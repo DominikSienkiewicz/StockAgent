@@ -130,7 +130,8 @@ class TrainingReport(Mapping[str, object]):
 
     `outcome` jest typem domenowym; `rmse`, `baseline_rmse` i pozostałe metryki
     to średnie po foldach (None, gdy trening się nie odbył). `extras` niesie pola
-    poboczne (np. `feature_set_version` przy pominięciu, DAT-09).
+    poboczne (np. `feature_set_version` przy pominięciu, DAT-09). `weights_sha256`
+    (CI-13) to sha256 pliku wag zapisanego w tym treningu — None bez zapisu wag.
 
     Widok `Mapping` to kontrakt słownika sprzed ARCH-09 (te same klucze i wartości,
     status z `LEGACY_STATUS`): czytają go zapis karty (`save_model_scorecard`),
@@ -151,6 +152,7 @@ class TrainingReport(Mapping[str, object]):
     metric_note: str | None = None
     model_path: str | None = None
     extras: Mapping[str, object] = field(default_factory=dict)
+    weights_sha256: str | None = None
 
     @property
     def status(self) -> str:
@@ -179,6 +181,8 @@ class TrainingReport(Mapping[str, object]):
             )
         if self.model_path is not None:
             legacy["model_path"] = self.model_path
+        if self.weights_sha256 is not None:
+            legacy["weights_sha256"] = self.weights_sha256
         legacy.update(self.extras)
         return legacy
 

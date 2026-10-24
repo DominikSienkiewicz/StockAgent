@@ -668,6 +668,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         session_close_settlement_enabled: bool = False,
         rag_exact_search_enabled: bool = False,
         receipts_enabled: bool = True,
+        scorecard_weights_sha256_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -681,6 +682,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # chybieniem tylko przy włączonych kwitach. Domyślnie true — bezpośrednia
         # konstrukcja (narzędzia, testy) czyta jak dotąd; Fast Loop podaje flagę z configu.
         self._receipts_enabled = receipts_enabled
+        # CI-13: kolumna `model_scorecards.weights_sha256` istnieje od migracji 060 —
+        # bez flagi payload karty jej nie niesie (PGRST204 zgubiłby cały wiersz).
+        self._scorecard_weights_sha256_enabled = scorecard_weights_sha256_enabled
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
         # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
         self._stale_quote_enabled = stale_quote_enabled
@@ -2033,6 +2037,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         feature_stats = result.get("feature_stats")
         if self._scorecard_feature_stats_enabled and feature_stats is not None:
             payload["feature_stats"] = feature_stats
+        weights_sha256 = result.get("weights_sha256")
+        if self._scorecard_weights_sha256_enabled and weights_sha256 is not None:
+            payload["weights_sha256"] = weights_sha256
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:

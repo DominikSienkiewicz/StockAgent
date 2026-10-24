@@ -313,3 +313,15 @@ class TestTrainingReport:
             "model_path": "m.ubj",
         }
         assert "validation_rmse" not in report
+
+    def test_weights_hash_follows_the_model_path_in_the_legacy_view(self) -> None:
+        # CI-13: sha256 pliku wag w karcie modelu; bez zapisu wag klucza nie ma.
+        report = TrainingReport(
+            TrainingOutcome.ACCEPTED,
+            n_samples=200,
+            model_path="m.ubj",
+            weights_sha256="ab" * 32,
+        )
+
+        assert list(report)[-2:] == ["model_path", "weights_sha256"]
+        assert report["weights_sha256"] == "ab" * 32

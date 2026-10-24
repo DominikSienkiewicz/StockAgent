@@ -171,6 +171,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "council_votes_upsert_enabled",
     # ML-21: sam zapis rozkładu cech treningu (biny + PSI) w karcie; prognoza ta sama.
     "model_scorecard_feature_stats_enabled",
+    # CI-13: sam zapis sha256 pliku wag w karcie; prognoza ta sama.
+    "model_scorecard_weights_sha256_enabled",
     # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
     "correction_category_enabled",
     # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
@@ -592,6 +594,10 @@ class Settings(BaseSettings):
     # i PSI ostatnich 30 dni próbki (kolumna JSONB z migracji 052); karta ostrzega
     # przy PSI > 0.25. Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz.
     model_scorecard_feature_stats_enabled: bool = False
+    # CI-13: wiersze karty niosą sha256 pliku wag zapisanego w przebiegu (kolumna
+    # z migracji 060) — wiąże metryki przebiegu z wagami z Release i z
+    # `model_version` predykcji. Off: nowy klucz przed migracją → PGRST204.
+    model_scorecard_weights_sha256_enabled: bool = False
     # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False

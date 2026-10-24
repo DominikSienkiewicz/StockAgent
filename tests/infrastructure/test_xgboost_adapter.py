@@ -842,3 +842,34 @@ class TestPairedLossTest:
                     passed.append((kind, seed))
 
         assert passed == []
+
+
+class TestWeightsHash:
+    """CI-13: karta modelu niesie sha256 pliku wag, który faktycznie leży na dysku
+    (ten sam plik idzie do Release `model-latest`) — bez ponownej serializacji."""
+
+    def test_accepted_report_carries_the_sha256_of_the_written_file(
+        self, adapter: XGBoostAdapter, model_path: str
+    ) -> None:
+        import hashlib
+
+        features, target = _synthetic_dataset(n=200)
+
+        report = adapter.train(features, target)
+
+        assert report.outcome is TrainingOutcome.ACCEPTED
+        expected = hashlib.sha256(Path(model_path).read_bytes()).hexdigest()
+        assert report.weights_sha256 == expected
+        assert report["weights_sha256"] == expected
+
+    def test_reports_without_written_weights_carry_no_hash(
+        self, adapter: XGBoostAdapter
+    ) -> None:
+        features, target = _synthetic_dataset(n=200)
+
+        evaluated = adapter.train(features, target, persist=False)
+        rejected = adapter.train(features, pd.Series([0.0] * 200))
+
+        assert evaluated.weights_sha256 is None
+        assert rejected.weights_sha256 is None
+        assert "weights_sha256" not in rejected

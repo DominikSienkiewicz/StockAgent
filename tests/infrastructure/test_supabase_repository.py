@@ -2889,6 +2889,49 @@ class TestModelScorecardFeatureStats:
         assert "feature_stats" not in payload
 
 
+class TestModelScorecardWeightsSha256:
+    """CI-13: sha256 pliku wag trafia do karty tylko za flagą — kolumna istnieje od
+    migracji 060, a nowy klucz przed nią to PGRST204 i przepadły wiersz karty."""
+
+    _SHA = "0f" * 32
+
+    def test_flag_off_payload_has_no_weights_hash(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        repo.save_model_scorecard(
+            "ALL", {"status": "trained_successfully", "weights_sha256": self._SHA}
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "weights_sha256" not in payload
+
+    def test_flag_on_payload_carries_the_weights_hash(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_weights_sha256_enabled=True,
+        )
+
+        repo.save_model_scorecard(
+            "ALL", {"status": "trained_successfully", "weights_sha256": self._SHA}
+        )
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["weights_sha256"] == self._SHA
+
+    def test_flag_on_without_weights_sends_no_key(self, mock_client: MagicMock) -> None:
+        repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="anon-key",
+            scorecard_weights_sha256_enabled=True,
+        )
+
+        repo.save_model_scorecard("ALL", {"status": "skipped_validation_failed"})
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "weights_sha256" not in payload
+
+
 class TestSettledAtWindows:
     """WIA-19: okno „rozliczone od `since`” filtruje i sortuje po `settled_at`
     (migracja 029). Bez `since` zapytanie nie dotyka kolumny, której przed

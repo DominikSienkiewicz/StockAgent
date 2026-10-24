@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -122,6 +123,7 @@ class XGBoostAdapter(MLPredictionPort):
             *,
             reason: str | None = None,
             model_path: str | None = None,
+            weights_sha256: str | None = None,
         ) -> TrainingReport:
             return _training_report(
                 outcome,
@@ -131,6 +133,7 @@ class XGBoostAdapter(MLPredictionPort):
                 reason=reason,
                 model_path=model_path,
                 target_unit=target_unit,
+                weights_sha256=weights_sha256,
             )
 
         if not persist:
@@ -168,7 +171,13 @@ class XGBoostAdapter(MLPredictionPort):
         model.save_model(self._model_path)
         self._model = model
         self._target_unit = target_unit
-        return report(TrainingOutcome.ACCEPTED, model_path=self._model_path)
+        # CI-13: hash bajtów pliku na dysku — tego samego, który workflow wysyła do
+        # Release `model-latest`, a Fast Loop haszuje jako `model_version`.
+        return report(
+            TrainingOutcome.ACCEPTED,
+            model_path=self._model_path,
+            weights_sha256=hashlib.sha256(model_path.read_bytes()).hexdigest(),
+        )
 
     def _walk_forward_folds_detail(
         self,
@@ -350,6 +359,7 @@ def _training_report(
     reason: str | None,
     model_path: str | None,
     target_unit: TargetUnit,
+    weights_sha256: str | None = None,
 ) -> TrainingReport:
     """ARCH-09: werdykt i metryki walk-forward jako domenowy `TrainingReport`.
 
@@ -373,6 +383,7 @@ def _training_report(
         extras=(
             {} if target_unit is TargetUnit.RETURN else {"target_unit": target_unit.value}
         ),
+        weights_sha256=weights_sha256,
     )
 
 

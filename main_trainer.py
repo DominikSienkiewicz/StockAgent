@@ -132,6 +132,8 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
+        # CI-13: sha256 pliku wag w karcie (migracja 060) za flagą.
+        scorecard_weights_sha256_enabled=settings.model_scorecard_weights_sha256_enabled,
         correction_category_enabled=settings.correction_category_enabled,
         # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
         fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,

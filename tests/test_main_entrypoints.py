@@ -1918,6 +1918,20 @@ class TestModelScorecardRunId:
 
         assert supabase_cls.call_args.kwargs["scorecard_feature_stats_enabled"] is enabled
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_weights_sha256_flag(
+        self, settings, mocker, enabled: bool
+    ) -> None:
+        # CI-13: kolumna `weights_sha256` (migracja 060) tylko za flagą.
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(
+            update={"model_scorecard_weights_sha256_enabled": enabled}
+        )
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs["scorecard_weights_sha256_enabled"] is enabled
+
     def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")

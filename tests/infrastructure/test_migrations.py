@@ -96,6 +96,7 @@ MIGRATION_FILES = [
     "057_price_level_alerts.sql",
     "058_settled_reads_without_stale_quote.sql",
     "059_settlement_session_close.sql",
+    "060_model_scorecards_weights_sha256.sql",
     "061_digests.sql",
     "062_corporate_actions.sql",
     "063_rag_exact_search.sql",
@@ -3671,3 +3672,51 @@ def test_missing_docker_daemon_still_skips_without_require_docker(
 
     with pytest.raises(pytest.skip.Exception), _pgvector_connection():
         pass
+
+
+@pytest.mark.containers
+class TestMigration060ScorecardWeightsSha256:
+    """CI-13: karta modelu niesie sha256 pliku wag z przebiegu; NULL bez zapisu wag."""
+
+    def test_weights_hash_is_a_nullable_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert "weights_sha256" in _columns(migrated_pg_conn, "model_scorecards")
+        digest = "0f" * 32
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, weights_sha256) VALUES "
+                "('ALL', 'trained_successfully', %s), ('AAPL', 'evaluated_passed_gate', NULL)",
+                (digest,),
+            )
+            cur.execute(
+                "SELECT symbol, weights_sha256 FROM model_scorecards "
+                "WHERE symbol IN ('ALL', 'AAPL') ORDER BY symbol"
+            )
+            rows = cur.fetchall()
+
+        assert rows == [("AAPL", None), ("ALL", digest)]
+
+    def test_weights_hash_rejects_anything_but_a_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, weights_sha256) "
+                "VALUES ('ALL', 'trained_successfully', 'sha256:abc')"
+            )
+
+    def test_060_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "060_model_scorecards_weights_sha256.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%weights_sha256%'"
+            )
+            assert cur.fetchone() == (1,)
