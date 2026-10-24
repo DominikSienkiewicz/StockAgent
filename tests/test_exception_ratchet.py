@@ -19,10 +19,12 @@ ROOT = Path(__file__).parent.parent
 # Stan na 7b44c99 (2026-10-24), policzony tym samym AST-em po src/ i main_*.py: 157.
 # +1 za zgodą właściciela (2026-10-25): krok ewaluacji ML-52 w Slow Loopie
 # (`main_trainer._evaluate_snapshot_models`) jest best-effort jak sąsiednie kroki.
-# Kontynuacja ARCH-33 w fali 2 ma sprowadzić liczbę z powrotem do <= 157.
+# Kontynuacja ARCH-33 w fali 2 sprowadziła liczbę poniżej 157 (warunek właściciela):
 # -1 (BEZ-27, 2026-10-25): z web digestem U3 zniknął `_publish_web_digest`.
 # -1 (WIA-15): publikacja revealu łapie błędy zapisu i serializacji, nie `Exception`.
-BROAD_HANDLER_BASELINE = 156
+# -4 (fala 2, kontynuacja ARCH-33): adaptery analityków i opcji Finnhub, zapis głosów
+# rady w grafie i odczyt wieku cache fundamentów w trenerze łapią `PortError`.
+BROAD_HANDLER_BASELINE = 152
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
 
 

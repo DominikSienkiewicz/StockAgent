@@ -4,6 +4,8 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import Mock
 
+import pytest
+
 from src.application.agent_graph import AgentGraphDeps, create_agent_graph
 from src.application.ports import (
     AdvisoryCouncilPort,
@@ -299,6 +301,31 @@ class TestCouncilVolatilityThreshold:
         assert all_args["symbol"] == "AAPL"
         assert len(all_args["votes"]) == 1
         assert all_args["votes"][0].investor_name == "Warren Buffett"
+
+    def test_council_votes_port_error_keeps_the_saved_prediction(self):
+        # ARCH-33: awaria bazy przy głosach (taksonomia z repozytorium) nie cofa
+        # zapisu predykcji — JSONB w prediction_logs zostaje.
+        from src.application.errors import ProviderUnavailable
+
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, repo = _make_graph_with_repo(council_port=council_port)
+        repo.save_council_votes.side_effect = ProviderUnavailable("PGRST000")
+
+        result = graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
+
+        assert result.get("status") == "saved"
+
+    def test_council_votes_programming_error_is_not_swallowed(self):
+        # ARCH-33: tylko błąd portu jest „bazą, która nie odpowiedziała” — błąd
+        # programisty przy zapisie głosów nie znika w logu.
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = _make_verdict()
+        graph, repo = _make_graph_with_repo(council_port=council_port)
+        repo.save_council_votes.side_effect = TypeError("bug in the vote rows")
+
+        with pytest.raises(TypeError, match="bug in the vote rows"):
+            graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
 
     def test_no_council_votes_persisted_when_council_skipped(self):
         # Gdy rada nie odpaliła (próg blokuje), nie ma głosów do zapisu.

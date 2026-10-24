@@ -622,6 +622,24 @@ class TestMainTrainer:
         assert fetched == ["S01", "S02", *[f"S{i:02d}" for i in range(15, 5, -1)]]
         repository.get_fundamentals_fetched_at.assert_called_once_with(settings.symbols)
 
+    def test_refresh_without_cache_ages_falls_back_to_list_order(self, settings) -> None:
+        # ARCH-33: nieosiągalna baza (taksonomia z repozytorium) → partia bez rotacji.
+        from src.application.errors import ProviderUnavailable
+
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_fundamentals_fetched_at.side_effect = ProviderUnavailable("PGRST000")
+
+        ages = main_trainer._fundamentals_fetched_at(repository, ["AAPL", "MSFT"])
+
+        assert ages == {"AAPL": None, "MSFT": None}
+
+    def test_cache_ages_programming_error_is_not_swallowed(self) -> None:
+        repository = MagicMock(spec=RepositoryPort)
+        repository.get_fundamentals_fetched_at.side_effect = TypeError("bug in the read")
+
+        with pytest.raises(TypeError, match="bug in the read"):
+            main_trainer._fundamentals_fetched_at(repository, ["AAPL"])
+
     def test_main_returns_zero_on_success(self, settings, mock_external_clients, mocker):
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "reason": "not enough data"}

@@ -2371,7 +2371,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
                 symbol=state["symbol"],
                 votes=list(verdict.investor_opinions),
             )
-        except Exception:
+        except PortError:
             logger.exception(
                 "save_council_votes failed for %s — JSONB blob in "
                 "prediction_logs is still saved",

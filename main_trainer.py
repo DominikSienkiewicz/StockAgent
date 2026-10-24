@@ -225,7 +225,7 @@ def _fundamentals_fetched_at(
     szła kolejnością listy."""
     try:
         known = repository.get_fundamentals_fetched_at(symbols)
-    except Exception:
+    except PortError:
         logger.exception("Fundamentals cache ages unavailable — refresh without rotation")
         known = {}
     return {
