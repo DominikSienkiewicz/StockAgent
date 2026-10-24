@@ -1,9 +1,12 @@
 """Adapter Reddit — prędkość społeczna z publicznego search.json (bez OAuth).
 
-Reddit udostępnia wyszukiwarkę jako JSON pod
+Adapter woła wyszukiwarkę JSON pod
     https://www.reddit.com/r/{subreddits}/search.json
-bez logowania i bez klucza API. Wymaga jednak własnego User-Agenta —
-domyślne UA bibliotek HTTP są blokowane (429/403).
+bez logowania i bez klucza API, z własnym User-Agentem. Od co najmniej
+2026-07-27 Reddit odpowiada na takie żądania z runnerów GitHub Actions
+`403 Blocked` (anonimowy JSON odcięty, oficjalna droga to OAuth), więc
+produkcyjny config.toml trzyma `social_velocity_enabled = false` — patrz
+docs/configuration.md. Pierwszy 403 kończy Reddit do końca cyklu.
 
 Adapter robi DWA zapytania na symbol:
   * t=day  → liczba postów z ostatniej doby = `mentions_24h`,
@@ -22,6 +25,7 @@ Cienki I/O — klasyfikacja trendu siedzi w domenie
 from __future__ import annotations
 
 import logging
+from http import HTTPStatus
 
 import requests
 
@@ -52,8 +56,12 @@ class RedditSocialAdapter(SocialVelocityPort):
         self._user_agent = user_agent
         self._timeout = timeout
         self._session = session if session is not None else build_session()
+        # Adapter żyje jeden cykl, a blokada Reddita w trakcie cyklu nie mija.
+        self._blocked = False
 
     def get_social_velocity(self, symbol: str) -> SocialVelocitySnapshot | None:
+        if self._blocked:
+            return None
         day_count = self._count_posts(symbol, period="day")
         if day_count is None:
             return None
@@ -94,6 +102,14 @@ class RedditSocialAdapter(SocialVelocityPort):
                 headers={"User-Agent": self._user_agent},
                 timeout=self._timeout,
             )
+            if response.status_code == HTTPStatus.FORBIDDEN:
+                self._blocked = True
+                logger.warning(
+                    "Reddit answered 403 for %s — no more Reddit requests this cycle "
+                    "(see docs/configuration.md, social velocity)",
+                    symbol,
+                )
+                return None
             response.raise_for_status()
             payload = response.json()
             data = payload["data"]
