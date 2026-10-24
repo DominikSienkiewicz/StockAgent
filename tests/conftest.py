@@ -27,13 +27,20 @@ hypothesis_settings.register_profile("ci", max_examples=200, deadline=None)
 hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
+def _update_golden_from_env() -> bool:
+    """TEST-10: `UPDATE_GOLDEN=1` jako alias `--update-golden` (np. dla konfiguracji IDE,
+    gdzie nie da się dopisać opcji). W CI (`CI` ustawione) ignorowany: snapshot przepisany
+    po cichu na runnerze zazieleniłby zmianę, której nikt nie obejrzał."""
+    return os.environ.get("UPDATE_GOLDEN") == "1" and not os.environ.get("CI")
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
-    # TEST-02: jawna (i jedyna) droga do przepisania golden snapshotów maila;
-    # TEST-10: ta sama dla golden promptów.
+    # TEST-02: jawna droga do przepisania golden snapshotów maila (TEST-10: i promptów);
+    # sama zmienna `UPDATE_GOLDEN=1` jest aliasem tej opcji poza CI.
     parser.addoption(
         "--update-golden",
         action="store_true",
-        default=False,
+        default=_update_golden_from_env(),
         help=(
             "przepisz snapshoty tests/application/snapshots/ i tests/golden/prompts/ "
             "zamiast je porównywać"
