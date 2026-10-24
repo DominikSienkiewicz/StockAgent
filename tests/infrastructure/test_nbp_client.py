@@ -277,6 +277,25 @@ class TestFxRateForDay:
         assert mock_get.call_count == 1
 
 
+class TestMalformedBodyIsGraceful:
+    """DAT-26: `MacroIndicatorsPort` zwraca None, gdy źródło nie daje danych —
+    nieparsowalny JSON i wpis kursu bez `mid` też, tak jak 5xx albo pusta tabela
+    (ARCH-33 zostawia klasę błędu w logu degradacji, zob. `TestPortErrorTaxonomy`)."""
+
+    def test_malformed_json_returns_empty(self, client: NbpClient, mocker, caplog) -> None:
+        broken = _ok_response({})
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=broken)
+
+        assert client._fetch_rates("EUR") == []
+        assert any(record.exc_info for record in caplog.records)
+
+    def test_json_that_is_not_an_object_returns_empty(self, client: NbpClient, mocker) -> None:
+        mocker.patch("requests.Session.get", return_value=_ok_response(["rates"]))
+
+        assert client.fetch_polish_macro() is None
+
+
 class TestPortErrorTaxonomy:
     """ARCH-33: błędy NBP w taksonomii portów — awaria logowana jako klasa
     taksonomii, śmieciowa treść tabeli kursów wychodzi jako `MalformedPayload`."""
@@ -294,7 +313,7 @@ class TestPortErrorTaxonomy:
         assert issubclass(exc_info[0], ProviderUnavailable)
 
     def test_unparseable_rates_body_is_malformed_payload(
-        self, client: NbpClient, mocker
+        self, client: NbpClient, mocker, caplog
     ) -> None:
         from src.application.errors import MalformedPayload
 
@@ -302,17 +321,23 @@ class TestPortErrorTaxonomy:
         broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
         mocker.patch("requests.Session.get", return_value=broken)
 
-        with pytest.raises(MalformedPayload):
-            client.fetch_polish_macro()
+        assert client.fetch_polish_macro() is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], MalformedPayload)
 
-    def test_rate_without_mid_is_malformed_payload(self, client: NbpClient, mocker) -> None:
+    def test_rate_without_mid_is_malformed_payload(
+        self, client: NbpClient, mocker, caplog
+    ) -> None:
         from src.application.errors import MalformedPayload
 
         payload = {"rates": [{"effectiveDate": "2026-05-01"}, {"effectiveDate": "2026-05-02"}]}
         mocker.patch("requests.Session.get", return_value=_ok_response(payload))
 
-        with pytest.raises(MalformedPayload):
-            client.fetch_polish_macro()
+        assert client.fetch_polish_macro() is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], MalformedPayload)
 
     def test_fx_rate_network_error_is_logged_as_provider_unavailable(
         self, mocker, caplog

@@ -19,8 +19,9 @@ Cienki I/O — cała logika oceny stresu i P/L w złotych siedzi w domenie
 (`PolishMacroSnapshot.evaluate_stress_level`, `Portfolio.pln_pnl`).
 
 ARCH-33: sieć i status wychodzą w taksonomii portów (log degradacji niesie jej
-klasę), a nieparsowalna albo niepełna tabela kursów `NbpClient` jako
-`MalformedPayload` (wciąż `ValueError`).
+klasę), a nieparsowalna albo niepełna tabela kursów to `MalformedPayload` (wciąż
+`ValueError`). DAT-26: `NbpClient` łapie ją jak błąd sieci — loguje klasę i oddaje
+None, bo port obiecuje brak danych zamiast wyjątku.
 """
 
 from __future__ import annotations
@@ -75,8 +76,12 @@ class NbpClient(MacroIndicatorsPort):
             # Brak punktu referencyjnego do delty 30d.
             return None
 
-        eur_latest, eur_baseline = _mid(eur_rates[-1]), _mid(eur_rates[0])
-        usd_latest, usd_baseline = _mid(usd_rates[-1]), _mid(usd_rates[0])
+        try:
+            eur_latest, eur_baseline = _mid(eur_rates[-1]), _mid(eur_rates[0])
+            usd_latest, usd_baseline = _mid(usd_rates[-1]), _mid(usd_rates[0])
+        except MalformedPayload:
+            logger.exception("NBP rates table without a numeric mid")
+            return None
 
         return PolishMacroSnapshot(
             eur_pln=eur_latest,
@@ -91,11 +96,11 @@ class NbpClient(MacroIndicatorsPort):
         try:
             response = translated_get(self._session, url, timeout=self._timeout)
             raise_for_status_translated(response)
+            payload = json_payload(response)
         except PortError:
             logger.exception("NBP fetch failed for %s", currency)
             return []
-        payload = json_payload(response)
-        rates = payload.get("rates")
+        rates = payload.get("rates") if isinstance(payload, dict) else None
         if not isinstance(rates, list):
             return []
         return rates
