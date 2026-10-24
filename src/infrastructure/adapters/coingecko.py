@@ -9,6 +9,10 @@ Mapping w adapterze: user trzyma w configu czyste tickery (BTC, ETH),
 adapter przekłada je na CoinGecko coin IDs (bitcoin, ethereum).
 Domyślny słownik pokrywa MVP; do dodania kolejnej monety wystarczy
 przekazać własny `ticker_to_id` przy konstrukcji.
+
+ARCH-33: błędy wychodzą w taksonomii portów — sieć i 5xx jako
+`ProviderUnavailable`, 429 jako `QuotaExhausted`, nieznana moneta jako `NotFound`
+(wciąż `ValueError`), niepełna albo nieparsowalna treść jako `MalformedPayload`.
 """
 
 from __future__ import annotations
@@ -18,12 +22,18 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from src.application.errors import MalformedPayload, NotFound
 from src.application.ports import DailyChangePort, MarketDataPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money
-from src.infrastructure.adapters._http import build_session
+from src.infrastructure.adapters._http import (
+    build_session,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +47,11 @@ DEFAULT_TICKER_TO_ID: dict[str, str] = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
 }
+
+
+class CoinGeckoCoinNotFound(NotFound, ValueError):
+    """Moneta bez mapowania na coin id albo nieznana CoinGecko. `ValueError`
+    zostaje bazą dla dotychczasowych wywołujących (ARCH-33)."""
 
 
 class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
@@ -59,7 +74,7 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
         coin_block = self._fetch_coin_block(symbol, {})
         price = coin_block.get(self._vs_currency)
         if price is None:
-            raise ValueError(
+            raise MalformedPayload(
                 f"CoinGecko response for '{symbol}' missing "
                 f"'{self._vs_currency}' field."
             )
@@ -74,7 +89,7 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
         percent = coin_block.get(f"{self._vs_currency}_24h_change")
         stamp = coin_block.get("last_updated_at")
         if percent is None or not stamp:
-            raise ValueError(
+            raise MalformedPayload(
                 f"CoinGecko response for '{symbol}' missing the 24h change "
                 f"(has_change={percent is not None}, has_updated_at={bool(stamp)})."
             )
@@ -86,12 +101,13 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
     def _fetch_coin_block(self, symbol: str, extra_params: dict[str, str]) -> dict[str, Any]:
         coin_id = self._ticker_to_id.get(symbol)
         if coin_id is None:
-            raise ValueError(
+            raise CoinGeckoCoinNotFound(
                 f"Crypto ticker '{symbol}' is not mapped to a CoinGecko coin "
                 f"id. Add it to ticker_to_id (known: "
                 f"{sorted(self._ticker_to_id)})."
             )
-        response = self._session.get(
+        response = translated_get(
+            self._session,
             f"{self._base_url}/simple/price",
             params={"ids": coin_id, "vs_currencies": self._vs_currency, **extra_params},
             timeout=self._timeout,
@@ -118,11 +134,11 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
                     "rate limit (~5-15 req/min) exhausted."
                 ),
             )
-        response.raise_for_status()
-        payload = response.json()
-        coin_block = payload.get(coin_id)
+        raise_for_status_translated(response)
+        payload = json_payload(response)
+        coin_block = payload.get(coin_id) if isinstance(payload, dict) else None
         if not isinstance(coin_block, dict):
-            raise ValueError(
+            raise CoinGeckoCoinNotFound(
                 f"CoinGecko returned no data for '{symbol}' "
                 f"(coin_id={coin_id})."
             )
