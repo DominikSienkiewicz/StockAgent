@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 from typing import cast
 
-from src.application.errors import PortError
+from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
 
 # Jedna klasa na parę (taksonomia, typ dostawcy) — `except` i `isinstance` widzą
 # ten sam typ przy każdym tłumaczeniu, także z wątków równoległych symboli.
@@ -47,3 +47,20 @@ def as_port_error[E: Exception](exc: E, kind: type[PortError]) -> E:
     translated.args = exc.args
     translated.__dict__.update(exc.__dict__)
     return cast(E, translated.with_traceback(exc.__traceback__))
+
+
+_RATE_LIMITED = 429
+_SERVER_ERROR = 500
+
+
+def sdk_error_kind(exc: Exception) -> type[PortError]:
+    """Klasa taksonomii błędu SDK dostawcy LLM (Anthropic, OpenAI): brak odpowiedzi
+    (połączenie, timeout — bez `status_code`) i 5xx (w tym 529 Overloaded) to
+    niedostępny dostawca, 429 to kwota, reszta 4xx (zły prompt, klucz, model) to
+    ogólny błąd portu."""
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        return ProviderUnavailable
+    if status == _RATE_LIMITED:
+        return QuotaExhausted
+    return ProviderUnavailable if status >= _SERVER_ERROR else PortError

@@ -5,11 +5,13 @@ import logging
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIConnectionError, APIStatusError
 
+from src.application.errors import MalformedPayload
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 from src.infrastructure.llm.anthropic_client import (
@@ -122,7 +124,10 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             if offer_tools:
                 kwargs["tools"] = tool_schema
 
-            response = self._client.messages.create(**kwargs)
+            try:
+                response = self._client.messages.create(**kwargs)
+            except (APIStatusError, APIConnectionError) as exc:
+                raise as_port_error(exc, sdk_error_kind(exc)) from None
             if self._usage_sink is not None:
                 report_usage(self._usage_sink, anthropic_usage(response, self._model))
 
@@ -166,7 +171,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
     def _parse_final(self, content: Any) -> dict[str, Any]:
         text = self._extract_text(content)
         if not text:
-            raise ValueError(
+            raise MalformedPayload(
                 "Anthropic tool-use returned empty content for the final answer."
             )
         # Reuse robustnego parsowania z AnthropicAdapter — Claude nie ma JSON
@@ -181,6 +186,6 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
                     return parse_json_object(candidate)
                 except json.JSONDecodeError:
                     pass
-            raise ValueError(
+            raise MalformedPayload(
                 f"Anthropic tool-use returned invalid JSON: {cleaned[:200]!r}"
             ) from None

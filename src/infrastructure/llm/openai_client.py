@@ -7,12 +7,19 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
-from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
-from src.application.errors import LLMTruncatedError
+from src.application.errors import LLMTruncatedError, MalformedPayload
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 
@@ -200,7 +207,7 @@ class OpenAIAdapter(LLMPort):
                     "max_tokens for this model.",
                     output_tokens=_completion_tokens(response),
                 )
-            raise ValueError(
+            raise MalformedPayload(
                 "OpenAI returned empty content for analyze() "
                 f"(finish_reason={finish_reason!r})."
             )
@@ -222,7 +229,7 @@ class OpenAIAdapter(LLMPort):
                     f"{self._resolved_max_tokens()} tokens: {content[:200]!r}",
                     output_tokens=_completion_tokens(response),
                 ) from exc
-            raise ValueError(
+            raise MalformedPayload(
                 f"OpenAI returned invalid JSON: {content[:200]!r}"
             ) from exc
 
@@ -243,11 +250,14 @@ class OpenAIAdapter(LLMPort):
             report_usage(self._usage_sink, openai_chat_usage(response, self._model))
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
-        """Retry'uje wyłącznie RateLimitError (429). Honoruje retry-after.
+        """Retry'uje 429, 5xx i błędy połączenia. Honoruje retry-after.
 
         Sygnalizacja kwot:
         - sukces po >=1 retry → WARNING (na granicy TPM)
         - wyczerpanie retry → CRITICAL przed propagacją wyjątku
+
+        ARCH-33: błąd wychodzi przetłumaczony na taksonomię portów (`sdk_error_kind`),
+        wciąż jako typ SDK z `status_code` — failover i dotychczasowe handlery bez zmian.
         """
         attempt = 0
         while True:
@@ -291,7 +301,7 @@ class OpenAIAdapter(LLMPort):
                             f"{self._max_retries} retries — call failed."
                         ),
                     )
-                    raise
+                    raise as_port_error(exc, sdk_error_kind(exc)) from None
                 wait = self._compute_wait(exc, attempt)
                 logger.warning(
                     "OpenAI %s (attempt %d/%d) — sleeping %.1fs",
@@ -302,6 +312,9 @@ class OpenAIAdapter(LLMPort):
                 )
                 time.sleep(wait)
                 attempt += 1
+            except APIStatusError as exc:
+                # Nieprzejściowy status (zły prompt, klucz, model) — bez ponowień.
+                raise as_port_error(exc, sdk_error_kind(exc)) from None
 
     def _compute_wait(self, exc: Exception, attempt: int) -> float:
         # Najpierw spróbuj `retry-after` z odpowiedzi serwera — to jego

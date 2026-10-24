@@ -5,11 +5,13 @@ import logging
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, OpenAI
 
+from src.application.errors import MalformedPayload
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.infrastructure.adapters._http import redact_secrets
+from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 from src.infrastructure.llm.openai_client import (
@@ -124,7 +126,10 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             if offer_tools:
                 kwargs["tools"] = tool_schema
 
-            response = self._client.chat.completions.create(**kwargs)
+            try:
+                response = self._client.chat.completions.create(**kwargs)
+            except (APIStatusError, APIConnectionError) as exc:
+                raise as_port_error(exc, sdk_error_kind(exc)) from None
             if self._usage_sink is not None:
                 report_usage(self._usage_sink, openai_chat_usage(response, self._model))
             message = response.choices[0].message
@@ -172,12 +177,12 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
     @staticmethod
     def _parse_final(content: str | None) -> dict[str, Any]:
         if not content:
-            raise ValueError(
+            raise MalformedPayload(
                 "OpenAI tool-use returned empty content for the final answer."
             )
         try:
             return parse_json_object(content)
         except json.JSONDecodeError as exc:
-            raise ValueError(
+            raise MalformedPayload(
                 f"OpenAI tool-use returned invalid JSON: {content[:200]!r}"
             ) from exc

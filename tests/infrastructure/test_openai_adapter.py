@@ -706,3 +706,84 @@ class TestUsageReporting:
             adapter.analyze("prompt")
 
         assert sink.record.call_args.args[0].output_tokens == 4096
+
+
+def _client_error(status: int = 400) -> Exception:
+    import httpx
+    from openai import APIStatusError
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return APIStatusError(message="bad request", response=response, body=None)
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błędy OpenAI po wyczerpaniu ponowień wychodzą jako taksonomia
+    portów i nadal jako typy SDK (failover czyta `status_code`)."""
+
+    @staticmethod
+    def _adapter(mock_openai_class, mocker, side_effect) -> OpenAIAdapter:
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.side_effect = side_effect
+        return OpenAIAdapter(api_key="sk-test", backoff_base=0.01, max_retries=1)
+
+    def test_server_error_after_retries_is_provider_unavailable(
+        self, mock_openai_class, mocker
+    ):
+        from openai import InternalServerError
+
+        from src.application.errors import ProviderUnavailable
+
+        adapter = self._adapter(mock_openai_class, mocker, _server_error())
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.analyze("p")
+
+        assert isinstance(excinfo.value, InternalServerError)
+        assert excinfo.value.status_code == 503
+
+    def test_rate_limit_after_retries_is_quota_exhausted(self, mock_openai_class, mocker):
+        from src.application.errors import QuotaExhausted
+
+        adapter = self._adapter(mock_openai_class, mocker, _rate_limit_error())
+
+        with pytest.raises(QuotaExhausted):
+            adapter.analyze_mistake("p")
+
+    def test_connection_error_after_retries_is_provider_unavailable(
+        self, mock_openai_class, mocker
+    ):
+        import httpx
+        from openai import APIConnectionError
+
+        from src.application.errors import ProviderUnavailable
+
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        adapter = self._adapter(mock_openai_class, mocker, APIConnectionError(request=request))
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.analyze("p")
+
+        assert isinstance(excinfo.value, APIConnectionError)
+
+    def test_client_error_is_a_port_error_without_retry(self, mock_openai_class, mocker):
+        from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
+
+        adapter = self._adapter(mock_openai_class, mocker, _client_error(400))
+
+        with pytest.raises(PortError) as excinfo:
+            adapter.analyze("p")
+
+        assert not isinstance(excinfo.value, ProviderUnavailable | QuotaExhausted)
+
+    @pytest.mark.parametrize("content", [None, "no json here"], ids=["empty", "invalid-json"])
+    def test_unparseable_answer_is_malformed_payload(self, adapter_with_client, content):
+        from src.application.errors import MalformedPayload
+
+        adapter, client = adapter_with_client
+        client.chat.completions.create.return_value = _completion(content)
+
+        with pytest.raises(MalformedPayload):
+            adapter.analyze("p")

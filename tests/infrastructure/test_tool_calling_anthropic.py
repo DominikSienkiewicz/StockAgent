@@ -422,3 +422,47 @@ class TestUsageReporting:
         recorded = [call.args[0] for call in sink.record.call_args_list]
         assert [(u.input_tokens, u.output_tokens) for u in recorded] == [(1000, 40), (1300, 120)]
         assert {(u.provider, u.model) for u in recorded} == {("anthropic", "claude-sonnet-4-6")}
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błąd SDK w pętli tool-use i nieparsowalny werdykt wychodzą jako
+    taksonomia portów (nadal typy SDK / `ValueError`)."""
+
+    @staticmethod
+    def _status_error(status: int) -> Exception:
+        import httpx
+        from anthropic import APIStatusError, InternalServerError, RateLimitError
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(status, request=request)
+        if status == 429:
+            return RateLimitError("rate limited", response=response, body=None)
+        if status >= 500:
+            return InternalServerError("overloaded", response=response, body=None)
+        return APIStatusError("client error", response=response, body=None)
+
+    @pytest.mark.parametrize(
+        ("status", "kind_name"),
+        [(529, "ProviderUnavailable"), (429, "QuotaExhausted"), (400, "PortError")],
+    )
+    def test_sdk_error_maps_to_its_kind(self, adapter_with_client, status, kind_name):
+        from anthropic import APIStatusError
+
+        from src.application import errors
+
+        adapter, client = adapter_with_client
+        client.messages.create.side_effect = self._status_error(status)
+
+        with pytest.raises(getattr(errors, kind_name)) as excinfo:
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])
+
+        assert isinstance(excinfo.value, APIStatusError)
+
+    def test_unparseable_verdict_is_malformed_payload(self, adapter_with_client):
+        from src.application.errors import MalformedPayload
+
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _final_response("no json here")
+
+        with pytest.raises(MalformedPayload):
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])

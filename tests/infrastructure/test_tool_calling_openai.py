@@ -363,3 +363,47 @@ class TestUsageReporting:
         recorded = [call.args[0] for call in sink.record.call_args_list]
         assert [(u.input_tokens, u.output_tokens) for u in recorded] == [(800, 25), (950, 90)]
         assert {(u.provider, u.model) for u in recorded} == {("openai", "gpt-4o")}
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błąd SDK w pętli tool-use i nieparsowalny werdykt wychodzą jako
+    taksonomia portów (nadal typy SDK / `ValueError`)."""
+
+    @staticmethod
+    def _status_error(status: int) -> Exception:
+        import httpx
+        from openai import APIStatusError, InternalServerError, RateLimitError
+
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(status, request=request)
+        if status == 429:
+            return RateLimitError(message="rate limited", response=response, body=None)
+        if status >= 500:
+            return InternalServerError(message="unavailable", response=response, body=None)
+        return APIStatusError(message="bad request", response=response, body=None)
+
+    @pytest.mark.parametrize(
+        ("status", "kind_name"),
+        [(503, "ProviderUnavailable"), (429, "QuotaExhausted"), (400, "PortError")],
+    )
+    def test_sdk_error_maps_to_its_kind(self, adapter_with_client, status, kind_name):
+        from openai import APIStatusError
+
+        from src.application import errors
+
+        adapter, client = adapter_with_client
+        client.chat.completions.create.side_effect = self._status_error(status)
+
+        with pytest.raises(getattr(errors, kind_name)) as excinfo:
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])
+
+        assert isinstance(excinfo.value, APIStatusError)
+
+    def test_unparseable_verdict_is_malformed_payload(self, adapter_with_client):
+        from src.application.errors import MalformedPayload
+
+        adapter, client = adapter_with_client
+        client.chat.completions.create.return_value = _final_message("no json here")
+
+        with pytest.raises(MalformedPayload):
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])

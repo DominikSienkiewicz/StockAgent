@@ -14,14 +14,11 @@ from src.application.errors import (
     LLMRefusalError,
     LLMTruncatedError,
     MalformedPayload,
-    PortError,
-    ProviderUnavailable,
-    QuotaExhausted,
 )
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
-from src.infrastructure.error_translation import as_port_error
+from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
@@ -87,17 +84,6 @@ class _Completion(NamedTuple):
     text: str
     stop_reason: str | None
     output_tokens: int | None
-
-
-def _port_error_kind(exc: APIStatusError | APIConnectionError) -> type[PortError]:
-    """ARCH-33: błąd SDK w taksonomii — brak odpowiedzi i 5xx (w tym 529 Overloaded)
-    to niedostępny dostawca, 429 to kwota, reszta 4xx (zły prompt, klucz, model)
-    to ogólny błąd portu."""
-    if isinstance(exc, APIConnectionError):
-        return ProviderUnavailable
-    if exc.status_code == 429:
-        return QuotaExhausted
-    return ProviderUnavailable if exc.status_code >= 500 else PortError
 
 
 class AnthropicAdapter(LLMPort):
@@ -228,7 +214,7 @@ class AnthropicAdapter(LLMPort):
                 return result
             except (APIStatusError, APIConnectionError) as exc:
                 if not self._is_transient(exc):
-                    raise as_port_error(exc, _port_error_kind(exc)) from None
+                    raise as_port_error(exc, sdk_error_kind(exc)) from None
                 if attempt >= self._max_retries:
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
@@ -247,7 +233,7 @@ class AnthropicAdapter(LLMPort):
                             f"({type(exc).__name__}) — call failed."
                         ),
                     )
-                    raise as_port_error(exc, _port_error_kind(exc)) from None
+                    raise as_port_error(exc, sdk_error_kind(exc)) from None
                 wait = self._compute_wait(exc, attempt)
                 logger.warning(
                     "Anthropic transient error %s (attempt %d/%d) — sleeping %.1fs",
