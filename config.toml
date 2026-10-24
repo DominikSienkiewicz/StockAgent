@@ -30,6 +30,10 @@ persona_vote_outcomes_enabled = false
 # Tylko kolejność i opis w mailu. UWAGA: włącz DOPIERO po migracji 065 (inaczej
 # ranking wraca do hit-rate'u z WARNING-iem).
 persona_brier_ranking_enabled = false
+# WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
+# efektywna liczba niezależnych głosów). Recap tygodniowy dopisuje linię „7 person
+# ≈ 2,1 niezależnego głosu”. Sama treść maila, bez migracji.
+council_redundancy_enabled = false
 debate_mode_enabled = false
 # Model routing (#2): tani model domyślnie, eskalacja do frontier gdy
 # confidence < routing_floor. Domyślnie off (główna analiza wg llm_provider).

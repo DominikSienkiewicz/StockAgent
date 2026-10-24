@@ -759,6 +759,7 @@ def _send_weekly_recap(
             repository_port=repository,
             llm_port=llm_port,
             crypto_symbols=settings.crypto_symbols,
+            council_redundancy_enabled=settings.council_redundancy_enabled,
         ).run(days=WEEKLY_RECAP_DAYS, since=since)
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]

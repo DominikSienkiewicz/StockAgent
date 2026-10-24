@@ -38,6 +38,7 @@ from src.domain.calibration_curve import (
     reliability_curve,
 )
 from src.domain.council import InvestorOpinion, Recommendation, vindicated_dissenters
+from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.prediction import Prediction, sideways_tolerance_for
 from src.domain.value_objects import AssetType
 
@@ -180,6 +181,9 @@ class WeeklyRecap:
     previous_ece: float | None
     ece_delta: float | None
     scores: ProbabilityScores | None = None
+    # WIA-45: zgodność person i efektywna liczba niezależnych głosów rady; None =
+    # nie liczone (flaga off) albo za mało wspólnych predykcji.
+    redundancy: CouncilRedundancy | None = None
 
 
 def _to_highlight(closed: ClosedPrediction) -> RecapHighlight:

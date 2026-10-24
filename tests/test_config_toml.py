@@ -540,6 +540,12 @@ def test_real_config_toml_ships_the_persona_brier_ranking_off_until_migration() 
     assert data["persona_brier_ranking_enabled"] is False
 
 
+def test_real_config_toml_ships_the_council_redundancy_off() -> None:
+    """WIA-45: maile (recap, odznaka konsensusu) zmieniają się dopiero po decyzji właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["council_redundancy_enabled"] is False
+
+
 def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
     """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

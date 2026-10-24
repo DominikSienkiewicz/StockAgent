@@ -21,8 +21,9 @@ bo mogą nieść prompt-injection.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -31,6 +32,11 @@ from src.application._prompt_safety import fence_untrusted
 from src.application.ports import LLMPort, RepositoryPort
 from src.application.report_weekly_recap import best_title, hero_verdict, worst_title
 from src.domain.council import InvestorOpinion, Recommendation, parse_recommendation
+from src.domain.council_redundancy import (
+    CouncilRedundancy,
+    CouncilVoteSample,
+    assess_council_redundancy,
+)
 from src.domain.prediction import Prediction, TrendDirection, is_substantive_insight
 from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
@@ -190,6 +196,23 @@ def _extract_narrative(result: Any) -> str:
     return str(result) if result else ""
 
 
+def _council_redundancy(closed: Sequence[ClosedPrediction]) -> CouncilRedundancy | None:
+    """WIA-45: zgodność person i N_eff z głosów rady zamkniętych predykcji tygodnia
+    (ten sam JSONB, który napędza wybronionych dysydentów) — bez dodatkowego odczytu.
+    Predykcja bez zapisanego id dostaje klucz z kolejności, żeby jej głosy się
+    wyrównały między personami."""
+    votes: list[CouncilVoteSample] = []
+    trends: dict[str, str] = {}
+    for index, item in enumerate(closed):
+        prediction_id = item.prediction.id or f"closed-{index}"
+        trends[prediction_id] = item.prediction.predicted_trend.value
+        votes.extend(
+            CouncilVoteSample(prediction_id, opinion.investor_name, opinion.recommendation)
+            for opinion in item.council_opinions
+        )
+    return assess_council_redundancy(votes, trends)
+
+
 # FIN-30: płatne wywołania LLM jednego przebiegu (narracja) — wkład recapu
 # do tygodniowego budżetu Slow Loopa.
 PAID_LLM_CALLS_PER_RUN = 1
@@ -203,9 +226,12 @@ class WeeklyRecapUseCase:
         repository_port: RepositoryPort,
         llm_port: LLMPort,
         crypto_symbols: Collection[str] = (),
+        council_redundancy_enabled: bool = False,
     ) -> None:
         self._repo = repository_port
         self._llm = llm_port
+        # WIA-45: linia „N person ≈ M niezależnego głosu” w recapie; off = recap bez niej.
+        self._council_redundancy_enabled = council_redundancy_enabled
         # Symbole krypto (DI z `settings.crypto_symbols`) wyznaczają pasmo FLAT.
         self._crypto_symbols = frozenset(s.upper() for s in crypto_symbols)
 
@@ -225,6 +251,8 @@ class WeeklyRecapUseCase:
             # Twarda reguła domenowa: poniżej progu recap nie powstaje, mail nie
             # wychodzi i — kluczowe dla FinOps — LLM NIE jest wołany.
             return {"status": "skipped_below_threshold", "n_closed": len(closed)}
+        if self._council_redundancy_enabled:
+            recap = dataclasses.replace(recap, redundancy=_council_redundancy(closed))
 
         # DOKŁADNIE jedno płatne wywołanie tygodniowo. Awaria → recap i tak
         # wychodzi, tylko bez narracji.

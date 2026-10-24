@@ -98,6 +98,9 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # WIA-44: sama kolejność i opis leaderboardu person w mailu; wagi konsensusu
     # (`persona_weighting_enabled`) liczy osobna ścieżka.
     "persona_brier_ranking_enabled",
+    # WIA-45: linia redundancji w recapie i brak odznaki „silny konsensus” w mailu —
+    # sama treść maili, ocena po predykcji.
+    "council_redundancy_enabled",
     # ALR-11: alerty poziomów cenowych watcha — push poza cyklem, nie prognoza.
     "price_level_alerts_enabled",
     "price_alerts",
@@ -495,6 +498,10 @@ class Settings(BaseSettings):
     # `persona_scoring_stats`, migracja 065) zamiast po samym hit-rate'cie. Tylko
     # kolejność i opis w mailu — prognoza ta sama. Off: ranking jak dotąd.
     persona_brier_ranking_enabled: bool = False
+    # WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
+    # N_eff). Recap tygodniowy dopisuje linię „7 person ≈ 2,1 niezależnego głosu”.
+    # Tylko treść maila — prognoza ta sama. Off: recap bez zmian.
+    council_redundancy_enabled: bool = False
     debate_mode_enabled: bool = False
 
     # ----- Model routing (#2 — tani model + eskalacja do frontier) -----

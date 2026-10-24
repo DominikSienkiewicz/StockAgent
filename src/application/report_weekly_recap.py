@@ -17,6 +17,8 @@ from decimal import Decimal
 from src.application.report_evidence import probability_label
 from src.application.report_formatting import INVESTMENT_DISCLAIMER, number, pct
 from src.domain.council import InvestorOpinion
+from src.domain.council_redundancy import CouncilRedundancy
+from src.domain.number_format import format_number_pl
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
 _COLOR_GOOD = "#16a34a"
@@ -55,6 +57,42 @@ def _scores_html(recap: WeeklyRecap) -> str:
         "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"🎯 Pewność: {_html.escape(label)} — BSS 0% to brak umiejętności "
         "względem prognozy „zawsze stopa bazowa”.</div>"
+    )
+
+
+def _redundancy_label(redundancy: CouncilRedundancy | None) -> str:
+    """„7 person ≈ 2,1 niezależnego głosu (średnia kappa 0,52, zgodność 81%)” (WIA-45).
+
+    Gdy N_eff nie przekracza progu jednego głosu, dopisuje wprost, że rada mówi
+    w praktyce jednym głosem; najbardziej zgodna para person idzie na końcu."""
+    if redundancy is None or redundancy.n_eff is None or redundancy.mean_kappa is None:
+        return ""
+    n_eff = format_number_pl(Decimal(str(redundancy.n_eff)), signed=False, decimals=1)
+    kappa = format_number_pl(Decimal(str(redundancy.mean_kappa)), signed=False, decimals=2)
+    agreement = format_number_pl(
+        Decimal(str((redundancy.mean_agreement or 0.0) * 100)), signed=False, decimals=0
+    )
+    label = (
+        f"{redundancy.personas} person ≈ {n_eff} niezależnego głosu "
+        f"(średnia kappa {kappa}, surowa zgodność {agreement}%, "
+        f"{redundancy.predictions} predykcji)"
+    )
+    if redundancy.is_effectively_single_voter:
+        label += " — rada mówi w praktyce jeden głos"
+    top = redundancy.pairs[0] if redundancy.pairs else None
+    if top is not None:
+        top_kappa = format_number_pl(Decimal(str(top.kappa)), signed=False, decimals=2)
+        label += f"; najbardziej zgodne: {top.first} i {top.second} (kappa {top_kappa})"
+    return label
+
+
+def _redundancy_html(recap: WeeklyRecap) -> str:
+    label = _redundancy_label(recap.redundancy)
+    if not label:
+        return ""
+    return (
+        "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
+        f"🧮 Rada: {_html.escape(label)}.</div>"
     )
 
 
@@ -164,6 +202,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + _dissenters_html(recap.worst.vindicated_dissenters)
         + _dissenters_html(recap.best.vindicated_dissenters)
         + _scores_html(recap)
+        + _redundancy_html(recap)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
         # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
@@ -201,6 +240,9 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     scores = _scores_label(recap)
     if scores:
         lines.append(f"  Pewność: {scores}")
+    redundancy = _redundancy_label(recap.redundancy)
+    if redundancy:
+        lines.append(f"  Rada: {redundancy}")
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
     lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
     return "\n".join(lines)

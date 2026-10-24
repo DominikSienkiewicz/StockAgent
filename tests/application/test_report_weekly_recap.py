@@ -238,3 +238,46 @@ class TestWeeklyRecapProbabilityScores:
     def test_recap_without_scores_has_no_brier_line(self) -> None:
         assert "Brier" not in render_weekly_recap_html(_recap())
         assert "Brier" not in render_weekly_recap_text(_recap())
+
+
+class TestCouncilRedundancyLine:
+    """WIA-45: „7 person ≈ 2,1 niezależnego głosu” w recapie — tylko gdy policzone."""
+
+    @staticmethod
+    def _with_redundancy(n_eff: float = 2.1, personas: int = 7) -> WeeklyRecap:
+        from src.domain.council_redundancy import CouncilRedundancy, PairAgreement
+
+        pair = PairAgreement("Graham", "Buffett", n=30, agreement=0.95, kappa=0.91)
+        return dataclasses.replace(
+            _recap(),
+            redundancy=CouncilRedundancy(
+                personas=personas,
+                predictions=40,
+                pairs=(pair,),
+                llm_pairs=(),
+                mean_kappa=0.52,
+                mean_agreement=0.81,
+                n_eff=n_eff,
+            ),
+        )
+
+    def test_html_states_the_effective_number_of_voters(self) -> None:
+        html = render_weekly_recap_html(self._with_redundancy())
+
+        assert "7 person ≈ 2,1 niezależnego głosu" in html
+        assert "Graham" in html and "Buffett" in html
+        assert "kappa 0,91" in html
+
+    def test_text_states_the_effective_number_of_voters(self) -> None:
+        text = render_weekly_recap_text(self._with_redundancy())
+
+        assert "7 person ≈ 2,1 niezależnego głosu" in text
+
+    def test_a_council_that_speaks_with_one_voice_is_called_out(self) -> None:
+        html = render_weekly_recap_html(self._with_redundancy(n_eff=1.0, personas=3))
+
+        assert "w praktyce jeden głos" in html
+
+    def test_recap_without_redundancy_has_no_such_line(self) -> None:
+        assert "niezależnego głosu" not in render_weekly_recap_html(_recap())
+        assert "niezależnego głosu" not in render_weekly_recap_text(_recap())

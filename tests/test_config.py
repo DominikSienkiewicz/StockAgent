@@ -1611,6 +1611,23 @@ class TestPersonaBrierRankingFlag:
         assert "persona_brier_ranking_enabled" not in RECIPE_SETTINGS_FIELDS
 
 
+class TestCouncilRedundancyFlag:
+    """WIA-45: linia redundancji w recapie i brak odznaki „silny konsensus” przy
+    jednym efektywnym głosie — sama treść maili, domyślnie off, poza przepisem."""
+
+    def test_defaults_off(self, env):
+        assert (
+            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).council_redundancy_enabled
+            is False
+        )
+
+    def test_is_not_part_of_the_recipe(self, env):
+        from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
+
+        assert "council_redundancy_enabled" in NON_RECIPE_SETTINGS_FIELDS
+        assert "council_redundancy_enabled" not in RECIPE_SETTINGS_FIELDS
+
+
 class TestCorrectionCategoryFlag:
     """WIA-57: kolumna `correction_category` (migracja 046) — sam zapis kategorii
     diagnozy i jej odczyt w panelu lessons; prognoza ta sama, poza przepisem."""

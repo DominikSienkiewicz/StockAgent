@@ -2197,6 +2197,21 @@ class TestWeeklyRecapWiring:
         call = main_trainer.WeeklyRecapUseCase.call_args
         assert list(call.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_recap_gets_the_council_redundancy_flag(
+        self, settings, mock_external_clients, mocker, enabled: bool
+    ) -> None:
+        # WIA-45: linia redundancji w recapie tygodniowym tylko za flagą.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        settings.council_redundancy_enabled = enabled
+        self._trainer(settings, mocker, "recap_ready")
+
+        main_trainer.main(settings)
+
+        call = main_trainer.WeeklyRecapUseCase.call_args
+        assert call.kwargs["council_redundancy_enabled"] is enabled
+
     def test_flag_off_never_builds_the_recap(self, settings, mock_external_clients, mocker) -> None:
         settings.weekly_recap_enabled = False
         settings.symbols = ["AAPL"]
