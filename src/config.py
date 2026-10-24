@@ -444,7 +444,8 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # ARCH-23: `.env` jak `config.toml` — względem roota repo, nie CWD.
+        env_file=str(_REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

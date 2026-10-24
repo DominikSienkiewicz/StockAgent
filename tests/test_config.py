@@ -1,6 +1,7 @@
 import base64
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -1892,3 +1893,11 @@ class TestIsotonicCalibrationFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "isotonic_calibration_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
+def test_env_file_is_anchored_at_the_repo_root() -> None:
+    """ARCH-23: `.env` jak `config.toml` leży względem roota repo, nie CWD — job
+    odpalony z innego katalogu nie traci po cichu kluczy i sekretów."""
+    repo_root = Path(__file__).resolve().parent.parent
+
+    assert Path(str(Settings.model_config["env_file"])) == repo_root / ".env"

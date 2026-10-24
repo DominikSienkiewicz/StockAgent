@@ -749,7 +749,7 @@ def run_watch(
 
 
 def main(settings: Settings | None = None) -> int:
-    resolved = settings or Settings()  # type: ignore[call-arg]
+    resolved = settings or Settings.from_env()
     configure_logging("main_watch", resolved.secret_values())
     # Import lokalny — reguła pingu żyje w DI Containerze Fast Loopa.
     from main_agent import run_with_heartbeat

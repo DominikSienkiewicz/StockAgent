@@ -183,6 +183,19 @@ class TestWatchCycle:
         repo.get_last_price_snapshot.assert_not_called()
 
 
+def test_main_builds_settings_via_from_env(settings, mocker) -> None:
+    # ARCH-23: ten sam punkt wejścia konfiguracji co main_agent (`Settings.from_env`),
+    # bez gołego `Settings()` z ignorem mypy.
+    settings_cls = mocker.patch("main_watch.Settings")
+    settings_cls.from_env.return_value = settings
+    mocker.patch("main_watch.configure_logging")
+    mocker.patch("main_agent.run_with_heartbeat", return_value=0)
+
+    assert main_watch.main() == 0
+
+    settings_cls.from_env.assert_called_once_with()
+
+
 def test_main_wires_free_adapters_only(settings, mocker) -> None:
     # `main()` składa adaptery fabrykami z `main_agent` (import lokalny). Rename
     # buildera przeszedłby przez testy `run_watch`, a wywaliłby sam entry-point.
