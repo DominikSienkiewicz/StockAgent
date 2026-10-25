@@ -16,6 +16,7 @@ from src.application.report_charts import (
     build_forecast_chart_html,
 )
 from src.application.report_models import SymbolResult
+from src.domain.cycle_maturity import SkipReason
 
 
 def _saved(symbol: str, delta: str) -> SymbolResult:
@@ -58,6 +59,23 @@ class TestBuildChartUrl:
     def test_error_results_yield_empty_string(self) -> None:
         results = [SymbolResult(symbol="X", status="error", error_message="boom")]
         assert build_delta_chart_html(results) == ""
+
+    def test_cold_start_symbols_are_not_drawn(self) -> None:
+        # Decyzja 2026-10-25: Δ = 0 przy cold-starcie to brak punktu odniesienia,
+        # nie „bez zmian” — w mailu Dzień 1 wykres rysował rząd słupków „+0,00%”.
+        cold = SymbolResult(
+            symbol="NVDA", status="ignored", delta=Decimal("0"), skip_reason=SkipReason.COLD_START
+        )
+        html = build_delta_chart_html([cold, _saved("AAPL", "0.02")])
+
+        assert "AAPL" in html
+        assert "NVDA" not in html
+
+    def test_only_cold_start_symbols_yield_empty_string(self) -> None:
+        cold = SymbolResult(
+            symbol="NVDA", status="ignored", delta=Decimal("0"), skip_reason=SkipReason.COLD_START
+        )
+        assert build_delta_chart_html([cold]) == ""
 
     def test_results_without_delta_yield_empty_string(self) -> None:
         assert build_delta_chart_html([SymbolResult(symbol="X", status="ignored")]) == ""
