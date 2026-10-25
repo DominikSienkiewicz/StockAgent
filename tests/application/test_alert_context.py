@@ -61,7 +61,7 @@ class TestShareInZlotys:
         assert context is not None
         assert context.weight is None
         # Zwrot od zakupu jest w jednej walucie, więc zostaje: 90 / 80 − 1.
-        assert context.return_pct == Decimal("0.125")
+        assert context.return_ratio == Decimal("0.125")
 
     def test_a_missing_rate_of_another_currency_marks_the_portfolio_partly_priced(self) -> None:
         portfolio = Portfolio(

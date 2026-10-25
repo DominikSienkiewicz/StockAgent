@@ -30,13 +30,13 @@ REASONING_MAX_CHARS = 240
 class PositionContext:
     """Pozycja w alertowanym symbolu.
 
-    `weight` — udział w wartości portfela (ułamek) z bieżących cen, `return_pct` —
+    `weight` — udział w wartości portfela (ułamek) z bieżących cen, `return_ratio` —
     zwrot od zakupu (ułamek); None = brak ceny symbolu. `fully_priced` — False, gdy
     część pozycji nie ma ceny, więc waga liczy się z wycenionej części portfela.
     `as_of` — chwila stanu tabeli pozycji (stęchły portfel daje fałszywy P/L)."""
 
     weight: Decimal | None
-    return_pct: Ratio | None
+    return_ratio: Ratio | None
     fully_priced: bool
     as_of: datetime
 
@@ -99,14 +99,14 @@ def position_context(
         if price is not None and comparable is not None
         else None
     )
-    return_pct = (
+    return_ratio = (
         Ratio(sum((lot.market_value(price) for lot in lots), Decimal("0")) / cost - 1)
         if price is not None and cost > 0
         else None
     )
     return PositionContext(
         weight=weight,
-        return_pct=return_pct,
+        return_ratio=return_ratio,
         fully_priced=(
             not portfolio.unpriced_symbols(prices)
             and comparable is not None
@@ -147,8 +147,8 @@ def _position_line(position: PositionContext, now: datetime, tz: str) -> str:
     if position.weight is not None:
         share = "portfela" if position.fully_priced else "wycenionej części portfela"
         parts.append(f"{format_pct_pl(position.weight * 100, signed=False, decimals=0)} {share}")
-    if position.return_pct is not None:
-        parts.append(f"{format_pct_pl(to_percent(position.return_pct), signed=True)} od zakupu")
+    if position.return_ratio is not None:
+        parts.append(f"{format_pct_pl(to_percent(position.return_ratio), signed=True)} od zakupu")
     line = f"💼 Twoja pozycja: {', '.join(parts)}" if parts else "💼 Masz tę pozycję w portfelu"
     if is_stale(position.as_of, now):
         line += (
