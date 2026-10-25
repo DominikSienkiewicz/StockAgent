@@ -2,6 +2,7 @@ import base64
 import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -26,6 +27,16 @@ REQUIRED_ENV_KWARGS = {
 }
 
 
+def make_settings(**overrides: Any) -> Settings:
+    """`Settings` bez czytania `.env` (`_env_file=None`).
+
+    Typowany wrapper: mypy syntetyzuje `Settings.__init__` wyłącznie z pól modelu,
+    więc nie zna `_env_file` i odrzuca wartości z `**dict` oraz zagnieżdżone dicty
+    (`llm_pricing`, `ml_challengers`), które pydantic waliduje dopiero w runtime —
+    a to ten runtime testy sprawdzają."""
+    return Settings(**{"_env_file": None, **overrides})
+
+
 @pytest.fixture
 def env(monkeypatch):
     """Czysty zestaw zmiennych — wymagane ustawione, opcjonalne wykasowane,
@@ -46,7 +57,7 @@ def env(monkeypatch):
 
 class TestSettings:
     def test_loads_required_keys_from_env(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.openai_api_key == "sk-test"
         assert settings.finnhub_api_key == "fh-test"
         assert settings.supabase_url == "https://test.supabase.co"
@@ -55,20 +66,20 @@ class TestSettings:
         # ARCH-05: brak klucza zatrzymuje fabrykę, która go woła, nie konstrukcję.
         env.delenv("FINNHUB_API_KEY")
         with pytest.raises(ValueError, match="FINNHUB_API_KEY"):
-            Settings(_env_file=None).require_finnhub_api_key()
+            make_settings().require_finnhub_api_key()
 
     def test_alpha_vantage_is_required(self, env):
         env.delenv("ALPHA_VANTAGE_API_KEYS")
         env.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
         with pytest.raises(ValueError, match="alpha_vantage"):
-            Settings(_env_file=None).require_alpha_vantage_api_keys()
+            make_settings().require_alpha_vantage_api_keys()
 
     def test_settings_constructs_without_paid_keys(self, env):
         # ARCH-05: darmowe joby (watch, deadman) nie potrzebują atrap płatnych kluczy.
         for key in ("OPENAI_API_KEY", "FINNHUB_API_KEY", "ALPHA_VANTAGE_API_KEYS"):
             env.delenv(key)
 
-        settings = Settings(_env_file=None)
+        settings = make_settings()
 
         assert settings.openai_api_key is None
         assert settings.finnhub_api_key is None
@@ -77,10 +88,10 @@ class TestSettings:
     def test_require_openai_api_key_names_the_variable(self, env):
         env.delenv("OPENAI_API_KEY")
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-            Settings(_env_file=None).require_openai_api_key()
+            make_settings().require_openai_api_key()
 
     def test_require_helpers_return_the_configured_keys(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
 
         assert settings.require_openai_api_key() == "sk-test"
         assert settings.require_finnhub_api_key() == "fh-test"
@@ -88,28 +99,28 @@ class TestSettings:
 
     def test_parses_alpha_vantage_keys_csv(self, env):
         env.setenv("ALPHA_VANTAGE_API_KEYS", "key1, key2 , key3")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.alpha_vantage_api_keys == ["key1", "key2", "key3"]
 
     def test_deduplicates_alpha_vantage_keys(self, env):
         env.setenv("ALPHA_VANTAGE_API_KEYS", "k1,k2,k1,k3,k2")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.alpha_vantage_api_keys == ["k1", "k2", "k3"]
 
     def test_legacy_singular_alpha_vantage_key_still_works(self, env):
         # Backward-compat: user może mieć w .env stary ALPHA_VANTAGE_API_KEY.
         env.delenv("ALPHA_VANTAGE_API_KEYS")
         env.setenv("ALPHA_VANTAGE_API_KEY", "legacy-single-key")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.alpha_vantage_api_keys == ["legacy-single-key"]
 
     def test_default_volatility_threshold_is_two_percent(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.volatility_threshold == Decimal("0.02")
 
     def test_custom_threshold_from_env(self, env):
         env.setenv("VOLATILITY_THRESHOLD", "0.05")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.volatility_threshold == Decimal("0.05")
 
     def test_negative_volatility_threshold_rejected(self, env):
@@ -117,68 +128,68 @@ class TestSettings:
         # płatne porty (LLM/AV/embeddingi) odpalają co cykl, bez błędu startu.
         negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="volatility_threshold"):
-            Settings(_env_file=None, volatility_threshold=negative)
+            make_settings(volatility_threshold=negative)
 
     def test_negative_council_volatility_threshold_rejected(self, env):
         negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="council_volatility_threshold"):
-            Settings(_env_file=None, council_volatility_threshold=negative)
+            make_settings(council_volatility_threshold=negative)
 
     def test_negative_crypto_volatility_threshold_rejected(self, env):
         negative = Decimal("-0.01")
         with pytest.raises(ValueError, match="crypto_volatility_threshold"):
-            Settings(_env_file=None, crypto_volatility_threshold=negative)
+            make_settings(crypto_volatility_threshold=negative)
 
     def test_council_volatility_threshold_zero_is_accepted(self, env):
         # 0.0 to udokumentowany "always run" disable switch — nie footgun.
-        settings = Settings(
-            _env_file=None, council_volatility_threshold=Decimal("0")
+        settings = make_settings(
+            council_volatility_threshold=Decimal("0")
         )
         assert settings.council_volatility_threshold == Decimal("0")
 
     def test_default_symbols_list(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert isinstance(settings.symbols, list)
         assert len(settings.symbols) > 0
         assert "AAPL" in settings.symbols
 
     def test_parses_symbols_csv_from_env(self, env):
         env.setenv("SYMBOLS", "AAPL,MSFT,GOOGL")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbols == ["AAPL", "MSFT", "GOOGL"]
 
     def test_default_ml_model_path(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.ml_model_path == "data/models/price_predictor.ubj"
 
     def test_llm_provider_defaults_to_openai(self, env):
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.llm_provider == "openai"
 
     def test_anthropic_provider_requires_anthropic_key(self, env):
         env.setenv("LLM_PROVIDER", "anthropic")
         # Bez ANTHROPIC_API_KEY config nadal się buduje — walidacja providera odbywa się w DI.
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.llm_provider == "anthropic"
         assert settings.anthropic_api_key is None
 
     def test_symbols_etf_defaults_to_empty(self, env: pytest.MonkeyPatch) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbols_etf == []
 
     def test_symbols_etf_parses_csv(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("SYMBOLS_ETF", "VOO, CSPX.L , SPY")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbols_etf == ["VOO", "CSPX.L", "SPY"]
 
     def test_risk_symbols_default_empty(self, env: pytest.MonkeyPatch) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.risk_symbols == []
         assert settings.risk_symbol_types == {}
 
     def test_risk_symbols_parses_csv(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("RISK_SYMBOLS", "EPOL, SH , VIXY")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.risk_symbols == ["EPOL", "SH", "VIXY"]
 
     def test_risk_symbol_types_parses_mapping(
@@ -190,7 +201,7 @@ class TestSettings:
             "RISK_SYMBOL_TYPES",
             "EPOL:SOVEREIGN_PROXY,SH:INVERSE_EQUITY,VIXY:VOLATILITY",
         )
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.risk_symbol_types == {
             "EPOL": MacroRiskInstrumentType.SOVEREIGN_PROXY,
             "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
@@ -202,15 +213,15 @@ class TestSettings:
     ) -> None:
         env.setenv("RISK_SYMBOL_TYPES", "EPOL:NOT_A_REAL_TYPE")
         with pytest.raises(ValueError, match="NOT_A_REAL_TYPE"):
-            Settings(_env_file=None)
+            make_settings()
 
     def test_nbp_enabled_defaults_false(self, env: pytest.MonkeyPatch) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.nbp_enabled is False
 
     def test_nbp_enabled_reads_env(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("NBP_ENABLED", "true")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.nbp_enabled is True
 
 
@@ -218,14 +229,14 @@ class TestResilienceSettings:
     def test_symbols_unsupported_price_defaults_empty(
         self, env: pytest.MonkeyPatch
     ) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbols_unsupported_price == []
 
     def test_symbols_unsupported_price_parses_csv(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("SYMBOLS_UNSUPPORTED_PRICE", "CSPX.L, XDWD.DE ,IUSN.DE")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbols_unsupported_price == [
             "CSPX.L", "XDWD.DE", "IUSN.DE",
         ]
@@ -233,14 +244,14 @@ class TestResilienceSettings:
     def test_symbol_throttle_defaults_to_zero(
         self, env: pytest.MonkeyPatch
     ) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbol_throttle_seconds == pytest.approx(0.0)
 
     def test_symbol_throttle_parses_float(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "2.5")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.symbol_throttle_seconds == pytest.approx(2.5)
 
     def test_symbol_throttle_negative_rejected(
@@ -248,7 +259,7 @@ class TestResilienceSettings:
     ) -> None:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "-1")
         with pytest.raises(ValueError, match="symbol_throttle_seconds"):
-            Settings(_env_file=None)
+            make_settings()
 
     def test_reflection_min_age_hours_default_is_safe_nonzero(
         self, env: pytest.MonkeyPatch
@@ -258,14 +269,14 @@ class TestResilienceSettings:
         # zatruwała accuracy_score (XGBoost) i hit-rate raportu. conftest
         # ustawia STOCKAGENT_DISABLE_TOML=1, więc to czysty default z kodu,
         # nie wartość z config.toml.
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.reflection_min_age_hours == 6
 
     def test_reflection_min_age_hours_reads_env(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("REFLECTION_MIN_AGE_HOURS", "12")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.reflection_min_age_hours == 12
 
     def test_reflection_max_age_hours_default_bounds_settlement_age(
@@ -273,21 +284,21 @@ class TestResilienceSettings:
     ) -> None:
         # WIA-04: 96 h obejmuje weekend (piątek → poniedziałek ≈ 72 h) z zapasem,
         # a predykcja sprzed tygodni nie jest już rozliczana bieżącą ceną.
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.reflection_max_age_hours == 96
 
     def test_reflection_max_age_hours_reads_env(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "120")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.reflection_max_age_hours == 120
 
     def test_reflection_max_age_zero_disables_the_bound(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "0")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.reflection_max_age_hours == 0
 
     def test_reflection_max_age_must_exceed_min_age(
@@ -297,55 +308,55 @@ class TestResilienceSettings:
         env.setenv("REFLECTION_MIN_AGE_HOURS", "6")
         env.setenv("REFLECTION_MAX_AGE_HOURS", "6")
         with pytest.raises(ValueError, match="reflection_max_age_hours"):
-            Settings(_env_file=None)
+            make_settings()
 
     def test_reflection_max_age_negative_rejected(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "-1")
         with pytest.raises(ValueError, match="reflection_max_age_hours"):
-            Settings(_env_file=None)
+            make_settings()
 
 
 class TestCryptoSettings:
     def test_crypto_symbols_defaults_empty(
         self, env: pytest.MonkeyPatch
     ) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_symbols == []
 
     def test_crypto_symbols_parses_csv(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("CRYPTO_SYMBOLS", "BTC, ETH ,SOL")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_symbols == ["BTC", "ETH", "SOL"]
 
     def test_crypto_volatility_threshold_defaults_to_five_percent(
         self, env: pytest.MonkeyPatch
     ) -> None:
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_volatility_threshold == Decimal("0.05")
 
     def test_crypto_volatility_threshold_reads_env(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("CRYPTO_VOLATILITY_THRESHOLD", "0.08")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_volatility_threshold == Decimal("0.08")
 
     def test_crypto_tool_use_threshold_defaults_to_the_shared_one(
         self, env: pytest.MonkeyPatch
     ) -> None:
         # FIN-08: brak wartości = krypto bierze `tool_use_volatility_threshold`.
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_tool_use_volatility_threshold is None
 
     def test_crypto_tool_use_threshold_reads_env(
         self, env: pytest.MonkeyPatch
     ) -> None:
         env.setenv("CRYPTO_TOOL_USE_VOLATILITY_THRESHOLD", "0.10")
-        settings = Settings(_env_file=None)
+        settings = make_settings()
         assert settings.crypto_tool_use_volatility_threshold == Decimal("0.10")
 
     def test_zero_crypto_tool_use_threshold_rejected(
@@ -355,7 +366,7 @@ class TestCryptoSettings:
         with pytest.raises(
             ValueError, match="crypto_tool_use_volatility_threshold must be positive"
         ):
-            Settings(_env_file=None, crypto_tool_use_volatility_threshold=Decimal("0"))
+            make_settings(crypto_tool_use_volatility_threshold=Decimal("0"))
 
     def test_crypto_tool_use_threshold_is_part_of_the_recipe(
         self, env: pytest.MonkeyPatch
@@ -363,9 +374,8 @@ class TestCryptoSettings:
         # FIN-08: pole steruje płatną pętlą tool-use, więc należy do przepisu.
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        changed = Settings(
-            _env_file=None,
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        changed = make_settings(
             **REQUIRED_ENV_KWARGS,
             crypto_tool_use_volatility_threshold=Decimal("0.10"),
         ).config_hash()
@@ -409,18 +419,18 @@ class TestDisplayTimezone:
     def test_defaults_to_warsaw(self, env):
         env.delenv("DISPLAY_TIMEZONE", raising=False)
 
-        assert Settings(_env_file=None).display_timezone == "Europe/Warsaw"
+        assert make_settings().display_timezone == "Europe/Warsaw"
 
     def test_accepts_any_iana_zone(self, env):
         env.setenv("DISPLAY_TIMEZONE", "America/New_York")
 
-        assert Settings(_env_file=None).display_timezone == "America/New_York"
+        assert make_settings().display_timezone == "America/New_York"
 
     @pytest.mark.parametrize("bad", ["Europe/Warszawa", "CEST+2", ""])
     def test_rejects_an_unknown_zone(self, env, bad):
         # Literówka ma zatrzymać start, a nie wysłać godzinę UTC podpisaną jako lokalna.
         with pytest.raises(ValueError, match="display_timezone"):
-            Settings(_env_file=None, display_timezone=bad)
+            make_settings(display_timezone=bad)
 
 
 class TestConfigHash:
@@ -448,7 +458,7 @@ class TestConfigHash:
     }
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_hash_is_a_stable_sha256(self, env):
         assert self._settings().config_hash() == self._settings().config_hash()
@@ -492,7 +502,7 @@ class TestConfigHashScope:
     do hasha albo z niego wypadnie."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_every_field_is_classified_exactly_once(self):
         from src.config import (
@@ -566,15 +576,15 @@ class TestFeatureSnapshotsFlag:
     zapisu, więc domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).feature_snapshots_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).feature_snapshots_enabled is False
 
     def test_is_a_write_only_flag_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "feature_snapshots_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -585,15 +595,15 @@ class TestMarketFeaturesFlag:
     modelu i progi się nie zmieniają, a wpływ na wagi łapie `model_version`."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).market_features_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).market_features_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "market_features_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, market_features_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, market_features_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -604,7 +614,7 @@ class TestSnapshotTrainingFlag:
     idzie wyłącznie przez wagi, które łapie `model_version` — poza przepisem."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).snapshot_training_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).snapshot_training_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -617,15 +627,15 @@ class TestSigmaTargetFlag:
     przez σ — zmiana tego, co Fast Loop serwuje, więc off i w przepisie."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).ml_sigma_target_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).ml_sigma_target_enabled is False
 
     def test_is_part_of_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
         assert "ml_sigma_target_enabled" in RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, ml_sigma_target_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, ml_sigma_target_enabled=True
         ).config_hash()
         assert flipped != baseline
 
@@ -636,15 +646,15 @@ class TestIntervalCoverageFlag:
     przepisem, a domyślnie off, bo przed migracją zapis dałby PGRST204."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).interval_coverage_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).interval_coverage_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "interval_coverage_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, interval_coverage_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, interval_coverage_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -655,16 +665,16 @@ class TestRegimeTaggingFlag:
     więc poza przepisem (`config_hash` się nie rusza)."""
 
     def test_defaults_to_unset(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).regime_tagging_enabled is None
+        assert make_settings(**REQUIRED_ENV_KWARGS).regime_tagging_enabled is None
 
     def test_is_a_write_only_flag_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "regime_tagging_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
         for value in (True, False):
-            flipped = Settings(
-                _env_file=None, **REQUIRED_ENV_KWARGS, regime_tagging_enabled=value
+            flipped = make_settings(
+                **REQUIRED_ENV_KWARGS, regime_tagging_enabled=value
             ).config_hash()
             assert flipped == baseline, value
 
@@ -675,7 +685,7 @@ class TestRegimeHysteresisSettings:
     zmieniają efektywny próg bramki, więc należą do przepisu (`config_hash`)."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_off_with_two_exit_confirmations(self, env):
         settings = self._settings()
@@ -703,15 +713,15 @@ class TestMacroSeriesFlag:
     zacieśnić próg bramki, więc flaga należy do przepisu."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).macro_series_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).macro_series_enabled is False
 
     def test_belongs_to_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
         assert "macro_series_enabled" in RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, macro_series_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, macro_series_enabled=True
         ).config_hash()
         assert flipped != baseline
 
@@ -721,15 +731,15 @@ class TestTrendProbabilitiesFlag:
     off, a że zmienia prompt i rozkład pewności, należy do przepisu."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).trend_probabilities_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).trend_probabilities_enabled is False
 
     def test_belongs_to_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
         assert "trend_probabilities_enabled" in RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, trend_probabilities_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, trend_probabilities_enabled=True
         ).config_hash()
         assert flipped != baseline
 
@@ -739,15 +749,15 @@ class TestInvalidationLevelFlag:
     off, a że zmienia prompt, należy do przepisu (`config_hash` się zmienia)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).invalidation_level_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).invalidation_level_enabled is False
 
     def test_belongs_to_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
         assert "invalidation_level_enabled" in RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, invalidation_level_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, invalidation_level_enabled=True
         ).config_hash()
         assert flipped != baseline
 
@@ -759,7 +769,7 @@ class TestPromptDeltaRoundingFlag:
     def test_defaults_off_and_in_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.prompt_delta_rounding_enabled is False
         assert "prompt_delta_rounding_enabled" in RECIPE_SETTINGS_FIELDS
@@ -772,7 +782,7 @@ class TestRagPointInTimeFlag:
     def test_defaults_off_and_in_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.rag_point_in_time_enabled is False
         assert "rag_point_in_time_enabled" in RECIPE_SETTINGS_FIELDS
@@ -785,7 +795,7 @@ class TestCorporateEventsFlag:
     def test_defaults_off_and_in_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.corporate_events_enabled is False
         assert "corporate_events_enabled" in RECIPE_SETTINGS_FIELDS
@@ -796,15 +806,15 @@ class TestGateDeltaFlag:
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).gate_delta_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).gate_delta_enabled is False
 
     def test_is_a_write_only_flag_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "gate_delta_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, gate_delta_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, gate_delta_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -816,7 +826,7 @@ class TestSectorsDrivePeerGroups:
     wyprowadzamy z sektorów — bez ETF-ów i krypto, które sektora akcji nie mają."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_are_empty(self, env):
         settings = self._settings()
@@ -858,7 +868,7 @@ class TestSectorPeers:
     """PORT-05: peerzy 💡 Warte uwagi kluczowani sektorami z `sectors`."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_are_empty(self, env):
         assert self._settings().sector_peers == {}
@@ -894,15 +904,15 @@ class TestFxRatesCacheFlag:
     tabeli nie ma, więc domyślnie off; kursy nie zmieniają prognozy."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).fx_rates_cache_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).fx_rates_cache_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "fx_rates_cache_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -912,7 +922,7 @@ class TestPaperCostSettings:
     parametry oceny i prezentacji, nie prognozy — poza przepisem."""
 
     def test_defaults_match_the_decision(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.paper_cost_bps == 10
         assert settings.crypto_paper_cost_bps == 25
@@ -920,11 +930,11 @@ class TestPaperCostSettings:
     @pytest.mark.parametrize("field", ["paper_cost_bps", "crypto_paper_cost_bps"])
     def test_negative_cost_is_rejected(self, env, field):
         with pytest.raises(ValueError, match=field):
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, **{field: -1})
+            make_settings(**REQUIRED_ENV_KWARGS, **{field: -1})
 
     @pytest.mark.parametrize("field", ["paper_cost_bps", "crypto_paper_cost_bps"])
     def test_zero_cost_is_allowed(self, env, field):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS, **{field: 0})
+        settings = make_settings(**REQUIRED_ENV_KWARGS, **{field: 0})
 
         assert getattr(settings, field) == 0
 
@@ -932,9 +942,9 @@ class TestPaperCostSettings:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert {"paper_cost_bps", "crypto_paper_cost_bps"} <= NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        changed = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, paper_cost_bps=30, crypto_paper_cost_bps=60
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        changed = make_settings(
+            **REQUIRED_ENV_KWARGS, paper_cost_bps=30, crypto_paper_cost_bps=60
         ).config_hash()
         assert changed == baseline
 
@@ -954,7 +964,7 @@ class TestExperimentSettings:
     }
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_to_no_experiments_and_the_column_off(self, env):
         settings = self._settings()
@@ -1038,7 +1048,7 @@ class TestSecretValues:
         assert set(self._VALUES) == SECRET_SETTINGS_FIELDS
 
     def test_lists_every_secret_with_each_alpha_vantage_key_separately(self, env):
-        settings = Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **self._VALUES})
+        settings = make_settings(**{**REQUIRED_ENV_KWARGS, **self._VALUES})
 
         values = settings.secret_values()
 
@@ -1051,7 +1061,7 @@ class TestSecretValues:
         assert "av-key-0005,av-key-0006" not in values
 
     def test_skips_unset_optional_secrets(self, env):
-        values = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).secret_values()
+        values = make_settings(**REQUIRED_ENV_KWARGS).secret_values()
 
         assert all(values)
         assert {"sk-test", "av-test", "supa-key"} <= set(values)
@@ -1065,20 +1075,20 @@ class TestDbWritesFlag:
     def test_defaults_off(self, env):
         env.delenv("DB_WRITES_ENABLED", raising=False)
 
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).db_writes_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).db_writes_enabled is False
 
     def test_reads_the_environment_variable(self, env):
         env.setenv("DB_WRITES_ENABLED", "true")
 
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).db_writes_enabled is True
+        assert make_settings(**REQUIRED_ENV_KWARGS).db_writes_enabled is True
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "db_writes_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, db_writes_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, db_writes_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -1111,7 +1121,7 @@ class TestSupabaseKeyRole:
         env.setenv("SUPABASE_KEY", key)
 
         with pytest.raises(ValidationError, match="sb_secret_") as raised:
-            Settings(_env_file=None)
+            make_settings()
 
         assert "service_role" in str(raised.value)
         assert key not in str(raised.value)
@@ -1134,13 +1144,13 @@ class TestSupabaseKeyRole:
     def test_accepts_secret_and_opaque_keys(self, env, key):
         env.setenv("SUPABASE_KEY", key)
 
-        assert Settings(_env_file=None).supabase_key == key
+        assert make_settings().supabase_key == key
 
     def test_other_validation_errors_do_not_echo_the_key(self, env):
         """`hide_input_in_errors`: błąd innego pola nie wypisuje wejścia, więc
         traceback startu nie niesie wartości sekretów."""
         with pytest.raises(ValidationError) as raised:
-            Settings(_env_file=None, supabase_key=["sb_secret_list-instead-of-str"])
+            make_settings(supabase_key=["sb_secret_list-instead-of-str"])
 
         assert "sb_secret_list-instead-of-str" not in str(raised.value)
 
@@ -1153,11 +1163,11 @@ def test_zero_volatility_threshold_rejected(env, field: str) -> None:
     # FIN-07: próg 0 przepuszcza każdy ruch (|Δ| >= 0), więc bramka FinOps
     # cicho znika i płatne porty odpalają dla wszystkich symboli w każdym cyklu.
     with pytest.raises(ValueError, match=f"{field} must be positive"):
-        Settings(_env_file=None, **{field: Decimal("0")})
+        make_settings(**{field: Decimal("0")})
 
 
 def test_zero_council_volatility_threshold_stays_the_always_run_switch(env) -> None:
-    settings = Settings(_env_file=None, council_volatility_threshold=Decimal("0"))
+    settings = make_settings(council_volatility_threshold=Decimal("0"))
 
     assert settings.council_volatility_threshold == Decimal("0")
 
@@ -1172,7 +1182,7 @@ class TestAlphaVantageBudget:
     _WATCHLIST = [f"S{i:02d}" for i in range(43)]
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_settings_warns_when_av_worst_case_exceeds_capacity(self, env, caplog):
         import logging
@@ -1247,7 +1257,7 @@ class TestFastLoopCyclesPerDay:
     a nie stała w kodzie — zgodność z cronem pilnuje test w test_config_toml.py."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_to_one_cycle_a_day(self, env):
         assert self._settings().fast_loop_cycles_per_day == 1
@@ -1278,7 +1288,7 @@ class TestMaxPaidLlmCallsPerCycle:
     None = bez limitu; produkcyjny `config.toml` ustawia 100."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_to_no_cap(self, env):
         assert self._settings().max_paid_llm_calls_per_cycle is None
@@ -1304,7 +1314,7 @@ class TestSlowLoopWeeklyLlmBudget:
     kalibracji i przyszłe joby). None = bez limitu; `config.toml` ustawia 15."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_to_no_cap(self, env):
         assert self._settings().slow_loop_max_paid_llm_calls_per_week is None
@@ -1331,7 +1341,7 @@ class TestModelScorecardRunIdFlag:
     """ML-24: `run_id` w karcie modelu dopiero po migracji 049 — domyślnie off."""
 
     def test_defaults_off(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.model_scorecard_run_id_enabled is False
 
@@ -1346,7 +1356,7 @@ class TestModelScorecardFeatureStatsFlag:
     poza przepisem (sam zapis w Slow Loopie)."""
 
     def test_defaults_off(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.model_scorecard_feature_stats_enabled is False
 
@@ -1354,9 +1364,9 @@ class TestModelScorecardFeatureStatsFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "model_scorecard_feature_stats_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, model_scorecard_feature_stats_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, model_scorecard_feature_stats_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -1366,7 +1376,7 @@ class TestModelScorecardWeightsSha256Flag:
     poza przepisem (sam zapis w Slow Loopie)."""
 
     def test_defaults_off(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.model_scorecard_weights_sha256_enabled is False
 
@@ -1374,9 +1384,9 @@ class TestModelScorecardWeightsSha256Flag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "model_scorecard_weights_sha256_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, model_scorecard_weights_sha256_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, model_scorecard_weights_sha256_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -1386,7 +1396,7 @@ class TestModelScorecardProvenanceFlag:
     poza przepisem (sam zapis w Slow Loopie)."""
 
     def test_defaults_off(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.model_scorecard_provenance_enabled is False
 
@@ -1394,9 +1404,9 @@ class TestModelScorecardProvenanceFlag:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "model_scorecard_provenance_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, model_scorecard_provenance_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, model_scorecard_provenance_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -1407,7 +1417,7 @@ class TestSettledPurgeFlag:
     (`model_version`), więc poza `config_hash` jak `snapshot_training_enabled`."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).ml_settled_purge_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).ml_settled_purge_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1420,7 +1430,7 @@ class TestNyseClosureSkipFlag:
     domyślnie off (testy entry pointów nie zależą od daty), `config.toml` ją włącza."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).nyse_closure_skip_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).nyse_closure_skip_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1436,20 +1446,20 @@ class TestPaidCallsFlag:
     def test_defaults_off(self, env):
         env.delenv("PAID_CALLS_ENABLED", raising=False)
 
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).paid_calls_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).paid_calls_enabled is False
 
     def test_reads_the_environment_variable(self, env):
         env.setenv("PAID_CALLS_ENABLED", "true")
 
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).paid_calls_enabled is True
+        assert make_settings(**REQUIRED_ENV_KWARGS).paid_calls_enabled is True
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
         assert "paid_calls_enabled" in NON_RECIPE_SETTINGS_FIELDS
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        flipped = Settings(
-            _env_file=None, **REQUIRED_ENV_KWARGS, paid_calls_enabled=True
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        flipped = make_settings(
+            **REQUIRED_ENV_KWARGS, paid_calls_enabled=True
         ).config_hash()
         assert flipped == baseline
 
@@ -1459,10 +1469,10 @@ class TestCostLedgerSettings:
     `llm_calls` za flagą — produkcja nie ma migracji 040, więc w kodzie off."""
 
     def test_ledger_write_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).cost_ledger_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).cost_ledger_enabled is False
 
     def test_no_price_list_in_code(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.llm_pricing == {}
         assert settings.llm_pricing_as_of is None
@@ -1473,8 +1483,7 @@ class TestCostLedgerSettings:
 
         from src.domain.finops import ModelPrice
 
-        settings = Settings(
-            _env_file=None,
+        settings = make_settings(
             **REQUIRED_ENV_KWARGS,
             llm_pricing_as_of="2026-10-20",
             llm_pricing={
@@ -1501,8 +1510,7 @@ class TestCostLedgerSettings:
 
     def test_negative_rate_is_rejected(self, env):
         with pytest.raises(ValidationError, match="input"):
-            Settings(
-                _env_file=None,
+            make_settings(
                 **REQUIRED_ENV_KWARGS,
                 llm_pricing={"gpt-5-mini": {"input": -0.25, "output": 2.0}},
             )
@@ -1510,8 +1518,7 @@ class TestCostLedgerSettings:
     def test_unknown_rate_key_is_rejected(self, env):
         # Literówka („ouput”) nie może po cichu zostawić modelu bez stawki wyjścia.
         with pytest.raises(ValidationError, match="ouput"):
-            Settings(
-                _env_file=None,
+            make_settings(
                 **REQUIRED_ENV_KWARGS,
                 llm_pricing={"gpt-5-mini": {"input": 0.25, "ouput": 2.0}},
             )
@@ -1522,9 +1529,8 @@ class TestCostLedgerSettings:
         assert {"cost_ledger_enabled", "llm_pricing", "llm_pricing_as_of"} <= (
             NON_RECIPE_SETTINGS_FIELDS
         )
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS).config_hash()
-        priced = Settings(
-            _env_file=None,
+        baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
+        priced = make_settings(
             **REQUIRED_ENV_KWARGS,
             llm_pricing={"gpt-5-mini": {"input": 0.25, "output": 2.0}},
             llm_pricing_as_of="2026-10-20",
@@ -1536,7 +1542,7 @@ class TestTwoPhaseCycleFlag:
     """EXP-27: cykl dwufazowy to eksperyment za flagą, domyślnie wyłączony."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).two_phase_cycle_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).two_phase_cycle_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         # Faza 2 to ten sam przepis płatnej analizy co cykl jednofazowy; flaga
@@ -1551,7 +1557,7 @@ class TestCycleRunsFlag:
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).cycle_runs_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).cycle_runs_enabled is False
 
     def test_is_a_write_only_flag_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1566,14 +1572,14 @@ class TestHeartbeatUrl:
     def test_defaults_to_none(self, env):
         env.delenv("HEARTBEAT_URL", raising=False)
 
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).heartbeat_url is None
+        assert make_settings(**REQUIRED_ENV_KWARGS).heartbeat_url is None
 
     def test_is_a_secret_outside_the_hash_and_redacted(self, env):
         from src.config import SECRET_SETTINGS_FIELDS
 
         url = "https://hc-ping.com/5f3c0b9e-7a1d-4c2e-9b8f-0d6a2e4c1b7f"
-        baseline = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
-        with_url = Settings(_env_file=None, **REQUIRED_ENV_KWARGS, heartbeat_url=url)
+        baseline = make_settings(**REQUIRED_ENV_KWARGS)
+        with_url = make_settings(**REQUIRED_ENV_KWARGS, heartbeat_url=url)
 
         assert "heartbeat_url" in SECRET_SETTINGS_FIELDS
         assert with_url.config_hash() == baseline.config_hash()
@@ -1583,7 +1589,7 @@ class TestHeartbeatUrl:
         monkeypatch.setenv("HEARTBEAT_URL", "https://hc-ping.com/abc-from-env")
 
         assert (
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).heartbeat_url
+            make_settings(**REQUIRED_ENV_KWARGS).heartbeat_url
             == "https://hc-ping.com/abc-from-env"
         )
 
@@ -1593,7 +1599,7 @@ class TestReferenceSignalFlag:
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).reference_signal_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).reference_signal_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1607,7 +1613,7 @@ class TestFastLoopWeeklyBudget:
     za bramką) × cykle na dobę × 5 dni handlowych. None = brak kontroli."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_defaults_to_no_budget(self, env):
         assert self._settings().fast_loop_weekly_budget_usd is None
@@ -1679,7 +1685,7 @@ class TestPersonaVoteOutcomesFlag:
 
     def test_defaults_off(self, env):
         assert (
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled
+            make_settings(**REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled
             is False
         )
 
@@ -1695,7 +1701,7 @@ class TestPersonaBrierRankingFlag:
 
     def test_defaults_off(self, env):
         assert (
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).persona_brier_ranking_enabled
+            make_settings(**REQUIRED_ENV_KWARGS).persona_brier_ranking_enabled
             is False
         )
 
@@ -1712,7 +1718,7 @@ class TestCouncilRedundancyFlag:
 
     def test_defaults_off(self, env):
         assert (
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).council_redundancy_enabled
+            make_settings(**REQUIRED_ENV_KWARGS).council_redundancy_enabled
             is False
         )
 
@@ -1729,7 +1735,7 @@ class TestCorrectionCategoryFlag:
 
     def test_defaults_off(self, env):
         assert (
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS).correction_category_enabled
+            make_settings(**REQUIRED_ENV_KWARGS).correction_category_enabled
             is False
         )
 
@@ -1744,14 +1750,14 @@ class TestDiagnosisBackfillSettings:
     z capem płatnych wywołań na przebieg; inny job niż Fast Loop, poza przepisem."""
 
     def test_defaults_off_with_a_cap_of_five(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.diagnosis_backfill_enabled is False
         assert settings.diagnosis_backfill_max_calls == 5
 
     def test_negative_cap_is_rejected(self, env):
         with pytest.raises(ValueError):
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, diagnosis_backfill_max_calls=-1)
+            make_settings(**REQUIRED_ENV_KWARGS, diagnosis_backfill_max_calls=-1)
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1766,7 +1772,7 @@ class TestPriceAlerts:
     poziom ≤ 0 zatrzymuje start, zamiast po cichu nie alarmować."""
 
     def _settings(self, **overrides) -> Settings:
-        return Settings(_env_file=None, **{**REQUIRED_ENV_KWARGS, **overrides})
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
 
     def test_entries_become_domain_levels(self, env):
         from src.domain.price_levels import LevelDirection, PriceLevel
@@ -1810,13 +1816,13 @@ class TestInsiderLeadMaxAgeDays:
     prezentacja maila, poza przepisem predykcji."""
 
     def test_defaults_to_three_days(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.insider_lead_max_age_days == 3
 
     def test_negative_age_is_rejected(self, env):
         with pytest.raises(ValueError):
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, insider_lead_max_age_days=-1)
+            make_settings(**REQUIRED_ENV_KWARGS, insider_lead_max_age_days=-1)
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1831,7 +1837,7 @@ class TestSessionCloseSettlementFlag:
     def test_defaults_off_and_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.session_close_settlement_enabled is False
         assert "session_close_settlement_enabled" in NON_RECIPE_SETTINGS_FIELDS
@@ -1844,7 +1850,7 @@ class TestExecutableEntryFlag:
     def test_defaults_off_and_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.executable_entry_enabled is False
         assert "executable_entry_enabled" in NON_RECIPE_SETTINGS_FIELDS
@@ -1857,7 +1863,7 @@ class TestPaperLedgerFlag:
     def test_defaults_off_and_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.paper_ledger_enabled is False
         assert "paper_ledger_enabled" in NON_RECIPE_SETTINGS_FIELDS
@@ -1871,7 +1877,7 @@ class TestEdgeCalendarHorizonFlag:
     def test_defaults_off_and_inside_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.edge_calendar_horizon_enabled is False
         assert "edge_calendar_horizon_enabled" in RECIPE_SETTINGS_FIELDS
@@ -1884,7 +1890,7 @@ class TestSplitDetectionFlag:
     def test_defaults_off_and_inside_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.split_detection_enabled is False
         assert "split_detection_enabled" in RECIPE_SETTINGS_FIELDS
@@ -1897,7 +1903,7 @@ class TestPriceOutlierGuardFlag:
     def test_defaults_off_and_inside_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.price_outlier_guard_enabled is False
         assert "price_outlier_guard_enabled" in RECIPE_SETTINGS_FIELDS
@@ -1910,7 +1916,7 @@ class TestRagExactSearchFlag:
     def test_defaults_off_and_inside_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.rag_exact_search_enabled is False
         assert "rag_exact_search_enabled" in RECIPE_SETTINGS_FIELDS
@@ -1923,7 +1929,7 @@ class TestPromptTaintFenceFlag:
     def test_defaults_off_and_inside_the_recipe(self, env):
         from src.config import RECIPE_SETTINGS_FIELDS
 
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.prompt_taint_fence_enabled is False
         assert "prompt_taint_fence_enabled" in RECIPE_SETTINGS_FIELDS
@@ -1934,7 +1940,7 @@ class TestDirectionClassifierFlag:
     poza przepisem (champion i prognoza bez zmian)."""
 
     def test_defaults_off(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.ml_direction_classifier_enabled is False
 
@@ -1950,7 +1956,7 @@ class TestShadowPredictionsFlag:
     o unikalnych nazwach innych niż champion."""
 
     def test_defaults_off_without_challengers(self, env):
-        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
 
         assert settings.shadow_predictions_enabled is False
         assert settings.ml_challengers == []
@@ -1961,8 +1967,7 @@ class TestShadowPredictionsFlag:
         assert {"shadow_predictions_enabled", "ml_challengers"} <= NON_RECIPE_SETTINGS_FIELDS
 
     def test_reads_challengers_with_their_kind(self, env):
-        settings = Settings(
-            _env_file=None,
+        settings = make_settings(
             **REQUIRED_ENV_KWARGS,
             ml_challengers=[
                 {"name": "direction", "path": "data/models/d.ubj", "kind": "direction"},
@@ -1994,7 +1999,7 @@ class TestShadowPredictionsFlag:
     )
     def test_rejects_challengers_the_shadow_table_cannot_tell_apart(self, env, challengers):
         with pytest.raises(ValidationError):
-            Settings(_env_file=None, **REQUIRED_ENV_KWARGS, ml_challengers=challengers)
+            make_settings(**REQUIRED_ENV_KWARGS, ml_challengers=challengers)
 
 
 class TestIsotonicCalibrationFlag:
@@ -2002,7 +2007,7 @@ class TestIsotonicCalibrationFlag:
     (ranking liczy się po predykcji, jak `calibrated_confidence_enabled`)."""
 
     def test_defaults_off(self, env):
-        assert Settings(_env_file=None, **REQUIRED_ENV_KWARGS).isotonic_calibration_enabled is False
+        assert make_settings(**REQUIRED_ENV_KWARGS).isotonic_calibration_enabled is False
 
     def test_is_outside_the_recipe(self, env):
         from src.config import NON_RECIPE_SETTINGS_FIELDS

@@ -9,7 +9,7 @@ from __future__ import annotations
 import tomllib
 from datetime import date
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -30,6 +30,16 @@ _REQUIRED_SECRETS = {
     "supabase_url": "https://t.supabase.co",
     "supabase_key": "anon",
 }
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """`Settings` bez czytania `.env` (`_env_file=None`).
+
+    Typowany wrapper: mypy syntetyzuje `Settings.__init__` wyłącznie z pól modelu,
+    więc nie zna `_env_file` i odrzuca wartości z `**dict` oraz zagnieżdżone dicty
+    (`llm_pricing`, `ml_challengers`), które pydantic waliduje dopiero w runtime —
+    a to ten runtime testy sprawdzają."""
+    return Settings(**{"_env_file": None, **overrides})
 
 
 def _model_provider(model: str) -> str:
@@ -108,7 +118,7 @@ def test_settings_reads_non_secret_from_toml(
     )
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
     # Sekrety wstrzykujemy jako kwargs (wygrywają nad TOML); env odcięte.
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     assert s.symbol_throttle_seconds == pytest.approx(7.5)
     assert s.llm_provider == "anthropic"
 
@@ -122,7 +132,7 @@ def test_config_toml_found_regardless_of_cwd(
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
     monkeypatch.chdir(tmp_path)  # CWD != root repo
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert s.symbols == data["symbols"], "config.toml nie został znaleziony spoza roota"
     assert s.notifications_enabled is data["notifications_enabled"]
@@ -139,7 +149,7 @@ def test_unknown_toml_key_is_rejected(
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
 
     with pytest.raises(ValueError, match="weekly_recap_enable"):
-        Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+        make_settings(**_REQUIRED_SECRETS)
 
 
 def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,7 +157,7 @@ def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) 
     narzędzi (SONAR_TOKEN, GH_TOKEN), więc `extra = "ignore"` dla nich zostaje."""
     monkeypatch.setenv("SONAR_TOKEN", "not-a-setting")
 
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
 
     assert not hasattr(settings, "sonar_token")
 
@@ -167,7 +177,7 @@ def test_env_overrides_toml(
     toml.write_text("symbol_throttle_seconds = 7.5\n", encoding="utf-8")
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
     monkeypatch.setenv("SYMBOL_THROTTLE_SECONDS", "3.0")
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     # env > toml
     assert s.symbol_throttle_seconds == pytest.approx(3.0)
 
@@ -251,7 +261,7 @@ def test_settings_derive_peer_groups_from_config_sectors(
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
 
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
 
     assert s.sectors == data["sectors"]
     assert s.peer_groups == data["sectors"]
@@ -426,7 +436,7 @@ def test_settings_read_the_price_list_from_config_toml(monkeypatch: pytest.Monke
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
 
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
 
     table = settings.llm_price_table()
     assert table["claude-sonnet-4-6"].cache_write_usd_per_mtok == pytest.approx(3.75)
@@ -560,7 +570,7 @@ def test_real_config_toml_weekly_budget_covers_its_worst_case(
 
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
     personas = load_council_personas(CONFIG_TOML.parent / settings.council_personas_dir)
 
     weekly = settings.fast_loop_weekly_budget(personas=len(personas))
