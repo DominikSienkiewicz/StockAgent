@@ -1,4 +1,6 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import Mock
 
 import numpy as np
@@ -47,11 +49,11 @@ def repository_port() -> Mock:
 
 
 @pytest.fixture
-def use_case(ml_port, repository_port) -> TrainModelUseCase:
+def use_case(ml_port: Mock, repository_port: Mock) -> TrainModelUseCase:
     return TrainModelUseCase(ml_port=ml_port, db_port=repository_port)
 
 
-def _feature_store_rows(n: int) -> list[dict]:
+def _feature_store_rows(n: int) -> list[dict[str, Any]]:
     """Generuje n rekordów jak z widoku ml_feature_store.
 
     Widok dostarcza GOTOWE `price_delta` (NaN-guarded) i `target_return` (zwrot
@@ -76,15 +78,15 @@ def _feature_store_rows(n: int) -> list[dict]:
 
 class TestRun:
     def test_refresh_feature_store_delegates_to_repository(
-        self, use_case, repository_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock
+    ) -> None:
         use_case.refresh_feature_store()
 
         repository_port.refresh_feature_store.assert_called_once()
 
     def test_returns_not_enough_data_when_below_minimum(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(
             MIN_SAMPLES_FOR_TRAINING - 1
         )
@@ -92,12 +94,13 @@ class TestRun:
         result = use_case.run("AAPL")
 
         assert result["status"] == "skipped"
-        assert "not enough" in result["reason"].lower() or "za mało" in result["reason"].lower()
+        reason = cast(str, result["reason"])
+        assert "not enough" in reason.lower() or "za mało" in reason.lower()
         ml_port.train.assert_not_called()
 
     def test_returns_not_enough_data_when_empty(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         result = use_case.run("AAPL")
@@ -106,8 +109,8 @@ class TestRun:
         ml_port.train.assert_not_called()
 
     def test_can_skip_feature_store_refresh(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         use_case.run("AAPL", refresh_view=False)
@@ -116,8 +119,8 @@ class TestRun:
         ml_port.train.assert_not_called()
 
     def test_trains_model_with_correct_features_and_target(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(
             MIN_SAMPLES_FOR_TRAINING + 10
         )
@@ -135,8 +138,8 @@ class TestRun:
         assert len(features) == len(target)
 
     def test_uses_view_price_delta_without_recompute(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         # Widok dostarcza price_delta GOTOWE — train_model nie wolno go przeliczać
         # (stary recompute (current-prev)/prev dublował logikę i robił +inf przy
         # prev=0). Ustawiamy price_delta na wartość, której recompute NIGDY by nie
@@ -154,14 +157,14 @@ class TestRun:
         assert np.allclose([row["price_delta"] for row in features], 0.5)
 
     def test_drops_rows_when_view_price_delta_is_null(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         # Widok emituje price_delta=NULL gdy price_prev_12h=0/NULL (guard anty-inf).
         # train_model NIE przelicza (stary recompute dawał +inf przeżywające
         # dropna) — wiersz z NULL price_delta musi zostać odrzucony, a do modelu
         # trafiają wyłącznie skończone wartości.
         rows = _feature_store_rows(MIN_SAMPLES_FOR_TRAINING + 5)
-        rows[0]["price_delta"] = None  # type: ignore[assignment]
+        rows[0]["price_delta"] = None
         repository_port.get_feature_store_data.return_value = rows
         ml_port.train.return_value = {"status": "trained_successfully"}
 
@@ -171,7 +174,9 @@ class TestRun:
         assert len(features) == len(rows) - 1
         assert bool(np.isfinite([row["price_delta"] for row in features]).all())
 
-    def test_returns_ml_train_result(self, use_case, repository_port, ml_port):
+    def test_returns_ml_train_result(
+        self, use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(
             MIN_SAMPLES_FOR_TRAINING + 10
         )
@@ -187,7 +192,9 @@ class TestRun:
         assert result["n_samples"] == 60
 
 
-def test_skip_result_reports_n_samples(use_case, repository_port, ml_port):
+def test_skip_result_reports_n_samples(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # ML-04: liczba próbek była tylko w tekście powodu ("3 < 50") — scorecard
     # i logi nie miały jej jako pola, więc brak wag dało się wyjaśnić tylko z logu GHA.
     repository_port.get_feature_store_data.return_value = _feature_store_rows(3)
@@ -199,7 +206,9 @@ def test_skip_result_reports_n_samples(use_case, repository_port, ml_port):
     ml_port.train.assert_not_called()
 
 
-def test_skip_after_dropna_reports_valid_n_samples(use_case, repository_port, ml_port):
+def test_skip_after_dropna_reports_valid_n_samples(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     rows = _feature_store_rows(MIN_SAMPLES_FOR_TRAINING + 2)
     for row in rows[:5]:
         row["price_delta"] = None
@@ -212,7 +221,7 @@ def test_skip_after_dropna_reports_valid_n_samples(use_case, repository_port, ml
     ml_port.train.assert_not_called()
 
 
-def _stamped_rows(symbol: str, n: int, start_hour: int, step_hours: int) -> list[dict]:
+def _stamped_rows(symbol: str, n: int, start_hour: int, step_hours: int) -> list[dict[str, Any]]:
     """Wiersze widoku z `symbol` i `timestamp` (ISO jak z PostgREST). `target_return`
     koduje (symbol, kolejność), żeby test widział porządek wierszy w modelu."""
     rows = _feature_store_rows(n)
@@ -225,13 +234,15 @@ def _stamped_rows(symbol: str, n: int, start_hour: int, step_hours: int) -> list
     return rows
 
 
-def _rows_by_symbol(mapping: dict[str, list[dict]]):
+def _rows_by_symbol(
+    mapping: dict[str, list[dict[str, Any]]],
+) -> Callable[[str], list[dict[str, Any]]]:
     return lambda symbol: mapping[symbol]
 
 
 def test_pooled_training_calls_train_once_with_rows_of_all_symbols(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # ML-13 (decyzja 4): JEDEN wspólny model. Dziś trener pomija wszystkie symbole
     # (max 17 próbek przy progu 50), choć łącznie jest ich kilkaset.
     repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
@@ -256,8 +267,8 @@ def test_pooled_training_calls_train_once_with_rows_of_all_symbols(
 
 
 def test_pooled_rows_follow_global_time_not_symbol_blocks(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Konkatenacja per symbol dałaby AAPL(0..58h), potem BTC(1..59h) — fold
     # walidowałby AAPL na chwilach wcześniejszych niż trening na BTC.
     repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
@@ -278,8 +289,8 @@ def test_pooled_rows_follow_global_time_not_symbol_blocks(
 
 
 def test_pooled_training_skips_below_minimum_and_reports_n_samples(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
         {
             "AAPL": _stamped_rows("AAPL", 10, start_hour=0, step_hours=1),
@@ -294,7 +305,9 @@ def test_pooled_training_skips_below_minimum_and_reports_n_samples(
     ml_port.train.assert_not_called()
 
 
-def test_per_symbol_run_is_evaluation_only(use_case, repository_port, ml_port):
+def test_per_symbol_run_is_evaluation_only(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Pętla per symbol zostaje do ewaluacji — zapis wag robi wyłącznie model wspólny,
     # więc kolejne symbole nie nadpisują już jednego pliku .ubj (last-writer-wins).
     repository_port.get_feature_store_data.return_value = _feature_store_rows(
@@ -307,7 +320,9 @@ def test_per_symbol_run_is_evaluation_only(use_case, repository_port, ml_port):
     assert ml_port.train.call_args.kwargs["persist"] is False
 
 
-def test_pooled_scorecard_row_is_recorded_as_all(use_case, repository_port, ml_port):
+def test_pooled_scorecard_row_is_recorded_as_all(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
         {"AAPL": _stamped_rows("AAPL", 60, start_hour=0, step_hours=1)}
     )
@@ -319,7 +334,7 @@ def test_pooled_scorecard_row_is_recorded_as_all(use_case, repository_port, ml_p
     assert POOLED_MODEL_SYMBOL == "ALL"
 
 
-def test_pooled_scorecard_row_carries_the_run_id(ml_port, repository_port):
+def test_pooled_scorecard_row_carries_the_run_id(ml_port: Mock, repository_port: Mock) -> None:
     # ML-24: jeden `run_id` na przebieg Slow Loopa — wiersz ALL i wiersze per symbol
     # grupuje on, a nie przerwa czasowa (re-run tego samego dnia).
     repository_port.get_feature_store_data.return_value = []
@@ -332,7 +347,9 @@ def test_pooled_scorecard_row_carries_the_run_id(ml_port, repository_port):
     )
 
 
-def test_pooled_skip_is_recorded_too(use_case, repository_port, ml_port):
+def test_pooled_skip_is_recorded_too(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Deadman czyta najnowszy wiersz scorecardu — przebieg bez modelu też jest śladem.
     repository_port.get_feature_store_data.return_value = []
 
@@ -344,8 +361,8 @@ def test_pooled_skip_is_recorded_too(use_case, repository_port, ml_port):
 
 
 def test_pooled_scorecard_write_failure_does_not_fail_training(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = []
     repository_port.save_model_scorecard.side_effect = Exception("no table")
 
@@ -354,7 +371,9 @@ def test_pooled_scorecard_write_failure_does_not_fail_training(
     assert result["status"] == "skipped"
 
 
-def test_pooled_scorecard_is_not_recorded_by_default(use_case, repository_port, ml_port):
+def test_pooled_scorecard_is_not_recorded_by_default(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = []
 
     use_case.run_pooled(["AAPL"])
@@ -363,8 +382,8 @@ def test_pooled_scorecard_is_not_recorded_by_default(use_case, repository_port, 
 
 
 def test_per_symbol_run_purges_label_horizon_with_row_timestamps(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Decyzja 4 (2026-10-18): purge horyzontu etykiety także w ewaluacji per symbol.
     # Bez znaczników czasu fold uczył się na wierszach, których zwrot 12h dojrzewa
     # dopiero w oknie walidacji.
@@ -384,8 +403,8 @@ def test_per_symbol_run_purges_label_horizon_with_row_timestamps(
 
 
 def test_per_symbol_run_without_row_timestamps_trains_unpurged(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Zgodność wstecz: wiersze bez kolumny `timestamp` ewaluują się jak dotąd.
     repository_port.get_feature_store_data.return_value = _feature_store_rows(
         MIN_SAMPLES_FOR_TRAINING + 10
@@ -401,8 +420,8 @@ def test_per_symbol_run_without_row_timestamps_trains_unpurged(
 
 
 def test_without_feature_set_filter_training_reads_the_whole_history(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # Bez flagi (i bez migracji 027) odczyt nie może dotknąć kolumny wersji.
     repository_port.get_feature_store_data.return_value = []
 
@@ -416,7 +435,9 @@ def test_without_feature_set_filter_training_reads_the_whole_history(
     assert all(not c.kwargs for c in repository_port.get_feature_store_data.call_args_list)
 
 
-def test_feature_set_filter_reads_only_the_current_version(repository_port, ml_port):
+def test_feature_set_filter_reads_only_the_current_version(
+    repository_port: Mock, ml_port: Mock
+) -> None:
     use_case = TrainModelUseCase(
         ml_port=ml_port, db_port=repository_port, feature_set_version=2
     )
@@ -431,8 +452,8 @@ def test_feature_set_filter_reads_only_the_current_version(repository_port, ml_p
 
 
 def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
-    repository_port, ml_port, caplog
-):
+    repository_port: Mock, ml_port: Mock, caplog: pytest.LogCaptureFixture
+) -> None:
     # Odcięcie historii po wersji zmniejsza próbkę — pominięcie ma mówić, ile
     # próbek zostało i dlaczego, a nie wyglądać jak zwykły brak danych.
     use_case = TrainModelUseCase(
@@ -448,7 +469,7 @@ def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
     assert result["status"] == "skipped"
     assert result["n_samples"] == 12
     assert result["feature_set_version"] == 2
-    assert "feature set version 2" in result["reason"]
+    assert "feature set version 2" in cast(str, result["reason"])
     assert "feature set version 2 leaves 12 samples" in caplog.text
     ml_port.train.assert_not_called()
     _, saved = repository_port.save_model_scorecard.call_args.args
@@ -456,8 +477,11 @@ def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
 
 
 def test_pooled_training_logs_how_many_labels_settle_after_the_next_row(
-    use_case, repository_port, ml_port, caplog
-):
+    use_case: TrainModelUseCase,
+    repository_port: Mock,
+    ml_port: Mock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # ML-25: widok z migracji 050 wystawia `settled_at`; model wspólny mierzy, ile
     # etykiet dojrzewa dopiero po następnym wierszu symbolu (purge 12 h ich nie łapie).
     rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24)
@@ -475,8 +499,11 @@ def test_pooled_training_logs_how_many_labels_settle_after_the_next_row(
 
 
 def test_pooled_training_without_settled_at_logs_no_overlap(
-    use_case, repository_port, ml_port, caplog
-):
+    use_case: TrainModelUseCase,
+    repository_port: Mock,
+    ml_port: Mock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Przed migracją 050 widok nie ma kolumny — odczyt `*` jest tolerancyjny, pomiaru brak.
     repository_port.get_feature_store_data.return_value = _stamped_rows(
         "AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24
@@ -495,7 +522,7 @@ T0 = datetime(2026, 10, 1, 7, 30, tzinfo=UTC)
 SERVED_VECTOR = {name: (i + 1) / 10 for i, name in enumerate(EXPECTED_ML_FEATURES)}
 
 
-def _cycle_vector(i: int, *, gated: bool, flags: list[str] | None = None) -> dict:
+def _cycle_vector(i: int, *, gated: bool, flags: list[str] | None = None) -> dict[str, Any]:
     """Wektor cyklu jak z `_persist_feature_snapshot`: cechy darmowe zawsze, wektor
     modelu i dodatki tylko za bramką."""
     free = {
@@ -546,12 +573,14 @@ def training_data() -> Mock:
 
 
 @pytest.fixture
-def snapshot_use_case(ml_port, repository_port, training_data) -> TrainModelUseCase:
+def snapshot_use_case(
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> TrainModelUseCase:
     ml_port.train.return_value = TrainingReport(TrainingOutcome.EVALUATION_PASSED, n_samples=60)
     return TrainModelUseCase(ml_port=ml_port, db_port=repository_port, training_data=training_data)
 
 
-def _train_call(ml_port: Mock, *, llm: bool):
+def _train_call(ml_port: Mock, *, llm: bool) -> Any:
     calls = [
         c for c in ml_port.train.call_args_list
         if ("llm_trend_signal" in c.args[0][0]) is llm
@@ -561,8 +590,8 @@ def _train_call(ml_port: Mock, *, llm: bool):
 
 
 def test_snapshot_llm_model_trains_on_the_served_vector_with_price_snapshot_label(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     # ML-52: trening czyta wektor zapisany przez cykl (ten, który dostał serving),
     # a etykieta to zwrot do pierwszego snapshotu ceny po 12 h — bez widoku SQL.
     snapshots, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
@@ -582,8 +611,8 @@ def test_snapshot_llm_model_trains_on_the_served_vector_with_price_snapshot_labe
 
 
 def test_free_feature_model_trains_on_every_labeled_cycle(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     gated, gated_prices = _cycles("BTC", 30)
     quiet, quiet_prices = _cycles("ETH", 30, gated=False)
     training_data.get_feature_snapshots.return_value = gated + quiet
@@ -606,8 +635,8 @@ def test_free_feature_model_trains_on_every_labeled_cycle(
 
 
 def test_llm_model_drops_gated_cycles_with_failed_llm_or_feed(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     clean, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING)
     broken, broken_prices = _cycles("ETH", 10, flags=["llm_analysis_failed"])
     training_data.get_feature_snapshots.return_value = clean + broken
@@ -620,8 +649,8 @@ def test_llm_model_drops_gated_cycles_with_failed_llm_or_feed(
 
 
 def test_empty_feature_snapshots_report_not_enough_data(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     # Baza produkcyjna jest pusta: obie karty mówią wprost, że danych za mało.
     training_data.get_feature_snapshots.return_value = []
     training_data.get_price_series.return_value = {}
@@ -637,8 +666,8 @@ def test_empty_feature_snapshots_report_not_enough_data(
 
 
 def test_snapshot_training_reads_feature_set_version_4_of_listed_symbols_only(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     # Decyzja 2026-10-21: trening z wektorów w wersji zestawu cech 4.
     btc, prices = _cycles("BTC", 5)
     other, _ = _cycles("DOGE", 5)
@@ -653,8 +682,8 @@ def test_snapshot_training_reads_feature_set_version_4_of_listed_symbols_only(
 
 
 def test_snapshot_models_are_recorded_as_two_cards(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     use_case = TrainModelUseCase(
         ml_port=ml_port, db_port=repository_port, training_data=training_data, run_id="run-1"
     )
@@ -673,8 +702,8 @@ def test_snapshot_models_are_recorded_as_two_cards(
 
 
 def test_snapshot_source_trains_the_shipped_model_on_gated_served_vectors(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
     quiet, quiet_prices = _cycles("ETH", 20, gated=False)
     training_data.get_feature_snapshots.return_value = gated + quiet
@@ -699,8 +728,8 @@ def test_snapshot_source_trains_the_shipped_model_on_gated_served_vectors(
 
 
 def test_snapshot_source_with_too_few_gated_vectors_skips_the_shipped_model(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     gated, prices = _cycles("BTC", 10)
     training_data.get_feature_snapshots.return_value = gated
     training_data.get_price_series.return_value = {"BTC": prices}
@@ -732,8 +761,8 @@ def _zigzag_prices(start: datetime, n: int) -> list[tuple[datetime, float]]:
 
 
 def test_sigma_target_divides_the_pooled_target_by_the_as_of_sigma(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING + 10, start_hour=0, step_hours=24)
     for i, row in enumerate(rows):
         row["target_return"] = 0.001 * (i + 1)
@@ -756,8 +785,8 @@ def test_sigma_target_divides_the_pooled_target_by_the_as_of_sigma(
 
 
 def test_sigma_target_drops_rows_without_enough_history(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     # Krótka historia daje niestabilną σ — wiersz wypada, a model wspólny uczciwie
     # mówi, ile próbek zostało.
     repository_port.get_feature_store_data.return_value = _stamped_rows(
@@ -777,8 +806,8 @@ def test_sigma_target_drops_rows_without_enough_history(
 
 
 def test_sigma_target_puts_the_snapshot_cards_in_sigma_units(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     snapshots, _ = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
     training_data.get_feature_snapshots.return_value = snapshots
     training_data.get_price_series.return_value = {
@@ -796,8 +825,8 @@ def test_sigma_target_puts_the_snapshot_cards_in_sigma_units(
 
 
 def test_without_the_flag_training_passes_no_target_unit(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     snapshots, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
     training_data.get_feature_snapshots.return_value = snapshots
     training_data.get_price_series.return_value = {"BTC": prices}
@@ -810,7 +839,9 @@ def test_without_the_flag_training_passes_no_target_unit(
 # -- ML-22: opis próbki dla proweniencji treningu ---------------------------------
 
 
-def test_pooled_training_describes_the_sample_to_the_model(ml_port, repository_port):
+def test_pooled_training_describes_the_sample_to_the_model(
+    ml_port: Mock, repository_port: Mock
+) -> None:
     # Karta i sidecar mają mówić, na jakich danych powstał model: ile wierszy
     # per symbol, która wersja zestawu cech i który commit kodu.
     use_case = TrainModelUseCase(
@@ -831,8 +862,8 @@ def test_pooled_training_describes_the_sample_to_the_model(ml_port, repository_p
 
 
 def test_pooled_training_set_is_exactly_what_the_model_trains_on(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     # `reproduce-training` odbudowuje próbkę tą samą ścieżką co Slow Loop.
     repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
         {
@@ -853,7 +884,9 @@ def test_pooled_training_set_is_exactly_what_the_model_trains_on(
     assert training_set.dataset == ml_port.train.call_args.kwargs["dataset"]
 
 
-def test_pooled_training_set_below_the_minimum_is_the_skip_report(use_case, repository_port):
+def test_pooled_training_set_below_the_minimum_is_the_skip_report(
+    use_case: TrainModelUseCase, repository_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _stamped_rows(
         "AAPL", 5, start_hour=0, step_hours=1
     )
@@ -864,7 +897,9 @@ def test_pooled_training_set_below_the_minimum_is_the_skip_report(use_case, repo
     assert skipped.outcome is TrainingOutcome.SKIPPED
 
 
-def test_snapshot_source_describes_the_gated_sample(ml_port, repository_port, training_data):
+def test_snapshot_source_describes_the_gated_sample(
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
     training_data.get_feature_snapshots.return_value = gated
     training_data.get_price_series.return_value = {"BTC": prices}
@@ -886,8 +921,8 @@ def test_snapshot_source_describes_the_gated_sample(ml_port, repository_port, tr
 
 
 def test_snapshot_model_cards_describe_their_own_samples(
-    snapshot_use_case, ml_port, training_data
-):
+    snapshot_use_case: TrainModelUseCase, ml_port: Mock, training_data: Mock
+) -> None:
     gated, gated_prices = _cycles("BTC", 30)
     quiet, quiet_prices = _cycles("ETH", 30, gated=False)
     training_data.get_feature_snapshots.return_value = gated + quiet
@@ -900,7 +935,9 @@ def test_snapshot_model_cards_describe_their_own_samples(
     assert dataset.feature_set_version == MARKET_FEATURE_SET_VERSION
 
 
-def test_per_symbol_evaluation_describes_its_symbol(use_case, repository_port, ml_port):
+def test_per_symbol_evaluation_describes_its_symbol(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _feature_store_rows(
         MIN_SAMPLES_FOR_TRAINING + 10
     )
@@ -917,8 +954,8 @@ def test_per_symbol_evaluation_describes_its_symbol(use_case, repository_port, m
 
 
 def test_pooled_training_hands_the_label_overlap_to_the_model(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24)
     for i, row in enumerate(rows):
         hours = 30 if i % 5 == 0 else 20
@@ -933,8 +970,8 @@ def test_pooled_training_hands_the_label_overlap_to_the_model(
 
 
 def test_pooled_training_without_settled_at_has_no_label_overlap(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _stamped_rows(
         "AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=0, step_hours=24
     )
@@ -946,8 +983,8 @@ def test_pooled_training_without_settled_at_has_no_label_overlap(
 
 
 def test_snapshot_source_measures_the_label_overlap_of_the_gated_sample(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     # Etykieta wektora dojrzewa na pierwszym snapshocie po 12 h, a cykle są co dobę —
     # żadna nie sięga za następny cykl symbolu.
     gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
@@ -968,7 +1005,7 @@ def test_snapshot_source_measures_the_label_overlap_of_the_gated_sample(
 # -- ML-26: purge po chwili rozliczenia etykiety (flaga) ---------------------------
 
 
-def _settled_rows() -> list[dict]:
+def _settled_rows() -> list[dict[str, Any]]:
     """Dzienne wiersze AAPL: co piąty rozliczony po 72 h, jeden z dolną granicą
     029 (`settled_at = timestamp`), jeden bez rozliczenia."""
     rows = _stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING + 5, start_hour=0, step_hours=24)
@@ -981,7 +1018,9 @@ def _settled_rows() -> list[dict]:
     return rows
 
 
-def test_settled_purge_hands_the_label_ends_to_the_model(repository_port, ml_port):
+def test_settled_purge_hands_the_label_ends_to_the_model(
+    repository_port: Mock, ml_port: Mock
+) -> None:
     from src.domain.backtest import label_end_times
 
     use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
@@ -1000,8 +1039,8 @@ def test_settled_purge_hands_the_label_ends_to_the_model(repository_port, ml_por
 
 
 def test_without_the_settled_purge_flag_training_passes_no_label_ends(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _settled_rows()
     ml_port.train.return_value = TrainingReport(TrainingOutcome.ACCEPTED, n_samples=55)
 
@@ -1011,7 +1050,9 @@ def test_without_the_settled_purge_flag_training_passes_no_label_ends(
     assert all("label_ends" not in c.kwargs for c in ml_port.train.call_args_list)
 
 
-def test_settled_purge_without_settled_at_keeps_the_fixed_horizon(repository_port, ml_port):
+def test_settled_purge_without_settled_at_keeps_the_fixed_horizon(
+    repository_port: Mock, ml_port: Mock
+) -> None:
     # Widok sprzed migracji 050 nie ma `settled_at` — purge zostaje 12-godzinny.
     use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
     repository_port.get_feature_store_data.return_value = _stamped_rows(
@@ -1024,7 +1065,9 @@ def test_settled_purge_without_settled_at_keeps_the_fixed_horizon(repository_por
     assert "label_ends" not in ml_port.train.call_args.kwargs
 
 
-def test_settled_purge_covers_the_per_symbol_evaluation(repository_port, ml_port):
+def test_settled_purge_covers_the_per_symbol_evaluation(
+    repository_port: Mock, ml_port: Mock
+) -> None:
     use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
     repository_port.get_feature_store_data.return_value = _settled_rows()[::-1]
     ml_port.train.return_value = {"status": "evaluated_passed_gate"}
@@ -1038,8 +1081,8 @@ def test_settled_purge_covers_the_per_symbol_evaluation(repository_port, ml_port
 
 
 def test_settled_purge_on_snapshot_labels_uses_their_settlement(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     gated, prices = _cycles("BTC", MIN_SAMPLES_FOR_TRAINING + 1)
     training_data.get_feature_snapshots.return_value = gated
     training_data.get_price_series.return_value = {"BTC": prices}
@@ -1062,7 +1105,7 @@ def test_settled_purge_on_snapshot_labels_uses_their_settlement(
 # -- ML-30: wariant binarny P(wzrost poza martwą strefą) --------------------------
 
 
-def _signed_rows(n: int) -> list[dict]:
+def _signed_rows(n: int) -> list[dict[str, Any]]:
     """Dzienne wiersze AAPL ze zwrotami ±1% (co trzeci w martwej strefie ±0,05%)."""
     rows = _stamped_rows("AAPL", n, start_hour=0, step_hours=24)
     for i, row in enumerate(rows):
@@ -1071,14 +1114,14 @@ def _signed_rows(n: int) -> list[dict]:
 
 
 def test_direction_variant_trains_the_classifier_on_the_pooled_sample(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _signed_rows(90)
     ml_port.train_direction_classifier.return_value = "report"
 
     result = use_case.run_direction_variant(["AAPL"], dead_band=0.001)
 
-    assert result == "report"
+    assert cast(object, result) == "report"
     call = ml_port.train_direction_classifier.call_args
     features, target = call.args
     assert len(features) == len(target) == 90
@@ -1088,8 +1131,8 @@ def test_direction_variant_trains_the_classifier_on_the_pooled_sample(
 
 
 def test_direction_variant_learns_raw_returns_even_with_the_sigma_target(
-    ml_port, repository_port, training_data
-):
+    ml_port: Mock, repository_port: Mock, training_data: Mock
+) -> None:
     # Martwa strefa to ułamek ceny — etykieta kierunku z surowego zwrotu, nie z σ.
     use_case = TrainModelUseCase(
         ml_port=ml_port, db_port=repository_port, training_data=training_data, sigma_target=True
@@ -1105,8 +1148,8 @@ def test_direction_variant_learns_raw_returns_even_with_the_sigma_target(
 
 
 def test_direction_variant_with_too_few_rows_outside_the_band_skips(
-    use_case, repository_port, ml_port
-):
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     rows = _signed_rows(60)
     for row in rows[:20]:
         row["target_return"] = 0.0
@@ -1122,7 +1165,9 @@ def test_direction_variant_with_too_few_rows_outside_the_band_skips(
     assert "dead band" in (result.reason or "")
 
 
-def test_direction_variant_below_the_pooled_minimum_skips(use_case, repository_port, ml_port):
+def test_direction_variant_below_the_pooled_minimum_skips(
+    use_case: TrainModelUseCase, repository_port: Mock, ml_port: Mock
+) -> None:
     repository_port.get_feature_store_data.return_value = _signed_rows(10)
 
     result = use_case.run_direction_variant(["AAPL"], dead_band=0.001)
