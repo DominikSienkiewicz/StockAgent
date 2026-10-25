@@ -113,9 +113,7 @@ class TestSummarizeFolds:
             raise AssertionError("BacktestSummary should be frozen")
 
 
-def _folds(
-    candidate: float, baseline: float, n_valid: float, n: int = 4
-) -> list[dict[str, float]]:
+def _folds(candidate: float, baseline: float, n_valid: float, n: int = 4) -> list[dict[str, float]]:
     return [
         {
             "candidate_rmse": candidate,
@@ -168,9 +166,7 @@ def test_enough_oos_points_keep_the_verdict() -> None:
 
 def test_folds_without_n_valid_skip_the_oos_condition() -> None:
     # Brak klucza `n_valid` = warunek pominięty (kształt foldów sprzed ML-06).
-    summary = summarize_folds(
-        [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
-    )
+    summary = summarize_folds([{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}])
 
     assert summary.n_oos_points is None
     assert summary.beats_baseline is True
@@ -229,9 +225,11 @@ def test_embargo_widens_the_gap_before_validation() -> None:
 
     assert purge_training_indices(prediction_ts, label_end_ts, 4) == (0, 1, 2, 3)
     # Start walidacji 20:00, embargo 6 h → etykieta musi skończyć się do 14:00.
-    assert purge_training_indices(
-        prediction_ts, label_end_ts, 4, embargo=timedelta(hours=6)
-    ) == (0, 1, 2)
+    assert purge_training_indices(prediction_ts, label_end_ts, 4, embargo=timedelta(hours=6)) == (
+        0,
+        1,
+        2,
+    )
 
 
 def test_fixed_horizon_label_ends_reproduce_purged_train_end() -> None:
@@ -262,8 +260,7 @@ def test_label_end_times_need_aligned_rows() -> None:
 
 def _ic_folds(ics: list[float]) -> list[dict[str, float]]:
     return [
-        {"candidate_rmse": 0.01, "baseline_rmse": 0.02, "hit_rate": 0.5, "ic": ic}
-        for ic in ics
+        {"candidate_rmse": 0.01, "baseline_rmse": 0.02, "hit_rate": 0.5, "ic": ic} for ic in ics
     ]
 
 
@@ -287,9 +284,7 @@ def test_ic_t_stat_needs_at_least_two_folds() -> None:
 
 
 def test_ic_fields_stay_empty_when_folds_carry_no_ic() -> None:
-    summary = summarize_folds(
-        [{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}]
-    )
+    summary = summarize_folds([{"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.6}])
 
     assert summary.mean_ic is None
     assert summary.ic_t_stat is None

@@ -45,12 +45,14 @@ class TestAnalyze:
     ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response(
-            json.dumps({
-                "trend_direction": "BULLISH",
-                "confidence_score": 0.85,
-                "target_price_12h": 110.0,
-                "reasoning": "macro tailwinds",
-            })
+            json.dumps(
+                {
+                    "trend_direction": "BULLISH",
+                    "confidence_score": 0.85,
+                    "target_price_12h": 110.0,
+                    "reasoning": "macro tailwinds",
+                }
+            )
         )
 
         result = adapter.analyze("Predict AAPL.")
@@ -116,9 +118,9 @@ class TestAnalyze:
         # Adapter musi wyłuskać pierwszy zbalansowany obiekt {...}.
         adapter, client = adapter_with_client
         prose = (
-            'Here is the analysis: '
+            "Here is the analysis: "
             '{"trend_direction":"BULLISH","confidence_score":0.8} '
-            'hope this helps'
+            "hope this helps"
         )
         client.messages.create.return_value = _message_response(prose)
 
@@ -146,10 +148,7 @@ class TestAnalyze:
     ) -> None:
         # Nawias klamrowy w stringu nie może mylić skanera balansu.
         adapter, client = adapter_with_client
-        text = (
-            'Result: {"reasoning": "earnings up }{ noise", '
-            '"trend_direction": "BULLISH"} done'
-        )
+        text = 'Result: {"reasoning": "earnings up }{ noise", "trend_direction": "BULLISH"} done'
         client.messages.create.return_value = _message_response(text)
 
         result = adapter.analyze("Predict.")
@@ -317,9 +316,7 @@ class TestRetryAndQuota:
             _message_response("{}"),
         ]
         monitor = QuotaMonitor()
-        adapter = AnthropicAdapter(
-            api_key="sk-ant-test", backoff_base=0.01, quota_monitor=monitor
-        )
+        adapter = AnthropicAdapter(api_key="sk-ant-test", backoff_base=0.01, quota_monitor=monitor)
 
         adapter.analyze("Predict.")
 
@@ -455,9 +452,7 @@ class TestAnthropicLive:
             pytest.skip("ANTHROPIC_API_KEY not set")
 
         adapter = AnthropicAdapter(api_key=api_key)
-        result = adapter.analyze(
-            'Return ONLY JSON: {"answer": 42}. No markdown, just JSON.'
-        )
+        result = adapter.analyze('Return ONLY JSON: {"answer": 42}. No markdown, just JSON.')
         assert isinstance(result, dict)
 
 
@@ -479,9 +474,7 @@ class TestStripCodeBlockReDoS:
         assert out == evil
 
     def test_extracts_json_from_fenced_block(self) -> None:
-        assert (
-            AnthropicAdapter._strip_code_block('```json\n{"a": 1}\n```') == '{"a": 1}'
-        )
+        assert AnthropicAdapter._strip_code_block('```json\n{"a": 1}\n```') == '{"a": 1}'
         assert AnthropicAdapter._strip_code_block('```{"b": 2}```') == '{"b": 2}'
 
 
@@ -732,9 +725,7 @@ class TestPortErrorTaxonomy:
         from src.application.errors import ProviderUnavailable
 
         request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        adapter = self._adapter(
-            mock_anthropic_class, mocker, APIConnectionError(request=request)
-        )
+        adapter = self._adapter(mock_anthropic_class, mocker, APIConnectionError(request=request))
 
         with pytest.raises(ProviderUnavailable) as excinfo:
             adapter.analyze("Predict.")

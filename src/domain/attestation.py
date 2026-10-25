@@ -81,9 +81,7 @@ def _json_default(value: Any) -> str:
     raise TypeError(f"Typ nieserializowalny w attestation payload: {type(value).__name__}")
 
 
-def canonicalize(
-    payload: Mapping[str, Any], *, schema_version: int = SCHEMA_VERSION_V1
-) -> str:
+def canonicalize(payload: Mapping[str, Any], *, schema_version: int = SCHEMA_VERSION_V1) -> str:
     """Deterministyczna, kanoniczna serializacja payloadu do JSON.
 
     Reguła (ZAMROŻONA — patrz docstring modułu):
@@ -150,9 +148,7 @@ def verify(
     z JSONL/GitHuba może być zapisany wielkimi literami). Używamy
     `hmac.compare_digest`, by uniknąć wycieku informacji przez czas porównania.
     """
-    return verify_canonical(
-        canonicalize(payload, schema_version=schema_version), salt, commitment
-    )
+    return verify_canonical(canonicalize(payload, schema_version=schema_version), salt, commitment)
 
 
 def verify_canonical(canonical: str, salt: str, commitment: str) -> bool:

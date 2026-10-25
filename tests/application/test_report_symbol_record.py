@@ -28,9 +28,7 @@ def _resolved(symbol: str, trend: str, correct: bool) -> ResolvedPrediction:
 
 def _nvda_history() -> list[ResolvedPrediction]:
     """NVDA: 4 trafione z 7 kierunkowych, plus SIDEWAYS poza mianownikiem."""
-    calls = [
-        _resolved("NVDA", "BULLISH", index < 4) for index in range(7)
-    ]
+    calls = [_resolved("NVDA", "BULLISH", index < 4) for index in range(7)]
     return [*calls, _resolved("NVDA", "SIDEWAYS", True), _resolved("AAPL", "BULLISH", True)]
 
 
@@ -77,8 +75,8 @@ class TestChipInReport:
         html, text = build_html_report([_saved("NVDA")], _STARTED_AT, 1.0, context)
 
         chip = "Trafność kierunkowa na NVDA: 4/7 (30 dni"
-        reasoning = html[html.index("💡 Uzasadnienia"):]
-        signals = html[html.index("🎯 Najsilniejsze sygnały"):html.index("💡 Uzasadnienia")]
+        reasoning = html[html.index("💡 Uzasadnienia") :]
+        signals = html[html.index("🎯 Najsilniejsze sygnały") : html.index("💡 Uzasadnienia")]
         assert chip in reasoning
         assert chip in signals
         assert text.count(chip) == 2

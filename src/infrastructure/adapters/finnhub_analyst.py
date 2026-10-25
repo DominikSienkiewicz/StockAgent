@@ -115,7 +115,6 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
             target = payload.get("targetMean")
         return _as_float(target)
 
-
     def _fetch(self, endpoint: str, symbol: str) -> requests.Response:
         if self._rate_limiter is not None:
             self._rate_limiter.acquire()

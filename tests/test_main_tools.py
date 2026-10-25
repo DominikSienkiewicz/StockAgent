@@ -127,7 +127,9 @@ def test_import_positions_reports_a_missing_file(
 
 
 def test_import_positions_apply_says_nothing_was_written_without_db_writes(
-    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    positions_adapter: MagicMock,
+    mocker: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # BEZ-08: lokalny run jest domyślnie tylko do odczytu — `--apply` nie może
@@ -148,7 +150,9 @@ def test_import_positions_apply_says_nothing_was_written_without_db_writes(
 
 
 def test_import_positions_dry_run_is_unchanged_without_db_writes(
-    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    positions_adapter: MagicMock,
+    mocker: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     settings = mocker.patch("src.config.Settings.from_env").return_value
@@ -304,6 +308,7 @@ def test_render_sample_report_writes_both_bodies_without_settings(
     assert "przebieg #sample" in text
     assert "report-email.html" in capsys.readouterr().out
 
+
 # --- WIA-56: explain ----------------------------------------------------------
 
 
@@ -394,6 +399,7 @@ def test_persona_ablation_without_migration_045_says_so(
 
     assert code == 1
     assert "045" in capsys.readouterr().err
+
 
 # --- DOC-17: render-graph-diagram -----------------------------------------------
 
@@ -500,8 +506,10 @@ def test_verify_attestation_exits_two_for_a_missing_file(
     code = main_tools.main(
         [
             "verify-attestation",
-            "--commitments", str(tmp_path / "missing.jsonl"),
-            "--reveals", str(tmp_path / "missing-too.jsonl"),
+            "--commitments",
+            str(tmp_path / "missing.jsonl"),
+            "--reveals",
+            str(tmp_path / "missing-too.jsonl"),
         ]
     )
 
@@ -509,9 +517,7 @@ def test_verify_attestation_exits_two_for_a_missing_file(
     assert "missing.jsonl" in capsys.readouterr().err
 
 
-def test_verify_attestation_needs_no_settings_and_no_network(
-    tmp_path: Path, mocker: Any
-) -> None:
+def test_verify_attestation_needs_no_settings_and_no_network(tmp_path: Path, mocker: Any) -> None:
     # Weryfikator ma działać u sceptyka, który nie ma żadnych kluczy.
     from_env = mocker.patch("src.config.Settings.from_env")
     commitments, reveals = _write_ledger(tmp_path)
@@ -560,16 +566,20 @@ def test_verify_attestation_takes_the_rekor_identity_of_a_fork(
     (tmp_path / "reveals.jsonl").write_text("", encoding="utf-8")
     base = [
         "verify-attestation",
-        "--commitments", str(commitments),
-        "--reveals", str(tmp_path / "reveals.jsonl"),
+        "--commitments",
+        str(commitments),
+        "--reveals",
+        str(tmp_path / "reveals.jsonl"),
     ]
 
     default_code = main_tools.main(base)
     fork_code = main_tools.main(
         [
             *base,
-            "--rekor-repository", "someone/fork",
-            "--rekor-workflow", ".github/workflows/agent.yml",
+            "--rekor-repository",
+            "someone/fork",
+            "--rekor-workflow",
+            ".github/workflows/agent.yml",
         ]
     )
 
@@ -593,9 +603,7 @@ def _reproduction_case(mocker: Any, tmp_path: Path, *, train: bool = True) -> tu
     stamps = [datetime(2026, 10, 1, tzinfo=UTC) + timedelta(hours=12 * i) for i in range(200)]
     features: list[dict[str, float | None]] = [
         {"price_delta": float(delta), "llm_trend_signal": float(signal)}
-        for delta, signal in zip(
-            rng.normal(0, 0.05, 200), rng.choice([-1, 0, 1], 200), strict=True
-        )
+        for delta, signal in zip(rng.normal(0, 0.05, 200), rng.choice([-1, 0, 1], 200), strict=True)
     ]
     target = [
         0.4 * float(row["price_delta"] or 0.0) + 0.02 * float(row["llm_trend_signal"] or 0.0)

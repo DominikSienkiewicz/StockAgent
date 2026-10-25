@@ -103,9 +103,7 @@ class TestRevision:
         from src.domain.analyst_consensus import RevisionDirection
 
         previous = AnalystConsensus(symbol="AAPL", buy=10, hold=10)
-        latest = AnalystConsensus(
-            symbol="AAPL", strong_buy=3, buy=12, hold=5, previous=previous
-        )
+        latest = AnalystConsensus(symbol="AAPL", strong_buy=3, buy=12, hold=5, previous=previous)
 
         revision = latest.revision()
 

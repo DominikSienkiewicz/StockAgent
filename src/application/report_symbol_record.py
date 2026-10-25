@@ -44,10 +44,7 @@ def symbol_chip_label(view: SymbolTrackRecordView, symbol: str) -> str:
     if record is None or record.insufficient:
         n = 0 if record is None else record.directional
         minimum = MIN_SYMBOL_SAMPLE if record is None else record.min_sample
-        return (
-            f"Trafność kierunkowa na {symbol}: za mało historii "
-            f"(n={n} < {minimum}, {days} dni)"
-        )
+        return f"Trafność kierunkowa na {symbol}: za mało historii (n={n} < {minimum}, {days} dni)"
     low, high = record.interval
     return (
         f"Trafność kierunkowa na {symbol}: {record.hits}/{record.directional} "

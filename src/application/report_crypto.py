@@ -119,10 +119,7 @@ def _render_crypto_section_html(
               · {status_html}</span>
           </div>
         """)
-    return (
-        _section_h2("🪙 Krypto")
-        + "".join(rows)
-    )
+    return _section_h2("🪙 Krypto") + "".join(rows)
 
 
 def _render_crypto_section_text(
@@ -135,8 +132,7 @@ def _render_crypto_section_text(
     for r in cryptos:
         if r.status == "saved":
             status = (
-                f"{_trend_label(r.trend)} "
-                f"prognoza {_pct(r.expected_change, signed=True)}"
+                f"{_trend_label(r.trend)} prognoza {_pct(r.expected_change, signed=True)}"
                 if r.expected_change is not None and not r.ml_cold_start
                 else _trend_label(r.trend)
             )

@@ -8,12 +8,10 @@ from typing import Any
 from src.application.ports import LLMPort
 
 _STUB_REASONING = (
-    "Lokalny przebieg bez płatnych wywołań (PAID_CALLS_ENABLED=false) — "
-    "atrapa LLM, nie analiza."
+    "Lokalny przebieg bez płatnych wywołań (PAID_CALLS_ENABLED=false) — atrapa LLM, nie analiza."
 )
 _STUB_INSIGHT = (
-    "Lokalny przebieg bez płatnych wywołań (PAID_CALLS_ENABLED=false) — "
-    "diagnoza LLM nie powstała."
+    "Lokalny przebieg bez płatnych wywołań (PAID_CALLS_ENABLED=false) — diagnoza LLM nie powstała."
 )
 
 

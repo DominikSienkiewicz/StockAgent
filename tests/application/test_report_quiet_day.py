@@ -68,9 +68,7 @@ def test_compact_mail_without_a_portfolio_reports_the_watchlist() -> None:
 
 def test_compact_mail_reports_the_owners_portfolio_change() -> None:
     portfolio = Portfolio(
-        positions=(
-            Position(symbol="NVDA", quantity=Decimal("10"), purchase_price=Decimal("90")),
-        ),
+        positions=(Position(symbol="NVDA", quantity=Decimal("10"), purchase_price=Decimal("90")),),
         as_of=STARTED - timedelta(days=1),
     )
 

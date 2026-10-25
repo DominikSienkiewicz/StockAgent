@@ -32,9 +32,7 @@ def _ok_response(payload: dict[str, Any]) -> Mock:
 def _error_response(status_code: int) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
-    response.raise_for_status.side_effect = requests.HTTPError(
-        f"{status_code} error"
-    )
+    response.raise_for_status.side_effect = requests.HTTPError(f"{status_code} error")
     return response
 
 
@@ -65,9 +63,7 @@ class TestGetCurrentPrice:
 
         assert price.amount == Decimal("3142.10")
 
-    def test_maps_ticker_to_coingecko_id(
-        self, adapter: CoinGeckoAdapter, mocker: Any
-    ) -> None:
+    def test_maps_ticker_to_coingecko_id(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"bitcoin": {"usd": 50000}}),
@@ -106,16 +102,12 @@ class TestGetCurrentPrice:
 
 
 class TestErrorHandling:
-    def test_raises_value_error_for_unknown_ticker(
-        self, adapter: CoinGeckoAdapter
-    ) -> None:
+    def test_raises_value_error_for_unknown_ticker(self, adapter: CoinGeckoAdapter) -> None:
         # Tylko BTC i ETH na start — nieznane tickery rzucają jawnie.
         with pytest.raises(ValueError, match="DOGE"):
             adapter.get_current_price("DOGE")
 
-    def test_raises_on_http_error(
-        self, adapter: CoinGeckoAdapter, mocker: Any
-    ) -> None:
+    def test_raises_on_http_error(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_error_response(503),
@@ -124,9 +116,7 @@ class TestErrorHandling:
         with pytest.raises(requests.HTTPError):
             adapter.get_current_price("BTC")
 
-    def test_raises_on_empty_response(
-        self, adapter: CoinGeckoAdapter, mocker: Any
-    ) -> None:
+    def test_raises_on_empty_response(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({}),
@@ -135,9 +125,7 @@ class TestErrorHandling:
         with pytest.raises(ValueError, match="BTC"):
             adapter.get_current_price("BTC")
 
-    def test_raises_on_missing_usd_field(
-        self, adapter: CoinGeckoAdapter, mocker: Any
-    ) -> None:
+    def test_raises_on_missing_usd_field(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"bitcoin": {}}),
@@ -150,9 +138,7 @@ class TestErrorHandling:
 class TestExtensibility:
     def test_custom_mapping_supports_additional_tickers(self, mocker: Any) -> None:
         """User może dorzucić własne tickery przez custom mapping."""
-        adapter = CoinGeckoAdapter(
-            ticker_to_id={"BTC": "bitcoin", "SOL": "solana"}
-        )
+        adapter = CoinGeckoAdapter(ticker_to_id={"BTC": "bitcoin", "SOL": "solana"})
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"solana": {"usd": 145.20}}),
@@ -252,9 +238,7 @@ def test_rate_limit_alert_is_polish_and_logged_in_english(
 
     monitor = QuotaMonitor()
     adapter = CoinGeckoAdapter(quota_monitor=monitor)
-    mocker.patch(
-        "requests.Session.get", return_value=_rate_limited_response(retry_after="42")
-    )
+    mocker.patch("requests.Session.get", return_value=_rate_limited_response(retry_after="42"))
 
     with caplog.at_level(logging.WARNING), pytest.raises(requests.HTTPError):
         adapter.get_current_price("BTC")
@@ -396,9 +380,7 @@ class TestPortErrorTaxonomy:
     ) -> None:
         from src.application.errors import MalformedPayload
 
-        mocker.patch(
-            "requests.Session.get", return_value=_ok_response({"bitcoin": {"usd": 1.0}})
-        )
+        mocker.patch("requests.Session.get", return_value=_ok_response({"bitcoin": {"usd": 1.0}}))
 
         with pytest.raises(MalformedPayload):
             adapter.get_daily_change("BTC")

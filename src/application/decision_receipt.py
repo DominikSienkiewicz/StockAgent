@@ -74,9 +74,7 @@ def read_decision_receipt(payload: object) -> DecisionReceipt | None:
             else {}
         ),
         model_used=(
-            _model_used(payload.get("model_used"))
-            if schema_version >= RECEIPT_SCHEMA_V2
-            else None
+            _model_used(payload.get("model_used")) if schema_version >= RECEIPT_SCHEMA_V2 else None
         ),
     )
 
@@ -134,11 +132,7 @@ def _experiment_arms(value: object) -> dict[str, str]:
     """Ramiona `{id: ramię}`; wpis o nietekstowej wartości pomijamy."""
     if not isinstance(value, Mapping):
         return {}
-    return {
-        str(experiment_id): arm
-        for experiment_id, arm in value.items()
-        if isinstance(arm, str)
-    }
+    return {str(experiment_id): arm for experiment_id, arm in value.items() if isinstance(arm, str)}
 
 
 def _model_used(value: object) -> str | None:

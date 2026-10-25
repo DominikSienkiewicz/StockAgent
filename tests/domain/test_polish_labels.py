@@ -57,9 +57,7 @@ def test_model_signal_title_is_not_a_recommendation() -> None:
 def test_dictionary_imports_nothing_outside_the_domain() -> None:
     tree = ast.parse(Path(polish_labels.__file__).read_text(encoding="utf-8"))
     imported = [
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     ] + [
         alias.name
         for node in ast.walk(tree)

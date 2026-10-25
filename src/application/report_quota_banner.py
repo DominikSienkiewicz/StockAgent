@@ -189,15 +189,13 @@ def render_llm_budget_banner_text(breach: BudgetBreach | None) -> str:
 
 
 def _section_html(data: SectionInput) -> str:
-    return render_llm_budget_banner_html(
-        data.context.llm_budget_breach
-    ) + render_quota_banner_html(data.context.quota_alerts or [], data.context.display_timezone)
+    return render_llm_budget_banner_html(data.context.llm_budget_breach) + render_quota_banner_html(
+        data.context.quota_alerts or [], data.context.display_timezone
+    )
 
 
 def _section_text(data: SectionInput) -> list[str]:
-    return text_block(
-        render_llm_budget_banner_text(data.context.llm_budget_breach)
-    ) + text_block(
+    return text_block(render_llm_budget_banner_text(data.context.llm_budget_breach)) + text_block(
         render_quota_banner_text(data.context.quota_alerts or [], data.context.display_timezone)
     )
 

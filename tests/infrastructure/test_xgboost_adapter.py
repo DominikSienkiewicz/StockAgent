@@ -127,9 +127,7 @@ class TestTrain:
         assert not Path(model_path).exists()
         assert adapter.is_trained is False
 
-    def test_baseline_rmse_is_zero_return_persistence(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_baseline_rmse_is_zero_return_persistence(self, adapter: XGBoostAdapter) -> None:
         # Baseline = "predykcja zwrotu = 0" (persystencja: cena bez zmian).
         # baseline_rmse musi być RMSE zwrotów względem 0 (a NIE rozrzutem
         # pojedynczego skalara z train — stary, błędny baseline). Przy małej
@@ -138,7 +136,7 @@ class TestTrain:
         n = 15
         features, target = _synthetic_dataset(n=n)
         validation_size = max(10, int(n * 0.2))
-        valid_target = target.iloc[n - validation_size:]
+        valid_target = target.iloc[n - validation_size :]
         expected_baseline = float(np.sqrt(np.mean(valid_target.to_numpy() ** 2)))
 
         result = adapter.train(features, target)
@@ -146,9 +144,7 @@ class TestTrain:
         assert result["n_folds"] == 1
         assert result["baseline_rmse"] == pytest.approx(expected_baseline, rel=1e-9)
 
-    def test_reports_candidate_holdout_directional_hit_rate(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_reports_candidate_holdout_directional_hit_rate(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset()
         result: Mapping[str, Any] = adapter.train(features, target)
 
@@ -178,9 +174,7 @@ class TestWalkForwardValidation:
         # średnio po foldach → skip, model nie ląduje na dysku.
         rng = np.random.default_rng(7)
         n = 200
-        features = pd.DataFrame(
-            {name: rng.normal(0, 1, n) for name in FEATURE_NAMES}
-        )
+        features = pd.DataFrame({name: rng.normal(0, 1, n) for name in FEATURE_NAMES})
         target = pd.Series(rng.normal(0, 0.05, n))
 
         result = adapter.train(features, target)
@@ -205,17 +199,13 @@ class TestWalkForwardValidation:
         result: Mapping[str, Any] = adapter.train(features, target)
         assert result["n_folds"] > 1
 
-    def test_small_sample_falls_back_to_single_split(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_small_sample_falls_back_to_single_split(self, adapter: XGBoostAdapter) -> None:
         # Poniżej progu na walk-forward → pojedynczy split (zachowanie sane).
         features, target = _synthetic_dataset(n=15)
         result = adapter.train(features, target)
         assert result["n_folds"] == 1
 
-    def test_result_includes_per_feature_distribution_stats(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_result_includes_per_feature_distribution_stats(self, adapter: XGBoostAdapter) -> None:
         # Drift-detection: per-feature mean/std w wyniku, żeby porównać z
         # poprzednim runem i wykryć dryf rozkładu cech wejściowych.
         features, target = _synthetic_dataset(n=120)
@@ -229,9 +219,7 @@ class TestWalkForwardValidation:
             expected_mean = float(features[name].mean())
             assert stats[name]["mean"] == pytest.approx(expected_mean, rel=1e-9)
 
-    def test_feature_stats_present_even_when_skipped(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_feature_stats_present_even_when_skipped(self, adapter: XGBoostAdapter) -> None:
         # Dryf cech jest obserwowalny niezależnie od werdyktu bramki.
         features, _ = _synthetic_dataset(n=200)
         target = pd.Series([0.0] * 200)
@@ -244,15 +232,17 @@ class TestWalkForwardValidation:
 class TestPredict:
     def test_returns_money_instance(self, trained_adapter: XGBoostAdapter) -> None:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
-        features.update({
-            "price_delta": 0.02,
-            "av_sentiment_score": 0.5,
-            "av_relevance_avg": 0.75,
-            "news_volume_24h": 4.0,
-            "high_relevance_count": 2.0,
-            "llm_trend_signal": 1.0,
-            "av_llm_agreement": 0.8,
-        })
+        features.update(
+            {
+                "price_delta": 0.02,
+                "av_sentiment_score": 0.5,
+                "av_relevance_avg": 0.75,
+                "news_volume_24h": 4.0,
+                "high_relevance_count": 2.0,
+                "llm_trend_signal": 1.0,
+                "av_llm_agreement": 0.8,
+            }
+        )
         prediction = trained_adapter.predict(features, current_price=Decimal("100"))
         assert isinstance(prediction, Money)
 
@@ -260,11 +250,13 @@ class TestPredict:
         self, trained_adapter: XGBoostAdapter
     ) -> None:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
-        features.update({
-            "av_relevance_avg": 0.5,
-            "news_volume_24h": 3.0,
-            "av_llm_agreement": 0.5,
-        })
+        features.update(
+            {
+                "av_relevance_avg": 0.5,
+                "news_volume_24h": 3.0,
+                "av_llm_agreement": 0.5,
+            }
+        )
         prediction = trained_adapter.predict(features, current_price=Decimal("100"))
         # Model przewiduje mały ZWROT → cena odtworzona wokół current_price.
         assert Decimal("80") < prediction.amount < Decimal("130")
@@ -275,12 +267,14 @@ class TestPredict:
         # Model zwraca ZWROT; predict rekonstruuje cenę = current_price*(1+zwrot).
         # Ten sam zwrot na innym poziomie ceny → ta sama RELATYWNA zmiana.
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
-        features.update({
-            "price_delta": 0.03,
-            "av_sentiment_score": 0.8,
-            "llm_trend_signal": 1.0,
-            "av_llm_agreement": 0.9,
-        })
+        features.update(
+            {
+                "price_delta": 0.03,
+                "av_sentiment_score": 0.8,
+                "llm_trend_signal": 1.0,
+                "av_llm_agreement": 0.9,
+            }
+        )
         p100 = trained_adapter.predict(features, current_price=Decimal("100"))
         p200 = trained_adapter.predict(features, current_price=Decimal("200"))
 
@@ -397,27 +391,25 @@ class TestExplain:
 
     def _typical_features(self) -> dict[str, float]:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
-        features.update({
-            "price_delta": 0.02,
-            "av_sentiment_score": 0.5,
-            "av_relevance_avg": 0.75,
-            "news_volume_24h": 4.0,
-            "high_relevance_count": 2.0,
-            "llm_trend_signal": 1.0,
-            "av_llm_agreement": 0.8,
-        })
+        features.update(
+            {
+                "price_delta": 0.02,
+                "av_sentiment_score": 0.5,
+                "av_relevance_avg": 0.75,
+                "news_volume_24h": 4.0,
+                "high_relevance_count": 2.0,
+                "llm_trend_signal": 1.0,
+                "av_llm_agreement": 0.8,
+            }
+        )
         return features
 
-    def test_returns_contribution_per_known_feature(
-        self, trained_adapter: XGBoostAdapter
-    ) -> None:
+    def test_returns_contribution_per_known_feature(self, trained_adapter: XGBoostAdapter) -> None:
         contribs = trained_adapter.explain(self._typical_features())
         # Klucz per cecha, na której model był trenowany (bias pod osobnym kluczem).
         assert set(FEATURE_NAMES).issubset(set(contribs.keys()))
 
-    def test_contributions_are_finite_floats(
-        self, trained_adapter: XGBoostAdapter
-    ) -> None:
+    def test_contributions_are_finite_floats(self, trained_adapter: XGBoostAdapter) -> None:
         contribs = trained_adapter.explain(self._typical_features())
         for value in contribs.values():
             assert isinstance(value, float)
@@ -437,9 +429,7 @@ class TestExplain:
         total = sum(contribs.values())
         assert total == pytest.approx(raw_return, abs=1e-4)
 
-    def test_exposes_bias_under_dedicated_key(
-        self, trained_adapter: XGBoostAdapter
-    ) -> None:
+    def test_exposes_bias_under_dedicated_key(self, trained_adapter: XGBoostAdapter) -> None:
         # Bias/base value jest osobno (nie jako cecha) — czytelny dla raportu.
         contribs = trained_adapter.explain(self._typical_features())
         assert "_bias" in contribs
@@ -450,9 +440,7 @@ class TestExplain:
         with pytest.raises(RuntimeError, match="not trained"):
             adapter.explain(features)
 
-    def test_ignores_unknown_extra_features(
-        self, trained_adapter: XGBoostAdapter
-    ) -> None:
+    def test_ignores_unknown_extra_features(self, trained_adapter: XGBoostAdapter) -> None:
         # Tak jak predict(): nieznana cecha jest ignorowana (wyrównanie do modelu).
         features = self._typical_features()
         features["holding_hours"] = 24.0
@@ -467,15 +455,17 @@ class TestModelPersistence:
         # Pierwszy adapter trenuje i zapisuje. Drugi czyta z dysku.
         reloaded = XGBoostAdapter(model_path=model_path)
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
-        features.update({
-            "price_delta": 0.02,
-            "av_sentiment_score": 0.5,
-            "av_relevance_avg": 0.75,
-            "news_volume_24h": 4.0,
-            "high_relevance_count": 2.0,
-            "llm_trend_signal": 1.0,
-            "av_llm_agreement": 0.8,
-        })
+        features.update(
+            {
+                "price_delta": 0.02,
+                "av_sentiment_score": 0.5,
+                "av_relevance_avg": 0.75,
+                "news_volume_24h": 4.0,
+                "high_relevance_count": 2.0,
+                "llm_trend_signal": 1.0,
+                "av_llm_agreement": 0.8,
+            }
+        )
 
         original = trained_adapter.predict(features, current_price=Decimal("100"))
         from_disk = reloaded.predict(features, current_price=Decimal("100"))
@@ -520,8 +510,7 @@ class TestDomainGate:
     ) -> None:
         # 0.0200 vs 0.0201 = 0.5% poprawy. Stara reguła (próg 1e-9) shipowała szum.
         folds = [
-            {"candidate_rmse": 0.0200, "baseline_rmse": 0.0201, "hit_rate": 0.5,
-             "n_valid": 30.0}
+            {"candidate_rmse": 0.0200, "baseline_rmse": 0.0201, "hit_rate": 0.5, "n_valid": 30.0}
             for _ in range(4)
         ]
         monkeypatch.setattr(adapter, "_walk_forward_folds_detail", lambda *a, **k: folds)
@@ -631,9 +620,7 @@ class TestPooledTrainingSupport:
     ) -> None:
         features, target = _synthetic_dataset(n=200)
 
-        folds = adapter._walk_forward_folds_detail(
-            features, target, timestamps=_hourly_stamps(200)
-        )
+        folds = adapter._walk_forward_folds_detail(features, target, timestamps=_hourly_stamps(200))
 
         # Godzinne wiersze, horyzont 12h → 11 ostatnich wierszy przed walidacją
         # ma etykietę po jej starcie i wypada z treningu foldu.
@@ -749,9 +736,7 @@ class TestStrongerBaselines:
         for key in ("baseline_rmse", "drift_baseline_rmse", "llm_baseline_rmse"):
             assert result[key] > result["candidate_holdout_rmse"]
 
-    def test_fold_baselines_come_from_the_training_part_only(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_fold_baselines_come_from_the_training_part_only(self, adapter: XGBoostAdapter) -> None:
         # n=15 → jeden split: 5 wierszy treningu (target 0.01), 10 walidacji (0.05).
         # Z podglądem walidacji oba baseline'y miałyby RMSE 0; z samego treningu
         # przewidują 0.01, więc RMSE = 0.04.
@@ -764,14 +749,10 @@ class TestStrongerBaselines:
         assert fold["drift_baseline_rmse"] == pytest.approx(0.04)
         assert fold["llm_baseline_rmse"] == pytest.approx(0.04)
 
-    def test_llm_baseline_is_omitted_without_the_llm_feature(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_llm_baseline_is_omitted_without_the_llm_feature(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
-        folds = adapter.walk_forward_report(
-            features.drop(columns=["llm_trend_signal"]), target
-        )
+        folds = adapter.walk_forward_report(features.drop(columns=["llm_trend_signal"]), target)
 
         assert all("llm_baseline_rmse" not in fold for fold in folds)
         assert all("drift_baseline_rmse" in fold for fold in folds)
@@ -793,9 +774,7 @@ class TestFeatureStatsBins:
         # Cecha dyskretna (sygnał LLM −1/0/+1) dostaje granice z wartości próby.
         assert stats["llm_trend_signal"]["edges"] == [-1.0, 0.0, 1.0]
 
-    def test_psi_flags_a_feature_shifted_in_the_last_30_days(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_psi_flags_a_feature_shifted_in_the_last_30_days(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
         stamps = pd.Series(pd.date_range("2026-05-01", periods=200, freq="D", tz="UTC"))
         # Ostatnie 30 dni: rozkład price_delta przesunięty o +0.2 (dryf).
@@ -815,13 +794,12 @@ class TestFeatureStatsBins:
 
         assert stats["price_delta"]["psi_recent_30d"] is None
 
+
 class TestPairedLossTest:
     """EXP-04: foldy niosą Σd i Σd² różnicy strat (baseline − kandydat), a domena
     wymaga istotnego z — sam margines 2% na średniej 4 foldów przepuszczał szum."""
 
-    def test_folds_carry_paired_loss_sums_for_every_baseline(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_folds_carry_paired_loss_sums_for_every_baseline(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter.walk_forward_report(features, target)
@@ -873,9 +851,7 @@ class TestWeightsHash:
         assert report.weights_sha256 == expected
         assert report["weights_sha256"] == expected
 
-    def test_reports_without_written_weights_carry_no_hash(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_reports_without_written_weights_carry_no_hash(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         evaluated = adapter.train(features, target, persist=False)
@@ -927,9 +903,7 @@ class TestReproducibleTraining:
         )
         assert refit == first.booster_dump()
 
-    def test_report_carries_the_provenance_of_the_sample(
-        self, adapter: XGBoostAdapter
-    ) -> None:
+    def test_report_carries_the_provenance_of_the_sample(self, adapter: XGBoostAdapter) -> None:
         import xgboost
 
         from src.domain.training_provenance import DatasetDescription
@@ -1207,9 +1181,7 @@ class TestChallenger:
         assert forecast.proba is None
         assert forecast.predicted_return == pytest.approx(float(served.amount) - 1.0)
 
-    def test_direction_challenger_forecasts_the_ml30_probability(
-        self, model_path: str
-    ) -> None:
+    def test_direction_challenger_forecasts_the_ml30_probability(self, model_path: str) -> None:
         from src.domain.promotion import ForecastKind
         from src.infrastructure.adapters.xgboost_local import load_challenger
 

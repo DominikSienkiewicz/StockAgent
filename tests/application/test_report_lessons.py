@@ -70,8 +70,7 @@ def test_preserves_most_recent_first_order() -> None:
 def test_limit_caps_items_but_total_counts_all() -> None:
     """limit przycina items, ale total_mistakes liczy wszystkie błędy."""
     resolved = [
-        _resolved(f"S{i}", is_correct=False, insight=f"diagnoza numer {i}")
-        for i in range(10)
+        _resolved(f"S{i}", is_correct=False, insight=f"diagnoza numer {i}") for i in range(10)
     ]
 
     report = build_lessons(resolved, limit=3)

@@ -39,15 +39,11 @@ class TestComponentDirections:
         ("recommendation", "trend"),
         [("BUY", "BULLISH"), ("SELL", "BEARISH"), ("HOLD", "SIDEWAYS"), (" buy ", "BULLISH")],
     )
-    def test_council_recommendation_maps_to_a_trend(
-        self, recommendation: str, trend: str
-    ) -> None:
+    def test_council_recommendation_maps_to_a_trend(self, recommendation: str, trend: str) -> None:
         assert council_trend(recommendation) == trend
 
     @pytest.mark.parametrize("recommendation", [None, "", "STRONG_BUY"])
-    def test_missing_or_unknown_recommendation_is_no_call(
-        self, recommendation: str | None
-    ) -> None:
+    def test_missing_or_unknown_recommendation_is_no_call(self, recommendation: str | None) -> None:
         assert council_trend(recommendation) is None
 
     def test_model_trend_follows_the_target_price(self) -> None:

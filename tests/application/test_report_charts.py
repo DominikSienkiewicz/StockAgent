@@ -126,8 +126,10 @@ class TestForecastChartUrl:
     def test_returns_inline_html_for_saved(self) -> None:
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved",
-                current_price=Decimal("100"), target_price=Decimal("105"),
+                symbol="AAPL",
+                status="saved",
+                current_price=Decimal("100"),
+                target_price=Decimal("105"),
             )
         ]
         html = build_forecast_chart_html(results)
@@ -141,16 +143,16 @@ class TestForecastChartUrl:
         assert build_forecast_chart_html(results) == ""
 
     def test_saved_without_target_yield_empty_string(self) -> None:
-        results = [
-            SymbolResult(symbol="X", status="saved", current_price=Decimal("100"))
-        ]
+        results = [SymbolResult(symbol="X", status="saved", current_price=Decimal("100"))]
         assert build_forecast_chart_html(results) == ""
 
     def test_label_uses_cykl_not_12h(self) -> None:
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved",
-                current_price=Decimal("100"), target_price=Decimal("103"),
+                symbol="AAPL",
+                status="saved",
+                current_price=Decimal("100"),
+                target_price=Decimal("103"),
             )
         ]
         html = build_forecast_chart_html(results)
@@ -163,8 +165,10 @@ class TestForecastChartUrl:
 # ---------------------------------------------------------------------------
 def _pt(symbol: str, sentiment: float, delta: str) -> SymbolResult:
     return SymbolResult(
-        symbol=symbol, status="saved",
-        sentiment_score=sentiment, delta=Decimal(delta),
+        symbol=symbol,
+        status="saved",
+        sentiment_score=sentiment,
+        delta=Decimal(delta),
     )
 
 

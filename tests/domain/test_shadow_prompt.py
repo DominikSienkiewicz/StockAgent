@@ -121,9 +121,12 @@ class TestSettlementMatchesProduction:
             Decimal(actual), tolerance=sideways_tolerance_for(asset_type)
         )
 
-        assert _forecast(trend).is_correct(
-            price_at_prediction=price, actual_price=Decimal(actual), asset_type=asset_type
-        ) is expected
+        assert (
+            _forecast(trend).is_correct(
+                price_at_prediction=price, actual_price=Decimal(actual), asset_type=asset_type
+            )
+            is expected
+        )
 
     def test_a_hit_and_a_miss_are_told_apart(self) -> None:
         forecast = _forecast(TrendDirection.BULLISH)

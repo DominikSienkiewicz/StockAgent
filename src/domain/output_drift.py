@@ -61,9 +61,7 @@ class WindowSummary:
 def summarize_window(samples: Sequence[OutputSample]) -> WindowSummary:
     """Podsumowanie okna. Etykiety spoza `TRENDS` (bez rozróżniania wielkości
     liter) są pomijane. Bias liczony tylko na predykcjach z `realized_up`."""
-    known = [
-        (sample, sample.trend.upper()) for sample in samples if sample.trend.upper() in TRENDS
-    ]
+    known = [(sample, sample.trend.upper()) for sample in samples if sample.trend.upper() in TRENDS]
     counts = {trend: 0 for trend in TRENDS}
     for _, trend in known:
         counts[trend] += 1
@@ -201,9 +199,7 @@ def output_distribution_shift(
     p_value = chi_square_p_value(statistic, df)
     bias_shift = _shift(previous.bullish_bias, current.bullish_bias)
     confidence_shift = _shift(previous.mean_confidence, current.mean_confidence)
-    share_drift = (
-        p_value < alpha and bias_shift is not None and abs(bias_shift) >= MIN_BIAS_SHIFT
-    )
+    share_drift = p_value < alpha and bias_shift is not None and abs(bias_shift) >= MIN_BIAS_SHIFT
     confidence_drift = confidence_shift is not None and (
         abs(confidence_shift) >= MIN_CONFIDENCE_SHIFT
     )

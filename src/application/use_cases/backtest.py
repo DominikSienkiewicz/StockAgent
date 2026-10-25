@@ -89,7 +89,5 @@ def _too_few_samples_summary(n_valid: int) -> BacktestSummary:
         mean_hit_rate=0,
         improvement_pct=0,
         beats_baseline=False,
-        verdict=(
-            f"za mało próbek na backtest ({n_valid} < {MIN_BACKTEST_SAMPLES})"
-        ),
+        verdict=(f"za mało próbek na backtest ({n_valid} < {MIN_BACKTEST_SAMPLES})"),
     )

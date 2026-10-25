@@ -75,8 +75,7 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
         price = coin_block.get(self._vs_currency)
         if price is None:
             raise MalformedPayload(
-                f"CoinGecko response for '{symbol}' missing "
-                f"'{self._vs_currency}' field."
+                f"CoinGecko response for '{symbol}' missing '{self._vs_currency}' field."
             )
         return Money(Decimal(str(price)))
 
@@ -126,8 +125,7 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
                 ),
                 action=(
                     "Spowolnij odpytywanie krypto (podnieś SYMBOL_THROTTLE_SECONDS), "
-                    "zmniejsz liczbę krypto w SYMBOLS albo dodaj klucz API CoinGecko."
-                    + retry_after
+                    "zmniejsz liczbę krypto w SYMBOLS albo dodaj klucz API CoinGecko." + retry_after
                 ),
                 log_message=(
                     f"CoinGecko returned 429 for '{symbol}' — free tier "
@@ -139,8 +137,7 @@ class CoinGeckoAdapter(MarketDataPort, DailyChangePort):
         coin_block = payload.get(coin_id) if isinstance(payload, dict) else None
         if not isinstance(coin_block, dict):
             raise CoinGeckoCoinNotFound(
-                f"CoinGecko returned no data for '{symbol}' "
-                f"(coin_id={coin_id})."
+                f"CoinGecko returned no data for '{symbol}' (coin_id={coin_id})."
             )
         return coin_block
 

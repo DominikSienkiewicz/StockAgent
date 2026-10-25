@@ -201,9 +201,7 @@ class TestModelScorecardRunId:
     ) -> None:
         # ML-21: kolumna `feature_stats` (migracja 052) tylko za flagą.
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
-        settings = settings.model_copy(
-            update={"model_scorecard_feature_stats_enabled": enabled}
-        )
+        settings = settings.model_copy(update={"model_scorecard_feature_stats_enabled": enabled})
 
         main_trainer.build_repository(settings)
 
@@ -215,9 +213,7 @@ class TestModelScorecardRunId:
     ) -> None:
         # CI-13: kolumna `weights_sha256` (migracja 060) tylko za flagą.
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
-        settings = settings.model_copy(
-            update={"model_scorecard_weights_sha256_enabled": enabled}
-        )
+        settings = settings.model_copy(update={"model_scorecard_weights_sha256_enabled": enabled})
 
         main_trainer.build_repository(settings)
 
@@ -392,9 +388,7 @@ class TestWeeklyRecapWiring:
         assert exit_code == 0
         assert UNDELIVERED_ANNOTATION in capsys.readouterr().out.splitlines()
         alerts = [c.args[0] for c in repository.save_quota_alert.call_args_list]
-        assert [a.severity for a in alerts if "nie dotarł" in a.message] == [
-            QuotaSeverity.CRITICAL
-        ]
+        assert [a.severity for a in alerts if "nie dotarł" in a.message] == [QuotaSeverity.CRITICAL]
 
     def test_recap_without_a_failure_leaves_no_annotation(
         self,
@@ -555,9 +549,7 @@ class TestPooledTrainingLoop:
 
         assert main_trainer.main(settings) == 0
 
-        fake_uc.run_pooled.assert_called_once_with(
-            ["AAPL", "BTC", "ETH"], record_scorecard=True
-        )
+        fake_uc.run_pooled.assert_called_once_with(["AAPL", "BTC", "ETH"], record_scorecard=True)
 
     def test_scorecard_flag_off_reaches_the_pooled_run(
         self, settings: Settings, mock_external_clients: None, mocker: Any
@@ -691,8 +683,7 @@ class TestModelScorecardBaselinesWiring:
 
         assert repo_cls.call_args_list
         assert all(
-            c.kwargs["scorecard_baselines_enabled"] is enabled
-            for c in repo_cls.call_args_list
+            c.kwargs["scorecard_baselines_enabled"] is enabled for c in repo_cls.call_args_list
         )
 
 
@@ -843,9 +834,9 @@ class TestSlowLoopPaidBudget:
         with caplog.at_level(logging.INFO, logger="main_trainer"):
             main_trainer.main(settings)
 
-        assert any(
-            "Slow Loop paid LLM calls: 1/15" in rec.message for rec in caplog.records
-        ), [rec.message for rec in caplog.records]
+        assert any("Slow Loop paid LLM calls: 1/15" in rec.message for rec in caplog.records), [
+            rec.message for rec in caplog.records
+        ]
 
 
 class TestDiagnosisBackfillJob:

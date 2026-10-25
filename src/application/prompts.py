@@ -87,8 +87,7 @@ def format_corporate_events(events: Sequence[CorporateEvent]) -> str:
     """DAT-17: świeże raporty 8-K symbolu do bloku `<corporate_events>` — jedna linia na
     raport („26.10 8-K: wyniki finansowe”). Brak raportów → "" (bloku nie ma)."""
     return "\n".join(
-        f"  - {event.filed_on:%d.%m} {event.form}: {_event_item_labels(event)}"
-        for event in events
+        f"  - {event.filed_on:%d.%m} {event.form}: {_event_item_labels(event)}" for event in events
     )
 
 

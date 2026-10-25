@@ -118,9 +118,7 @@ class InsiderFlowSnapshot:
     largest_buy: InsiderBuy | None = None
     latest_filing_url: str | None = None
 
-    def significant_buy(
-        self, min_value_usd: float = SIGNIFICANT_BUY_MIN_USD
-    ) -> InsiderBuy | None:
+    def significant_buy(self, min_value_usd: float = SIGNIFICANT_BUY_MIN_USD) -> InsiderBuy | None:
         """DAT-21: znaczący zakup = kod P od officera za ≥ `min_value_usd` USD.
         Liczba akcji nie mówi o skali (10 000 akcji po 5 USD i po 900 USD)."""
         buy = self.largest_buy

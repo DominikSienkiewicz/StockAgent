@@ -58,10 +58,7 @@ class SlackNotifier(ReportNotifierPort):
             self._emit_quota_alert(
                 # Treść wyjątku niesie URL webhooka — do maila i bazy idzie typ.
                 message=f"Push Slack nie wyszedł (błąd sieci: {type(exc).__name__}).",
-                action=(
-                    "Sprawdź SLACK_WEBHOOK_URL i połączenie wychodzące do "
-                    "hooks.slack.com."
-                ),
+                action=("Sprawdź SLACK_WEBHOOK_URL i połączenie wychodzące do hooks.slack.com."),
                 # Tylko nazwa wyjątku: jego treść niesie URL z sekretem
                 # (token / webhook), a logi repo są publiczne.
                 log_message=f"Slack push failed (network): {type(exc).__name__}.",
@@ -74,10 +71,7 @@ class SlackNotifier(ReportNotifierPort):
                     f"Slack zwrócił {response.status_code} — push nie został "
                     "dostarczony (unieważniony albo błędny webhook)."
                 ),
-                action=(
-                    "Wygeneruj nowy incoming webhook Slacka i zaktualizuj "
-                    "SLACK_WEBHOOK_URL."
-                ),
+                action=("Wygeneruj nowy incoming webhook Slacka i zaktualizuj SLACK_WEBHOOK_URL."),
                 log_message=(
                     f"Slack returned {response.status_code} — push not "
                     "delivered (revoked / malformed webhook)."

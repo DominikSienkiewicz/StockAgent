@@ -209,8 +209,7 @@ class TestCapAndLimits:
     def test_max_three_items(self) -> None:
         """Max 3 pozycje, nawet przy nadmiarze sygnałów."""
         signals = [
-            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict())
-            for i in range(6)
+            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict()) for i in range(6)
         ]
         items = build_lead(signals, [_critical_alert(), _critical_alert("OpenAI")])
 
@@ -218,8 +217,7 @@ class TestCapAndLimits:
 
     def test_custom_max_items(self) -> None:
         signals = [
-            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict())
-            for i in range(4)
+            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict()) for i in range(4)
         ]
         assert len(build_lead(signals, max_items=2)) == 2
 
@@ -509,6 +507,7 @@ class TestConsensusFlip:
 
         assert [item.symbol for item in items] == ["NVDA", "BBB", "AMD"]
 
+
 class TestSignificantInsiderBuyTier:
     """DAT-21: znaczący zakup insidera to osobny tier między radą PODZIELONĄ
     a silnym konsensusem — kolejność pozostałych tierów bez zmian."""
@@ -579,9 +578,7 @@ class TestRegimeChangeTier:
 
         change = RegimeChange(previous=MarketRegime.NEUTRAL, current=MarketRegime.RISK_OFF)
 
-        items = build_lead(
-            [self._against_position()], [_critical_alert()], regime_change=change
-        )
+        items = build_lead([self._against_position()], [_critical_alert()], regime_change=change)
 
         assert "Alpha Vantage" in items[0].headline
         assert items[1].headline == "Rynek przeszedł w RISK_OFF, analiza rzadsza"
@@ -718,9 +715,7 @@ class TestHeldEarningsTier:
         assert "AAA" in items[1].headline
 
     def test_earnings_today_before_the_open(self) -> None:
-        (item,) = build_lead(
-            [self._held(days_until=0, timing=EarningsTiming.BEFORE_OPEN)]
-        )
+        (item,) = build_lead([self._held(days_until=0, timing=EarningsTiming.BEFORE_OPEN)])
 
         assert item.headline == "MSFT (24% portfela): wyniki dziś przed sesją"
 

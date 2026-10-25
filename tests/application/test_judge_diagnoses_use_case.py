@@ -110,9 +110,7 @@ def test_a_low_score_rejects_the_diagnosis_and_a_pass_keeps_it() -> None:
 
     result = _use_case(repo, llm, rejects_enabled=True).run()
 
-    saved = {
-        call.args[0]: call.kwargs for call in repo.save_diagnosis_judgement.call_args_list
-    }
+    saved = {call.args[0]: call.kwargs for call in repo.save_diagnosis_judgement.call_args_list}
     rejected_id = next(pid for pid, kwargs in saved.items() if kwargs["score"] == 1)
     kept_id = next(pid for pid, kwargs in saved.items() if kwargs["score"] == 2)
     rejected_n = rejected_id.removeprefix("id-")
@@ -134,9 +132,7 @@ def test_shadow_mode_saves_a_low_score_without_rejecting_the_diagnosis() -> None
         repository_port=repo, llm_port=llm, clock=lambda: NOW, rng=random.Random(7)
     ).run()
 
-    repo.save_diagnosis_judgement.assert_called_once_with(
-        "id-1", score=0, rejected_insight=None
-    )
+    repo.save_diagnosis_judgement.assert_called_once_with("id-1", score=0, rejected_insight=None)
     assert result["judged"] == 1
     assert result["rejected"] == 0
 

@@ -402,9 +402,7 @@ def capped_cycle_call_upper_bound(
     sufitu (`shadow_call_allowed`), więc nigdy nie ma go więcej niż `cap`.
     """
     extras = {"max_escalations": max_escalations, "max_shadow_calls": max_shadow_calls}
-    bound = cycle_call_upper_bound(
-        n_gated, n_av_symbols, personas, debate, tool_rounds, **extras
-    )
+    bound = cycle_call_upper_bound(n_gated, n_av_symbols, personas, debate, tool_rounds, **extras)
     if cap is None:
         return bound
     for name, value in (("cap", cap), ("concurrency", concurrency)):
@@ -412,22 +410,18 @@ def capped_cycle_call_upper_bound(
             raise ValueError(f"{name} must be >= 1 (got {value})")
 
     analysed = min(n_gated, cap - 1 + concurrency)
-    council_per_symbol = cycle_call_upper_bound(
-        1, 1, personas, debate, tool_rounds
-    ).calls["council_llm"]
+    council_per_symbol = cycle_call_upper_bound(1, 1, personas, debate, tool_rounds).calls[
+        "council_llm"
+    ]
     analysed_bound = cycle_call_upper_bound(
         analysed, n_av_symbols, personas, debate, tool_rounds, **extras
     )
     calls = dict(analysed_bound.calls)
     calls["llm"] += (n_gated - analysed) * _DIAGNOSIS_REQUESTS
-    calls["council_llm"] = min(
-        calls["council_llm"], cap - 1 + concurrency * council_per_symbol
-    )
+    calls["council_llm"] = min(calls["council_llm"], cap - 1 + concurrency * council_per_symbol)
     if SHADOW_LLM_SOURCE in calls:
         calls[SHADOW_LLM_SOURCE] = min(calls[SHADOW_LLM_SOURCE], cap)
-    return CycleCallBound(
-        calls=MappingProxyType(calls), av_requests=analysed_bound.av_requests
-    )
+    return CycleCallBound(calls=MappingProxyType(calls), av_requests=analysed_bound.av_requests)
 
 
 # WIA-11: cron Fast Loopa chodzi w dni robocze (`1-5`), więc tydzień ma 5 dni cykli.
@@ -629,9 +623,7 @@ def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:
     return sorted(deltas, key=lambda symbol: (-abs(deltas[symbol]), symbol))
 
 
-def slow_loop_paid_budget(
-    calls_by_job: Mapping[str, int], cap: int | None
-) -> dict[str, int]:
+def slow_loop_paid_budget(calls_by_job: Mapping[str, int], cap: int | None) -> dict[str, int]:
     """FIN-30: przydział tygodniowego budżetu płatnych wywołań LLM Slow Loopa.
 
     Slow Loop chodzi poza bramką volatility (recap, sędzia kalibracji, przyszłe

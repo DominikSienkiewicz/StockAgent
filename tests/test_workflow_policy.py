@@ -261,9 +261,7 @@ def _triggers(spec: dict[Any, Any]) -> dict[str, Any]:
 
 def _job_ids() -> list[tuple[str, str]]:
     return [
-        (workflow, name)
-        for workflow, spec in _workflow_specs().items()
-        for name in _jobs(spec)
+        (workflow, name) for workflow, spec in _workflow_specs().items() for name in _jobs(spec)
     ]
 
 
@@ -440,7 +438,7 @@ def test_setup_uv_pins_uv_version() -> None:
         if not _EXACT_VERSION.fullmatch(str(inputs.get("version", "")))
     ]
     assert unpinned == [], (
-        f"setup-uv bez jawnej `version: \"x.y.z\"` w {unpinned} — instaluje najnowsze uv"
+        f'setup-uv bez jawnej `version: "x.y.z"` w {unpinned} — instaluje najnowsze uv'
     )
 
 

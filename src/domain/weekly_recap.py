@@ -82,9 +82,7 @@ class ClosedPrediction:
     def __post_init__(self) -> None:
         # Koercja do tuple — realna niezmienność frozen value objectu (frozen=True
         # blokuje rebinding atrybutu, nie mutację listy w miejscu).
-        object.__setattr__(
-            self, "council_opinions", tuple(self.council_opinions)
-        )
+        object.__setattr__(self, "council_opinions", tuple(self.council_opinions))
 
     @property
     def symbol(self) -> str:
@@ -102,9 +100,7 @@ class ClosedPrediction:
         """
         if self.recorded_trend_correct is not None:
             return self.recorded_trend_correct
-        return self.prediction.is_trend_correct(
-            self.actual_price, tolerance=self.flat_band()
-        )
+        return self.prediction.is_trend_correct(self.actual_price, tolerance=self.flat_band())
 
     def flat_band(self) -> Decimal:
         """Pasmo „bez ruchu” klasy aktywa — ta sama reguła co w reflect."""
@@ -158,9 +154,7 @@ class RecapHighlight:
     direction_correct: bool | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "vindicated_dissenters", tuple(self.vindicated_dissenters)
-        )
+        object.__setattr__(self, "vindicated_dissenters", tuple(self.vindicated_dissenters))
 
 
 @dataclass(frozen=True)
@@ -235,9 +229,7 @@ def build_weekly_recap(
     )
 
     samples = [(c.confidence, c.is_correct()) for c in closed_predictions]
-    current_ece = expected_calibration_error(
-        reliability_curve(samples, n_buckets)
-    )
+    current_ece = expected_calibration_error(reliability_curve(samples, n_buckets))
     ece_delta = None if previous_ece is None else current_ece - previous_ece
 
     return WeeklyRecap(

@@ -101,8 +101,12 @@ class SupabaseCachedFxRates(FxRatePort):
         try:
             self._client.table(self._table).upsert(record, on_conflict="currency,on_date").execute()
         except Exception:
-            logger.warning("fx_rates: cache write failed for %s on %s", rate.currency,
-                           rate.on_date, exc_info=True)
+            logger.warning(
+                "fx_rates: cache write failed for %s on %s",
+                rate.currency,
+                rate.on_date,
+                exc_info=True,
+            )
 
 
 def _parse_row(row: dict[str, Any], currency: str, on_date: date) -> FxRate | None:

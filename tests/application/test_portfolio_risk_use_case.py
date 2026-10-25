@@ -31,9 +31,7 @@ _BASE = datetime(2026, 6, 1, tzinfo=UTC)
 
 def _series(values: list[str]) -> list[tuple[datetime, Money]]:
     """Buduje chronologiczną historię (rosnąco) z listy cen."""
-    return [
-        (_BASE + timedelta(days=i), Money(Decimal(v))) for i, v in enumerate(values)
-    ]
+    return [(_BASE + timedelta(days=i), Money(Decimal(v))) for i, v in enumerate(values)]
 
 
 # PORT-22: radar liczy korelacje, klastry i bety od 20 sparowanych zwrotów,
@@ -65,9 +63,7 @@ def _make_uc(repo: Mock) -> PortfolioRiskUseCase:
 
 
 class TestBuildsReport:
-    def test_builds_matrix_and_clusters_from_history(
-        self, repository_port: Mock
-    ) -> None:
+    def test_builds_matrix_and_clusters_from_history(self, repository_port: Mock) -> None:
         # NVDA: zwroty zmienne (`_RETURN_PATTERN`); MSFT identyczne (perfect corr);
         # GLD lustrzane (anti-corr). Zwroty MUSZĄ się różnić, inaczej zerowa
         # wariancja zerowałaby korelację.
@@ -84,14 +80,10 @@ class TestBuildsReport:
         assert report.matrix[("MSFT", "NVDA")] == pytest.approx(1.0)
         assert report.matrix[("GLD", "NVDA")] == pytest.approx(-1.0)
         # NVDA i MSFT poruszają się razem.
-        assert any(
-            "NVDA" in cluster and "MSFT" in cluster for cluster in report.clusters
-        )
+        assert any("NVDA" in cluster and "MSFT" in cluster for cluster in report.clusters)
 
     def test_pulls_history_for_each_symbol(self, repository_port: Mock) -> None:
-        repository_port.get_price_history.return_value = _series(
-            ["100", "110", "121"]
-        )
+        repository_port.get_price_history.return_value = _series(["100", "110", "121"])
 
         _make_uc(repository_port).run(["A", "B"])
 
@@ -143,22 +135,14 @@ class TestVarAndStress:
         }
 
     def test_var_disabled_by_default(self, repository_port: Mock) -> None:
-        repository_port.get_price_history.side_effect = (
-            lambda sym, days: self._history()[sym]
-        )
-        report = PortfolioRiskUseCase(repository_port=repository_port).run(
-            ["NVDA", "MSFT", "GLD"]
-        )
+        repository_port.get_price_history.side_effect = lambda sym, days: self._history()[sym]
+        report = PortfolioRiskUseCase(repository_port=repository_port).run(["NVDA", "MSFT", "GLD"])
         assert report.var is None
         assert report.cvar is None
         assert report.scenarios == ()
 
-    def test_var_and_cvar_populated_when_enabled(
-        self, repository_port: Mock
-    ) -> None:
-        repository_port.get_price_history.side_effect = (
-            lambda sym, days: self._long_history()[sym]
-        )
+    def test_var_and_cvar_populated_when_enabled(self, repository_port: Mock) -> None:
+        repository_port.get_price_history.side_effect = lambda sym, days: self._long_history()[sym]
         report = PortfolioRiskUseCase(
             repository_port=repository_port,
             var_enabled=True,
@@ -171,14 +155,10 @@ class TestVarAndStress:
         assert report.cvar >= report.var
         assert report.var_confidence == pytest.approx(0.95)
 
-    def test_stress_scenarios_populated_when_enabled(
-        self, repository_port: Mock
-    ) -> None:
+    def test_stress_scenarios_populated_when_enabled(self, repository_port: Mock) -> None:
         from src.domain.scenarios import Scenario
 
-        repository_port.get_price_history.side_effect = (
-            lambda sym, days: self._long_history()[sym]
-        )
+        repository_port.get_price_history.side_effect = lambda sym, days: self._long_history()[sym]
         scenarios = (
             Scenario(name="Korekta -10%", market_shock=-0.10),
             Scenario(name="Krach -20%", market_shock=-0.20),
@@ -196,9 +176,9 @@ class TestVarAndStress:
 
     def test_var_skipped_when_too_few_symbols(self, repository_port: Mock) -> None:
         repository_port.get_price_history.return_value = _series(["100", "110"])
-        report = PortfolioRiskUseCase(
-            repository_port=repository_port, var_enabled=True
-        ).run(["AAPL"])
+        report = PortfolioRiskUseCase(repository_port=repository_port, var_enabled=True).run(
+            ["AAPL"]
+        )
         # <2 symbole z historią → pusty raport, bez VaR.
         assert report.var is None
 
@@ -213,17 +193,13 @@ class TestGracefulDegradation:
         assert report.clusters == []
         assert report.verdict == ""
 
-    def test_empty_symbol_list_yields_empty_report(
-        self, repository_port: Mock
-    ) -> None:
+    def test_empty_symbol_list_yields_empty_report(self, repository_port: Mock) -> None:
         report = _make_uc(repository_port).run([])
 
         assert report.matrix == {}
         assert report.clusters == []
 
-    def test_symbols_with_too_short_history_skipped(
-        self, repository_port: Mock
-    ) -> None:
+    def test_symbols_with_too_short_history_skipped(self, repository_port: Mock) -> None:
         history = {
             "A": _long_series(100),
             "B": _long_series(50),
@@ -237,9 +213,7 @@ class TestGracefulDegradation:
         assert ("B", "C") not in report.matrix
         assert ("A", "B") in report.matrix
 
-    def test_per_symbol_history_error_does_not_kill_pass(
-        self, repository_port: Mock
-    ) -> None:
+    def test_per_symbol_history_error_does_not_kill_pass(self, repository_port: Mock) -> None:
         def get_history(sym: str, days: int) -> list[tuple[datetime, Money]]:
             if sym == "BROKEN":
                 raise RuntimeError("DB timeout")
@@ -252,9 +226,7 @@ class TestGracefulDegradation:
         # A i B przeżywają mimo padniętego BROKEN.
         assert ("A", "B") in report.matrix
 
-    def test_fewer_than_two_with_history_is_graceful(
-        self, repository_port: Mock
-    ) -> None:
+    def test_fewer_than_two_with_history_is_graceful(self, repository_port: Mock) -> None:
         history = {
             "A": _series(["100", "110", "121"]),
             "B": _series([]),  # brak historii
@@ -319,14 +291,9 @@ class TestUtcDayAlignment:
         assert report.clusters == [("AMD", "NVDA")]
         assert report.matrix[("AMD", "NVDA")] == pytest.approx(1.0)
 
-    def test_last_snapshot_of_a_day_is_the_one_that_counts(
-        self, repository_port: Mock
-    ) -> None:
+    def test_last_snapshot_of_a_day_is_the_one_that_counts(self, repository_port: Mock) -> None:
         nvda = self._zigzag(25)
-        noise = [
-            (_BASE + timedelta(days=i, hours=1), Money(Decimal("1")))
-            for i in range(25)
-        ]
+        noise = [(_BASE + timedelta(days=i, hours=1), Money(Decimal("1"))) for i in range(25)]
         history = {
             "NVDA": sorted(noise + self._daily(nvda, second=1)),
             "AMD": self._daily([p * 0.5 for p in nvda], second=8),
@@ -355,18 +322,15 @@ class TestMinimumSamples:
                 for i, p in enumerate(nvda)
             ]
 
-        gld = [
-            (_BASE + timedelta(days=i), Money(Decimal(str(100 + (i % 4)))))
-            for i in range(days)
-        ]
+        gld = [(_BASE + timedelta(days=i), Money(Decimal(str(100 + (i % 4))))) for i in range(days)]
         return {"NVDA": series(1.0), "MSFT": series(0.5), "GLD": gld}
 
     def _run(self, repo: Mock, days: int, **kwargs: Any) -> PortfolioRiskReport:
         history = self._history(days)
         repo.get_price_history.side_effect = lambda sym, days: history[sym]
-        return PortfolioRiskUseCase(
-            repository_port=repo, require_min_samples=True, **kwargs
-        ).run(["NVDA", "MSFT", "GLD"])
+        return PortfolioRiskUseCase(repository_port=repo, require_min_samples=True, **kwargs).run(
+            ["NVDA", "MSFT", "GLD"]
+        )
 
     def test_var_is_none_below_min_observations(self, repository_port: Mock) -> None:
         report = self._run(repository_port, 10, var_enabled=True)
@@ -381,9 +345,7 @@ class TestMinimumSamples:
         assert report.var is not None
         assert all(stat != "var" for stat, _, _ in report.insufficient)
 
-    def test_correlations_are_skipped_below_min_paired_returns(
-        self, repository_port: Mock
-    ) -> None:
+    def test_correlations_are_skipped_below_min_paired_returns(self, repository_port: Mock) -> None:
         report = self._run(repository_port, 10)
 
         assert report.matrix == {}
@@ -391,21 +353,18 @@ class TestMinimumSamples:
         assert report.verdict == ""
         assert ("correlation", 9, 20) in report.insufficient
 
-    def test_correlations_are_kept_on_20_paired_returns(
-        self, repository_port: Mock
-    ) -> None:
+    def test_correlations_are_kept_on_20_paired_returns(self, repository_port: Mock) -> None:
         report = self._run(repository_port, 21)
 
         assert report.clusters == [("MSFT", "NVDA")]
         assert report.insufficient == ()
 
-    def test_stress_betas_are_skipped_below_min_paired_returns(
-        self, repository_port: Mock
-    ) -> None:
+    def test_stress_betas_are_skipped_below_min_paired_returns(self, repository_port: Mock) -> None:
         from src.domain.scenarios import Scenario
 
         report = self._run(
-            repository_port, 10,
+            repository_port,
+            10,
             stress_enabled=True,
             scenarios=(Scenario(name="Krach -20%", market_shock=-0.20),),
         )
@@ -413,9 +372,7 @@ class TestMinimumSamples:
         assert report.scenarios == ()
         assert ("beta", 9, 20) in report.insufficient
 
-    def test_disabled_var_is_not_reported_as_insufficient(
-        self, repository_port: Mock
-    ) -> None:
+    def test_disabled_var_is_not_reported_as_insufficient(self, repository_port: Mock) -> None:
         report = self._run(repository_port, 10)
 
         assert all(stat != "var" for stat, _, _ in report.insufficient)
@@ -425,9 +382,9 @@ class TestMinimumSamples:
         history = self._history(10)
         repository_port.get_price_history.side_effect = lambda sym, days: history[sym]
 
-        report = PortfolioRiskUseCase(
-            repository_port=repository_port, var_enabled=True
-        ).run(["NVDA", "MSFT", "GLD"])
+        report = PortfolioRiskUseCase(repository_port=repository_port, var_enabled=True).run(
+            ["NVDA", "MSFT", "GLD"]
+        )
 
         assert report.var is None
         assert ("var", 9, 60) in report.insufficient
@@ -504,36 +461,26 @@ class TestPositionRisk:
 
         self._uc(repository_port, history).position_risk(self._portfolio(("NVDA", "1")))
 
-        assert [c.args[0] for c in repository_port.get_price_history.call_args_list] == [
-            "NVDA"
-        ]
+        assert [c.args[0] for c in repository_port.get_price_history.call_args_list] == ["NVDA"]
 
     def test_var_is_none_below_min_observations(self, repository_port: Mock) -> None:
         history = {"NVDA": _series(["100", "90", "95", "80", "85"])}
 
-        risk = self._uc(repository_port, history).position_risk(
-            self._portfolio(("NVDA", "1"))
-        )
+        risk = self._uc(repository_port, history).position_risk(self._portfolio(("NVDA", "1")))
 
         assert risk.var is None
 
-    def test_drawdown_is_the_current_depth_below_the_peak(
-        self, repository_port: Mock
-    ) -> None:
+    def test_drawdown_is_the_current_depth_below_the_peak(self, repository_port: Mock) -> None:
         history = {"NVDA": _series(["100", "120", "110", "96"])}
 
-        risk = self._uc(repository_port, history).position_risk(
-            self._portfolio(("NVDA", "1"))
-        )
+        risk = self._uc(repository_port, history).position_risk(self._portfolio(("NVDA", "1")))
 
         assert risk.drawdown == pytest.approx(0.2)
 
     def test_drawdown_is_zero_at_a_new_high(self, repository_port: Mock) -> None:
         history = {"NVDA": _series(["100", "90", "95", "130"])}
 
-        risk = self._uc(repository_port, history).position_risk(
-            self._portfolio(("NVDA", "1"))
-        )
+        risk = self._uc(repository_port, history).position_risk(self._portfolio(("NVDA", "1")))
 
         assert risk.drawdown == pytest.approx(0.0)
 
@@ -549,9 +496,7 @@ class TestPositionRisk:
         assert risk.drawdown == pytest.approx(0.2)
 
     def test_no_usable_history_gives_no_risk(self, repository_port: Mock) -> None:
-        risk = self._uc(repository_port, {"NVDA": []}).position_risk(
-            self._portfolio(("NVDA", "1"))
-        )
+        risk = self._uc(repository_port, {"NVDA": []}).position_risk(self._portfolio(("NVDA", "1")))
 
         assert risk == PositionRisk()
 
@@ -579,9 +524,7 @@ class TestPositionRisk:
 
         assert risk.hedge_effective is True
 
-    def test_held_hedge_moving_with_the_book_is_ineffective(
-        self, repository_port: Mock
-    ) -> None:
+    def test_held_hedge_moving_with_the_book_is_ineffective(self, repository_port: Mock) -> None:
         history = {"NVDA": _long_series(100), "SH": _long_series(40)}
 
         risk = self._uc(repository_port, history).position_risk(
@@ -668,9 +611,7 @@ class TestNonFiniteReturns:
     """PORT-09: symbol z nieskończonym zwrotem (cena poza zakresem floata) wypada
     per symbol, zamiast zatruć VaR i korelacje całej sekcji."""
 
-    def test_symbol_with_non_finite_returns_drops_out_alone(
-        self, repository_port: Mock
-    ) -> None:
+    def test_symbol_with_non_finite_returns_drops_out_alone(self, repository_port: Mock) -> None:
         import math
 
         broken = _long_series(100)

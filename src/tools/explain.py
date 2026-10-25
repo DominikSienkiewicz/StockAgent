@@ -84,9 +84,7 @@ def _header(stored: StoredReceipt) -> str:
         if stored.predicted_at is None
         else stored.predicted_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     )
-    outcome = {True: "trafiona", False: "chybiona", None: "nierozliczona"}[
-        stored.is_trend_correct
-    ]
+    outcome = {True: "trafiona", False: "chybiona", None: "nierozliczona"}[stored.is_trend_correct]
     trend = stored.predicted_trend or "?"
     return (
         f"Predykcja {stored.prediction_id} · {stored.symbol} · {moment} · "

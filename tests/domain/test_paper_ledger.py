@@ -145,8 +145,11 @@ class TestCloseTrade:
 
     @pytest.mark.parametrize(
         ("side", "pnl"),
-        [(TradeSide.LONG, Decimal("0.06")), (TradeSide.SHORT, Decimal("-0.06")),
-         (TradeSide.FLAT, Decimal("0"))],
+        [
+            (TradeSide.LONG, Decimal("0.06")),
+            (TradeSide.SHORT, Decimal("-0.06")),
+            (TradeSide.FLAT, Decimal("0")),
+        ],
     )
     def test_pnl_is_the_signed_gross_return(self, side: TradeSide, pnl: Decimal) -> None:
         close = close_trade(side, Decimal("100"), Decimal("106"), self.AT, ExitReason.SETTLED)

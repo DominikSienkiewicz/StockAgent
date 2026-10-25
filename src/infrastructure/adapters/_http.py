@@ -386,6 +386,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)(hooks\.slack\.com/)[^\s'\"<>]+"), rf"\g<1>{REDACTED}"),
 )
 
+
 def redact_secrets(text: str, secret_values: Iterable[str] = ()) -> str:
     """Zwraca `text` bez sekretów: każdej wartości z `secret_values` (np. kluczy
     z `Settings`, najdłuższe najpierw) i rozpoznawalnych kształtów — parametrów

@@ -93,9 +93,7 @@ class RegimeDetector:
             return MarketRegime.NEUTRAL
         return MarketRegime.RISK_ON
 
-    def threshold_multiplier(
-        self, regime: MarketRegime, max_multiplier: float
-    ) -> float:
+    def threshold_multiplier(self, regime: MarketRegime, max_multiplier: float) -> float:
         """Mnożnik progu volatility dla danego reżimu.
 
         Niezmiennik FinOps: wynik jest ZAWSZE w [1.0, max(1.0, max_multiplier)].
@@ -209,9 +207,7 @@ class RegimeChange:
         return self.current is MarketRegime.RISK_OFF
 
 
-def risk_off_change(
-    previous: MarketRegime | None, current: MarketRegime
-) -> RegimeChange | None:
+def risk_off_change(previous: MarketRegime | None, current: MarketRegime) -> RegimeChange | None:
     """ALR-05: zmiana reżimu warta leadu maila albo None.
 
     `previous` to reżim efektywny z `regime_history` (histereza ALR-03); bez niego

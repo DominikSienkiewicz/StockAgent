@@ -49,7 +49,7 @@ def _is_public_module(path: str, directory: str) -> bool:
     name = _module_name(path)
     return (
         path.startswith(directory)
-        and "/" not in path[len(directory):]
+        and "/" not in path[len(directory) :]
         and name.endswith(".py")
         and not name.startswith("_")
     )
@@ -77,8 +77,10 @@ def _count_ports(ports_source: str) -> int:
 
 def _is_allowed_domain_import(module: str) -> bool:
     top = module.split(".", 1)[0]
-    return module == "__future__" or module.startswith("src.domain") or (
-        top in sys.stdlib_module_names
+    return (
+        module == "__future__"
+        or module.startswith("src.domain")
+        or (top in sys.stdlib_module_names)
     )
 
 
@@ -101,7 +103,7 @@ def compute_repo_stats(sources: Mapping[str, str], migration_names: Iterable[str
     domain = {
         path: text
         for path, text in sources.items()
-        if path.startswith(_DOMAIN_DIR) and "/" not in path[len(_DOMAIN_DIR):]
+        if path.startswith(_DOMAIN_DIR) and "/" not in path[len(_DOMAIN_DIR) :]
     }
     return RepoStats(
         test_functions=_count_test_functions(sources),

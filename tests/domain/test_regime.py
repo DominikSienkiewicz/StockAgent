@@ -86,10 +86,7 @@ class TestClassify:
 
     def test_none_macro_with_clean_signals_is_neutral(self) -> None:
         detector = RegimeDetector()
-        assert (
-            detector.classify(None, [MacroAlertLevel.NORMAL])
-            is MarketRegime.NEUTRAL
-        )
+        assert detector.classify(None, [MacroAlertLevel.NORMAL]) is MarketRegime.NEUTRAL
 
     def test_accepts_polish_stress_level(self) -> None:
         detector = RegimeDetector()
@@ -126,9 +123,7 @@ class TestThresholdMultiplier:
         assert detector.threshold_multiplier(MarketRegime.RISK_OFF, 0.5) == pytest.approx(1.0)
 
     @pytest.mark.parametrize("max_mult", [1.0, 1.5, 2.0, 3.0, 5.0])
-    def test_ordering_risk_off_ge_neutral_ge_risk_on(
-        self, max_mult: float
-    ) -> None:
+    def test_ordering_risk_off_ge_neutral_ge_risk_on(self, max_mult: float) -> None:
         detector = RegimeDetector()
         off = detector.threshold_multiplier(MarketRegime.RISK_OFF, max_mult)
         neutral = detector.threshold_multiplier(MarketRegime.NEUTRAL, max_mult)
@@ -185,9 +180,7 @@ class TestApplyHysteresis:
         assert [s.regime for s in states] == [MarketRegime.RISK_OFF] * 3
 
     def test_two_consecutive_readings_exit_on_the_second(self) -> None:
-        first, second = _walk(
-            MarketRegime.RISK_OFF, [MarketRegime.RISK_ON, MarketRegime.RISK_ON]
-        )
+        first, second = _walk(MarketRegime.RISK_OFF, [MarketRegime.RISK_ON, MarketRegime.RISK_ON])
 
         assert first == RegimeState(
             regime=MarketRegime.RISK_OFF, pending=MarketRegime.RISK_ON, streak=1
@@ -195,9 +188,7 @@ class TestApplyHysteresis:
         assert second == RegimeState(regime=MarketRegime.RISK_ON)
 
     def test_entering_risk_off_is_immediate(self) -> None:
-        state = apply_hysteresis(
-            RegimeState(regime=MarketRegime.RISK_ON), MarketRegime.RISK_OFF
-        )
+        state = apply_hysteresis(RegimeState(regime=MarketRegime.RISK_ON), MarketRegime.RISK_OFF)
 
         assert state == RegimeState(regime=MarketRegime.RISK_OFF)
 
@@ -215,17 +206,13 @@ class TestApplyHysteresis:
 
     def test_neutral_and_risk_on_both_count_towards_the_exit(self) -> None:
         # Kierunek = wyjście z RISK_OFF; reżim po wyjściu to ostatni surowy odczyt.
-        first, second = _walk(
-            MarketRegime.RISK_OFF, [MarketRegime.NEUTRAL, MarketRegime.RISK_ON]
-        )
+        first, second = _walk(MarketRegime.RISK_OFF, [MarketRegime.NEUTRAL, MarketRegime.RISK_ON])
 
         assert first.regime is MarketRegime.RISK_OFF
         assert second == RegimeState(regime=MarketRegime.RISK_ON)
 
     def test_moves_outside_risk_off_are_not_delayed(self) -> None:
-        state = apply_hysteresis(
-            RegimeState(regime=MarketRegime.NEUTRAL), MarketRegime.RISK_ON
-        )
+        state = apply_hysteresis(RegimeState(regime=MarketRegime.NEUTRAL), MarketRegime.RISK_ON)
 
         assert state == RegimeState(regime=MarketRegime.RISK_ON)
 
@@ -273,9 +260,9 @@ class TestHysteresisFinOps:
 
         effective = apply_hysteresis(previous, raw, confirmations).regime
 
-        assert detector.threshold_multiplier(
-            effective, 2.0
-        ) >= detector.threshold_multiplier(raw, 2.0)
+        assert detector.threshold_multiplier(effective, 2.0) >= detector.threshold_multiplier(
+            raw, 2.0
+        )
 
 
 class TestMacroSeriesVotes:
@@ -288,9 +275,7 @@ class TestMacroSeriesVotes:
         level = vix_percentile_alert_level(92.0)
 
         assert level is MacroAlertLevel.CRITICAL
-        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (
-            MarketRegime.RISK_OFF
-        )
+        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (MarketRegime.RISK_OFF)
 
     @pytest.mark.parametrize(
         ("percentile", "expected"),
@@ -311,6 +296,4 @@ class TestMacroSeriesVotes:
         level = credit_spread_alert_level(0.30)
 
         assert level is MacroAlertLevel.ELEVATED
-        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (
-            MarketRegime.NEUTRAL
-        )
+        assert RegimeDetector().classify(MacroAlertLevel.NORMAL, [level]) is (MarketRegime.NEUTRAL)

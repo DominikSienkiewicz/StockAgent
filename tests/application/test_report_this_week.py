@@ -13,9 +13,7 @@ MONDAY = datetime(2026, 10, 26, 6, 0, tzinfo=UTC)
 
 def _week() -> tuple[EarningsEvent, ...]:
     return (
-        EarningsEvent(
-            "MSFT", 2, "2026-10-28", timing=EarningsTiming.AFTER_CLOSE, eps_estimate=3.1
-        ),
+        EarningsEvent("MSFT", 2, "2026-10-28", timing=EarningsTiming.AFTER_CLOSE, eps_estimate=3.1),
         EarningsEvent("AAPL", 4, "2026-10-30", timing=EarningsTiming.BEFORE_OPEN),
         EarningsEvent("NVDA", 5, "2026-10-31"),
     )

@@ -99,8 +99,7 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
     overall_bg = _ALERT_BG[report.overall_alert]
 
     parts.append(
-        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "🚨 Risk Watch — sygnały makro</h2>"
+        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>🚨 Risk Watch — sygnały makro</h2>"
     )
     parts.append(
         f"<div style='padding: 10px 14px; background: {overall_bg}; "
@@ -164,9 +163,7 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Korelacja</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Skuteczność</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ocena</th>"
-        "</tr></thead><tbody>"
-        + "".join(rows)
-        + _TABLE_CLOSE
+        "</tr></thead><tbody>" + "".join(rows) + _TABLE_CLOSE
     )
 
 
@@ -196,9 +193,7 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Typ</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Δ vs poprz.</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
-        "</tr></thead><tbody>"
-        + "".join(rows)
-        + _TABLE_CLOSE
+        "</tr></thead><tbody>" + "".join(rows) + _TABLE_CLOSE
     )
 
 
@@ -233,9 +228,7 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
         "Spadek od 30d szczytu</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szczyt</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Alert</th>"
-        "</tr></thead><tbody>"
-        + "".join(rows)
-        + _TABLE_CLOSE
+        "</tr></thead><tbody>" + "".join(rows) + _TABLE_CLOSE
     )
 
 
@@ -266,9 +259,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
 
     lines: list[str] = []
     lines.append("=== 🚨 Risk Watch — sygnały makro ===")
-    lines.append(
-        f"Ogólny alert: {_ALERT_LABEL[report.overall_alert]}"
-    )
+    lines.append(f"Ogólny alert: {_ALERT_LABEL[report.overall_alert]}")
     lines.append("")
 
     if report.signals:
@@ -315,9 +306,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
             f"  USD/PLN: {number_exact(snap.usd_pln)} "
             f"({_format_pct(snap.usd_pln_30d_change_ratio)} / 30d)"
         )
-        lines.append(
-            f"  Stres fiskalny: {_STRESS_LABEL[snap.evaluate_stress_level()]}"
-        )
+        lines.append(f"  Stres fiskalny: {_STRESS_LABEL[snap.evaluate_stress_level()]}")
         lines.append("")
 
     return "\n".join(lines)

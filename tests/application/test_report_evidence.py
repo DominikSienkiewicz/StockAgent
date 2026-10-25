@@ -149,9 +149,7 @@ class TestBenchmarkComparison:
         assert comparison.basket.total_return == pytest.approx(0.009)
 
     def test_no_price_moves_no_comparison(self) -> None:
-        comparison = benchmark_comparison(
-            [], COSTS, self._HISTORY, settle_after=timedelta(hours=6)
-        )
+        comparison = benchmark_comparison([], COSTS, self._HISTORY, settle_after=timedelta(hours=6))
 
         assert comparison is None
 
@@ -203,7 +201,9 @@ def test_public_label_replaces_the_index_ticker() -> None:
         (datetime(2026, 10, 2, 5, 31, tzinfo=UTC), 102.1),
     ]
     comparison = benchmark_comparison(
-        [_call("AAPL", "BEARISH", 1, "103.4")], PaperCosts(), history,
+        [_call("AAPL", "BEARISH", 1, "103.4")],
+        PaperCosts(),
+        history,
         settle_after=timedelta(hours=6),
     )
     assert comparison is not None

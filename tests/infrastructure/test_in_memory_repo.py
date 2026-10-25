@@ -232,9 +232,7 @@ def test_previous_verdict_reads_the_latest_saved_council_verdict() -> None:
         dissenting_views=("Warren Buffett: drogo",),
         investor_opinions=(_opinion("Cathie Wood", "BUY"),),
     )
-    repo.save_prediction(
-        _record(council_verdict=dataclasses.asdict(verdict), sentiment_score=0.25)
-    )
+    repo.save_prediction(_record(council_verdict=dataclasses.asdict(verdict), sentiment_score=0.25))
 
     previous = repo.get_previous_verdict("NVDA")
 
@@ -350,9 +348,7 @@ def test_revision_votes_sit_next_to_the_first_round_and_reads_stay_on_round_one(
     repo = _repo(_Clock())
     prediction_id = repo.save_prediction(_record())
     repo.save_council_votes(prediction_id, "NVDA", [_opinion("Cathie Wood", "SELL")])
-    repo.save_council_votes(
-        prediction_id, "NVDA", [_opinion("Cathie Wood", "BUY")], debate_round=2
-    )
+    repo.save_council_votes(prediction_id, "NVDA", [_opinion("Cathie Wood", "BUY")], debate_round=2)
 
     votes = repo.get_council_votes_for_prediction(prediction_id)
     history = repo.get_council_vote_history(["NVDA"], window_days=30)

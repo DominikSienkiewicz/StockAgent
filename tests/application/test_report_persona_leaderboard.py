@@ -87,9 +87,7 @@ class TestRenderPersonaLeaderboardHtml:
         assert color in html
 
     def test_escapes_investor_name(self) -> None:
-        html = render_persona_leaderboard_html(
-            [_record("<script>alert(1)</script>", 0.6, 10)]
-        )
+        html = render_persona_leaderboard_html([_record("<script>alert(1)</script>", 0.6, 10)])
 
         assert "<script>" not in html
         assert "&lt;script&gt;" in html

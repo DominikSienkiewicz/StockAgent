@@ -114,9 +114,7 @@ def test_asset_type_members() -> None:
 
 
 def test_valuation_verdict_members() -> None:
-    assert {v.name for v in ValuationVerdict} == {
-        "UNDERVALUED", "FAIR", "OVERVALUED", "UNKNOWN"
-    }
+    assert {v.name for v in ValuationVerdict} == {"UNDERVALUED", "FAIR", "OVERVALUED", "UNKNOWN"}
 
 
 def test_fundamentals_is_frozen_dataclass() -> None:

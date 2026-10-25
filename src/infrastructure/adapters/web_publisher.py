@@ -46,9 +46,7 @@ class FileWebPublisher(WebPublisherPort):
             target.write_text(html, encoding="utf-8")
         except OSError as exc:
             # Publikacja jest best-effort — błąd nie może przerwać cyklu.
-            logger.warning(
-                "Web digest publish failed for %s: %s", self._output_path, exc
-            )
+            logger.warning("Web digest publish failed for %s: %s", self._output_path, exc)
             return ""
         resolved = str(target.resolve())
         logger.info("Web page published to %s", resolved)

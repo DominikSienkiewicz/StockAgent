@@ -104,9 +104,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             logger.warning("Tool %s raised: %s", tool.name, message)
             return {"error": message}
 
-    def analyze_with_tools(
-        self, prompt: str, tools: Sequence[Tool]
-    ) -> dict[str, Any]:
+    def analyze_with_tools(self, prompt: str, tools: Sequence[Tool]) -> dict[str, Any]:
         tools_by_name = {tool.name: tool for tool in tools}
         tool_schema = self._map_tools(tools)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
@@ -137,18 +135,14 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
 
             # Model prosi o narzędzia — dołóż jego turę (cały content, w tym
             # bloki tool_use), potem wykonaj każdy blok tool_use.
-            messages.append(
-                {"role": "assistant", "content": response.content}
-            )
+            messages.append({"role": "assistant", "content": response.content})
             tool_results: list[dict[str, Any]] = []
             for block in response.content:
                 if getattr(block, "type", None) != "tool_use":
                     continue
                 tool = tools_by_name.get(block.name)
                 if tool is None:
-                    result: dict[str, Any] = {
-                        "error": f"unknown tool: {block.name}"
-                    }
+                    result: dict[str, Any] = {"error": f"unknown tool: {block.name}"}
                 else:
                     result = self._execute_tool(tool, block.input)
                 tool_results.append(

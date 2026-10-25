@@ -33,7 +33,7 @@ def prompt_templates_sha256() -> str:
 
 
 def ml_model_version(model_path: str) -> str:
-    """"cold_start", gdy brak pliku wag; inaczej sha256 jego bajtów."""
+    """ "cold_start", gdy brak pliku wag; inaczej sha256 jego bajtów."""
     path = Path(model_path)
     if not path.is_file():
         return COLD_START_MODEL_VERSION

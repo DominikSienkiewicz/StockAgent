@@ -87,6 +87,7 @@ tu zostają czyste funkcje):
 
 Exit code: 0 zawsze (narzędzie raportujące, nie bramka CI).
 """
+
 from __future__ import annotations
 
 import json
@@ -258,16 +259,16 @@ class ClassError:
 @dataclass(frozen=True)
 class EvalReport:
     sample_count: int
-    hit_rate: float | None        # blended trafność (BULLISH/BEARISH/SIDEWAYS)
-    model_rmse: float | None      # RMSE prognozy vs rzeczywistość
-    baseline_rmse: float | None   # RMSE naiwnego "brak zmiany"
-    beats_baseline: bool          # czy model bije baseline
+    hit_rate: float | None  # blended trafność (BULLISH/BEARISH/SIDEWAYS)
+    model_rmse: float | None  # RMSE prognozy vs rzeczywistość
+    baseline_rmse: float | None  # RMSE naiwnego "brak zmiany"
+    beats_baseline: bool  # czy model bije baseline
     # Finding #24: blended hit_rate zalicza SIDEWAYS jako trafienie zawsze, gdy
     # ruch < ±0.5% — banking trafień na spokojnych dniach myli „trafiłem kierunek"
     # z „nic się nie ruszyło". Rozdzielamy directional-only od pokrycia SIDEWAYS.
     directional_hit_rate: float | None  # trafność tylko BULLISH/BEARISH
-    directional_count: int              # liczba kierunkowych z flagą
-    sideways_count: int                 # liczba SIDEWAYS z flagą
+    directional_count: int  # liczba kierunkowych z flagą
+    sideways_count: int  # liczba SIDEWAYS z flagą
     # WIA-22: przedział na n_eff, baseline'y i werdykt istotności (None bez wierszy).
     evidence: HitRateEvidence | None = None
     # WIA-55: segmenty per segmentacja z `segment_by` (puste bez segmentacji).
@@ -401,11 +402,7 @@ def summarize_evaluation(
     z configu). Nieznana nazwa → ValueError.
     """
     segmentations = _segmentations(segment_by)
-    flags = [
-        bool(r["is_trend_correct"])
-        for r in rows
-        if r.get("is_trend_correct") is not None
-    ]
+    flags = [bool(r["is_trend_correct"]) for r in rows if r.get("is_trend_correct") is not None]
     hit_rate = (sum(flags) / len(flags)) if flags else None
 
     # Directional-only hit-rate: tylko predykcje BULLISH/BEARISH. SIDEWAYS jest
@@ -541,11 +538,14 @@ def _component_calls(row: dict[str, Any]) -> Iterable[tuple[str, ScoredCall]]:
     )
     for component, trend in votes:
         if trend is not None:
-            yield component, ScoredCall(
-                cycle=call.cycle,
-                predicted_trend=trend,
-                is_correct=trend_hit(trend, change),
-                realized_change=change,
+            yield (
+                component,
+                ScoredCall(
+                    cycle=call.cycle,
+                    predicted_trend=trend,
+                    is_correct=trend_hit(trend, change),
+                    realized_change=change,
+                ),
             )
 
 
@@ -698,7 +698,10 @@ def render_evaluation_json(
     """JSON ewaluacji (posortowane klucze, stabilny diff między przebiegami)."""
     report = summarize_evaluation(rows, segment_by=segmentations)
     return json.dumps(
-        evaluation_to_dict(report, days), ensure_ascii=False, indent=2, sort_keys=True,
+        evaluation_to_dict(report, days),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
         allow_nan=False,
     )
 
@@ -841,8 +844,7 @@ def format_echo(report: EchoReport) -> str:
         f"  Echo momentum (delta bramki, EXP-01; BH-FDR q={DEFAULT_FDR_Q:.2f}):",
         f"    Echo (trend = znak delty):      {_share(report.echo_rate, report.with_delta)}",
         f"    Odwrócenie (trend = −znak):     {_share(report.reversal_rate, report.with_delta)}",
-        f"    Porównanie na tych samych wierszach: n={report.compared}, "
-        f"n_eff≈{report.n_eff:.1f}",
+        f"    Porównanie na tych samych wierszach: n={report.compared}, n_eff≈{report.n_eff:.1f}",
         f"      LLM:                          {_share(report.llm_rate, report.compared)}",
         f"      Baseline „znak ruchu”:        {_share(report.momentum_rate, report.compared)}",
         f"      Baseline „przeciwny znak”:    {_share(report.contrarian_rate, report.compared)}",
@@ -1028,8 +1030,7 @@ def _discrimination_lines(
         f"trafność top {share * 100:.0f}%: {rate * 100:.1f}%" for share, rate in coverage
     )
     return [
-        f"  {label}: AUC {evidence.auc:.2f}{spread}, n={evidence.n}, "
-        f"n_eff≈{evidence.n_eff:.0f}",
+        f"  {label}: AUC {evidence.auc:.2f}{spread}, n={evidence.n}, n_eff≈{evidence.n_eff:.0f}",
         f"    {points}",
     ]
 
@@ -1093,9 +1094,7 @@ def _experiment_call(row: dict[str, Any], arm: str) -> ExperimentCall:
     )
 
 
-def summarize_experiment(
-    rows: list[dict[str, Any]], experiment: Experiment
-) -> ExperimentReport:
+def summarize_experiment(rows: list[dict[str, Any]], experiment: Experiment) -> ExperimentReport:
     """Ramiona eksperymentu na tych samych rozliczonych predykcjach (czysta funkcja).
 
     Wiersz bez ramienia tego eksperymentu (cykl bez aktywnego eksperymentu)
@@ -1143,9 +1142,7 @@ def _comparison_line(comparison: ArmComparison) -> str:
     ]
     if comparison.interval is not None:
         low, high = comparison.interval
-        parts.append(
-            f"95% CI blokowe {_metric_delta(metric, low)} … {_metric_delta(metric, high)}"
-        )
+        parts.append(f"95% CI blokowe {_metric_delta(metric, low)} … {_metric_delta(metric, high)}")
     else:
         parts.append(f"CI: za mało cykli (k={comparison.cycles})")
     parts.append(

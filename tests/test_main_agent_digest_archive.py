@@ -109,9 +109,7 @@ class TestBuildDigestArchive:
             SupabaseStorageDigestArchive,
         )
 
-        create = mocker.patch(
-            "src.infrastructure.adapters.supabase_storage_archive.create_client"
-        )
+        create = mocker.patch("src.infrastructure.adapters.supabase_storage_archive.create_client")
 
         archive = main_agent.build_digest_archive(settings)
 
@@ -181,9 +179,7 @@ def test_only_the_owner_subscriber_gets_the_link(settings: Settings, mocker: Any
 
     def resend(*, recipient: str, **_: object) -> MagicMock:
         channel = MagicMock()
-        channel.send_report.side_effect = lambda **kw: sent.__setitem__(
-            recipient, kw["html_body"]
-        )
+        channel.send_report.side_effect = lambda **kw: sent.__setitem__(recipient, kw["html_body"])
         return channel
 
     mocker.patch("main_agent.ResendNotifier", side_effect=resend)

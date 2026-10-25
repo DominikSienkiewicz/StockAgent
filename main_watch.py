@@ -131,9 +131,7 @@ PREVIOUS_CLOSE_BASIS = "od poprzedniego zamknięcia"
 ROLLING_24H_BASIS = "w ciągu ostatnich 24 h"
 
 # ALR-16: linia pusha drugiego szczebla drabiny eskalacji.
-ESCALATION_LINE = (
-    "Drugi alert dnia: ruch sięgnął 2× progu szoku albo odwrócił kierunek ponad próg."
-)
+ESCALATION_LINE = "Drugi alert dnia: ruch sięgnął 2× progu szoku albo odwrócił kierunek ponad próg."
 
 
 def _render_alert(
@@ -376,8 +374,7 @@ def _sent_levels(
         return repository.get_shock_alert_levels(today)
     except PortError as exc:
         logger.warning(
-            "Shock watch: szczeble drabiny nieczytelne (%s) — dziś najwyżej jeden alert "
-            "na symbol",
+            "Shock watch: szczeble drabiny nieczytelne (%s) — dziś najwyżej jeden alert na symbol",
             type(exc).__name__,
         )
         return None
@@ -454,9 +451,7 @@ def _render_portfolio_alert(
     return f"💼 Szok portfela: {move}", "\n".join(lines)
 
 
-def _pre_move_prices(
-    prices: dict[str, Decimal], deltas: dict[str, Decimal]
-) -> dict[str, Decimal]:
+def _pre_move_prices(prices: dict[str, Decimal], deltas: dict[str, Decimal]) -> dict[str, Decimal]:
     """Ceny SPRZED ruchu: cena bieżąca / (1 + Δ) dla symboli z policzoną zmianą,
     reszta bez zmian (jej wartość uznajemy za nieruszoną). Wagi sprzed ruchu to
     prawidłowe wagi dla Σ waga × Δ; cena spadająca do zera pomija symbol."""
@@ -551,7 +546,8 @@ def scan_watch(
     crypto = set(settings.crypto_symbols)
     unsupported = set(settings.symbols_unsupported_price)
     symbols = [
-        s for s in (*_watched_stocks(settings, moment), *settings.crypto_symbols)
+        s
+        for s in (*_watched_stocks(settings, moment), *settings.crypto_symbols)
         if s not in unsupported
     ]
 
@@ -705,9 +701,7 @@ def scan_watch(
             SNAPSHOT_MAX_AGE_HOURS,
         )
     logger.info("Shock watch done — %d alert(ów) wysłanych", sent)
-    return WatchOutcome(
-        sent=sent, failures=failures, total=len(work), checked=checked, stale=stale
-    )
+    return WatchOutcome(sent=sent, failures=failures, total=len(work), checked=checked, stale=stale)
 
 
 def _level_text(value: Decimal) -> str:
@@ -966,13 +960,9 @@ def _run_watch(settings: Settings) -> int:
     # zmiany. Port ceny bez tej zdolności → przebieg wyłącznie na snapshotach.
     outcome = scan(daily_change=market) if isinstance(market, DailyChangePort) else scan()
     # ALR-11: alerty poziomów cenowych — te same darmowe ceny i kanały push.
-    scan_price_levels(
-        settings, repository=repository, market=market, push_notifier=push_notifier
-    )
+    scan_price_levels(settings, repository=repository, market=market, push_notifier=push_notifier)
     # ML-27: unieważnione tezy otwartych predykcji — te same darmowe ceny i kanały push.
-    scan_invalidations(
-        settings, repository=repository, market=market, push_notifier=push_notifier
-    )
+    scan_invalidations(settings, repository=repository, market=market, push_notifier=push_notifier)
     write_step_summary(
         lambda: render_watch_summary_markdown(
             checked=outcome.checked,

@@ -160,8 +160,7 @@ def _render_trade_signals_html(
             "OBSERWUJ": "#f9fafb",
         }[_signal_tone(sig)]
         forecast_html = (
-            '<span style="color: #6b7280;">'
-            f"prognoza <strong>{_COLD_START_FORECAST}</strong></span>"
+            f'<span style="color: #6b7280;">prognoza <strong>{_COLD_START_FORECAST}</strong></span>'
             if sig.ml_cold_start
             else (
                 f'<span style="color: {_delta_color(sig.expected_change)};">'
@@ -171,8 +170,7 @@ def _render_trade_signals_html(
         # Q7: pasmo wielkości pozycji (Kelly-lite z konsensusu rady + hit-rate).
         size_band = _signal_size_band(sig)
         size_html = (
-            f'<span style="color: #6b7280; font-size: 12px;">'
-            f"{_html(size_band.label)}</span><br>"
+            f'<span style="color: #6b7280; font-size: 12px;">{_html(size_band.label)}</span><br>'
             if size_band
             else ""
         )

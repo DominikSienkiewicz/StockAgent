@@ -110,9 +110,7 @@ def test_misses_older_than_the_week_wait_for_the_backfill() -> None:
 
     prompt = llm.analyze_mistake.call_args.args[0]
     assert "AAPL" in prompt and "MSFT" not in prompt
-    assert [call.args[0] for call in repo.save_backfilled_diagnosis.call_args_list] == [
-        "id-AAPL"
-    ]
+    assert [call.args[0] for call in repo.save_backfilled_diagnosis.call_args_list] == ["id-AAPL"]
 
 
 def test_correct_predictions_and_rows_without_a_time_are_not_diagnosed() -> None:

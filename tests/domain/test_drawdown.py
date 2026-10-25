@@ -43,9 +43,7 @@ class TestDrawdownFraction:
     def test_drawdown_fraction_below_peak(self) -> None:
         # 100 → szczyt 120 → drawdown = (100 - 120) / 120 = -0.1666...
         sig = _signal(peak="120", current="100")
-        assert sig.drawdown_fraction == (
-            Decimal("100") - Decimal("120")
-        ) / Decimal("120")
+        assert sig.drawdown_fraction == (Decimal("100") - Decimal("120")) / Decimal("120")
 
     def test_drawdown_fraction_at_peak_is_zero(self) -> None:
         sig = _signal(peak="120", current="120")

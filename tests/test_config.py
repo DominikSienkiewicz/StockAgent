@@ -142,9 +142,7 @@ class TestSettings:
 
     def test_council_volatility_threshold_zero_is_accepted(self, env: pytest.MonkeyPatch) -> None:
         # 0.0 to udokumentowany "always run" disable switch — nie footgun.
-        settings = make_settings(
-            council_volatility_threshold=Decimal("0")
-        )
+        settings = make_settings(council_volatility_threshold=Decimal("0"))
         assert settings.council_volatility_threshold == Decimal("0")
 
     def test_default_symbols_list(self, env: pytest.MonkeyPatch) -> None:
@@ -192,9 +190,7 @@ class TestSettings:
         settings = make_settings()
         assert settings.risk_symbols == ["EPOL", "SH", "VIXY"]
 
-    def test_risk_symbol_types_parses_mapping(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_risk_symbol_types_parses_mapping(self, env: pytest.MonkeyPatch) -> None:
         from src.domain.macro_risk import MacroRiskInstrumentType
 
         env.setenv(
@@ -208,9 +204,7 @@ class TestSettings:
             "VIXY": MacroRiskInstrumentType.VOLATILITY,
         }
 
-    def test_risk_symbol_types_rejects_unknown_enum(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_risk_symbol_types_rejects_unknown_enum(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("RISK_SYMBOL_TYPES", "EPOL:NOT_A_REAL_TYPE")
         with pytest.raises(ValueError, match="NOT_A_REAL_TYPE"):
             make_settings()
@@ -226,37 +220,29 @@ class TestSettings:
 
 
 class TestResilienceSettings:
-    def test_symbols_unsupported_price_defaults_empty(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_symbols_unsupported_price_defaults_empty(self, env: pytest.MonkeyPatch) -> None:
         settings = make_settings()
         assert settings.symbols_unsupported_price == []
 
-    def test_symbols_unsupported_price_parses_csv(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_symbols_unsupported_price_parses_csv(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("SYMBOLS_UNSUPPORTED_PRICE", "CSPX.L, XDWD.DE ,IUSN.DE")
         settings = make_settings()
         assert settings.symbols_unsupported_price == [
-            "CSPX.L", "XDWD.DE", "IUSN.DE",
+            "CSPX.L",
+            "XDWD.DE",
+            "IUSN.DE",
         ]
 
-    def test_symbol_throttle_defaults_to_zero(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_symbol_throttle_defaults_to_zero(self, env: pytest.MonkeyPatch) -> None:
         settings = make_settings()
         assert settings.symbol_throttle_seconds == pytest.approx(0.0)
 
-    def test_symbol_throttle_parses_float(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_symbol_throttle_parses_float(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "2.5")
         settings = make_settings()
         assert settings.symbol_throttle_seconds == pytest.approx(2.5)
 
-    def test_symbol_throttle_negative_rejected(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_symbol_throttle_negative_rejected(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("SYMBOL_THROTTLE_SECONDS", "-1")
         with pytest.raises(ValueError, match="symbol_throttle_seconds"):
             make_settings()
@@ -272,9 +258,7 @@ class TestResilienceSettings:
         settings = make_settings()
         assert settings.reflection_min_age_hours == 6
 
-    def test_reflection_min_age_hours_reads_env(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_reflection_min_age_hours_reads_env(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("REFLECTION_MIN_AGE_HOURS", "12")
         settings = make_settings()
         assert settings.reflection_min_age_hours == 12
@@ -287,47 +271,35 @@ class TestResilienceSettings:
         settings = make_settings()
         assert settings.reflection_max_age_hours == 96
 
-    def test_reflection_max_age_hours_reads_env(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_reflection_max_age_hours_reads_env(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "120")
         settings = make_settings()
         assert settings.reflection_max_age_hours == 120
 
-    def test_reflection_max_age_zero_disables_the_bound(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_reflection_max_age_zero_disables_the_bound(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "0")
         settings = make_settings()
         assert settings.reflection_max_age_hours == 0
 
-    def test_reflection_max_age_must_exceed_min_age(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_reflection_max_age_must_exceed_min_age(self, env: pytest.MonkeyPatch) -> None:
         # Okno (min, max] puste → reflect nigdy niczego by nie rozliczył.
         env.setenv("REFLECTION_MIN_AGE_HOURS", "6")
         env.setenv("REFLECTION_MAX_AGE_HOURS", "6")
         with pytest.raises(ValueError, match="reflection_max_age_hours"):
             make_settings()
 
-    def test_reflection_max_age_negative_rejected(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_reflection_max_age_negative_rejected(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("REFLECTION_MAX_AGE_HOURS", "-1")
         with pytest.raises(ValueError, match="reflection_max_age_hours"):
             make_settings()
 
 
 class TestCryptoSettings:
-    def test_crypto_symbols_defaults_empty(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_crypto_symbols_defaults_empty(self, env: pytest.MonkeyPatch) -> None:
         settings = make_settings()
         assert settings.crypto_symbols == []
 
-    def test_crypto_symbols_parses_csv(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_crypto_symbols_parses_csv(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("CRYPTO_SYMBOLS", "BTC, ETH ,SOL")
         settings = make_settings()
         assert settings.crypto_symbols == ["BTC", "ETH", "SOL"]
@@ -338,9 +310,7 @@ class TestCryptoSettings:
         settings = make_settings()
         assert settings.crypto_volatility_threshold == Decimal("0.05")
 
-    def test_crypto_volatility_threshold_reads_env(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_crypto_volatility_threshold_reads_env(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("CRYPTO_VOLATILITY_THRESHOLD", "0.08")
         settings = make_settings()
         assert settings.crypto_volatility_threshold == Decimal("0.08")
@@ -352,25 +322,19 @@ class TestCryptoSettings:
         settings = make_settings()
         assert settings.crypto_tool_use_volatility_threshold is None
 
-    def test_crypto_tool_use_threshold_reads_env(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_crypto_tool_use_threshold_reads_env(self, env: pytest.MonkeyPatch) -> None:
         env.setenv("CRYPTO_TOOL_USE_VOLATILITY_THRESHOLD", "0.10")
         settings = make_settings()
         assert settings.crypto_tool_use_volatility_threshold == Decimal("0.10")
 
-    def test_zero_crypto_tool_use_threshold_rejected(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_zero_crypto_tool_use_threshold_rejected(self, env: pytest.MonkeyPatch) -> None:
         # FIN-07: próg 0 bramki płatnej ścieżki przepuszcza każdy ruch.
         with pytest.raises(
             ValueError, match="crypto_tool_use_volatility_threshold must be positive"
         ):
             make_settings(crypto_tool_use_volatility_threshold=Decimal("0"))
 
-    def test_crypto_tool_use_threshold_is_part_of_the_recipe(
-        self, env: pytest.MonkeyPatch
-    ) -> None:
+    def test_crypto_tool_use_threshold_is_part_of_the_recipe(self, env: pytest.MonkeyPatch) -> None:
         # FIN-08: pole steruje płatną pętlą tool-use, więc należy do przepisu.
         from src.config import RECIPE_SETTINGS_FIELDS
 
@@ -537,7 +501,8 @@ class TestConfigHashScope:
 
         baseline = self._settings().config_hash()
         flags = [
-            name for name in NON_RECIPE_SETTINGS_FIELDS
+            name
+            for name in NON_RECIPE_SETTINGS_FIELDS
             if Settings.model_fields[name].annotation is bool
         ]
 
@@ -551,7 +516,8 @@ class TestConfigHashScope:
 
         baseline = self._settings().config_hash()
         flags = [
-            name for name in RECIPE_SETTINGS_FIELDS
+            name
+            for name in RECIPE_SETTINGS_FIELDS
             if Settings.model_fields[name].annotation is bool
         ]
 
@@ -585,9 +551,7 @@ class TestFeatureSnapshotsFlag:
 
         assert "feature_snapshots_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, feature_snapshots_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -604,9 +568,7 @@ class TestMarketFeaturesFlag:
 
         assert "market_features_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, market_features_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, market_features_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -636,9 +598,7 @@ class TestSigmaTargetFlag:
 
         assert "ml_sigma_target_enabled" in RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, ml_sigma_target_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, ml_sigma_target_enabled=True).config_hash()
         assert flipped != baseline
 
 
@@ -655,9 +615,7 @@ class TestIntervalCoverageFlag:
 
         assert "interval_coverage_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, interval_coverage_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, interval_coverage_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -722,9 +680,7 @@ class TestMacroSeriesFlag:
 
         assert "macro_series_enabled" in RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, macro_series_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, macro_series_enabled=True).config_hash()
         assert flipped != baseline
 
 
@@ -872,9 +828,7 @@ class TestGateDeltaFlag:
 
         assert "gate_delta_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, gate_delta_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, gate_delta_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -972,9 +926,7 @@ class TestFxRatesCacheFlag:
 
         assert "fx_rates_cache_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, fx_rates_cache_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -1069,9 +1021,7 @@ class TestExperimentSettings:
         self, env: pytest.MonkeyPatch
     ) -> None:
         with pytest.raises(ValueError, match="overlapping"):
-            self._settings(
-                experiments={"EXP-02": self._DEFINITION, "EXP-09": self._DEFINITION}
-            )
+            self._settings(experiments={"EXP-02": self._DEFINITION, "EXP-09": self._DEFINITION})
 
     def test_definitions_are_in_the_recipe_and_the_column_flag_is_not(
         self, env: pytest.MonkeyPatch
@@ -1154,9 +1104,7 @@ class TestDbWritesFlag:
 
         assert "db_writes_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, db_writes_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, db_writes_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -1205,7 +1153,12 @@ class TestSupabaseKeyRole:
             _unsigned_jwt({"iss": "supabase"}),
         ],
         ids=[
-            "secret", "service-role-jwt", "fixture", "bare-anon-word", "dotted", "jwt-without-role",
+            "secret",
+            "service-role-jwt",
+            "fixture",
+            "bare-anon-word",
+            "dotted",
+            "jwt-without-role",
         ],
     )
     def test_accepts_secret_and_opaque_keys(self, env: pytest.MonkeyPatch, key: str) -> None:
@@ -1234,7 +1187,7 @@ def test_zero_volatility_threshold_rejected(env: pytest.MonkeyPatch, field: str)
 
 
 def test_zero_council_volatility_threshold_stays_the_always_run_switch(
-    env: pytest.MonkeyPatch
+    env: pytest.MonkeyPatch,
 ) -> None:
     settings = make_settings(council_volatility_threshold=Decimal("0"))
 
@@ -1402,9 +1355,12 @@ class TestSlowLoopWeeklyLlmBudget:
 
     def test_zero_is_a_valid_llm_free_week(self, env: pytest.MonkeyPatch) -> None:
         # Zero = recap bez narracji i kalibracja bez wniosku (deterministyczne fallbacki).
-        assert self._settings(
-            slow_loop_max_paid_llm_calls_per_week=0
-        ).slow_loop_max_paid_llm_calls_per_week == 0
+        assert (
+            self._settings(
+                slow_loop_max_paid_llm_calls_per_week=0
+            ).slow_loop_max_paid_llm_calls_per_week
+            == 0
+        )
 
     def test_negative_cap_is_rejected(self, env: pytest.MonkeyPatch) -> None:
         with pytest.raises(ValueError, match="slow_loop_max_paid_llm_calls_per_week"):
@@ -1539,9 +1495,7 @@ class TestPaidCallsFlag:
 
         assert "paid_calls_enabled" in NON_RECIPE_SETTINGS_FIELDS
         baseline = make_settings(**REQUIRED_ENV_KWARGS).config_hash()
-        flipped = make_settings(
-            **REQUIRED_ENV_KWARGS, paid_calls_enabled=True
-        ).config_hash()
+        flipped = make_settings(**REQUIRED_ENV_KWARGS, paid_calls_enabled=True).config_hash()
         assert flipped == baseline
 
 
@@ -1672,8 +1626,7 @@ class TestHeartbeatUrl:
         monkeypatch.setenv("HEARTBEAT_URL", "https://hc-ping.com/abc-from-env")
 
         assert (
-            make_settings(**REQUIRED_ENV_KWARGS).heartbeat_url
-            == "https://hc-ping.com/abc-from-env"
+            make_settings(**REQUIRED_ENV_KWARGS).heartbeat_url == "https://hc-ping.com/abc-from-env"
         )
 
 
@@ -1793,8 +1746,13 @@ class TestFastLoopWeeklyBudget:
 
         # 3 symbole za bramką (CSPX.L bez ceny), sufit 5 i dwa symbole naraz.
         bound = capped_cycle_call_upper_bound(
-            n_gated=3, n_av_symbols=3, personas=7, debate=False, tool_rounds=0,
-            cap=5, concurrency=2,
+            n_gated=3,
+            n_av_symbols=3,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            cap=5,
+            concurrency=2,
         )
         assert bound.calls["council_llm"] == 4 + 2 * 8
         assert weekly.cycles_per_week == 10
@@ -1877,10 +1835,7 @@ class TestPersonaVoteOutcomesFlag:
     (przy `persona_weighting_enabled`), więc należy do przepisu."""
 
     def test_defaults_off(self, env: pytest.MonkeyPatch) -> None:
-        assert (
-            make_settings(**REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled
-            is False
-        )
+        assert make_settings(**REQUIRED_ENV_KWARGS).persona_vote_outcomes_enabled is False
 
     def test_is_part_of_the_recipe(self, env: pytest.MonkeyPatch) -> None:
         from src.config import RECIPE_SETTINGS_FIELDS
@@ -1893,10 +1848,7 @@ class TestPersonaBrierRankingFlag:
     odczytu wymagającego migracji, domyślnie off, tylko treść maila."""
 
     def test_defaults_off(self, env: pytest.MonkeyPatch) -> None:
-        assert (
-            make_settings(**REQUIRED_ENV_KWARGS).persona_brier_ranking_enabled
-            is False
-        )
+        assert make_settings(**REQUIRED_ENV_KWARGS).persona_brier_ranking_enabled is False
 
     def test_is_not_part_of_the_recipe(self, env: pytest.MonkeyPatch) -> None:
         from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
@@ -1910,10 +1862,7 @@ class TestCouncilRedundancyFlag:
     jednym efektywnym głosie — sama treść maili, domyślnie off, poza przepisem."""
 
     def test_defaults_off(self, env: pytest.MonkeyPatch) -> None:
-        assert (
-            make_settings(**REQUIRED_ENV_KWARGS).council_redundancy_enabled
-            is False
-        )
+        assert make_settings(**REQUIRED_ENV_KWARGS).council_redundancy_enabled is False
 
     def test_is_not_part_of_the_recipe(self, env: pytest.MonkeyPatch) -> None:
         from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS
@@ -1927,10 +1876,7 @@ class TestCorrectionCategoryFlag:
     diagnozy i jej odczyt w panelu lessons; prognoza ta sama, poza przepisem."""
 
     def test_defaults_off(self, env: pytest.MonkeyPatch) -> None:
-        assert (
-            make_settings(**REQUIRED_ENV_KWARGS).correction_category_enabled
-            is False
-        )
+        assert make_settings(**REQUIRED_ENV_KWARGS).correction_category_enabled is False
 
     def test_is_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -1958,6 +1904,7 @@ class TestDiagnosisBackfillSettings:
         assert {"diagnosis_backfill_enabled", "diagnosis_backfill_max_calls"} <= (
             NON_RECIPE_SETTINGS_FIELDS
         )
+
 
 class TestPriceAlerts:
     """ALR-11: lista startowa `price_alerts` z config.toml i flaga watcha (off do

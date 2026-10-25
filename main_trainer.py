@@ -404,9 +404,7 @@ def _train_pooled_model(
     przebiegu. Zwraca liczbę niepowodzeń (0 albo 1); wiersz karty modelu zapisuje
     use case jako `POOLED_MODEL_SYMBOL`."""
     try:
-        result = use_case.run_pooled(
-            trainable, record_scorecard=settings.model_scorecard_enabled
-        )
+        result = use_case.run_pooled(trainable, record_scorecard=settings.model_scorecard_enabled)
     except Exception:
         logger.exception("Pooled training failed")
         return 1
@@ -492,9 +490,9 @@ def _review_challengers(
         return
     dead_band = float(load_evaluation_protocol().directional_dead_zone)
     try:
-        verdicts = ReviewChallengersUseCase(
-            repository, clock=lambda: datetime.now(UTC)
-        ).run(dead_band=dead_band)
+        verdicts = ReviewChallengersUseCase(repository, clock=lambda: datetime.now(UTC)).run(
+            dead_band=dead_band
+        )
     except PortError:
         logger.warning("Champion/challenger review failed — pomijam", exc_info=True)
         return

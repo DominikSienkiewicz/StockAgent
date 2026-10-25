@@ -44,10 +44,12 @@ CANARY = "TAINTCANARY7F3A"
 
 # Pola, które bez `prompt_taint_fence_enabled` idą do promptu surowo (decyzja: fence
 # zmienia tekst promptu, więc czeka za flagą do końca EXP-02/03).
-KNOWN_LEAKS_WITHOUT_FLAG = frozenset({
-    "prediction-reflection_context",
-    "chairman-reasoning",
-})
+KNOWN_LEAKS_WITHOUT_FLAG = frozenset(
+    {
+        "prediction-reflection_context",
+        "chairman-reasoning",
+    }
+)
 
 _FENCE_RE = re.compile(
     r"<<<UNTRUSTED_(?P<label>[A-Z0-9_]+)_DATA>>>.*?<<<END_UNTRUSTED_(?P=label)_DATA>>>",

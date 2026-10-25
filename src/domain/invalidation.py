@@ -34,9 +34,7 @@ class Invalidation:
 INVALIDATION_BAND = Decimal("0.15")
 
 
-def is_valid_invalidation(
-    trend: TrendDirection, current_price: Decimal, level: Decimal
-) -> bool:
+def is_valid_invalidation(trend: TrendDirection, current_price: Decimal, level: Decimal) -> bool:
     """Czy `level` jest poziomem unieważnienia tezy `trend` przy cenie `current_price`:
     po właściwej stronie ceny i najdalej o `INVALIDATION_BAND` od niej."""
     if current_price <= 0 or level <= 0 or level == current_price:

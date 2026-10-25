@@ -287,9 +287,7 @@ def summarize_run(
             skipped += 1
 
     total = accepted + rejected + skipped
-    summary_line = (
-        f"zaakceptowano {accepted}, odrzucono {rejected}, pominięto {skipped}"
-    )
+    summary_line = f"zaakceptowano {accepted}, odrzucono {rejected}, pominięto {skipped}"
     return RunSummary(
         total=total,
         accepted=accepted,
@@ -335,7 +333,5 @@ def summarize_evaluations(statuses: Iterable[str]) -> EvaluationSummary:
         passed=passed,
         failed=failed,
         skipped=skipped,
-        summary_line=(
-            f"bramkę przeszło {passed}, nie przeszło {failed}, pominięto {skipped}"
-        ),
+        summary_line=(f"bramkę przeszło {passed}, nie przeszło {failed}, pominięto {skipped}"),
     )

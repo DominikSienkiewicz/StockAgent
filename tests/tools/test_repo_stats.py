@@ -93,8 +93,7 @@ def test_counts_come_from_the_sources_not_from_imports() -> None:
             "def helper():\n    pass\n"
         ),
         "src/application/ports.py": (
-            "from abc import ABC\n\nclass APort(ABC):\n    pass\n\n"
-            "class NotAPort:\n    pass\n"
+            "from abc import ABC\n\nclass APort(ABC):\n    pass\n\nclass NotAPort:\n    pass\n"
         ),
         "src/infrastructure/adapters/a.py": "",
         "src/infrastructure/adapters/_http.py": "",

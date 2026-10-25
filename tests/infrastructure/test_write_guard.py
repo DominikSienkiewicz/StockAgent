@@ -48,9 +48,7 @@ GUARD_IDS = [guard.__name__ for _, guard in GUARDS]
 
 def _cases(kind: str) -> list[tuple[type[ABC], Any, str]]:
     return [
-        (port, guard, method)
-        for port, guard in GUARDS
-        for method in sorted(getattr(guard, kind))
+        (port, guard, method) for port, guard in GUARDS for method in sorted(getattr(guard, kind))
     ]
 
 

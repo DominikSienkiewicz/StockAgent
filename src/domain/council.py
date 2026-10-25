@@ -157,9 +157,7 @@ class CouncilVerdict:
             (REVISION_COUNCIL_ROUND, self.investor_opinions),
         )
 
-    def has_strong_consensus(
-        self, threshold: float = STRONG_CONSENSUS_THRESHOLD
-    ) -> bool:
+    def has_strong_consensus(self, threshold: float = STRONG_CONSENSUS_THRESHOLD) -> bool:
         """Czy rada wyraźnie się zgadza (consensus_strength ≥ threshold).
 
         Używane przez raport (czerwona/zielona banda) i potencjalnie przez
@@ -199,8 +197,7 @@ class CouncilVerdict:
         if not self.investor_opinions:
             return 0.0
         dissenting = sum(
-            1 for op in self.investor_opinions
-            if op.recommendation != self.final_recommendation
+            1 for op in self.investor_opinions if op.recommendation != self.final_recommendation
         )
         return dissenting / len(self.investor_opinions)
 
@@ -216,8 +213,7 @@ class CouncilVerdict:
         return sum(
             1
             for op in self.investor_opinions
-            if op.investor_name in prior
-            and prior[op.investor_name] != op.recommendation
+            if op.investor_name in prior and prior[op.investor_name] != op.recommendation
         )
 
 

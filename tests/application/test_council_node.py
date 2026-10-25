@@ -78,16 +78,18 @@ def _make_graph_with_repo(
     }
     if main_llm_fails:
         llm.analyze.side_effect = RuntimeError("Anthropic 529 Overloaded")
-    graph = create_agent_graph(make_deps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repo,
-        ml_port=ml,
-        llm_port=llm,
-        council_port=council_port,
-        council_threshold=council_threshold,
-    ))
+    graph = create_agent_graph(
+        make_deps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repo,
+            ml_port=ml,
+            llm_port=llm,
+            council_port=council_port,
+            council_threshold=council_threshold,
+        )
+    )
     return graph, repo
 
 
@@ -135,20 +137,22 @@ def _make_crypto_graph(
         "target_price_12h": 185.0,
         "reasoning": "Strong momentum.",
     }
-    graph = create_agent_graph(make_deps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repo,
-        ml_port=ml,
-        llm_port=llm,
-        # Główna bramka nisko (0.5%) — żeby krypto zawsze ją przeszło.
-        threshold=Threshold(Decimal("0.005")),
-        crypto_threshold=Threshold(Decimal("0.005")),
-        council_port=council_port,
-        council_threshold=council_threshold,
-        crypto_council_threshold=crypto_council_threshold,
-    ))
+    graph = create_agent_graph(
+        make_deps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repo,
+            ml_port=ml,
+            llm_port=llm,
+            # Główna bramka nisko (0.5%) — żeby krypto zawsze ją przeszło.
+            threshold=Threshold(Decimal("0.005")),
+            crypto_threshold=Threshold(Decimal("0.005")),
+            council_port=council_port,
+            council_threshold=council_threshold,
+            crypto_council_threshold=crypto_council_threshold,
+        )
+    )
     return graph, repo
 
 
@@ -205,7 +209,6 @@ class TestCouncilNodeIntegration:
         data = council_port.analyze.call_args.args[1]
         assert data.ml_model_active is True
         assert data.ml_price_target == Decimal("185.00")
-
 
     def test_council_skipped_when_main_llm_failed(self) -> None:
         # WIA-08: po awarii głównego LLM rada dostawała zastępcze „SIDEWAYS 50%”
@@ -295,9 +298,7 @@ class TestCouncilVolatilityThreshold:
         all_args = dict(call.kwargs)
         if call.args:
             # pozycyjne: (prediction_id, symbol, votes)
-            for key, val in zip(
-                ["prediction_id", "symbol", "votes"], call.args, strict=False
-            ):
+            for key, val in zip(["prediction_id", "symbol", "votes"], call.args, strict=False):
                 all_args.setdefault(key, val)
         assert all_args["prediction_id"] == "pred-123"
         assert all_args["symbol"] == "AAPL"
@@ -305,16 +306,12 @@ class TestCouncilVolatilityThreshold:
         assert all_args["votes"][0].investor_name == "Warren Buffett"
 
     @pytest.mark.parametrize("debated", [False, True])
-    def test_verdict_blob_keeps_its_keys_with_and_without_a_revision(
-        self, debated: bool
-    ) -> None:
+    def test_verdict_blob_keeps_its_keys_with_and_without_a_revision(self, debated: bool) -> None:
         # ML-40: rundy niesie `council_votes.round` (migracja 082); JSONB
         # `council_verdict` zostaje bajt w bajt jak przed polem rundy 1.
         verdict = _make_verdict()
         if debated:
-            verdict = dataclasses.replace(
-                verdict, first_round_opinions=verdict.investor_opinions
-            )
+            verdict = dataclasses.replace(verdict, first_round_opinions=verdict.investor_opinions)
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = verdict
         graph, repo = _make_graph_with_repo(council_port=council_port)
@@ -334,9 +331,7 @@ class TestCouncilVolatilityThreshold:
     def test_debated_verdict_saves_both_rounds(self) -> None:
         # ML-40: najpierw runda 1, potem rewizja — każda ze swoim numerem rundy.
         verdict = _make_verdict()
-        first_round = (
-            dataclasses.replace(verdict.investor_opinions[0], recommendation="SELL"),
-        )
+        first_round = (dataclasses.replace(verdict.investor_opinions[0], recommendation="SELL"),)
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = dataclasses.replace(
             verdict, first_round_opinions=first_round
@@ -429,11 +424,13 @@ class TestCryptoCouncilVolatilityThreshold:
         )
         app = graph.compile()
         asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
-        result = app.invoke({
-            "symbol": "BTC",
-            "previous_price": Decimal("170.00"),
-            "asset": asset,
-        })
+        result = app.invoke(
+            {
+                "symbol": "BTC",
+                "previous_price": Decimal("170.00"),
+                "asset": asset,
+            }
+        )
         # Sedno: rada pominięta DZIĘKI progowi krypto (5.88% < 8%), mimo że
         # próg akcji (2%) by ją przepuścił. To dowodzi, że crypto override działa.
         council_port.analyze.assert_not_called()
@@ -455,11 +452,13 @@ class TestCryptoCouncilVolatilityThreshold:
         )
         app = graph.compile()
         asset = Asset(symbol="BTC", asset_type=AssetType.CRYPTO)
-        result = app.invoke({
-            "symbol": "BTC",
-            "previous_price": Decimal("170.00"),
-            "asset": asset,
-        })
+        result = app.invoke(
+            {
+                "symbol": "BTC",
+                "previous_price": Decimal("170.00"),
+                "asset": asset,
+            }
+        )
         # Sedno: rada ODPALIŁA DZIĘKI progowi krypto (5.88% ≥ 3%), mimo że
         # próg akcji (20%) by ją zablokował.
         council_port.analyze.assert_called_once()

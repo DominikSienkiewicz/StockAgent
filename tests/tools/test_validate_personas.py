@@ -1,5 +1,6 @@
 # tests/tools/test_validate_personas.py
 """Smoke testy CLI walidatora person."""
+
 from __future__ import annotations
 
 import json
@@ -56,9 +57,7 @@ class TestValidatePersonasCLI:
         rc = validate_main(["--dir", str(tmp_path)])
         assert rc == 1
 
-    def test_default_dir_is_data_council_personas(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_default_dir_is_data_council_personas(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Brak --dir → użyj DEFAULT_PERSONAS_DIR. W repo ten katalog istnieje
         # z 7 wygenerowanymi plikami (rada ograniczona do 7 doradców).
         rc = validate_main([])

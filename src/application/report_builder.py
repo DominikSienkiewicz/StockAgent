@@ -153,9 +153,7 @@ def _cluster_exposure_per_symbol(
     exposures = portfolio.cluster_exposure(clusters, current_prices)
     by_cluster = {e.cluster: e.weight for e in exposures}
     return {
-        symbol: by_cluster[cluster]
-        for symbol, cluster in clusters.items()
-        if cluster in by_cluster
+        symbol: by_cluster[cluster] for symbol, cluster in clusters.items() if cluster in by_cluster
     }
 
 
@@ -212,14 +210,10 @@ def to_lead_signals(
                 price_delta_pct=PriceDelta(r.delta).percent,
                 council_verdict=r.council_verdict,
                 resolved_label=labels.get(r.symbol),
-                position_weight=(
-                    portfolio_weights.get(r.symbol) if portfolio_weights else None
-                ),
+                position_weight=(portfolio_weights.get(r.symbol) if portfolio_weights else None),
                 crossed_volatility_gate=r.status == "saved",
                 consensus_shift=shifts.get(r.symbol),
-                insider_buy_label=_insider_buy_label(
-                    alpha_signals, r.symbol, insider_lead_window
-                ),
+                insider_buy_label=_insider_buy_label(alpha_signals, r.symbol, insider_lead_window),
                 shock_pct=shocks.get(r.symbol),
                 analyst_revision_label=_analyst_revision_label(alpha_signals, r.symbol),
                 earnings_event=earnings.get(r.symbol),
@@ -272,17 +266,13 @@ def _weight_prices(
     return portfolio.pln_prices(prices, rates).prices
 
 
-def _report_prices(
-    results: list[SymbolResult], context: ReportContext
-) -> dict[str, Decimal]:
+def _report_prices(results: list[SymbolResult], context: ReportContext) -> dict[str, Decimal]:
     """#15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione cenami pozycji
     spoza watchlisty (`held_prices`). Cena z cyklu ma pierwszeństwo."""
     return {**(context.held_prices or {}), **_current_prices_of(results)}
 
 
-def build_cycle_lead(
-    results: list[SymbolResult], context: ReportContext
-) -> list[LeadItem]:
+def build_cycle_lead(results: list[SymbolResult], context: ReportContext) -> list[LeadItem]:
     """#1/PORT-10: lead cyklu — jedno źródło dla treści maila i jego tematu.
 
     Gdy znamy realny portfel, sygnały niosą wagi pozycji, więc ruch i sygnał
@@ -735,9 +725,7 @@ def to_symbol_result(
 
     # Q6: odznaki proweniencji — z degraded_reason, wieku fundamentów (TTL) i
     # data_quality_flags. Cała ocena progu żyje w domenie (build_provenance_badges).
-    fundamentals_fetched_at = (
-        fundamentals.fetched_at if fundamentals is not None else None
-    )
+    fundamentals_fetched_at = fundamentals.fetched_at if fundamentals is not None else None
     provenance_badges = build_provenance_badges(
         degraded_reason=sentiment.get("degraded_reason"),
         fundamentals_fetched_at=fundamentals_fetched_at,
@@ -841,8 +829,7 @@ def _clean_reflection(raw_ctx: Any) -> str | None:
 def _extract_top_news(news_items: list[dict[str, Any]], top_n: int = 2) -> list[TopNewsItem]:
     """Top N artykułów po relevance_score (z bonusem dla high-sentiment)."""
     valid = [
-        item for item in news_items
-        if item.get("relevance_score") is not None and item.get("title")
+        item for item in news_items if item.get("relevance_score") is not None and item.get("title")
     ]
     sorted_news = sorted(valid, key=lambda x: float(x["relevance_score"] or 0), reverse=True)
     return [

@@ -516,9 +516,7 @@ def _newest_metrics_row(
     with_metrics = [
         (stamp, row) for stamp, row in run if row.get("candidate_holdout_rmse") is not None
     ]
-    accepted = [
-        pair for pair in with_metrics if pair[1].get("status") == "trained_successfully"
-    ]
+    accepted = [pair for pair in with_metrics if pair[1].get("status") == "trained_successfully"]
     for candidates in (accepted, with_metrics):
         if candidates:
             return max(candidates, key=lambda pair: pair[0])[1]

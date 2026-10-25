@@ -44,8 +44,7 @@ class CalibrateConfidenceUseCase:
         usable = [
             r
             for r in rows
-            if r.get("confidence_score") is not None
-            and r.get("is_trend_correct") is not None
+            if r.get("confidence_score") is not None and r.get("is_trend_correct") is not None
         ]
         if not usable:
             return {
@@ -53,9 +52,7 @@ class CalibrateConfidenceUseCase:
                 "reason": "Brak rozliczonych predykcji z zapisaną pewnością.",
             }
 
-        samples = [
-            (float(r["confidence_score"]), bool(r["is_trend_correct"])) for r in usable
-        ]
+        samples = [(float(r["confidence_score"]), bool(r["is_trend_correct"])) for r in usable]
         scores = {
             str(row["id"]): self._score(confidence, correct)
             for row, (confidence, correct) in zip(usable, samples, strict=True)

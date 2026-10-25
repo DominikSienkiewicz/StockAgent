@@ -106,9 +106,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             logger.warning("Tool %s raised: %s", tool.name, message)
             return {"error": message}
 
-    def analyze_with_tools(
-        self, prompt: str, tools: Sequence[Tool]
-    ) -> dict[str, Any]:
+    def analyze_with_tools(self, prompt: str, tools: Sequence[Tool]) -> dict[str, Any]:
         tools_by_name = {tool.name: tool for tool in tools}
         tool_schema = self._map_tools(tools)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
@@ -160,9 +158,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             for call in tool_calls:
                 tool = tools_by_name.get(call.function.name)
                 if tool is None:
-                    result: dict[str, Any] = {
-                        "error": f"unknown tool: {call.function.name}"
-                    }
+                    result: dict[str, Any] = {"error": f"unknown tool: {call.function.name}"}
                 else:
                     result = self._execute_tool(tool, call.function.arguments)
                 messages.append(
@@ -177,9 +173,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
     @staticmethod
     def _parse_final(content: str | None) -> dict[str, Any]:
         if not content:
-            raise MalformedPayload(
-                "OpenAI tool-use returned empty content for the final answer."
-            )
+            raise MalformedPayload("OpenAI tool-use returned empty content for the final answer.")
         try:
             return parse_json_object(content)
         except json.JSONDecodeError as exc:

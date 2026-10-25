@@ -25,10 +25,20 @@ class TestBuildSimilarContextRerank:
     def test_reranks_by_outcome_in_built_text(self) -> None:
         repo = Mock(spec=RepositoryPort)
         repo.find_similar_predictions.return_value = [
-            {"news_summary": "ALPHA", "predicted_trend": "BULLISH",
-             "is_trend_correct": False, "similarity": 0.9, "correction_insights": ""},
-            {"news_summary": "BETA", "predicted_trend": "BEARISH",
-             "is_trend_correct": True, "similarity": 0.85, "correction_insights": ""},
+            {
+                "news_summary": "ALPHA",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": False,
+                "similarity": 0.9,
+                "correction_insights": "",
+            },
+            {
+                "news_summary": "BETA",
+                "predicted_trend": "BEARISH",
+                "is_trend_correct": True,
+                "similarity": 0.85,
+                "correction_insights": "",
+            },
         ]
         # BETA trafiony (0.85+0.3=1.15) > ALPHA nietrafiony (0.9) → BETA wyżej.
         # _build_similar_context zwraca (tekst, rekordy) — receipts #Q5.
@@ -63,10 +73,7 @@ class TestRerankAnalogs:
         assert [r["id"] for r in result] == ["b", "a"]
 
     def test_top_k_truncates(self) -> None:
-        records = [
-            {"id": str(i), "similarity": i / 10, "is_trend_correct": None}
-            for i in range(5)
-        ]
+        records = [{"id": str(i), "similarity": i / 10, "is_trend_correct": None} for i in range(5)]
         result = rerank_analogs(records, outcome_weight=0.3, top_k=2)
         assert len(result) == 2
 

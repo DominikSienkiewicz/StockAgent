@@ -9,6 +9,7 @@ Tutaj testujemy *infrastrukturę* (loader działa, autoescape włączone,
 templates istnieją na dysku), a nie ich treść — content jest pokryty
 przez test_report_council.py / test_report_valuation_section.py.
 """
+
 from __future__ import annotations
 
 from src.application.report_templates import get_template, render_template

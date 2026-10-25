@@ -70,9 +70,7 @@ class AlphaEnrichmentUseCase:
     def fetch_corporate_events(self, symbol: str) -> CorporateEventSnapshot | None:
         """DAT-17: raporty 8-K symbolu gracefully (błąd → None). Tylko spółki: ETF-y
         nie składają 8-K, a ticker krypto w mapie SEC może należeć do trustu ETF."""
-        if self._corporate_events is None or not has_insider_filings(
-            self._asset_type_of(symbol)
-        ):
+        if self._corporate_events is None or not has_insider_filings(self._asset_type_of(symbol)):
             return None
         return self._safe(self._corporate_events.get_corporate_events, symbol, "8-K")
 
@@ -125,9 +123,7 @@ class AlphaEnrichmentUseCase:
         return fundamentals.market_cap if fundamentals is not None else None
 
     @staticmethod
-    def _safe(
-        fetch: Callable[[str], _T | None], symbol: str, source: str
-    ) -> _T | None:
+    def _safe(fetch: Callable[[str], _T | None], symbol: str, source: str) -> _T | None:
         """Wywołuje port gracefully — błąd → None + log, nigdy nie propaguje."""
         try:
             return fetch(symbol)

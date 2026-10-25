@@ -90,8 +90,7 @@ class CascadingLLMAdapter(LLMPort):
             return _marked(cheap_result, self._cheap_model)
 
         logger.info(
-            "Escalating to frontier LLM: cheap confidence %.3f < floor %.3f "
-            "(escalation %d/%d)",
+            "Escalating to frontier LLM: cheap confidence %.3f < floor %.3f (escalation %d/%d)",
             confidence,
             self._routing_floor,
             escalation,

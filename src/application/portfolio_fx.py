@@ -87,4 +87,3 @@ def _rate(fx: FxRatePort, currency: str, day: date) -> FxRate | None:
     except Exception:
         logger.exception("FX rate for %s on %s failed — left without a rate", currency, day)
         return None
-

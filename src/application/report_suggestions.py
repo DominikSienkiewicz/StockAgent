@@ -83,12 +83,8 @@ def build_sector_suggestions(
             key=lambda m: abs(m.delta),  # type: ignore[arg-type]
             reverse=True,
         )
-        drivers = [
-            (m.symbol, m.delta) for m in drivers_sorted[:MAX_DRIVERS] if m.delta is not None
-        ]
-        suggestions.append(
-            (max_move, SectorSuggestion(sector, drivers, candidates))
-        )
+        drivers = [(m.symbol, m.delta) for m in drivers_sorted[:MAX_DRIVERS] if m.delta is not None]
+        suggestions.append((max_move, SectorSuggestion(sector, drivers, candidates)))
 
     # Ranking: najmocniejszy ruch pierwszy, remis → alfabetycznie wg sektora.
     suggestions.sort(key=lambda pair: (-pair[0], pair[1].sector))
@@ -122,8 +118,7 @@ def render_suggestions_html(suggestions: list[SectorSuggestion]) -> str:
         )
     return (
         "<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>"
-        "💡 Warte uwagi (sektory w ruchu)</h2>"
-        + "".join(rows)
+        "💡 Warte uwagi (sektory w ruchu)</h2>" + "".join(rows)
     )
 
 
@@ -133,17 +128,13 @@ def render_suggestions_text(suggestions: list[SectorSuggestion]) -> str:
         return ""
     lines = ["WARTE UWAGI (sektory w ruchu)", "-" * 64]
     for s in suggestions:
-        lines.append(
-            f"  {s.sector} — gorący ({_fmt_drivers(s.drivers)})"
-        )
+        lines.append(f"  {s.sector} — gorący ({_fmt_drivers(s.drivers)})")
         lines.append(f"      rozważ: {', '.join(s.candidates)}")
     return "\n".join(lines)
 
 
 def _suggestions(data: SectionInput) -> list[SectorSuggestion]:
-    return build_sector_suggestions(
-        data.results, data.sector_map, data.context.sector_peers or {}
-    )
+    return build_sector_suggestions(data.results, data.sector_map, data.context.sector_peers or {})
 
 
 def _section_html(data: SectionInput) -> str:

@@ -54,9 +54,7 @@ MONDAY_DEADMAN = datetime(2026, 10, 19, 9, 17, tzinfo=UTC)
 
 
 def test_monday_morning_after_friday_cycle_is_not_overdue() -> None:
-    assert not is_overdue_on_trading_days(
-        FRIDAY_CYCLE, MONDAY_DEADMAN, START_OF_TRADING_DAY, GRACE
-    )
+    assert not is_overdue_on_trading_days(FRIDAY_CYCLE, MONDAY_DEADMAN, START_OF_TRADING_DAY, GRACE)
     # Reguła godzinowa z tą samą przerwą alarmowałaby po każdym weekendzie.
     assert is_overdue(FRIDAY_CYCLE, MONDAY_DEADMAN, max_gap_hours=26)
 
@@ -64,9 +62,7 @@ def test_monday_morning_after_friday_cycle_is_not_overdue() -> None:
 def test_weekend_check_after_friday_cycle_is_not_overdue() -> None:
     sunday_deadman = datetime(2026, 10, 18, 9, 17, tzinfo=UTC)
 
-    assert not is_overdue_on_trading_days(
-        FRIDAY_CYCLE, sunday_deadman, START_OF_TRADING_DAY, GRACE
-    )
+    assert not is_overdue_on_trading_days(FRIDAY_CYCLE, sunday_deadman, START_OF_TRADING_DAY, GRACE)
 
 
 def test_two_missed_trading_days_is_overdue() -> None:
@@ -74,9 +70,7 @@ def test_two_missed_trading_days_is_overdue() -> None:
     tuesday_cycle = datetime(2026, 10, 13, 5, 35, tzinfo=UTC)
     thursday_deadman = datetime(2026, 10, 15, 9, 17, tzinfo=UTC)
 
-    assert is_overdue_on_trading_days(
-        tuesday_cycle, thursday_deadman, START_OF_TRADING_DAY, GRACE
-    )
+    assert is_overdue_on_trading_days(tuesday_cycle, thursday_deadman, START_OF_TRADING_DAY, GRACE)
 
 
 def test_holiday_is_not_a_missed_trading_day() -> None:

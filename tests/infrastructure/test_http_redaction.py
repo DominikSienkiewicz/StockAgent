@@ -118,7 +118,9 @@ class TestRedactSecrets:
 
 class TestRaiseForStatusRedacted:
     def test_http_error_keeps_type_and_response_without_secret(self) -> None:
-        response = _real_response(401, f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={SECRET}")
+        response = _real_response(
+            401, f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={SECRET}"
+        )
 
         with pytest.raises(requests.HTTPError) as excinfo:
             raise_for_status_redacted(response)

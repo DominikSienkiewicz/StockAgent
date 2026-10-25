@@ -7,6 +7,7 @@ Po naprawie:
 - logger.warning() emitowane gdy są jakieś flagi
 - brak flag = lista pusta (NIE None — łatwiejsze SQL: `array_length(...) = 0`)
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,15 +55,17 @@ def _make_graph(
         "av_agreement": 0.9,
         "reasoning": "OK",
     }
-    graph = create_agent_graph(AgentGraphDeps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repo,
-        ml_port=ml,
-        llm_port=llm,
-        threshold=Threshold(Decimal("0.02")),
-    ))
+    graph = create_agent_graph(
+        AgentGraphDeps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repo,
+            ml_port=ml,
+            llm_port=llm,
+            threshold=Threshold(Decimal("0.02")),
+        )
+    )
     return graph, repo
 
 
@@ -76,9 +79,7 @@ class TestDataQualityFlags:
             "high_relevance_count": 3,
         }
         graph, repo = _make_graph(sentiment_payload=clean)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         assert "data_quality_flags" in record
         assert record["data_quality_flags"] == []
@@ -93,9 +94,7 @@ class TestDataQualityFlags:
             "high_relevance_count": 3,
         }
         graph, repo = _make_graph(sentiment_payload=bad)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         flags = record["data_quality_flags"]
         assert "av_sentiment_score_missing" in flags
@@ -110,9 +109,7 @@ class TestDataQualityFlags:
             "high_relevance_count": 3,
         }
         graph, repo = _make_graph(sentiment_payload=bad)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         flags = record["data_quality_flags"]
         assert "news_volume_24h_invalid" in flags
@@ -126,9 +123,7 @@ class TestDataQualityFlags:
             "high_relevance_count": 3,
         }
         graph, repo = _make_graph(sentiment_payload=bad)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         flags = record["data_quality_flags"]
         assert "av_sentiment_score_invalid" in flags
@@ -142,9 +137,7 @@ class TestDataQualityFlags:
             "high_relevance_count": "junk",
         }
         graph, repo = _make_graph(sentiment_payload=bad)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         flags = record["data_quality_flags"]
         assert len(flags) >= 3
@@ -159,9 +152,7 @@ class TestDataQualityFlags:
         }
         graph, _ = _make_graph(sentiment_payload=bad)
         with caplog.at_level(logging.WARNING, logger="src.application.agent_graph"):
-            graph.compile().invoke(
-                {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-            )
+            graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         joined = " ".join(rec.message for rec in caplog.records)
         assert "data_quality" in joined.lower() or "av_sentiment_score_missing" in joined
 
@@ -178,9 +169,7 @@ class TestDataQualityFlags:
             "degraded_reason": "av_keys_exhausted",
         }
         graph, repo = _make_graph(sentiment_payload=payload_with_degradation)
-        graph.compile().invoke(
-            {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-        )
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         record = repo.save_prediction.call_args.args[0]
         assert "av_keys_exhausted" in record["data_quality_flags"]
 
@@ -194,8 +183,6 @@ class TestDataQualityFlags:
         }
         graph, _ = _make_graph(sentiment_payload=clean)
         with caplog.at_level(logging.WARNING, logger="src.application.agent_graph"):
-            graph.compile().invoke(
-                {"symbol": "AAPL", "previous_price": Decimal("160.00")}
-            )
+            graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
         joined = " ".join(rec.message for rec in caplog.records)
         assert "data_quality" not in joined.lower()

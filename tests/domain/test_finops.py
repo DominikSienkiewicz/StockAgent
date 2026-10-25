@@ -179,9 +179,7 @@ def test_fully_gated_cycle_has_a_zero_bound() -> None:
     assert estimate_cycle_cost(bound.calls).total_usd == 0.0
 
 
-@pytest.mark.parametrize(
-    "field", ["n_gated", "n_av_symbols", "personas", "tool_rounds"]
-)
+@pytest.mark.parametrize("field", ["n_gated", "n_av_symbols", "personas", "tool_rounds"])
 def test_upper_bound_rejects_negative_inputs(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         _bound(**cast(dict[str, Any], {field: -1}))
@@ -193,9 +191,7 @@ def test_upper_bound_rejects_negative_inputs(field: str) -> None:
 def test_av_budget_flags_worst_case_above_capacity() -> None:
     from src.domain.finops import AV_DAILY_REQUESTS_PER_KEY, av_daily_budget
 
-    over = av_daily_budget(
-        n_av_symbols=43, requests_per_symbol=1, cycles_per_day=1, n_keys=1
-    )
+    over = av_daily_budget(n_av_symbols=43, requests_per_symbol=1, cycles_per_day=1, n_keys=1)
 
     assert AV_DAILY_REQUESTS_PER_KEY == 25
     assert over.ok is False
@@ -497,9 +493,7 @@ def test_cycle_cost_takes_token_costs_and_falls_back_per_source() -> None:
 
     calls = {"llm": 2, "sentiment": 2, "council_llm": 8}
 
-    cost = estimate_cycle_cost(
-        calls, token_costs={"llm": 0.012}, priced_as_of=date(2026, 10, 20)
-    )
+    cost = estimate_cycle_cost(calls, token_costs={"llm": 0.012}, priced_as_of=date(2026, 10, 20))
 
     lines = {line.source: line for line in cost.lines}
     assert lines["llm"].from_tokens is True
@@ -558,8 +552,13 @@ def test_capped_bound_without_a_ceiling_is_the_plain_bound() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     capped = capped_cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
-        cap=None, concurrency=4,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=None,
+        concurrency=4,
     )
     plain = cycle_call_upper_bound(
         n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0
@@ -575,8 +574,13 @@ def test_ceiling_bounds_council_requests_by_cap_and_concurrency() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
-        cap=100, concurrency=4,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=100,
+        concurrency=4,
     )
 
     assert bound.calls["council_llm"] == 131
@@ -596,8 +600,13 @@ def test_ceiling_cuts_analysed_symbols_but_not_their_diagnoses() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=10, n_av_symbols=10, personas=0, debate=False, tool_rounds=0,
-        cap=3, concurrency=1,
+        n_gated=10,
+        n_av_symbols=10,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
+        cap=3,
+        concurrency=1,
     )
 
     assert bound.calls["llm"] == 3 * 2 + 7
@@ -612,8 +621,13 @@ def test_ceiling_never_raises_the_plain_bound() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3,
-        cap=1000, concurrency=4,
+        n_gated=2,
+        n_av_symbols=1,
+        personas=7,
+        debate=True,
+        tool_rounds=3,
+        cap=1000,
+        concurrency=4,
     )
     plain = cycle_call_upper_bound(
         n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3
@@ -629,8 +643,13 @@ def test_capped_bound_rejects_an_empty_ceiling_or_pool(cap: int, concurrency: in
 
     with pytest.raises(ValueError, match="must be >= 1"):
         capped_cycle_call_upper_bound(
-            n_gated=1, n_av_symbols=1, personas=7, debate=False, tool_rounds=0,
-            cap=cap, concurrency=concurrency,
+            n_gated=1,
+            n_av_symbols=1,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            cap=cap,
+            concurrency=concurrency,
         )
 
 
@@ -688,8 +707,13 @@ def test_weekly_budget_rejects_invalid_inputs(
 
 def test_bound_without_escalations_and_shadow_is_the_bound_of_today() -> None:
     explicit = cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=True, tool_rounds=3,
-        max_escalations=0, max_shadow_calls=0,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=True,
+        tool_rounds=3,
+        max_escalations=0,
+        max_shadow_calls=0,
     )
     plain = _bound(n_gated=42, n_av_symbols=42, debate=True, tool_rounds=3)
 
@@ -701,7 +725,11 @@ def test_frontier_escalations_add_llm_calls_up_to_the_cascade_ceiling() -> None:
     # FIN-21: eskalacja to drugi request `llm` po niepewnej odpowiedzi taniego modelu,
     # najwyżej `routing_max_escalations` razy na cykl.
     bound = cycle_call_upper_bound(
-        n_gated=10, n_av_symbols=10, personas=7, debate=False, tool_rounds=0,
+        n_gated=10,
+        n_av_symbols=10,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
         max_escalations=5,
     )
 
@@ -713,7 +741,11 @@ def test_escalations_never_outnumber_the_answers_that_can_escalate() -> None:
     # Bez rady eskalować może tylko `analyze` predykcji — jedno na symbol za bramką;
     # diagnoza pomyłki (`analyze_mistake`) zawsze idzie do taniego modelu.
     bound = cycle_call_upper_bound(
-        n_gated=2, n_av_symbols=2, personas=0, debate=False, tool_rounds=0,
+        n_gated=2,
+        n_av_symbols=2,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
         max_escalations=5,
     )
 
@@ -723,7 +755,11 @@ def test_escalations_never_outnumber_the_answers_that_can_escalate() -> None:
 
 def _escalated_llm(*, n_gated: int, max_escalations: int) -> int:
     return cycle_call_upper_bound(
-        n_gated=n_gated, n_av_symbols=n_gated, personas=7, debate=False, tool_rounds=0,
+        n_gated=n_gated,
+        n_av_symbols=n_gated,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
         max_escalations=max_escalations,
     ).calls["llm"]
 
@@ -734,8 +770,12 @@ def test_shadow_calls_are_a_separate_source_capped_by_the_hard_limit() -> None:
 
     def shadow(n_gated: int, max_shadow_calls: int) -> int:
         return cycle_call_upper_bound(
-            n_gated=n_gated, n_av_symbols=n_gated, personas=7, debate=False,
-            tool_rounds=0, max_shadow_calls=max_shadow_calls,
+            n_gated=n_gated,
+            n_av_symbols=n_gated,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            max_shadow_calls=max_shadow_calls,
         ).calls.get(SHADOW_LLM_SOURCE, 0)
 
     assert shadow(n_gated=10, max_shadow_calls=3) == 3
@@ -747,14 +787,16 @@ def test_shadow_calls_are_a_separate_source_capped_by_the_hard_limit() -> None:
 
 def test_shadow_calls_do_not_change_the_production_sources() -> None:
     with_shadow = cycle_call_upper_bound(
-        n_gated=10, n_av_symbols=10, personas=7, debate=False, tool_rounds=0,
+        n_gated=10,
+        n_av_symbols=10,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
         max_shadow_calls=3,
     )
     plain = _bound(n_gated=10, n_av_symbols=10)
 
-    assert {k: v for k, v in with_shadow.calls.items() if k in UNIT_COST_USD} == dict(
-        plain.calls
-    )
+    assert {k: v for k, v in with_shadow.calls.items() if k in UNIT_COST_USD} == dict(plain.calls)
 
 
 def test_ceiling_bounds_shadow_calls_by_its_slack() -> None:
@@ -763,8 +805,14 @@ def test_ceiling_bounds_shadow_calls_by_its_slack() -> None:
     from src.domain.finops import SHADOW_LLM_SOURCE, capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=10, n_av_symbols=10, personas=0, debate=False, tool_rounds=0,
-        cap=2, concurrency=1, max_shadow_calls=3,
+        n_gated=10,
+        n_av_symbols=10,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
+        cap=2,
+        concurrency=1,
+        max_shadow_calls=3,
     )
 
     assert bound.calls[SHADOW_LLM_SOURCE] == 2
@@ -774,8 +822,14 @@ def test_ceiling_keeps_the_escalations_of_the_admitted_symbols() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
-        cap=100, concurrency=4, max_escalations=5,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=100,
+        concurrency=4,
+        max_escalations=5,
     )
 
     assert bound.calls["llm"] == 84 + 5
@@ -785,7 +839,11 @@ def test_ceiling_keeps_the_escalations_of_the_admitted_symbols() -> None:
 def test_bound_rejects_negative_escalations_or_shadow_calls(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         cycle_call_upper_bound(
-            n_gated=1, n_av_symbols=1, personas=7, debate=False, tool_rounds=0,
+            n_gated=1,
+            n_av_symbols=1,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
             **{field: -1},
         )
 

@@ -208,9 +208,7 @@ class ClassIsotonicSelection:
         oceniana na samej tej klasie. Klasa z małą próbą i klasa nieznana (None)
         dostają mapę globalną."""
         own = (
-            self.class_selections.get(calibration_class)
-            if calibration_class is not None
-            else None
+            self.class_selections.get(calibration_class) if calibration_class is not None else None
         )
         return (own if own is not None else self.global_selection).calibrator
 

@@ -484,9 +484,7 @@ class EdgarInsiderAdapter(InsiderFlowPort, CorporateEventsPort):
         except (ValueError, TypeError):
             return None
 
-    def _parse_form4(
-        self, cik: str, accession: str, primary_doc: str
-    ) -> _Form4Summary | None:
+    def _parse_form4(self, cik: str, accession: str, primary_doc: str) -> _Form4Summary | None:
         """Fetch + parsuje pojedynczy Form 4 (akcje, wartość USD, rola).
 
         None gdy fetch lub parse XML padnie (filing pomijany w agregacji)."""

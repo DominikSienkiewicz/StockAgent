@@ -61,9 +61,7 @@ class TestTelegramNotifier:
 
     def test_emits_critical_on_4xx_and_does_not_raise(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
-        notifier = TelegramNotifier(
-            bot_token="123:ABC", chat_id="42", quota_monitor=monitor
-        )
+        notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(403))
 
         # Złamany kanał nie ma prawa wywalić cyklu.
@@ -75,9 +73,7 @@ class TestTelegramNotifier:
 
     def test_emits_critical_on_network_error_and_does_not_raise(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
-        notifier = TelegramNotifier(
-            bot_token="123:ABC", chat_id="42", quota_monitor=monitor
-        )
+        notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
         mocker.patch(
             "requests.Session.post",
             side_effect=requests.ConnectionError("boom"),
@@ -91,9 +87,7 @@ class TestTelegramNotifier:
 
     def test_no_alert_on_200(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
-        notifier = TelegramNotifier(
-            bot_token="123:ABC", chat_id="42", quota_monitor=monitor
-        )
+        notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(200))
 
         notifier.send_report("S", "<p>H</p>", "T")
@@ -109,9 +103,7 @@ class TestTelegramNotifier:
 
     def test_uses_quota_monitor_spec_mock(self, mocker: Any) -> None:
         monitor = Mock(spec=QuotaMonitor)
-        notifier = TelegramNotifier(
-            bot_token="123:ABC", chat_id="42", quota_monitor=monitor
-        )
+        notifier = TelegramNotifier(bot_token="123:ABC", chat_id="42", quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(403))
 
         notifier.send_report("S", "<p>H</p>", "T")

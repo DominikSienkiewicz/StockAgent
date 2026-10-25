@@ -281,9 +281,10 @@ def test_a_ledger_written_by_the_file_publisher_verifies(tmp_path: Path) -> None
     report = tool.verify_ledger(commitments, reveals, malformed=[*bad_commitments, *bad_reveals])
 
     assert report.ok
-    assert json.loads((tmp_path / "commitments.jsonl").read_text(encoding="utf-8"))[
-        "prediction_id"
-    ] == "pred-1"
+    assert (
+        json.loads((tmp_path / "commitments.jsonl").read_text(encoding="utf-8"))["prediction_id"]
+        == "pred-1"
+    )
 
 
 @pytest.mark.parametrize("value", [None, 5, ["x"]])

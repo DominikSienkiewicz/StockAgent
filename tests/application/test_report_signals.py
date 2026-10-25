@@ -72,17 +72,13 @@ class TestBuildTradeSignalsSizeBand:
 
     def test_strong_consensus_good_hitrate_gives_full_band(self) -> None:
         council = _verdict(consensus=0.9, opinions=(_opinion("BUY"), _opinion("BUY")))
-        signals = build_trade_signals(
-            [_saved_result(council=council)], hit_rate=0.7
-        )
+        signals = build_trade_signals([_saved_result(council=council)], hit_rate=0.7)
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "full"
 
     def test_weak_consensus_gives_starter_band(self) -> None:
         council = _verdict(consensus=0.4, opinions=(_opinion("BUY"), _opinion("SELL")))
-        signals = build_trade_signals(
-            [_saved_result(council=council)], hit_rate=0.7
-        )
+        signals = build_trade_signals([_saved_result(council=council)], hit_rate=0.7)
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
@@ -100,9 +96,7 @@ class TestBuildTradeSignalsSizeBand:
             consensus=0.9,
             opinions=(_opinion("BUY"), _opinion("SELL"), _opinion("SELL")),
         )
-        signals = build_trade_signals(
-            [_saved_result(council=council)], hit_rate=0.7
-        )
+        signals = build_trade_signals([_saved_result(council=council)], hit_rate=0.7)
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
@@ -139,9 +133,7 @@ class TestCalibratedConfidenceInSignalRanking:
     def _overconfident_bucket() -> list[CalibrationBucket]:
         # Kubełek 80-90%: deklarowana pewność 0.85, realny hit-rate 0.55.
         return [
-            CalibrationBucket(
-                lower=0.8, upper=0.9, count=100, mean_confidence=0.85, hit_rate=0.55
-            )
+            CalibrationBucket(lower=0.8, upper=0.9, count=100, mean_confidence=0.85, hit_rate=0.55)
         ]
 
     def test_without_buckets_strength_uses_raw_confidence(self) -> None:
@@ -191,9 +183,7 @@ class TestCalibratedConfidenceInSignalRanking:
         assert [s.symbol for s in calibrated] == ["MSFT", "AAPL"]
 
     def test_empty_buckets_behave_like_no_history(self) -> None:
-        (signal,) = build_trade_signals(
-            [self._saved("AAPL", 0.85, "0.10")], calibration_buckets=[]
-        )
+        (signal,) = build_trade_signals([self._saved("AAPL", 0.85, "0.10")], calibration_buckets=[])
 
         assert signal.strength == pytest.approx(0.85 * 10.0)
 
@@ -429,9 +419,7 @@ def test_divergence_copy_is_descriptive_not_diagnostic(delta: Decimal, sentiment
     # zamiast wróżyć „korektę lub pump” albo „okazję lub odbicie”.
     from src.application.report_signals import detect_risk_signals
 
-    result = SymbolResult(
-        symbol="NVDA", status="saved", delta=delta, sentiment_score=sentiment
-    )
+    result = SymbolResult(symbol="NVDA", status="saved", delta=delta, sentiment_score=sentiment)
 
     (signal,) = detect_risk_signals([result])
 
@@ -466,7 +454,9 @@ class TestBuildTradeSignalsPortfolioRisk:
     def _tier(**risk: object) -> str:
         council = _verdict(consensus=0.9, opinions=(_opinion("BUY"), _opinion("BUY")))
         signals = build_trade_signals(
-            [_saved_result(council=council)], hit_rate=0.7, **risk  # type: ignore[arg-type]
+            [_saved_result(council=council)],
+            hit_rate=0.7,
+            **risk,  # type: ignore[arg-type]
         )
         band = signals[0].size_band
         assert band is not None
@@ -632,24 +622,18 @@ class TestForecastHorizonLabel:
 
     def test_display_timezone_adds_the_local_close_hour(self) -> None:
         # Decyzja 2026-10-25: godzina w strefie odbiorcy tym samym helperem co MAIL-29.
-        label = forecast_horizon_label(
-            datetime(2026, 10, 15, 10, 30, tzinfo=UTC), "Europe/Warsaw"
-        )
+        label = forecast_horizon_label(datetime(2026, 10, 15, 10, 30, tzinfo=UTC), "Europe/Warsaw")
 
         assert label == "najbliższe zamknięcie NYSE: czw 15.10 16:00 ET (22:00 czasu PL)"
 
     def test_local_close_hour_follows_the_dst_gap(self) -> None:
         # 26–30.10: Europa już na CET, USA jeszcze na EDT — zamknięcie o 21:00 PL.
-        label = forecast_horizon_label(
-            datetime(2026, 10, 27, 5, 30, tzinfo=UTC), "Europe/Warsaw"
-        )
+        label = forecast_horizon_label(datetime(2026, 10, 27, 5, 30, tzinfo=UTC), "Europe/Warsaw")
 
         assert label == "najbliższe zamknięcie NYSE: wt 27.10 16:00 ET (21:00 czasu PL)"
 
     def test_local_hour_follows_the_early_close_note(self) -> None:
-        label = forecast_horizon_label(
-            datetime(2026, 11, 26, 10, 30, tzinfo=UTC), "Europe/Warsaw"
-        )
+        label = forecast_horizon_label(datetime(2026, 11, 26, 10, 30, tzinfo=UTC), "Europe/Warsaw")
 
         assert label == (
             "najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja) (19:00 czasu PL)"

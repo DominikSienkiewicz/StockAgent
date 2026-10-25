@@ -88,14 +88,12 @@ def test_graceful_when_a_port_raises() -> None:
     _all_none(ports)
     # Insider rzuca — nie wolno wywalić całej agregacji; pozostałe źródła OK.
     ports["insider_port"].get_insider_flow.side_effect = RuntimeError("EDGAR 503")
-    ports["analyst_port"].get_consensus.return_value = AnalystConsensus(
-        "AAPL", buy=7
-    )
+    ports["analyst_port"].get_consensus.return_value = AnalystConsensus("AAPL", buy=7)
 
     signals = AlphaEnrichmentUseCase(**ports).enrich("AAPL")
 
-    assert signals.insider is None          # błąd zdegradowany do None
-    assert signals.analyst is not None      # reszta nadal zebrana
+    assert signals.insider is None  # błąd zdegradowany do None
+    assert signals.analyst is not None  # reszta nadal zebrana
     assert signals.has_any()
 
 

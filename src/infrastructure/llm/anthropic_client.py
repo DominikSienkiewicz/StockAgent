@@ -162,8 +162,7 @@ class AnthropicAdapter(LLMPort):
         odpowiedź da się sparsować (np. ucięty komentarz po kompletnym obiekcie)."""
         if completion.stop_reason in (_STOP_MAX_TOKENS, _STOP_REFUSAL):
             logger.warning(
-                "Anthropic %s stopped with stop_reason=%s after %s output tokens "
-                "(max_tokens=%d)",
+                "Anthropic %s stopped with stop_reason=%s after %s output tokens (max_tokens=%d)",
                 self._model,
                 completion.stop_reason,
                 completion.output_tokens,
@@ -256,9 +255,7 @@ class AnthropicAdapter(LLMPort):
         status = getattr(exc, "status_code", None)
         return status == 429 or (isinstance(status, int) and status >= 500)
 
-    def _compute_wait(
-        self, exc: APIStatusError | APIConnectionError, attempt: int
-    ) -> float:
+    def _compute_wait(self, exc: APIStatusError | APIConnectionError, attempt: int) -> float:
         # Najpierw `retry-after` z odpowiedzi serwera — to jego rekomendacja.
         response = getattr(exc, "response", None)
         if response is not None:
@@ -372,9 +369,7 @@ class AnthropicAdapter(LLMPort):
                     pass
             if incomplete is not None:
                 raise incomplete from None
-            raise MalformedPayload(
-                f"Anthropic returned invalid JSON: {cleaned[:200]!r}"
-            ) from None
+            raise MalformedPayload(f"Anthropic returned invalid JSON: {cleaned[:200]!r}") from None
 
     def analyze_mistake(self, prompt: str) -> str:
         # Diagnoza to wolny tekst, a reflect_node nie ma guardu — ucięta lekcja wraca

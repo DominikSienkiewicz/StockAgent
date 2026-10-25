@@ -110,7 +110,5 @@ class TestBuildPeerContext:
         assert context == (("MSFT", "HOLD"), ("BANANA", "BUY"))
 
     def test_returns_tuple(self) -> None:
-        context = build_peer_context(
-            "NVDA", {"semis": ["NVDA", "AMD"]}, {"AMD": "BUY"}
-        )
+        context = build_peer_context("NVDA", {"semis": ["NVDA", "AMD"]}, {"AMD": "BUY"})
         assert isinstance(context, tuple)

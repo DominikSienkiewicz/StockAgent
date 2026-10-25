@@ -139,7 +139,6 @@ class TestNullNotifier:
         assert "skip" in caplog.text.lower()
 
 
-
 def test_silent_mail_is_the_same_mail(notifier: ResendNotifier, mocker: Any) -> None:
     # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` niczego w nim nie zmienia.
     mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
@@ -157,6 +156,7 @@ def test_null_notifier_accepts_silent(caplog: pytest.LogCaptureFixture) -> None:
     NullNotifier().send_report("Cichy subject", "html", "text", silent=True)
 
     assert "Cichy subject" in caplog.text
+
 
 @pytest.mark.integration
 class TestResendLive:
@@ -201,7 +201,9 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         notifier = ResendNotifier(
-            api_key="re_x", sender="a@x", recipient="b@x",
+            api_key="re_x",
+            sender="a@x",
+            recipient="b@x",
             quota_monitor=monitor,
         )
         mocker.patch("requests.Session.post", return_value=self._resp(429))
@@ -220,7 +222,9 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         notifier = ResendNotifier(
-            api_key="re_x", sender="a@x", recipient="b@x",
+            api_key="re_x",
+            sender="a@x",
+            recipient="b@x",
             quota_monitor=monitor,
         )
         mocker.patch("requests.Session.post", return_value=self._resp(401))
@@ -239,7 +243,9 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         notifier = ResendNotifier(
-            api_key="re_x", sender="a@x", recipient="b@x",
+            api_key="re_x",
+            sender="a@x",
+            recipient="b@x",
             quota_monitor=monitor,
         )
         mocker.patch("requests.Session.post", return_value=self._resp(503))
@@ -257,7 +263,9 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         notifier = ResendNotifier(
-            api_key="re_x", sender="a@x", recipient="b@x",
+            api_key="re_x",
+            sender="a@x",
+            recipient="b@x",
             quota_monitor=monitor,
         )
         mocker.patch("requests.Session.post", side_effect=requests.ConnectionError("timeout"))
@@ -274,7 +282,9 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         notifier = ResendNotifier(
-            api_key="re_x", sender="a@x", recipient="b@x",
+            api_key="re_x",
+            sender="a@x",
+            recipient="b@x",
             quota_monitor=monitor,
         )
         mocker.patch(

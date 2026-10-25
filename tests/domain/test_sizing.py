@@ -252,17 +252,13 @@ class TestSizingKnowsPortfolioRisk:
     def test_risk_steps_add_up(self) -> None:
         # Każdy sygnał ryzyka to osobny stopień; starter jest dnem.
         assert (
-            suggest_band(0.9, 0.1, 0.7, portfolio_var=0.05, hedge_effective=False).tier
-            == "starter"
+            suggest_band(0.9, 0.1, 0.7, portfolio_var=0.05, hedge_effective=False).tier == "starter"
         )
 
     def test_risk_applies_after_the_existing_exposure(self) -> None:
         # Ekspozycja zdejmuje stopień, VaR kolejny.
         assert suggest_band(0.9, 0.1, 0.7, current_weight=0.2).tier == "standard"
-        assert (
-            suggest_band(0.9, 0.1, 0.7, current_weight=0.2, portfolio_var=0.05).tier
-            == "starter"
-        )
+        assert suggest_band(0.9, 0.1, 0.7, current_weight=0.2, portfolio_var=0.05).tier == "starter"
 
     @pytest.mark.parametrize(
         ("consensus", "dissent", "hit_rate", "weight", "cluster"), _PRE_RISK_CASES
@@ -279,16 +275,19 @@ class TestSizingKnowsPortfolioRisk:
             consensus, dissent, hit_rate, current_weight=weight, cluster_exposure=cluster
         )
 
-        assert suggest_band(
-            consensus,
-            dissent,
-            hit_rate,
-            current_weight=weight,
-            cluster_exposure=cluster,
-            portfolio_var=None,
-            drawdown=None,
-            hedge_effective=None,
-        ) == phase_two
+        assert (
+            suggest_band(
+                consensus,
+                dissent,
+                hit_rate,
+                current_weight=weight,
+                cluster_exposure=cluster,
+                portfolio_var=None,
+                drawdown=None,
+                hedge_effective=None,
+            )
+            == phase_two
+        )
 
     def test_risk_never_widens_the_band(self) -> None:
         import itertools
@@ -318,7 +317,14 @@ class TestSizingKnowsPortfolioRisk:
                 hedge_effective=hedge,
             )
             assert _TIER_RANK[risky.tier] <= _TIER_RANK[base.tier], (
-                consensus, dissent, hit, weight, cluster, var, dd, hedge
+                consensus,
+                dissent,
+                hit,
+                weight,
+                cluster,
+                var,
+                dd,
+                hedge,
             )
 
 

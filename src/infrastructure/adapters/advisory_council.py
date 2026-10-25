@@ -36,6 +36,7 @@ def _log_discarded(name: str) -> Callable[[Future[InvestorOpinion | None]], None
 
     return _log
 
+
 # Górna granica oczekiwania na CAŁY zestaw wywołań LLM równolegle.
 # LLM port ma już własny timeout (30s) — ten jest buforem na sumę narzutu
 # threadpool/scheduler. Po jego przekroczeniu kontynuujemy z opiniami,
@@ -117,8 +118,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         if len(personas) > max_personas:
             dropped = [p.name for p in personas[max_personas:]]
             logger.warning(
-                "Advisory council: %d personas exceed cap of %d — "
-                "truncating to %d, dropping: %s",
+                "Advisory council: %d personas exceed cap of %d — truncating to %d, dropping: %s",
                 len(personas),
                 max_personas,
                 max_personas,
@@ -138,9 +138,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             raw = self._llm.analyze(prompt)
             return _parse_opinion(persona.name, raw)
         except Exception:
-            logger.exception(
-                "Advisory council: %s failed — vote dropped", persona.name
-            )
+            logger.exception("Advisory council: %s failed — vote dropped", persona.name)
             return None
 
     def _call_revision(
@@ -187,17 +185,11 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
                 for i, persona in enumerate(personas)
             }
             try:
-                for future in as_completed(
-                    future_to_idx, timeout=_COUNCIL_TOTAL_TIMEOUT_S
-                ):
+                for future in as_completed(future_to_idx, timeout=_COUNCIL_TOTAL_TIMEOUT_S):
                     idx = future_to_idx[future]
                     opinions[idx] = future.result()
             except TimeoutError:
-                pending = [
-                    personas[i].name
-                    for f, i in future_to_idx.items()
-                    if not f.done()
-                ]
+                pending = [personas[i].name for f, i in future_to_idx.items() if not f.done()]
                 logger.warning(
                     "Advisory council: hit %ss total timeout — %d investor(s) pending: %s",
                     _COUNCIL_TOTAL_TIMEOUT_S,
@@ -237,9 +229,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         personas = self._personas
 
         # --- Runda 1: równoległe opinie wszystkich person ---
-        resolved_opinions = self._run_round(
-            personas, lambda p: self._call_investor(p, data)
-        )
+        resolved_opinions = self._run_round(personas, lambda p: self._call_investor(p, data))
         if not resolved_opinions:
             raise CouncilUnavailableError(f"{symbol}: no council persona answered")
 
@@ -249,9 +239,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         first_round: list[InvestorOpinion] = []
         if self._debate_mode and self._is_split(resolved_opinions):
             round1 = resolved_opinions
-            revised = self._run_round(
-                personas, lambda p: self._call_revision(p, data, round1)
-            )
+            revised = self._run_round(personas, lambda p: self._call_revision(p, data, round1))
             # Cała runda rewizji po limicie czasu → zostają głosy z rundy 1 i nie ma
             # drugiej rundy do zapisu.
             if revised:
@@ -273,9 +261,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         # HOLD/0.5 nadpisującego głosy inwestorów (finding #3). Wagi (feature #3)
         # ważą głos każdej persony jej historyczną trafnością.
         weights = self._resolve_weights(data)
-        final_recommendation, consensus_strength = derive_consensus(
-            resolved_opinions, weights
-        )
+        final_recommendation, consensus_strength = derive_consensus(resolved_opinions, weights)
 
         # Chairman dostarcza już TYLKO warstwę narracyjną (summary, dissent).
         return CouncilVerdict(

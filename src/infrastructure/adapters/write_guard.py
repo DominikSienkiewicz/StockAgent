@@ -109,97 +109,101 @@ class ReadOnlyRepository(RepositoryPort):
     rady, commitment) dostały wartość, której nie da się pomylić z wierszem bazy.
     `refresh_feature_store` też jest zapisem: odświeża widok we wspólnej bazie."""
 
-    READ_METHODS: ClassVar[frozenset[str]] = frozenset({
-        "get_last_price",
-        "get_price_history",
-        "get_paper_trades",
-        "get_open_invalidations",
-        "get_paper_ledger_head",
-        "get_last_prediction_price",
-        "get_latest_prediction",
-        "get_latest_regime_state",
-        "get_unverified_prediction",
-        "get_feature_store_data",
-        "get_accuracy_stats",
-        "get_recently_resolved_predictions",
-        "get_resolved_predictions",
-        "get_cached_fundamentals",
-        "get_fundamentals_fetched_at",
-        "get_cached_earnings",
-        "get_recent_quota_alerts",
-        "find_similar_predictions",
-        "get_council_votes_for_prediction",
-        "get_receipt",
-        "find_receipts",
-        "get_resolved_for_calibration",
-        "get_persona_accuracy",
-        "get_persona_track_record",
-        "get_persona_vote_outcomes",
-        "get_persona_scoring",
-        "get_council_vote_samples",
-        "count_expired_unverified",
-        "get_deferred_diagnoses",
-        "get_diagnoses_to_judge",
-        "get_resolved_predictions_detailed",
-        "get_settled_moves",
-        "get_unrevealed_commitments",
-        "attestation_columns_available",
-        "get_current_hour_commitment_salt",
-        "get_current_hour_commitment",
-        "get_latest_snapshot_at",
-        "get_last_scorecard_at",
-        "probe_database",
-        "missing_prediction_columns",
-        "schema_version",
-        "get_db_size_report",
-        "get_last_price_snapshot",
-        "get_sent_shock_alerts",
-        "get_shock_alert_times",
-        "get_shock_alerts_since",
-        "get_shock_alert_levels",
-        "get_last_report_at",
-        "get_active_price_levels",
-        "get_previous_verdict",
-        "get_recent_model_scorecards",
-        "get_council_vote_history",
-        "get_reference_reads",
-        "get_open_reference_calls",
-        "get_cycle_runs_since",
-        "get_llm_cost_since",
-        "get_settled_shadow_predictions",
-    })
-    WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
-        "save_price_snapshot",
-        "expire_unverified_predictions",
-        "save_feature_snapshot",
-        "save_regime_state",
-        "save_prediction",
-        "update_prediction_accuracy",
-        "refresh_feature_store",
-        "save_fundamentals",
-        "save_earnings",
-        "save_quota_alert",
-        "save_calibration_scores",
-        "save_backfilled_diagnosis",
-        "save_diagnosis_judgement",
-        "mark_commitment_revealed",
-        "save_shock_alert",
-        "add_price_levels",
-        "record_price_level_reading",
-        "mark_price_level_triggered",
-        "save_model_scorecard",
-        "save_council_votes",
-        "save_llm_calls",
-        "save_cycle_run",
-        "save_reference_read",
-        "settle_reference_call",
-        "save_corporate_action",
-        "save_shadow_predictions",
-        "save_shadow_trend_prediction",
-        "append_paper_trade",
-        "close_paper_trade",
-        "mark_invalidation_alerted",
-    })
+    READ_METHODS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "get_last_price",
+            "get_price_history",
+            "get_paper_trades",
+            "get_open_invalidations",
+            "get_paper_ledger_head",
+            "get_last_prediction_price",
+            "get_latest_prediction",
+            "get_latest_regime_state",
+            "get_unverified_prediction",
+            "get_feature_store_data",
+            "get_accuracy_stats",
+            "get_recently_resolved_predictions",
+            "get_resolved_predictions",
+            "get_cached_fundamentals",
+            "get_fundamentals_fetched_at",
+            "get_cached_earnings",
+            "get_recent_quota_alerts",
+            "find_similar_predictions",
+            "get_council_votes_for_prediction",
+            "get_receipt",
+            "find_receipts",
+            "get_resolved_for_calibration",
+            "get_persona_accuracy",
+            "get_persona_track_record",
+            "get_persona_vote_outcomes",
+            "get_persona_scoring",
+            "get_council_vote_samples",
+            "count_expired_unverified",
+            "get_deferred_diagnoses",
+            "get_diagnoses_to_judge",
+            "get_resolved_predictions_detailed",
+            "get_settled_moves",
+            "get_unrevealed_commitments",
+            "attestation_columns_available",
+            "get_current_hour_commitment_salt",
+            "get_current_hour_commitment",
+            "get_latest_snapshot_at",
+            "get_last_scorecard_at",
+            "probe_database",
+            "missing_prediction_columns",
+            "schema_version",
+            "get_db_size_report",
+            "get_last_price_snapshot",
+            "get_sent_shock_alerts",
+            "get_shock_alert_times",
+            "get_shock_alerts_since",
+            "get_shock_alert_levels",
+            "get_last_report_at",
+            "get_active_price_levels",
+            "get_previous_verdict",
+            "get_recent_model_scorecards",
+            "get_council_vote_history",
+            "get_reference_reads",
+            "get_open_reference_calls",
+            "get_cycle_runs_since",
+            "get_llm_cost_since",
+            "get_settled_shadow_predictions",
+        }
+    )
+    WRITE_METHODS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "save_price_snapshot",
+            "expire_unverified_predictions",
+            "save_feature_snapshot",
+            "save_regime_state",
+            "save_prediction",
+            "update_prediction_accuracy",
+            "refresh_feature_store",
+            "save_fundamentals",
+            "save_earnings",
+            "save_quota_alert",
+            "save_calibration_scores",
+            "save_backfilled_diagnosis",
+            "save_diagnosis_judgement",
+            "mark_commitment_revealed",
+            "save_shock_alert",
+            "add_price_levels",
+            "record_price_level_reading",
+            "mark_price_level_triggered",
+            "save_model_scorecard",
+            "save_council_votes",
+            "save_llm_calls",
+            "save_cycle_run",
+            "save_reference_read",
+            "settle_reference_call",
+            "save_corporate_action",
+            "save_shadow_predictions",
+            "save_shadow_trend_prediction",
+            "append_paper_trade",
+            "close_paper_trade",
+            "mark_invalidation_alerted",
+        }
+    )
 
     def __init__(self, delegate: RepositoryPort) -> None:
         self._delegate = delegate
@@ -317,9 +321,7 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> list[dict[str, Any]]:
         return self._delegate.get_resolved_predictions_detailed(days, since=since)
 
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         return self._delegate.get_settled_moves(days, with_intervals=with_intervals)
 
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
@@ -402,7 +404,6 @@ class ReadOnlyRepository(RepositoryPort):
     def get_llm_cost_since(self, since: datetime) -> float:
         return self._delegate.get_llm_cost_since(since)
 
-
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         return self._delegate.get_settled_shadow_predictions(since)
 
@@ -421,9 +422,7 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> None:
         self._skipped.skip("save_feature_snapshot")
 
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         self._skipped.skip("save_regime_state")
 
     def save_shadow_predictions(
@@ -486,9 +485,7 @@ class ReadOnlyRepository(RepositoryPort):
     def save_quota_alert(self, alert: QuotaAlert) -> None:
         self._skipped.skip("save_quota_alert")
 
-    def save_calibration_scores(
-        self, scores: Mapping[str, float], *, score_version: int
-    ) -> int:
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
         self._skipped.skip("save_calibration_scores")
         return 0
 

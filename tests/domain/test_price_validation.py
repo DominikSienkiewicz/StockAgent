@@ -80,9 +80,7 @@ class TestUnconfirmedOutlier:
         history = _history()
         shocked = history[-1] * Decimal("0.7")
 
-        assert not is_unconfirmed_outlier(
-            shocked * Decimal("1.004"), history, prev_close=shocked
-        )
+        assert not is_unconfirmed_outlier(shocked * Decimal("1.004"), history, prev_close=shocked)
 
     def test_bad_tick_against_an_ordinary_previous_close_stays_unconfirmed(self) -> None:
         history = _history()

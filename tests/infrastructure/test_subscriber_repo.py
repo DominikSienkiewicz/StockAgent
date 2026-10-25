@@ -38,9 +38,7 @@ def _set_chain_response(
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch(
-        "src.infrastructure.adapters.subscriber_repo.create_client"
-    )
+    create = mocker.patch("src.infrastructure.adapters.subscriber_repo.create_client")
     client = MagicMock()
     create.return_value = client
     return client
@@ -48,9 +46,7 @@ def mock_client(mocker: Any) -> MagicMock:
 
 @pytest.fixture
 def repo(mock_client: MagicMock) -> SupabaseSubscriberRepository:
-    return SupabaseSubscriberRepository(
-        url="https://test.supabase.co", key="anon-key"
-    )
+    return SupabaseSubscriberRepository(url="https://test.supabase.co", key="anon-key")
 
 
 class TestListSubscribers:
@@ -75,11 +71,7 @@ class TestListSubscribers:
 
         subs = repo.list_subscribers()
 
-        assert subs == [
-            Subscriber(
-                email="a@example.com", symbols=frozenset({"AAPL", "VOO"})
-            )
-        ]
+        assert subs == [Subscriber(email="a@example.com", symbols=frozenset({"AAPL", "VOO"}))]
 
     def test_maps_row_with_csv_symbols(
         self, repo: SupabaseSubscriberRepository, mock_client: MagicMock
@@ -93,11 +85,7 @@ class TestListSubscribers:
 
         subs = repo.list_subscribers()
 
-        assert subs == [
-            Subscriber(
-                email="b@example.com", symbols=frozenset({"AAPL", "VOO"})
-            )
-        ]
+        assert subs == [Subscriber(email="b@example.com", symbols=frozenset({"AAPL", "VOO"}))]
 
     def test_empty_symbols_means_everything(
         self, repo: SupabaseSubscriberRepository, mock_client: MagicMock
@@ -134,9 +122,7 @@ class TestListSubscribers:
 
         subs = repo.list_subscribers()
 
-        assert subs == [
-            Subscriber(email="ok@example.com", symbols=frozenset({"VOO"}))
-        ]
+        assert subs == [Subscriber(email="ok@example.com", symbols=frozenset({"VOO"}))]
 
     def test_empty_table_returns_empty_list(
         self, repo: SupabaseSubscriberRepository, mock_client: MagicMock

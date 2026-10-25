@@ -81,9 +81,7 @@ class TestWeeklyRecapHtml:
         assert "<b>hej</b>" not in html
 
     def test_no_previous_ece_still_renders(self) -> None:
-        html = render_weekly_recap_html(
-            _recap(previous_ece=None, ece_delta=None)
-        )
+        html = render_weekly_recap_html(_recap(previous_ece=None, ece_delta=None))
         assert html != ""
         assert "TSLA" in html
 
@@ -119,9 +117,7 @@ class TestWeeklyRecapText:
         assert render_weekly_recap_text(None) == ""
 
     def test_contains_heroes_and_narrative(self) -> None:
-        text = render_weekly_recap_text(
-            _recap(), narrative="Podsumowanie tygodnia."
-        )
+        text = render_weekly_recap_text(_recap(), narrative="Podsumowanie tygodnia.")
         assert "NVDA" in text
         assert "TSLA" in text
         assert "Podsumowanie tygodnia." in text

@@ -82,9 +82,7 @@ def _render_prediction_row_html(r: SymbolResult) -> str:
     """Pojedynczy wiersz tabeli predykcji (saved). MAIL-23: pięć kolumn — cena
     bieżąca, sentyment, newsy i sygnał modelu są w bloku uzasadnień."""
     confidence_text = (
-        _pct(r.confidence_score, decimals=0)
-        if r.confidence_score is not None
-        else "—"
+        _pct(r.confidence_score, decimals=0) if r.confidence_score is not None else "—"
     )
     if r.ml_cold_start:
         forecast_text = _COLD_START_FORECAST
@@ -160,9 +158,7 @@ def _render_saved_section_html(
         for r in saved
         if has_full_block(r)
     )
-    parts.append(
-        _render_compact_predictions_html([r for r in saved if not has_full_block(r)])
-    )
+    parts.append(_render_compact_predictions_html([r for r in saved if not has_full_block(r)]))
     return "".join(parts)
 
 
@@ -193,9 +189,7 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
     rows = []
     for r in rest:
         signal = model_signal(r)
-        council = (
-            render_council_line(r.council_verdict) if r.council_verdict is not None else "—"
-        )
+        council = render_council_line(r.council_verdict) if r.council_verdict is not None else "—"
         rows.append(
             f'<tr><td class="pk b6">{_html(_company_label(r.symbol))}</td>'
             f'<td class="pk b7 {SIGNAL_TONE.get(signal, "nt")}">'
@@ -209,9 +203,7 @@ def _render_compact_predictions_html(rest: list[SymbolResult]) -> str:
         '<tr class="pr">'
         '<th scope="col" class="pk">Symbol</th>'
         f'<th scope="col" class="pk">{MODEL_SIGNAL_TITLE}</th>'
-        '<th scope="col" class="pk">Rada</th></tr>'
-        + "".join(rows)
-        + "</table>"
+        '<th scope="col" class="pk">Rada</th></tr>' + "".join(rows) + "</table>"
     )
 
 
@@ -254,10 +246,7 @@ def _render_prediction_text(
     if chip:
         lines.append(f"         {chip}")
     # Q6: odznaki proweniencji (pomijamy FRESH — brak szumu).
-    badge_labels = [
-        b.label for b in r.provenance_badges
-        if b.level is not ProvenanceLevel.FRESH
-    ]
+    badge_labels = [b.label for b in r.provenance_badges if b.level is not ProvenanceLevel.FRESH]
     if badge_labels:
         lines.append(f"         proweniencja: {', '.join(badge_labels)}")
     if r.reasoning:

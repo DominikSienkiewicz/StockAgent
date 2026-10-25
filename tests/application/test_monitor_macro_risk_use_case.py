@@ -32,10 +32,8 @@ from src.domain.value_objects import Money, Ratio
 def _history(*prices: str) -> list[tuple[datetime, Money]]:
     """Chronologiczna (rosnąco) historia snapshotów cen do mocka repo."""
     base = datetime(2026, 5, 1, tzinfo=UTC)
-    return [
-        (base.replace(day=i + 1), Money(Decimal(p)))
-        for i, p in enumerate(prices)
-    ]
+    return [(base.replace(day=i + 1), Money(Decimal(p))) for i, p in enumerate(prices)]
+
 
 SYMBOLS = {
     "SH": MacroRiskInstrumentType.INVERSE_EQUITY,
@@ -88,13 +86,9 @@ class TestSignalCollection:
 
         _make_uc(market_port, repository_port).run({"SH": MacroRiskInstrumentType.INVERSE_EQUITY})
 
-        repository_port.save_price_snapshot.assert_called_once_with(
-            "SH", Money(Decimal("50"))
-        )
+        repository_port.save_price_snapshot.assert_called_once_with("SH", Money(Decimal("50")))
 
-    def test_skips_signal_on_cold_start(
-        self, market_port: Mock, repository_port: Mock
-    ) -> None:
+    def test_skips_signal_on_cold_start(self, market_port: Mock, repository_port: Mock) -> None:
         market_port.get_current_price.return_value = Money(Decimal("50"))
         repository_port.get_last_price.return_value = None
 
@@ -108,6 +102,7 @@ class TestSignalCollection:
         self, market_port: Mock, repository_port: Mock
     ) -> None:
         """SH rzuca, EPOL+VIXY działają — raport ma 2 sygnały, nie 0."""
+
         def get_price(sym: str) -> Money:
             if sym == "SH":
                 raise RuntimeError("Finnhub 403")
@@ -128,9 +123,9 @@ class TestOverallAlert:
     ) -> None:
         def get_price(sym: str) -> Money:
             return {
-                "SH": Money(Decimal("104")),     # +4% → CRITICAL
+                "SH": Money(Decimal("104")),  # +4% → CRITICAL
                 "EPOL": Money(Decimal("99.8")),  # -0.2% → NORMAL
-                "VIXY": Money(Decimal("102")),   # +2% → ELEVATED
+                "VIXY": Money(Decimal("102")),  # +2% → ELEVATED
             }[sym]
 
         market_port.get_current_price.side_effect = get_price
@@ -221,9 +216,7 @@ class TestPolishMacroIntegration:
         report = _make_uc(market_port, repository_port, macro_port).run(SYMBOLS)
 
         assert report.polish_macro is snap
-        assert (
-            report.polish_macro.evaluate_stress_level() is MacroStressLevel.ELEVATED
-        )
+        assert report.polish_macro.evaluate_stress_level() is MacroStressLevel.ELEVATED
 
 
 class TestDrawdowns:
@@ -316,19 +309,18 @@ class TestHedgeEffectiveness:
     def _wire(
         self, market: Mock, repo: Mock, histories: dict[str, list[tuple[datetime, Money]]]
     ) -> None:
-        repo.get_price_history.side_effect = (
-            lambda sym, days: histories.get(sym, [])
-        )
+        repo.get_price_history.side_effect = lambda sym, days: histories.get(sym, [])
         market.get_current_price.return_value = Money(Decimal("80"))
         repo.get_last_price.return_value = Money(Decimal("82"))
 
-    def test_hedges_empty_by_default(
-        self, market_port: Mock, repository_port: Mock
-    ) -> None:
+    def test_hedges_empty_by_default(self, market_port: Mock, repository_port: Mock) -> None:
         self._wire(
-            market_port, repository_port,
-            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
-             "SH": _history("100", "90", "94.5", "75.6", "80.06")},
+            market_port,
+            repository_port,
+            {
+                "AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+                "SH": _history("100", "90", "94.5", "75.6", "80.06"),
+            },
         )
         report = _make_uc(market_port, repository_port).run(
             {"SH": MacroRiskInstrumentType.INVERSE_EQUITY}
@@ -340,9 +332,12 @@ class TestHedgeEffectiveness:
     ) -> None:
         # SH to dokładne lustro zwrotów AAPL → korelacja -1 → effectiveness +1.
         self._wire(
-            market_port, repository_port,
-            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
-             "SH": _history("100", "90", "94.5", "75.6", "80.06")},
+            market_port,
+            repository_port,
+            {
+                "AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+                "SH": _history("100", "90", "94.5", "75.6", "80.06"),
+            },
         )
         uc = MonitorMacroRiskUseCase(
             market_port=market_port,
@@ -355,18 +350,19 @@ class TestHedgeEffectiveness:
         assert len(report.hedges) == 1
         h = report.hedges[0]
         assert h.hedge_symbol == "SH"
-        assert h.correlation < 0          # porusza się przeciwnie do booka
-        assert h.effectiveness > 0.5      # dobry inverse hedge
+        assert h.correlation < 0  # porusza się przeciwnie do booka
+        assert h.effectiveness > 0.5  # dobry inverse hedge
         assert h.label == "skuteczny"
 
-    def test_broken_hedge_labeled_odwrocony(
-        self, market_port: Mock, repository_port: Mock
-    ) -> None:
+    def test_broken_hedge_labeled_odwrocony(self, market_port: Mock, repository_port: Mock) -> None:
         # "Hedge" porusza się TAK SAMO jak book (korelacja +1) → odwrócony.
         self._wire(
-            market_port, repository_port,
-            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
-             "BAD": _history("100", "110", "104.5", "125.4", "118.0")},
+            market_port,
+            repository_port,
+            {
+                "AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+                "BAD": _history("100", "110", "104.5", "125.4", "118.0"),
+            },
         )
         uc = MonitorMacroRiskUseCase(
             market_port=market_port,
@@ -383,10 +379,13 @@ class TestHedgeEffectiveness:
     ) -> None:
         # PORT-09: NaN w zwrotach dawał pearson 1.0 → fałszywy „odwrócony” hedge.
         self._wire(
-            market_port, repository_port,
-            {"AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
-             "SH": _history("100", "90", "94.5", "75.6", "80.06"),
-             "BRK": _history("100", "1e400", "94.5", "75.6", "80.06")},
+            market_port,
+            repository_port,
+            {
+                "AAPL": _history("100", "110", "104.5", "125.4", "118.0"),
+                "SH": _history("100", "90", "94.5", "75.6", "80.06"),
+                "BRK": _history("100", "1e400", "94.5", "75.6", "80.06"),
+            },
         )
         uc = MonitorMacroRiskUseCase(
             market_port=market_port,
@@ -407,7 +406,8 @@ class TestHedgeEffectiveness:
         self, market_port: Mock, repository_port: Mock
     ) -> None:
         self._wire(
-            market_port, repository_port,
+            market_port,
+            repository_port,
             {"SH": _history("100", "90", "94.5", "75.6", "80.06")},
         )
         uc = MonitorMacroRiskUseCase(
@@ -429,14 +429,16 @@ class TestHedgeEffectiveness:
         # bez wyrównania po dniu UTC przecięcie było puste i hedge znikał.
         def shifted(seconds: int, *prices: str) -> list[tuple[datetime, Money]]:
             return [
-                (ts + timedelta(hours=5, seconds=seconds), price)
-                for ts, price in _history(*prices)
+                (ts + timedelta(hours=5, seconds=seconds), price) for ts, price in _history(*prices)
             ]
 
         self._wire(
-            market_port, repository_port,
-            {"AAPL": shifted(2, "100", "110", "104.5", "125.4", "118.0"),
-             "SH": shifted(11, "100", "90", "94.5", "75.6", "80.06")},
+            market_port,
+            repository_port,
+            {
+                "AAPL": shifted(2, "100", "110", "104.5", "125.4", "118.0"),
+                "SH": shifted(11, "100", "90", "94.5", "75.6", "80.06"),
+            },
         )
         uc = MonitorMacroRiskUseCase(
             market_port=market_port,

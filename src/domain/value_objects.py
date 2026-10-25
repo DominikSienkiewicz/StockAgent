@@ -29,9 +29,7 @@ class Money:
         nigdy nie produkuje, a które cicho zatruwają porównania w domenie.
         """
         if self.amount.is_nan() or self.amount.is_infinite():
-            raise ValueError(
-                f"Money amount must be a finite number (got {self.amount})"
-            )
+            raise ValueError(f"Money amount must be a finite number (got {self.amount})")
 
     def for_storage(self) -> "Money":
         """Kwota w skali kolumny DECIMAL(14,4), zawsze z czterema miejscami.
@@ -57,13 +55,9 @@ class Threshold:
         konfiguracji — zgłaszamy `ValueError` zamiast cicho psuć porównanie.
         """
         if self.value.is_nan() or self.value.is_infinite():
-            raise ValueError(
-                f"Threshold value must be a finite number (got {self.value})"
-            )
+            raise ValueError(f"Threshold value must be a finite number (got {self.value})")
         if self.value < 0:
-            raise ValueError(
-                f"Threshold value must be non-negative (got {self.value})"
-            )
+            raise ValueError(f"Threshold value must be non-negative (got {self.value})")
 
 
 def clamp_unit(value: float) -> tuple[float, bool]:

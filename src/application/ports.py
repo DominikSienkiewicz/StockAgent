@@ -234,9 +234,7 @@ class RepositoryPort(ABC):
         """Najnowszy snapshot ceny z `price_snapshots` (nie z prediction_logs)."""
 
     @abstractmethod
-    def get_price_history(
-        self, symbol: str, days: int
-    ) -> list[tuple[datetime, Money]]:
+    def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         """Chronologiczna historia cen z `price_snapshots` (rosnąco po czasie),
         za ostatnie `days` dni. Zasila analizy portfelowe (drawdown, korelacje) —
         wszystko liczone z DARMOWYCH snapshotów, bez płatnych portów. Pusta lista
@@ -324,9 +322,7 @@ class RepositoryPort(ABC):
         `regime_hysteresis_enabled`."""
 
     @abstractmethod
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         """ALR-03 — jeden wiersz `regime_history` na cykl: surowy reżim
         z `classify()`, reżim efektywny po histerezie i seria potwierdzeń
         wyjścia z RISK_OFF."""
@@ -539,9 +535,7 @@ class RepositoryPort(ABC):
         parametry nic nie zmieniają."""
 
     @abstractmethod
-    def get_council_votes_for_prediction(
-        self, prediction_id: str
-    ) -> list[InvestorOpinion]:
+    def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         """Głosy rady zapisane dla danej predykcji (`council_votes`).
 
         Napędza counterfactual dissent-replay: gdy predykcja okazała się błędna,
@@ -567,9 +561,7 @@ class RepositoryPort(ABC):
         Pomija wiersze bez `confidence_score`/`is_trend_correct`."""
 
     @abstractmethod
-    def save_calibration_scores(
-        self, scores: Mapping[str, float], *, score_version: int
-    ) -> int:
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
         """WIA-65 — arytmetyczne oceny kalibracji (`id predykcji → confidence_calibration`)
         JEDNYM zapisem zbiorczym (RPC `save_calibration_scores`, migracja 077) razem
         z wersją reguły (`calibration_score_version`, 044: 1 liniowa, 2 Brier).
@@ -585,9 +577,7 @@ class RepositoryPort(ABC):
         → ważenie wyłączone (każda persona waży 1.0)."""
 
     @abstractmethod
-    def get_persona_track_record(
-        self, window_days: int = 90
-    ) -> dict[str, tuple[float, int]]:
+    def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
         """#3 — surowy track record person rady pod leaderboard w raporcie:
         `{investor_name: (hit_rate, liczba_rozliczonych_głosów)}` (migracja 018).
 
@@ -673,9 +663,7 @@ class RepositoryPort(ABC):
         dniach. None = okno po dacie utworzenia (działa bez migracji)."""
 
     @abstractmethod
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         """ML-34 — rozliczone predykcje z ostatnich `days` dni, ROSNĄCO po czasie:
         `symbol`, `timestamp`, `price_at_prediction`, `predicted_target_price`,
         `actual_price_after_12h`. Zasila okno kalibracyjne przedziału ruchu.
@@ -1507,9 +1495,7 @@ class ToolUseLLMPort(ABC):
     cap rund (FinOps). Zwraca ustrukturyzowany JSON jak `LLMPort.analyze`."""
 
     @abstractmethod
-    def analyze_with_tools(
-        self, prompt: str, tools: Sequence[Tool]
-    ) -> dict[str, Any]: ...
+    def analyze_with_tools(self, prompt: str, tools: Sequence[Tool]) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -1655,4 +1641,3 @@ class CircuitStatePort(ABC):
     @abstractmethod
     def circuit_states(self) -> tuple[CircuitState, ...]:
         """Obwody hostów, z którymi proces rozmawiał (otwarte i zamknięte)."""
-

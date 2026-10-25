@@ -266,12 +266,22 @@ class TestMigrations:
     ) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         required = {
-            "id", "symbol", "timestamp",
-            "price_at_prediction", "sentiment_score", "news_summary",
-            "av_relevance_avg", "news_volume_24h", "high_relevance_count",
+            "id",
+            "symbol",
+            "timestamp",
+            "price_at_prediction",
+            "sentiment_score",
+            "news_summary",
+            "av_relevance_avg",
+            "news_volume_24h",
+            "high_relevance_count",
             "av_llm_agreement",
-            "predicted_trend", "predicted_target_price", "reasoning_text",
-            "actual_price_after_12h", "accuracy_score", "correction_insights",
+            "predicted_trend",
+            "predicted_target_price",
+            "reasoning_text",
+            "actual_price_after_12h",
+            "accuracy_score",
+            "correction_insights",
             "is_trend_correct",
             "embedding",
         }
@@ -372,13 +382,22 @@ class TestMigrations:
                 " actual_price_after_12h, embedding) "
                 "VALUES (%s,%s,%s,%s,%s,%s::vector),(%s,%s,%s,%s,%s,%s::vector)",
                 (
-                    "NEAR", "Fed hawkish", "BEARISH", True, 100.0, near,
-                    "FAR", "Earnings beat", "BULLISH", False, 200.0, far,
+                    "NEAR",
+                    "Fed hawkish",
+                    "BEARISH",
+                    True,
+                    100.0,
+                    near,
+                    "FAR",
+                    "Earnings beat",
+                    "BULLISH",
+                    False,
+                    200.0,
+                    far,
                 ),
             )
             cur.execute(
-                "SELECT symbol, similarity FROM "
-                "match_news_embeddings(%s::vector, %s)",
+                "SELECT symbol, similarity FROM match_news_embeddings(%s::vector, %s)",
                 (query, 1),
             )
             rows = cur.fetchall()
@@ -421,8 +440,8 @@ class TestMigrations:
                     (prediction_id, symbol, "Buffett", recommendation, 0.8),
                 )
 
-            add_vote("PTR_HIT", 100.0, 110.0, "BUY")   # trafiony
-            add_vote("PTR_MISS", 100.0, 90.0, "BUY")   # chybiony
+            add_vote("PTR_HIT", 100.0, 110.0, "BUY")  # trafiony
+            add_vote("PTR_MISS", 100.0, 90.0, "BUY")  # chybiony
             # Nierozliczona predykcja — poza próbką (actual IS NULL).
             cur.execute(
                 "INSERT INTO prediction_logs (symbol, price_at_prediction) "
@@ -438,8 +457,7 @@ class TestMigrations:
             )
 
             cur.execute(
-                "SELECT investor_name, hit_rate, vote_count "
-                "FROM persona_accuracy_stats(%s)",
+                "SELECT investor_name, hit_rate, vote_count FROM persona_accuracy_stats(%s)",
                 (90,),
             )
             rows = cur.fetchall()
@@ -592,14 +610,12 @@ class TestMigrations:
         ON CONFLICT musi rzucić — to twardy fundament idempotentnego upsertu."""
         with pg_conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO price_snapshots (symbol, price, timestamp) "
-                "VALUES (%s, %s, %s)",
+                "INSERT INTO price_snapshots (symbol, price, timestamp) VALUES (%s, %s, %s)",
                 ("DUP_HOUR", 100.0, "2026-06-02T09:10:00+00:00"),
             )
             with pytest.raises(psycopg2.errors.UniqueViolation):
                 cur.execute(
-                    "INSERT INTO price_snapshots (symbol, price, timestamp) "
-                    "VALUES (%s, %s, %s)",
+                    "INSERT INTO price_snapshots (symbol, price, timestamp) VALUES (%s, %s, %s)",
                     ("DUP_HOUR", 200.0, "2026-06-02T09:55:00+00:00"),
                 )
 
@@ -733,9 +749,7 @@ class TestMigrations:
             )
             result = cur.fetchone()
         assert result is not None, "Wiersz nie pojawił się w widoku po REFRESH"
-        assert result[0] == 0.0, (
-            f"alpha_fusion_score = {result[0]!r}, oczekiwano 0.0 (COALESCE)"
-        )
+        assert result[0] == 0.0, f"alpha_fusion_score = {result[0]!r}, oczekiwano 0.0 (COALESCE)"
 
     # -- Migracja 023: positions (realny portfel użytkownika, #15) ------------
 
@@ -777,9 +791,7 @@ class TestMigrations:
 
     def test_edge_sigma_column_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "prediction_logs")
-        assert "edge_sigma" in cols, (
-            "Brak kolumny edge_sigma w prediction_logs (migracja 025)"
-        )
+        assert "edge_sigma" in cols, "Brak kolumny edge_sigma w prediction_logs (migracja 025)"
 
     # -- Migracja 026: ml_feature_store bez atrap (ML-12, EXP-07) -------------
 
@@ -830,9 +842,7 @@ class TestMigrations:
                 ],
             )
             cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
-            cur.execute(
-                "SELECT id FROM ml_feature_store WHERE symbol = 'QF_EXCL'"
-            )
+            cur.execute("SELECT id FROM ml_feature_store WHERE symbol = 'QF_EXCL'")
             in_view = {row[0] for row in cur.fetchall()}
 
         assert in_view == {clean, no_prior, null_flags}
@@ -845,13 +855,10 @@ class TestMigrations:
         atrapy — tak jak inference (`get_last_prediction_price`), która flag
         nie czyta. Filtr w CTE dałby train/serve skew."""
         with pg_conn.cursor() as cur:
-            _, _, after = self._settled_rows(
-                cur, "QF_LAG", ["[]", '["llm_analysis_failed"]', "[]"]
-            )
+            _, _, after = self._settled_rows(cur, "QF_LAG", ["[]", '["llm_analysis_failed"]', "[]"])
             cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
             cur.execute(
-                "SELECT price_prev_12h, price_prev_24h FROM ml_feature_store "
-                "WHERE id = %s",
+                "SELECT price_prev_12h, price_prev_24h FROM ml_feature_store WHERE id = %s",
                 (after,),
             )
             row = cur.fetchone()
@@ -893,8 +900,7 @@ class TestMigrations:
             )
             cur.execute("REFRESH MATERIALIZED VIEW ml_feature_store")
             cur.execute(
-                "SELECT symbol, feature_set_version FROM ml_feature_store "
-                "WHERE symbol LIKE 'FSV_%'"
+                "SELECT symbol, feature_set_version FROM ml_feature_store WHERE symbol LIKE 'FSV_%'"
             )
             versions = dict(cur.fetchall())
 
@@ -907,9 +913,7 @@ class TestMigrations:
     ) -> None:
         """Karta pokazuje wszystkie trzy baseline'y bramki; nowe kolumny są
         nullable, bo przebieg bez metryk (skipped) i stare wiersze ich nie mają."""
-        assert {"drift_baseline_rmse", "llm_baseline_rmse"} <= _columns(
-            pg_conn, "model_scorecards"
-        )
+        assert {"drift_baseline_rmse", "llm_baseline_rmse"} <= _columns(pg_conn, "model_scorecards")
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO model_scorecards (symbol, status) VALUES (%s, %s) "
@@ -1008,8 +1012,13 @@ class TestMigrations:
         """Re-run cyklu w tej samej godzinie aktualizuje wektor (upsert na
         `symbol,as_of_hour`), a goły INSERT drugiego wiersza tej godziny rzuca."""
         assert {
-            "id", "symbol", "as_of", "as_of_hour",
-            "feature_set_version", "features", "gated",
+            "id",
+            "symbol",
+            "as_of",
+            "as_of_hour",
+            "feature_set_version",
+            "features",
+            "gated",
         } <= _columns(pg_conn, "feature_snapshots")
         assert {
             "idx_feature_snapshots_symbol_hour_uniq",
@@ -1263,7 +1272,7 @@ class TestMigrations:
                 "INSERT INTO prediction_logs "
                 "(symbol, timestamp, price_at_prediction, experiment_arms) "
                 "VALUES ('EA_SET', '2026-11-02T21:30:00+00:00', 100.0, "
-                "'{\"EXP-02\": \"blind\"}') "
+                '\'{"EXP-02": "blind"}\') '
                 "RETURNING experiment_arms ->> 'EXP-02'"
             )
             assert cur.fetchone() == ("blind",)
@@ -1575,9 +1584,7 @@ class TestMigrations:
                 "confidence_calibration, calibration_score_version) "
                 "VALUES ('CSV_V2', '2026-11-03T21:30:00+00:00', 100.0, 0.19, 2)"
             )
-            cur.execute(
-                (MIGRATIONS_DIR / "044_calibration_score_version.sql").read_text()
-            )
+            cur.execute((MIGRATIONS_DIR / "044_calibration_score_version.sql").read_text())
             cur.execute(
                 "SELECT symbol, calibration_score_version FROM prediction_logs "
                 "WHERE symbol LIKE 'CSV_%' ORDER BY symbol"
@@ -1815,6 +1822,7 @@ class TestMigrations:
 
         assert psi == (pytest.approx(0.31),)
         assert data_type == ("jsonb",)
+
     # -- Migracja 055: znacznik nieaktualnego notowania (DAT-14) ---------------
 
     def test_stale_quote_column_is_a_nullable_boolean(
@@ -1868,8 +1876,15 @@ class TestMigrations:
         """Lista startowa z config.toml dopisuje się upsertem ON CONFLICT DO NOTHING —
         poziom wyłączony po trafieniu zostaje wyłączony."""
         assert {
-            "id", "symbol", "level", "direction", "note", "active",
-            "last_seen_price", "triggered_at", "created_at",
+            "id",
+            "symbol",
+            "level",
+            "direction",
+            "note",
+            "active",
+            "last_seen_price",
+            "triggered_at",
+            "created_at",
         } <= _columns(pg_conn, "price_level_alerts")
         with pg_conn.cursor() as cur:
             cur.execute(
@@ -2000,13 +2015,9 @@ def supabase_like_conn(
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
             if cur.fetchone() is None:
                 cur.execute(
-                    sql.SQL("CREATE ROLE {} {}").format(
-                        sql.Identifier(role), sql.SQL(attributes)
-                    )
+                    sql.SQL("CREATE ROLE {} {}").format(sql.Identifier(role), sql.SQL(attributes))
                 )
-        cur.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(SUPABASE_LIKE_DB))
-        )
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(SUPABASE_LIKE_DB)))
         cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(SUPABASE_LIKE_DB)))
 
     info = pg_conn.info
@@ -2250,9 +2261,7 @@ class TestSupabaseRoleEmulation:
             public = [
                 _has_table_privilege(cur, role, "ml_feature_store") for role in PUBLIC_API_ROLES
             ]
-            cur.execute(
-                "SELECT has_table_privilege('service_role', 'ml_feature_store', 'SELECT')"
-            )
+            cur.execute("SELECT has_table_privilege('service_role', 'ml_feature_store', 'SELECT')")
             service_role = cur.fetchone()[0]
 
         assert public == [False, False]
@@ -2264,9 +2273,7 @@ class TestSupabaseRoleEmulation:
         """FIN-13: nowa tabela po 038 — RLS włączony w 040, anon i authenticated bez
         prawa, a service_role (Fast i Slow Loop) zapisuje batch i czyta."""
         with _rolled_back(supabase_like_conn) as cur:
-            cur.execute(
-                "SELECT relrowsecurity FROM pg_class WHERE oid = 'llm_calls'::regclass"
-            )
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'llm_calls'::regclass")
             assert cur.fetchone() == (True,)
             public = [_has_table_privilege(cur, role, "llm_calls") for role in PUBLIC_API_ROLES]
 
@@ -2293,9 +2300,7 @@ class TestSupabaseRoleEmulation:
         """NIEZ-29: nowa tabela po 038 — RLS włączony w 041, anon i authenticated bez
         prawa, a service_role (Fast Loop) zapisuje przebieg i czyta historię."""
         with _rolled_back(supabase_like_conn) as cur:
-            cur.execute(
-                "SELECT relrowsecurity FROM pg_class WHERE oid = 'cycle_runs'::regclass"
-            )
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'cycle_runs'::regclass")
             assert cur.fetchone() == (True,)
             public = [_has_table_privilege(cur, role, "cycle_runs") for role in PUBLIC_API_ROLES]
 
@@ -2304,7 +2309,7 @@ class TestSupabaseRoleEmulation:
                 "INSERT INTO cycle_runs (loop, run_id, run_attempt, started_at, duration_s, "
                 "eligible, saved, failures, paid_calls, report_delivered) VALUES "
                 "('fast', 'CR_SR', 1, NOW(), 312.5, 40, 6, 1, "
-                "'{\"llm\": 7, \"council_llm\": 48}', true)"
+                '\'{"llm": 7, "council_llm": 48}\', true)'
             )
             cur.execute("SELECT paid_calls ->> 'llm' FROM cycle_runs WHERE run_id = 'CR_SR'")
             assert cur.fetchone() == ("7",)
@@ -2322,8 +2327,7 @@ class TestSupabaseRoleEmulation:
         prawa, a service_role (Slow Loop) zapisuje odczyt i rozlicza wywołanie."""
         with _rolled_back(supabase_like_conn) as cur:
             cur.execute(
-                "SELECT relrowsecurity FROM pg_class "
-                "WHERE oid = 'reference_predictions'::regclass"
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'reference_predictions'::regclass"
             )
             assert cur.fetchone() == (True,)
             public = [
@@ -2656,17 +2660,11 @@ class TestMigration013DedupesPreexistingDuplicates:
             )
 
             # Aplikacja 013 NIE może rzucić mimo duplikatów (sedno naprawy).
-            cur.execute(
-                (MIGRATIONS_DIR / "013_idempotency_and_pagination.sql").read_text()
-            )
+            cur.execute((MIGRATIONS_DIR / "013_idempotency_and_pagination.sql").read_text())
 
             # Unikalne indeksy powstały.
-            assert "idx_price_snapshots_symbol_hour_uniq" in _indexes(
-                conn, "price_snapshots"
-            )
-            assert "idx_prediction_logs_symbol_hour_uniq" in _indexes(
-                conn, "prediction_logs"
-            )
+            assert "idx_price_snapshots_symbol_hour_uniq" in _indexes(conn, "price_snapshots")
+            assert "idx_prediction_logs_symbol_hour_uniq" in _indexes(conn, "prediction_logs")
 
             # Zdeduplikowane: jeden wiersz na (symbol, godzina).
             cur.execute("SELECT count(*) FROM price_snapshots WHERE symbol='VT'")
@@ -2680,8 +2678,7 @@ class TestMigration013DedupesPreexistingDuplicates:
             # prediction_logs: zachowany ROZLICZONY wiersz (BULLISH @ 17:10),
             # mimo że jest starszy — feedback ma priorytet nad świeżością.
             cur.execute(
-                "SELECT predicted_trend, is_trend_correct "
-                "FROM prediction_logs WHERE symbol='VT'"
+                "SELECT predicted_trend, is_trend_correct FROM prediction_logs WHERE symbol='VT'"
             )
             kept = cur.fetchone()
             assert kept[0] == "BULLISH"
@@ -2717,8 +2714,7 @@ class TestMigration027BackfillsFeatureSetVersion:
             cur.execute((MIGRATIONS_DIR / "027_feature_set_version.sql").read_text())
 
             cur.execute(
-                "SELECT symbol, feature_set_version FROM prediction_logs "
-                "WHERE symbol LIKE 'FSV_%'"
+                "SELECT symbol, feature_set_version FROM prediction_logs WHERE symbol LIKE 'FSV_%'"
             )
             versions = dict(cur.fetchall())
 
@@ -2770,9 +2766,7 @@ class TestMigration029BackfillsSettledAt:
 
             cur.execute((MIGRATIONS_DIR / "029_prediction_settled_at.sql").read_text())
 
-            cur.execute(
-                "SELECT symbol, settled_at FROM prediction_logs WHERE symbol LIKE 'BF_%'"
-            )
+            cur.execute("SELECT symbol, settled_at FROM prediction_logs WHERE symbol LIKE 'BF_%'")
             settled = {symbol: stamp for symbol, stamp in cur.fetchall()}
 
         monday = datetime(2026, 10, 19, 5, 30, 5, tzinfo=UTC)
@@ -2913,7 +2907,7 @@ class TestMigration037BackfillsExperimentArms:
                 "INSERT INTO prediction_logs "
                 "(symbol, timestamp, price_at_prediction, decision_receipts) VALUES "
                 "('EB_ARMS', '2026-11-02T21:30:00+00:00', 100.0, "
-                "'{\"schema_version\": 2, \"experiment_arms\": {\"EXP-03\": \"no_memory\"}}'), "
+                '\'{"schema_version": 2, "experiment_arms": {"EXP-03": "no_memory"}}\'), '
                 "('EB_NONE', '2026-11-02T21:30:00+00:00', 100.0, '{\"schema_version\": 2}'), "
                 "('EB_BARE', '2026-11-02T21:30:00+00:00', 100.0, NULL)"
             )
@@ -2931,7 +2925,7 @@ class TestMigration037BackfillsExperimentArms:
             }
             # Idempotencja: ponowny przebieg nie nadpisuje ramion zapisanych przez Fast Loop.
             cur.execute(
-                "UPDATE prediction_logs SET experiment_arms = '{\"EXP-03\": \"memory\"}' "
+                'UPDATE prediction_logs SET experiment_arms = \'{"EXP-03": "memory"}\' '
                 "WHERE symbol = 'EB_ARMS'"
             )
             cur.execute(migration)
@@ -2981,6 +2975,7 @@ class TestMigration045PersonaVoteOutcomes:
             "FROM persona_vote_outcomes(%s)",
             (90,),
         )
+        rows = cur.fetchall()
         return [
             PersonaVoteOutcome(
                 prediction_id=str(pid),
@@ -2993,8 +2988,7 @@ class TestMigration045PersonaVoteOutcomes:
                 predicted_at=predicted_at,
                 settled_at=settled_at,
             )
-            for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at
-            in cur.fetchall()
+            for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at in rows
         ]
 
     def test_persona_vote_outcomes_return_raw_settled_votes(
@@ -3022,7 +3016,9 @@ class TestMigration045PersonaVoteOutcomes:
 
         (outcome,) = outcomes
         assert (outcome.investor_name, outcome.recommendation, outcome.symbol) == (
-            "Buffett", "HOLD", "PVO_BTC"
+            "Buffett",
+            "HOLD",
+            "PVO_BTC",
         )
         assert outcome.actual_price == Decimal("102.0000")
         assert outcome.settled_at is not None and outcome.predicted_at is not None
@@ -3059,9 +3055,7 @@ class TestMigration045PersonaVoteOutcomes:
             cur.execute(migration)
             cur.execute("SELECT count(*) FROM persona_accuracy_weights(90)")
             cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
-            cur.execute(
-                "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
-            )
+            cur.execute("SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)")
             assert "WIA-51" in cur.fetchone()[0]
 
 
@@ -3142,24 +3136,34 @@ class TestMigration065PersonaScoring:
                 "price_at_prediction, actual_price_after_12h, predicted_at, settled_at "
                 "FROM persona_vote_outcomes(90)"
             )
+            rows = cur.fetchall()
             outcomes = [
                 PersonaVoteOutcome(
-                    prediction_id=str(pid), investor_name=name, recommendation=rec,
-                    confidence=conf, symbol=symbol,
-                    price_at_prediction=Decimal(str(price)), actual_price=Decimal(str(actual)),
-                    predicted_at=predicted_at, settled_at=settled_at,
+                    prediction_id=str(pid),
+                    investor_name=name,
+                    recommendation=rec,
+                    confidence=conf,
+                    symbol=symbol,
+                    price_at_prediction=Decimal(str(price)),
+                    actual_price=Decimal(str(actual)),
+                    predicted_at=predicted_at,
+                    settled_at=settled_at,
                 )
-                for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at
-                in cur.fetchall()
+                for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at in rows
             ]
             scoring = self._scoring(cur, ["PS65_BTC"])
 
         crypto = {"PS65_BTC"}
         samples = [
-            (o.confidence, persona_vote_correct(
-                o.recommendation, o.price_at_prediction, o.actual_price,
-                AssetType.CRYPTO if o.symbol in crypto else None,
-            ))
+            (
+                o.confidence,
+                persona_vote_correct(
+                    o.recommendation,
+                    o.price_at_prediction,
+                    o.actual_price,
+                    AssetType.CRYPTO if o.symbol in crypto else None,
+                ),
+            )
             for o in outcomes
         ]
         hit_rate, votes = persona_hit_stats(outcomes, crypto_symbols=crypto)["Hold"]
@@ -3233,9 +3237,7 @@ class TestMigration046CorrectionCategory:
                     "VALUES (%s, NOW() - %s * interval '1 hour', %s)",
                     (f"CC046_{index}", index, None if category is None else category.value),
                 )
-            cur.execute(
-                "SELECT count(*) FROM prediction_logs WHERE symbol LIKE 'CC046_%'"
-            )
+            cur.execute("SELECT count(*) FROM prediction_logs WHERE symbol LIKE 'CC046_%'")
             assert cur.fetchone() == (len(MistakeCategory) + 1,)
 
     def test_correction_category_rejects_a_value_outside_the_taxonomy(
@@ -3309,6 +3311,7 @@ class TestMigration048NormalizesPredictedTrend:
             "NT_NULL": None,
         }
         assert validated == [False]
+
 
 @pytest.mark.containers
 class TestMigration053EarningsCache:
@@ -3409,8 +3412,7 @@ class TestMigration054CouncilVotesUnique:
                 (prediction_id,),
             )
             cur.execute(
-                "SELECT count(*), max(recommendation) FROM council_votes "
-                "WHERE prediction_id = %s",
+                "SELECT count(*), max(recommendation) FROM council_votes WHERE prediction_id = %s",
                 (prediction_id,),
             )
             assert cur.fetchone() == (1, "HOLD")
@@ -3504,8 +3506,7 @@ class TestMigration058SettledReadsWithoutStaleQuote:
             self._vote(cur, self._settled(cur, "SQ058_VT", True), "SQ058_VT")
             self._vote(cur, self._settled(cur, "SQ058_VN", None), "SQ058_VN")
             cur.execute(
-                "SELECT symbol FROM persona_vote_outcomes(90) "
-                "WHERE investor_name = 'SQ058 Persona'"
+                "SELECT symbol FROM persona_vote_outcomes(90) WHERE investor_name = 'SQ058 Persona'"
             )
             outcomes = [row[0] for row in cur.fetchall()]
             cur.execute(
@@ -3529,9 +3530,7 @@ class TestMigration058SettledReadsWithoutStaleQuote:
         with migrated_pg_conn.cursor() as cur:
             cur.execute(migration)
             cur.execute(migration)
-            cur.execute(
-                "SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)"
-            )
+            cur.execute("SELECT obj_description('persona_vote_outcomes(integer)'::regprocedure)")
             assert "DAT-14" in cur.fetchone()[0]
 
 
@@ -3565,9 +3564,7 @@ class TestMigration059SettlementSessionClose:
             )
             row = cur.fetchone()
 
-        assert row == (
-            Decimal("105.0000"), Decimal("106.1235"), "2026-10-19", "quote_close", True
-        )
+        assert row == (Decimal("105.0000"), Decimal("106.1235"), "2026-10-19", "quote_close", True)
 
     def test_settlement_source_rejects_an_unknown_field(
         self, migrated_pg_conn: psycopg2.extensions.connection
@@ -3610,8 +3607,14 @@ class TestMigration062CorporateActions:
         self, migrated_pg_conn: psycopg2.extensions.connection
     ) -> None:
         assert _columns(migrated_pg_conn, "corporate_actions") == {
-            "id", "symbol", "kind", "ratio", "prev_close", "reference_price",
-            "detected_at", "detected_on",
+            "id",
+            "symbol",
+            "kind",
+            "ratio",
+            "prev_close",
+            "reference_price",
+            "detected_at",
+            "detected_on",
         }
         with _rolled_back(migrated_pg_conn) as cur:
             cur.execute(self._INSERT, ("CA_NVDA", Decimal("0.1")))
@@ -3809,9 +3812,7 @@ class TestMigration072PredictionEntryPrice:
 _GENESIS = "0" * 64
 
 
-def _open_trade(
-    cur: psycopg2.extensions.cursor, symbol: str, prev_hash: str, row_hash: str
-) -> int:
+def _open_trade(cur: psycopg2.extensions.cursor, symbol: str, prev_hash: str, row_hash: str) -> int:
     """Predykcja w `prediction_logs` (FK) i jej otwarta pozycja w ledgerze; zwraca `seq`."""
     cur.execute(
         "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
@@ -3843,9 +3844,21 @@ class TestMigration073PaperTrades:
         self, migrated_pg_conn: psycopg2.extensions.connection
     ) -> None:
         assert _columns(migrated_pg_conn, "paper_trades") == {
-            "seq", "prediction_id", "symbol", "side", "entry_price", "entry_ts", "weight",
-            "cost_bps", "prev_hash", "row_hash", "exit_price", "exit_ts", "pnl",
-            "exit_reason", "recorded_at",
+            "seq",
+            "prediction_id",
+            "symbol",
+            "side",
+            "entry_price",
+            "entry_ts",
+            "weight",
+            "cost_bps",
+            "prev_hash",
+            "row_hash",
+            "exit_price",
+            "exit_ts",
+            "pnl",
+            "exit_reason",
+            "recorded_at",
         }
         with _rolled_back(migrated_pg_conn) as cur:
             _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
@@ -4126,24 +4139,26 @@ class TestSaveNodeRecordFitsPredictionLogs:
     po serializacji musi mieścić się w kolumnach `prediction_logs` po migracjach."""
 
     # Klucze, które dokładają flagi i porty — pilnuje, że test je naprawdę wywołał.
-    _OPTIONAL_KEYS = frozenset({
-        "regime",
-        "decision_receipts",
-        "feature_set_version",
-        "recipe_version",
-        "edge_sigma",
-        "interval_low",
-        "interval_high",
-        "gate_delta",
-        "experiment_arms",
-        "trend_probabilities",
-        "stale_quote",
-        "commitment_hash",
-        "commitment_salt",
-        "commitment_payload",
-        "embedding",
-        "invalidation_price",
-    })
+    _OPTIONAL_KEYS = frozenset(
+        {
+            "regime",
+            "decision_receipts",
+            "feature_set_version",
+            "recipe_version",
+            "edge_sigma",
+            "interval_low",
+            "interval_high",
+            "gate_delta",
+            "experiment_arms",
+            "trend_probabilities",
+            "stale_quote",
+            "commitment_hash",
+            "commitment_salt",
+            "commitment_payload",
+            "embedding",
+            "invalidation_price",
+        }
+    )
 
     def test_saved_record_keys_are_prediction_logs_columns(
         self, migrated_pg_conn: psycopg2.extensions.connection
@@ -4542,9 +4557,7 @@ class TestMigration079BotState:
     def test_bot_state_keeps_one_offset_per_channel(
         self, migrated_pg_conn: psycopg2.extensions.connection
     ) -> None:
-        assert {"channel", "update_offset", "updated_at"} <= _columns(
-            migrated_pg_conn, "bot_state"
-        )
+        assert {"channel", "update_offset", "updated_at"} <= _columns(migrated_pg_conn, "bot_state")
         with _rolled_back(migrated_pg_conn) as cur:
             for offset in (100, 105):
                 cur.execute(
@@ -4599,9 +4612,7 @@ class TestMigration080SymbolMutes:
     def test_symbol_mutes_keep_one_row_per_symbol(
         self, migrated_pg_conn: psycopg2.extensions.connection
     ) -> None:
-        assert {"symbol", "muted_until", "created_at"} <= _columns(
-            migrated_pg_conn, "symbol_mutes"
-        )
+        assert {"symbol", "muted_until", "created_at"} <= _columns(migrated_pg_conn, "symbol_mutes")
         with _rolled_back(migrated_pg_conn) as cur:
             for until in ("2026-11-01T08:00:00+00:00", "2026-11-08T08:00:00+00:00"):
                 cur.execute(
@@ -4628,13 +4639,9 @@ class TestMigration080SymbolMutes:
         self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         with _rolled_back(supabase_like_conn) as cur:
-            cur.execute(
-                "SELECT relrowsecurity FROM pg_class WHERE oid = 'symbol_mutes'::regclass"
-            )
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'symbol_mutes'::regclass")
             assert cur.fetchone() == (True,)
-            public = [
-                _has_table_privilege(cur, role, "symbol_mutes") for role in PUBLIC_API_ROLES
-            ]
+            public = [_has_table_privilege(cur, role, "symbol_mutes") for role in PUBLIC_API_ROLES]
             _set_role(cur, "service_role")
             cur.execute(
                 "INSERT INTO symbol_mutes (symbol, muted_until) VALUES ('TSLA', NOW()) "
@@ -4681,9 +4688,7 @@ class TestMigration081ShockAlertLevels:
         with _rolled_back(migrated_pg_conn) as cur:
             self._alert(cur, "SA081_OK", None)
             self._alert(cur, "SA081_OK", 2)
-            cur.execute(
-                "SELECT level FROM shock_alerts WHERE symbol = 'SA081_OK' ORDER BY level"
-            )
+            cur.execute("SELECT level FROM shock_alerts WHERE symbol = 'SA081_OK' ORDER BY level")
             assert [row[0] for row in cur.fetchall()] == [1, 2]
 
     def test_same_level_twice_a_day_is_rejected(
@@ -4697,9 +4702,7 @@ class TestMigration081ShockAlertLevels:
     def test_third_level_is_rejected(
         self, migrated_pg_conn: psycopg2.extensions.connection
     ) -> None:
-        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(
-            psycopg2.errors.CheckViolation
-        ):
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
             self._alert(cur, "SA081_THIRD", 3)
 
     def test_081_is_idempotent_and_drops_the_daily_constraint(
@@ -4810,14 +4813,12 @@ class TestMigration082CouncilVoteRounds:
             )
             weights = cur.fetchall()
             cur.execute(
-                "SELECT recommendation FROM persona_vote_outcomes(90) "
-                "WHERE investor_name = %s",
+                "SELECT recommendation FROM persona_vote_outcomes(90) WHERE investor_name = %s",
                 (self.PERSONA,),
             )
             outcomes = cur.fetchall()
             cur.execute(
-                "SELECT vote_count FROM persona_scoring_stats(90, '{}') "
-                "WHERE investor_name = %s",
+                "SELECT vote_count FROM persona_scoring_stats(90, '{}') WHERE investor_name = %s",
                 (self.PERSONA,),
             )
             scoring = cur.fetchall()
@@ -5122,7 +5123,7 @@ class TestMigration077SlowLoopRpcs:
                 )
                 can_execute[role] = cur.fetchone()[0]
 
-        assert "search_path=\"\"" in (config or [])
+        assert 'search_path=""' in (config or [])
         assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
 
     def test_db_size_report_returns_known_tables(
@@ -5157,7 +5158,7 @@ class TestMigration077SlowLoopRpcs:
                 can_execute[role] = cur.fetchone()[0]
 
         assert definer is True
-        assert "search_path=\"\"" in (config or [])
+        assert 'search_path=""' in (config or [])
         assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
 
     def test_077_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:

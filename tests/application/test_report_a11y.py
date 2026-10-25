@@ -28,9 +28,14 @@ STARTED = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
 
 def _saved(symbol: str, delta: str, target: str) -> SymbolResult:
     return SymbolResult(
-        symbol=symbol, status="saved", delta=Decimal(delta), current_price=Decimal("100"),
+        symbol=symbol,
+        status="saved",
+        delta=Decimal(delta),
+        current_price=Decimal("100"),
         trend="BULLISH" if Decimal(target) > 100 else "BEARISH",
-        target_price=Decimal(target), confidence_score=0.7, reasoning="Teza.",
+        target_price=Decimal(target),
+        confidence_score=0.7,
+        reasoning="Teza.",
     )
 
 
@@ -51,7 +56,7 @@ def test_stylesheet_sits_in_the_head() -> None:
 
     head = html[: html.index("</head>")]
     assert "<style>" in head
-    assert "<style>" not in html[html.index("<body>"):]
+    assert "<style>" not in html[html.index("<body>") :]
 
 
 # ---------------------------------------------------------------------------
@@ -67,12 +72,15 @@ def test_bar_chart_table_is_presentation() -> None:
 
 def test_quota_banner_table_is_presentation() -> None:
     alert = QuotaAlert(
-        source="OpenAI", severity=QuotaSeverity.CRITICAL, message="429",
-        action="Doładuj konto.", occurred_at=STARTED,
+        source="OpenAI",
+        severity=QuotaSeverity.CRITICAL,
+        message="429",
+        action="Doładuj konto.",
+        occurred_at=STARTED,
     )
     html, _ = build_html_report([], STARTED, 1.0, ReportContext(quota_alerts=[alert]))
 
-    banner = html[html.index("ALERTY SUBSKRYPCJI"):]
+    banner = html[html.index("ALERTY SUBSKRYPCJI") :]
     assert "<table role='presentation'" in banner[: banner.index("</table>")]
 
 
@@ -103,7 +111,7 @@ def test_predictions_table_shows_arrow_and_sign_for_the_move_and_the_forecast() 
     html, _ = build_html_report([_saved("AAPL", "0.025", "98")], STARTED, 1.0)
 
     start = html.index("🔮 Wygenerowane predykcje")
-    table = html[start:html.index("</table>", start)]
+    table = html[start : html.index("</table>", start)]
     assert "▲ +2,50%" in table
     assert "▼ -2,00%" in table
 
@@ -115,7 +123,7 @@ def test_resolved_verdict_has_a_word_next_to_the_mark() -> None:
     ]
     html, _ = build_html_report([], STARTED, 1.0, ReportContext(resolved_predictions=resolved))
 
-    section = html[html.index("📊 Zamknięte predykcje"):]
+    section = html[html.index("📊 Zamknięte predykcje") :]
     assert re.search(r"✅.{0,200}Trafiona", section)
     assert re.search(r"❌.{0,200}Błędna", section)
 
@@ -154,8 +162,16 @@ def test_contrast_ratio_matches_the_wcag_reference_values() -> None:
     assert contrast_ratio("#16a34a", "#fff") == pytest.approx(3.30, abs=0.01)
 
 
-_TEXT_ROLES = ("positive", "negative", "neutral", "caution", "text", "text_secondary",
-               "muted", "subtle")
+_TEXT_ROLES = (
+    "positive",
+    "negative",
+    "neutral",
+    "caution",
+    "text",
+    "text_secondary",
+    "muted",
+    "subtle",
+)
 _BACKGROUNDS = ("#ffffff", PALETTE.surface)
 
 
@@ -170,7 +186,7 @@ def test_palette_meets_wcag_aa(role: str, background: str) -> None:
 def test_footer_text_meets_wcag_aa() -> None:
     html, _ = _full_cycle()
 
-    footer = html[html.rindex("margin-top: 32px; padding-top: 16px;"):]
+    footer = html[html.rindex("margin-top: 32px; padding-top: 16px;") :]
     colors = re.findall(r"color: (#[0-9a-f]{6})", footer)
     assert colors
     assert all(contrast_ratio(color, "#ffffff") >= 4.5 for color in colors)
@@ -290,18 +306,14 @@ def test_states_missing_from_the_golden_scenarios_meet_aa_too() -> None:
     from src.domain.macro_risk import MacroAlertLevel
 
     alerts = [
-        QuotaAlert(
-            source=source, severity=severity, message="m", action="a", occurred_at=STARTED
-        )
+        QuotaAlert(source=source, severity=severity, message="m", action="a", occurred_at=STARTED)
         for source, severity in (("A", QuotaSeverity.CRITICAL), ("B", QuotaSeverity.WARNING))
     ]
     signals = [
         RiskSignal(symbol="AAPL", type="LOW_SIGNAL", severity=severity, description="d")
         for severity in ("high", "medium", "low")
     ]
-    losing = EquityCurve(
-        points=(), total_return=-0.12, win_rate=0.4, max_drawdown=0.2, n_trades=10
-    )
+    losing = EquityCurve(points=(), total_return=-0.12, win_rate=0.4, max_drawdown=0.2, n_trades=10)
     critical = MacroRiskReport(
         drawdowns=[
             DrawdownSignal(symbol="TSLA", current_price=Decimal("75"), peak_price=Decimal("100"))
@@ -359,7 +371,9 @@ def test_budget_cut_chips_meet_aa() -> None:
 
     cut = [
         SymbolResult(
-            symbol=symbol, status="ignored", delta=Decimal(delta),
+            symbol=symbol,
+            status="ignored",
+            delta=Decimal(delta),
             skip_reason=SkipReason.BUDGET_EXHAUSTED,
         )
         for symbol, delta in (("NVDA", "-0.035"), ("AMD", "0.031"))

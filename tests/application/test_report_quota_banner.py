@@ -135,9 +135,7 @@ class TestLlmBudgetBanner:
         from src.domain.finops import BudgetBreach
 
         assert breach is None or isinstance(breach, BudgetBreach)
-        return build_html_report(
-            [], self.STARTED, 1.0, ReportContext(llm_budget_breach=breach)
-        )
+        return build_html_report([], self.STARTED, 1.0, ReportContext(llm_budget_breach=breach))
 
     def test_daily_breach_names_the_cap_and_the_spend(self) -> None:
         from src.domain.finops import BudgetBreach, BudgetWindow
@@ -153,9 +151,7 @@ class TestLlmBudgetBanner:
     def test_monthly_breach_names_the_month(self) -> None:
         from src.domain.finops import BudgetBreach, BudgetWindow
 
-        html, text = self._mail(
-            BudgetBreach(BudgetWindow.MONTH, spent_usd=30.5, cap_usd=30.0)
-        )
+        html, text = self._mail(BudgetBreach(BudgetWindow.MONTH, spent_usd=30.5, cap_usd=30.0))
 
         assert "Miesięczny limit" in html
         assert "$30,50 z $30,00" in text

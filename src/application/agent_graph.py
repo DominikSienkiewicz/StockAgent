@@ -160,9 +160,7 @@ def _timed_node(node_name: str, symbol: str, telemetry: CycleTelemetry) -> Itera
         failed = False
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        logger.info(
-            "node=%s symbol=%s elapsed_ms=%.1f", node_name, symbol, elapsed_ms
-        )
+        logger.info("node=%s symbol=%s elapsed_ms=%.1f", node_name, symbol, elapsed_ms)
         telemetry.record_node_timing(node_name, symbol, elapsed_ms, failed=failed)
 
 
@@ -170,9 +168,7 @@ def _log_paid_call_line(node_name: str, symbol: str, detail: str) -> None:
     """Jawna linia w logu, gdy odpala się PŁATNE wywołanie zewnętrzne
     (LLM / sentyment / news / rada). Pozwala audytować FinOps — ile płatnych
     wywołań poszło w danym cyklu i z którego węzła."""
-    logger.info(
-        "paid call: node=%s symbol=%s %s", node_name, symbol, detail
-    )
+    logger.info("paid call: node=%s symbol=%s %s", node_name, symbol, detail)
 
 
 def _log_paid_call(
@@ -478,9 +474,7 @@ def _build_similar_context(
                 precedents.append(precedent)
         return "\n".join(lines), precedents
     except Exception:
-        logger.exception(
-            "find_similar_predictions failed for %s — predicting without RAG", symbol
-        )
+        logger.exception("find_similar_predictions failed for %s — predicting without RAG", symbol)
         return "", []
 
 
@@ -1019,9 +1013,7 @@ class AgentGraphDeps:
         ]
         if self.tool_use_port is not None and missing_tool_use:
             # ARCH-18: niepełna trójka cicho spadała do zwykłego `llm_port.analyze`.
-            raise ValueError(
-                f"tool-use: tool_use_port requires {' and '.join(missing_tool_use)}"
-            )
+            raise ValueError(f"tool-use: tool_use_port requires {' and '.join(missing_tool_use)}")
         if self.paid_call_meter is None:
             object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
         else:
@@ -1161,11 +1153,8 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
             update["session_quote"] = quote
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
-        update["drift"] = Ratio(
-            PriceDelta.calculate(Money(reference * ratio), current).fraction
-        )
+        update["drift"] = Ratio(PriceDelta.calculate(Money(reference * ratio), current).fraction)
     return update
-
 
 
 def _persist_price_snapshot(deps: AgentGraphDeps, state: AgentState) -> None:
@@ -1178,9 +1167,7 @@ def _persist_price_snapshot(deps: AgentGraphDeps, state: AgentState) -> None:
     """
     repository_port = deps.repository_port
     try:
-        repository_port.save_price_snapshot(
-            state["symbol"], Money(state["current_price"])
-        )
+        repository_port.save_price_snapshot(state["symbol"], Money(state["current_price"]))
     except Exception:
         logger.exception(
             "save_price_snapshot failed for %s — cykl kończy się bez "
@@ -1245,9 +1232,7 @@ def _gated_snapshot_features(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _persist_feature_snapshot(
-    deps: AgentGraphDeps, state: AgentState, *, gated: bool
-) -> None:
+def _persist_feature_snapshot(deps: AgentGraphDeps, state: AgentState, *, gated: bool) -> None:
     """ML-14 — wektor cech point-in-time, wołany z węzłów terminalnych obok
     snapshotu ceny (także z ignore, więc trening widzi też dni bez ruchu).
 
@@ -1300,8 +1285,7 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
         "effective_threshold": str(threshold.value),
         "precedents": precedents,
         "feature_attribution": [
-            {"feature": c.feature, "contribution": float(c.contribution)}
-            for c in attribution
+            {"feature": c.feature, "contribution": float(c.contribution)} for c in attribution
         ],
     }
     recipe = _effective_recipe(deps, state)
@@ -1335,7 +1319,6 @@ def _pick_threshold(
         regime_multiplier=state.get("regime_multiplier", 1.0) or 1.0,
         earnings_multiplier=state.get("earnings_multiplier", 1.0) or 1.0,
     )
-
 
 
 def _reference_is_stale(state: AgentState) -> bool:
@@ -1409,9 +1392,7 @@ def _gate_verdict(
     asset = state.get("asset") or Asset(symbol=state["symbol"])
     chosen = _pick_threshold(state, default, crypto_override)
     delta = PriceDelta(state["delta"])
-    passes = asset.evaluate_volatility(
-        delta, chosen, reference_stale=reference_stale, drift=drift
-    )
+    passes = asset.evaluate_volatility(delta, chosen, reference_stale=reference_stale, drift=drift)
     # ALR-10: bramkę otworzył sam dryf, gdy bez niego ruch cyklu byłby pod progiem.
     by_drift = (
         drift is not None
@@ -1519,7 +1500,6 @@ def _paid_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
     return "analyze_sentiment"
 
 
-
 def _settles_on_stale_quote(state: AgentState, last: Prediction) -> bool:
     """DAT-14: notowanie cyklu nie pochodzi z sesji po predykcji (weekend, święto,
     drugi przebieg przed otwarciem). Bez czasu notowania albo predykcji — False."""
@@ -1555,9 +1535,7 @@ def _settle_on_stale_quote(
         insight=STALE_QUOTE_INSIGHT,
         stale_quote=True if deps.stale_quote_enabled else None,
     )
-    return {
-        "reflection_context": "Ostatnie rozliczenie na nieaktualnym notowaniu — bez oceny."
-    }
+    return {"reflection_context": "Ostatnie rozliczenie na nieaktualnym notowaniu — bez oceny."}
 
 
 class _SettlementExtras(TypedDict, total=False):
@@ -1695,9 +1673,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
             **extras,
         )
         _close_paper_trade(deps, last, current_price, ExitReason.SETTLED)
-        return {
-            "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
-        }
+        return {"reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."}
 
     # #16: prior był BŁĘDNY. Tania księgowość (accuracy/trend/update) leci
     # ZAWSZE — to nie kosztuje płatnego API. PŁATNE analyze_mistake (LLM) jest
@@ -1713,13 +1689,16 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # ALR-10: i ten sam dryf — powolny zjazd też odsłania błąd predykcji.
     # FIN-25: wyczerpany limit USD doby albo miesiąca — cykl nie płaci także za
     # diagnozę; rozliczenie (tania część) idzie jak zawsze.
-    diagnose_paid = not deps.llm_budget_spent and _gate_verdict(
-        state,
-        threshold,
-        crypto_threshold,
-        reference_stale=_reference_is_stale(state),
-        drift=_drift_of(state),
-    ).passes
+    diagnose_paid = (
+        not deps.llm_budget_spent
+        and _gate_verdict(
+            state,
+            threshold,
+            crypto_threshold,
+            reference_stale=_reference_is_stale(state),
+            drift=_drift_of(state),
+        ).passes
+    )
 
     if deps.batch_diagnosis_enabled:
         # EXP-17: diagnozę tego błędu zrobi raz w tygodniu Slow Loop, jednym
@@ -1729,9 +1708,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,
         # mimo że agent poszedł inaczej? Wzbogaca diagnozę o stłumiony, trafny
         # głos mniejszości. W pełni graceful — brak głosów / błąd → bez bloku.
-        vindicated_ctx = _vindicated_context(
-            repository_port, last, current_price, symbol
-        )
+        vindicated_ctx = _vindicated_context(repository_port, last, current_price, symbol)
         # WIA-18: diagnoza widzi prawdziwe wejście predykcji (nagłówki,
         # uzasadnienie, cenę wejścia i cel). Prompt ogradza dane z bazy.
         prompt = get_mistake_diagnosis_prompt(
@@ -1772,7 +1749,6 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     return {"reflection_context": f"Ostatni błąd: {insight}"}
 
 
-
 def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     sentiment_port = deps.sentiment_port
     symbol = state["symbol"]
@@ -1787,7 +1763,6 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> AgentSta
         return {"sentiment": payload}
 
 
-
 def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     news_port = deps.news_port
     symbol = state["symbol"]
@@ -1795,7 +1770,6 @@ def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     _log_paid_call(deps, "fetch_news", symbol, "news", "news_port.get_news_context")
     with _timed_node("fetch_news", symbol, deps.telemetry):
         return {"news": news_port.get_news_context(symbol)}
-
 
 
 def _compute_rag_context(
@@ -1812,22 +1786,16 @@ def _compute_rag_context(
     similar_precedents: list[dict[str, Any]] = []
     if deps.embedding_port is not None and news_summary:
         # FIN-01: embedding to płatny request (OpenAI) — liczony w koszcie cyklu.
-        _log_paid_call(
-            deps, "predict", state["symbol"], "embedding", "embedding_port.embed"
-        )
+        _log_paid_call(deps, "predict", state["symbol"], "embedding", "embedding_port.embed")
         try:
             with usage_scope(source="embedding", node="predict", symbol=state["symbol"]):
                 news_embedding = deps.embedding_port.embed(news_summary)
         except Exception:
-            logger.exception(
-                "Embedding failed for %s — predicting without RAG", state["symbol"]
-            )
+            logger.exception("Embedding failed for %s — predicting without RAG", state["symbol"])
         if news_embedding:
             # Vector Memory: gdy włączone, retrieval preferuje analogi z tego
             # samego reżimu rynku (filtr w RPC, migracja 017).
-            regime_filter = (
-                state.get("regime_context") if deps.vector_memory_enabled else None
-            )
+            regime_filter = state.get("regime_context") if deps.vector_memory_enabled else None
             similar_context, similar_precedents = _build_similar_context(
                 deps.repository_port,
                 news_embedding,
@@ -1887,13 +1855,9 @@ def _call_prediction_llm(
         deps.tool_use_port is not None
         and deps.research_tools
         and deps.tool_use_threshold is not None
-        and _gate_verdict(
-            state, deps.tool_use_threshold, deps.crypto_tool_use_threshold
-        ).passes
+        and _gate_verdict(state, deps.tool_use_threshold, deps.crypto_tool_use_threshold).passes
     ):
-        _log_paid_call(
-            deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
-        )
+        _log_paid_call(deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools")
         with _timed_node("predict_tool_use", symbol, deps.telemetry):
             return deps.tool_use_port.analyze_with_tools(prompt, deps.research_tools)
     _log_paid_call(deps, "predict", symbol, "llm", "llm_port.analyze")
@@ -1927,9 +1891,7 @@ def _run_ml_prediction(
         return None
     feature_attribution: tuple[FeatureContribution, ...] = ()
     try:
-        contribs = {
-            k: v for k, v in ml_port.explain(features, **scale).items() if k != "_bias"
-        }
+        contribs = {k: v for k, v in ml_port.explain(features, **scale).items() if k != "_bias"}
         feature_attribution = top_contributions(contribs)
     except Exception:
         logger.exception("explain() failed for %s — bez atrybucji", symbol)
@@ -2012,9 +1974,7 @@ def _persist_shadow_prompt_forecast(
     if deps.shadow_prompt is None or forecast is None:
         return
     try:
-        deps.repository_port.save_shadow_trend_prediction(
-            prediction_id, state["symbol"], forecast
-        )
+        deps.repository_port.save_shadow_trend_prediction(prediction_id, state["symbol"], forecast)
     except PortError:
         logger.warning(
             "save_shadow_trend_prediction failed for %s — predykcja zapisana bez wariantu",
@@ -2313,9 +2273,7 @@ def _render_prediction_prompt(
         similar_context=similar_context if options.memory else "",
         # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
         regime_context=state.get("regime_context", ""),
-        peer_context=", ".join(
-            f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
-        ),
+        peer_context=", ".join(f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())),
         # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
         include_memory=options.memory,
@@ -2446,9 +2404,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         llm_analysis, trend_probabilities = _apply_probability_forecast(llm_analysis, symbol)
     invalidation_state: AgentState = {}
     if deps.invalidation_level_enabled:
-        invalidation, invalidation_flag = _parse_invalidation(
-            llm_analysis, state["current_price"]
-        )
+        invalidation, invalidation_flag = _parse_invalidation(llm_analysis, state["current_price"])
         invalidation_state["invalidation"] = invalidation
         if invalidation_flag is not None:
             analysis_flags.append(invalidation_flag)
@@ -2503,24 +2459,14 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
 
     raw_features = {
         "price_delta": ml_price_delta,
-        "av_sentiment_score": _v(
-            sentiment.get("av_sentiment_score"), "av_sentiment_score"
-        ),
-        "av_relevance_avg": _v(
-            sentiment.get("av_relevance_avg"), "av_relevance_avg"
-        ),
-        "news_volume_24h": _v(
-            sentiment.get("news_volume_24h"), "news_volume_24h"
-        ),
-        "high_relevance_count": _v(
-            sentiment.get("high_relevance_count"), "high_relevance_count"
-        ),
+        "av_sentiment_score": _v(sentiment.get("av_sentiment_score"), "av_sentiment_score"),
+        "av_relevance_avg": _v(sentiment.get("av_relevance_avg"), "av_relevance_avg"),
+        "news_volume_24h": _v(sentiment.get("news_volume_24h"), "news_volume_24h"),
+        "high_relevance_count": _v(sentiment.get("high_relevance_count"), "high_relevance_count"),
         "llm_trend_signal": float(llm_trend_signal),
         # av_agreement domyślnie 0.5 (neutralny) — brak agreement to nie jest
         # to samo co 0% zgody (które jest informacją samą w sobie).
-        "av_llm_agreement": _v(
-            llm_analysis.get("av_agreement"), "av_llm_agreement", default=0.5
-        ),
+        "av_llm_agreement": _v(llm_analysis.get("av_agreement"), "av_llm_agreement", default=0.5),
     }
     features = {name: raw_features[name] for name in ML_FEATURE_COLUMNS}
     # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag, baseline
@@ -2606,7 +2552,6 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     }
 
 
-
 def _council_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     council_port = deps.council_port
     council_threshold = deps.council_threshold
@@ -2679,7 +2624,6 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     return {"council_verdict": verdict}
 
 
-
 def _uses_memory(state: AgentState) -> bool:
     """EXP-03: czy prompt predykcji dostaje pamięć (lekcje z reflect i analogi
     RAG). Fałsz tylko w ramieniu `no_memory` aktywnego eksperymentu."""
@@ -2705,30 +2649,30 @@ def _resolve_news_vector(
         with usage_scope(source="embedding", node="save", symbol=state["symbol"]):
             return deps.embedding_port.embed(news_summary)
     except Exception:
-        logger.exception(
-            "Embedding failed for %s — saving without vector", state["symbol"]
-        )
+        logger.exception("Embedding failed for %s — saving without vector", state["symbol"])
         return None
 
 
 # FIN-05: kolumny `prediction_logs`, które `_save_node` zapisuje w każdym rekordzie.
-_ALWAYS_SAVED_PREDICTION_COLUMNS: frozenset[str] = frozenset({
-    "symbol",
-    "price_at_prediction",
-    "sentiment_score",
-    "av_relevance_avg",
-    "news_volume_24h",
-    "high_relevance_count",
-    "av_llm_agreement",
-    "news_summary",
-    "predicted_trend",
-    "predicted_target_price",
-    "confidence_score",
-    "reasoning_text",
-    "council_verdict",
-    "data_quality_flags",
-    "alpha_fusion_score",
-})
+_ALWAYS_SAVED_PREDICTION_COLUMNS: frozenset[str] = frozenset(
+    {
+        "symbol",
+        "price_at_prediction",
+        "sentiment_score",
+        "av_relevance_avg",
+        "news_volume_24h",
+        "high_relevance_count",
+        "av_llm_agreement",
+        "news_summary",
+        "predicted_trend",
+        "predicted_target_price",
+        "confidence_score",
+        "reasoning_text",
+        "council_verdict",
+        "data_quality_flags",
+        "alpha_fusion_score",
+    }
+)
 
 
 # WIA-61 (migracja 059): kolumny zamknięcia sesji, które reflect dopisuje do rozliczenia.
@@ -2861,9 +2805,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         "av_relevance_avg": sentiment.get("av_relevance_avg"),
         "news_volume_24h": sentiment.get("news_volume_24h"),
         "high_relevance_count": sentiment.get("high_relevance_count"),
-        "av_llm_agreement": _float_or_default(
-            llm_analysis.get("av_agreement"), 0.5
-        ),
+        "av_llm_agreement": _float_or_default(llm_analysis.get("av_agreement"), 0.5),
         "news_summary": news_summary,
         "predicted_trend": llm_analysis.get("trend_direction"),
         "predicted_target_price": _storage_price(state.get("ml_target_price")),
@@ -2986,8 +2928,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
                 )
         except PortError:
             logger.exception(
-                "save_council_votes failed for %s — JSONB blob in "
-                "prediction_logs is still saved",
+                "save_council_votes failed for %s — JSONB blob in prediction_logs is still saved",
                 state["symbol"],
             )
 
@@ -2996,7 +2937,6 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     _persist_feature_snapshot(deps, state, gated=True)
 
     return {"prediction_id": prediction_id, "status": "saved"}
-
 
 
 def _council_verdict_blob(verdict: CouncilVerdict) -> dict[str, Any]:
@@ -3031,7 +2971,6 @@ def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> AgentStat
     Wektor ML-14 też nie powstaje — ten sam ruch wróci jako obserwacja następnego
     cyklu, więc zapis tutaj zdublowałby go w treningu."""
     return {"status": "ignored", "budget_exhausted": True}
-
 
 
 def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
@@ -3175,4 +3114,3 @@ def create_paid_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     workflow.add_edge("save", END)
     workflow.add_edge("budget_exhausted", END)
     return workflow
-

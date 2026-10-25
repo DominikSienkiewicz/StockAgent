@@ -23,9 +23,9 @@ _SUNDAY = 6
 class EarningsProximity(Enum):
     """Jak blisko najbliższego raportu wyników jesteśmy."""
 
-    IMMINENT = "IMMINENT"   # raport w ciągu paru dni
-    NEAR = "NEAR"           # raport w bieżącym tygodniu/oknie
-    FAR = "FAR"             # daleko albo brak danych
+    IMMINENT = "IMMINENT"  # raport w ciągu paru dni
+    NEAR = "NEAR"  # raport w bieżącym tygodniu/oknie
+    FAR = "FAR"  # daleko albo brak danych
 
 
 class EarningsTiming(Enum):
@@ -63,9 +63,7 @@ class EarningsEvent:
     timing: EarningsTiming | None = None
     eps_estimate: float | None = None
 
-    def proximity(
-        self, imminent_days: int = 2, near_days: int = 7
-    ) -> EarningsProximity:
+    def proximity(self, imminent_days: int = 2, near_days: int = 7) -> EarningsProximity:
         """Klasyfikuje bliskość raportu. Brak daty / przeszłość → FAR."""
         if self.days_until is None or self.days_until < 0:
             return EarningsProximity.FAR
@@ -129,9 +127,7 @@ def earnings_this_week(
     week = [
         event
         for event in events
-        if event is not None
-        and event.days_until is not None
-        and 0 <= event.days_until <= days_left
+        if event is not None and event.days_until is not None and 0 <= event.days_until <= days_left
     ]
     return tuple(sorted(week, key=lambda event: (event.days_until or 0, event.symbol)))
 

@@ -54,8 +54,7 @@ _RESOLVED_EMPTY_NOTE = {
     RESOLVED_WINDOW_THIS_CYCLE: "Brak rozliczeń w tym cyklu.",
 }
 _RESOLVED_UNAVAILABLE_NOTE = (
-    "⚠️ Nie udało się odczytać rozliczeń — w tym mailu ich brakuje "
-    "(szczegóły w logach przebiegu)."
+    "⚠️ Nie udało się odczytać rozliczeń — w tym mailu ich brakuje (szczegóły w logach przebiegu)."
 )
 
 

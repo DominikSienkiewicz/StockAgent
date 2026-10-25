@@ -143,7 +143,10 @@ def sort_personas(
         return sorted(
             records,
             key=lambda r: (
-                -_skill_or_neutral(r), -r.wilson_lower, -r.votes, r.investor_name,
+                -_skill_or_neutral(r),
+                -r.wilson_lower,
+                -r.votes,
+                r.investor_name,
             ),
         )
     if rank_by == "wilson":

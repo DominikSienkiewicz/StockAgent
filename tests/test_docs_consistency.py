@@ -92,6 +92,7 @@ def test_eighth_feature_pattern_matches_both_languages() -> None:
     assert EIGHTH_FEATURE_CLAIM.search("as an eighth feature")
     assert not EIGHTH_FEATURE_CLAIM.search("kandydat na cechę ML")
 
+
 def test_how_it_works_names_the_prediction_horizon_honestly() -> None:
     # WIA-28: pętla chodzi raz na dobę handlową, więc „12h return” to fałsz
     # widoczny dla quanta — horyzont to zwrot do następnego cyklu.
@@ -270,8 +271,7 @@ def test_invariant_table_links_tests_that_exist(doc: str) -> None:
     problems = []
     for row in rows:
         files = [
-            (path.parent / target).resolve()
-            for target in re.findall(r"\]\(([^)#]+\.py)\)", row)
+            (path.parent / target).resolve() for target in re.findall(r"\]\(([^)#]+\.py)\)", row)
         ]
         named = re.findall(r"`((?:\w+::)?test_\w+)`", row)
         known = set().union(*(_test_ids_in(file) for file in files if file.is_file()))

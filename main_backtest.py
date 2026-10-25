@@ -67,17 +67,13 @@ def backtest_symbols(settings: Settings) -> list[str]:
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging("main_backtest", settings.secret_values())
-    repository = SupabaseRepository(
-        url=settings.supabase_url, key=settings.supabase_key
-    )
+    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
     symbols = backtest_symbols(settings)
     crypto = set(settings.crypto_symbols)
     stock_backtest = build_use_case(settings, repository=repository)
     # WIA-50: krypto ma własny koszt obrotu; bez krypto drugi use case nie powstaje.
     crypto_backtest = (
-        build_use_case(
-            settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps
-        )
+        build_use_case(settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps)
         if crypto
         else stock_backtest
     )
@@ -87,9 +83,7 @@ def main(settings: Settings | None = None) -> int:
     try:
         repository.refresh_feature_store()
     except Exception:
-        logger.exception(
-            "refresh_feature_store failed — backtest na ostatnim widoku"
-        )
+        logger.exception("refresh_feature_store failed — backtest na ostatnim widoku")
 
     failures = 0
     for symbol in symbols:

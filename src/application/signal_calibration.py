@@ -126,9 +126,7 @@ def _timed_directional(row: Mapping[str, Any]) -> tuple[datetime, float, bool] |
     return stamp, float(confidence), bool(correct)
 
 
-def _calibration_class(
-    row: Mapping[str, Any], crypto: frozenset[str]
-) -> CalibrationClass | None:
+def _calibration_class(row: Mapping[str, Any], crypto: frozenset[str]) -> CalibrationClass | None:
     symbol = row.get("symbol")
     if symbol is None:
         return None

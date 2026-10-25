@@ -124,9 +124,7 @@ class TrainingProvenance:
             "dataset_sha256": self.dataset_sha256,
             "data_start": _canonical_moment(self.data_start),
             "data_end": _canonical_moment(self.data_end),
-            "n_per_symbol": (
-                None if n_per_symbol is None else dict(sorted(n_per_symbol.items()))
-            ),
+            "n_per_symbol": (None if n_per_symbol is None else dict(sorted(n_per_symbol.items()))),
             "training_params": dict(self.params),
             "library_version": self.library_version,
             "feature_set_version": self.dataset.feature_set_version,

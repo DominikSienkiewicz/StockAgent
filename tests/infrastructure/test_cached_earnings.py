@@ -17,9 +17,7 @@ from src.infrastructure.adapters.cached_earnings import CachedEarningsAdapter
 TODAY = date(2026, 10, 27)
 
 
-def _adapter(
-    repo: Mock, delegate: EarningsCalendarPort | None = None
-) -> CachedEarningsAdapter:
+def _adapter(repo: Mock, delegate: EarningsCalendarPort | None = None) -> CachedEarningsAdapter:
     return CachedEarningsAdapter(
         repo=repo,
         delegate=delegate or Mock(spec=EarningsCalendarPort),

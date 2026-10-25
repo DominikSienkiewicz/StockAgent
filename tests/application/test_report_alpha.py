@@ -69,9 +69,7 @@ class TestPerSymbol:
     def test_skips_symbols_without_signals(self) -> None:
         signals = {
             "AAPL": AlphaSignals(symbol="AAPL"),  # pusty → pominięty
-            "MSFT": AlphaSignals(
-                symbol="MSFT", analyst=AnalystConsensus("MSFT", strong_buy=8)
-            ),
+            "MSFT": AlphaSignals(symbol="MSFT", analyst=AnalystConsensus("MSFT", strong_buy=8)),
         }
         html = render_alpha_html(signals, None)
         assert "MSFT" in html
@@ -90,7 +88,6 @@ class TestComposition:
         # current price 200 → upside +10%
         html = render_alpha_html(signals, None, current_prices={"AAPL": Decimal("200")})
         assert "+10" in html
-
 
 
 class TestInsiderWithoutEvidence:

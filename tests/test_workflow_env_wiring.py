@@ -100,9 +100,7 @@ def test_config_toml_exists() -> None:
 
 
 def test_dependency_sync_installs_anthropic_extra() -> None:
-    sync_cmds = [
-        str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))
-    ]
+    sync_cmds = [str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))]
     assert sync_cmds, "brak kroku `uv sync` w workflow"
     assert any("--extra anthropic" in cmd for cmd in sync_cmds), (
         "krok `uv sync` musi instalować `--extra anthropic` (LLM_PROVIDER=anthropic)."
@@ -281,9 +279,7 @@ def test_durable_guard_never_counts_a_push_without_the_ledger() -> None:
     script = "git add data/models/price_predictor.ubj && git commit -m weights && git push"
     steps = _agent_publication_steps({"jobs": {"agent": _agent_job({"run": script})}})
 
-    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == [
-        "attestation_enabled"
-    ]
+    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == ["attestation_enabled"]
 
 
 def test_real_fast_loop_publishes_the_scorecard_once_its_flag_is_on() -> None:
@@ -460,9 +456,7 @@ def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
 def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
     config = _repo_config(public_scorecard_path="public/index.html")
 
-    violations = _pages_publication_violations(
-        config, _synthetic_workflow(*_pages_steps("public"))
-    )
+    violations = _pages_publication_violations(config, _synthetic_workflow(*_pages_steps("public")))
 
     assert violations, "artefakt Pages `public` zabrałby `public/attestation/`"
 
@@ -489,9 +483,7 @@ def test_third_party_pages_action_must_publish_the_scorecard_dir(
 ) -> None:
     step = _third_party_pages_step(uses, key, path)
 
-    violations = _pages_publication_violations(
-        _repo_config(), _synthetic_workflow(step)
-    )
+    violations = _pages_publication_violations(_repo_config(), _synthetic_workflow(step))
 
     assert violations, f"{uses} z `{key}: {path}` przeszedł strażnika"
 
@@ -502,9 +494,7 @@ def test_third_party_pages_action_of_the_scorecard_dir_alone_is_allowed(
 ) -> None:
     step = _third_party_pages_step(uses, key, "public/scorecard")
 
-    violations = _pages_publication_violations(
-        _repo_config(), _synthetic_workflow(step)
-    )
+    violations = _pages_publication_violations(_repo_config(), _synthetic_workflow(step))
 
     assert violations == []
 
@@ -816,9 +806,7 @@ def test_enabled_push_features_have_channel_secrets_mapped() -> None:
     if not enabled:
         pytest.skip("żadna funkcja push nie jest włączona")
     env = _run_agent_env()
-    unmapped = [
-        key for key in PUSH_CHANNEL_SECRETS if env.get(key) != f"${{{{ secrets.{key} }}}}"
-    ]
+    unmapped = [key for key in PUSH_CHANNEL_SECRETS if env.get(key) != f"${{{{ secrets.{key} }}}}"]
     assert not unmapped, (
         f"{enabled} włączone, ale krok agenta nie mapuje {unmapped} — push nie ma kanału."
     )
@@ -1538,14 +1526,11 @@ def test_ledger_artifact_carries_both_ledger_files_from_config() -> None:
     config = _repo_config()
 
     uploaded = {
-        _normalized(line)
-        for line in str(dict(upload["with"])["path"]).splitlines()
-        if line.strip()
+        _normalized(line) for line in str(dict(upload["with"])["path"]).splitlines() if line.strip()
     }
 
     assert uploaded == {
-        _normalized(str(config[key]))
-        for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
+        _normalized(str(config[key])) for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
     }
 
 
@@ -1557,9 +1542,7 @@ def test_publish_step_commits_the_paper_ledger_heads_next_to_the_ledger() -> Non
     scripts = [str(step.get("run", "")) for job in publish.values() for step in job["steps"]]
 
     assert posixpath.dirname(heads) == _ledger_dir()
-    assert any(
-        _contains(path, heads) for script in scripts for path in _git_added_paths(script)
-    )
+    assert any(_contains(path, heads) for script in scripts for path in _git_added_paths(script))
 
 
 def test_publish_step_commits_the_paper_ledger_heads_it_got(

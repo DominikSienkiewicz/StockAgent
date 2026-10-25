@@ -252,17 +252,13 @@ def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception
     if isinstance(exc, APIError) and exc.code in _MISSING_SCHEMA_CODES:
         logger.warning("%s unavailable — %s (apply migration %s).", source, skipped, migration)
         return
-    logger.warning(
-        "%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True
-    )
+    logger.warning("%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True)
 
 
 # ARCH-33: PostgREST nie dosięgnął bazy (PGRST000–003: brak połączenia, cache
 # schematu, timeout puli), Postgres przerwał zapytanie (57014 statement_timeout)
 # albo odrzucił połączenie (53300 too_many_connections).
-_UNAVAILABLE_CODES = frozenset(
-    {"PGRST000", "PGRST001", "PGRST002", "PGRST003", "57014", "53300"}
-)
+_UNAVAILABLE_CODES = frozenset({"PGRST000", "PGRST001", "PGRST002", "PGRST003", "57014", "53300"})
 
 
 def _port_error_kind(exc: APIError | httpx.HTTPError) -> type[PortError]:
@@ -515,15 +511,17 @@ def _serialize(value: Any) -> Any:
 
 
 # ARCH-38: kolumny cenowe `prediction_logs` w skali DECIMAL(14,4) (001, 032, 059).
-_PREDICTION_PRICE_COLUMNS = frozenset({
-    "price_at_prediction",
-    "predicted_target_price",
-    "actual_price_after_12h",
-    "interval_low",
-    "interval_high",
-    "settlement_close_price",
-    "entry_price",
-})
+_PREDICTION_PRICE_COLUMNS = frozenset(
+    {
+        "price_at_prediction",
+        "predicted_target_price",
+        "actual_price_after_12h",
+        "interval_low",
+        "interval_high",
+        "settlement_close_price",
+        "entry_price",
+    }
+)
 
 # WIA-61 (migracja 059): trafność kierunku na oficjalnym zamknięciu sesji.
 _SESSION_CLOSE_CORRECT_COLUMN = "is_trend_correct_session_close"
@@ -569,9 +567,7 @@ def _serialize_record(
     record: dict[str, Any], price_columns: frozenset[str] = frozenset()
 ) -> dict[str, Any]:
     return {
-        k: _serialize(
-            _storage_price(v) if k in price_columns and isinstance(v, Decimal) else v
-        )
+        k: _serialize(_storage_price(v) if k in price_columns and isinstance(v, Decimal) else v)
         for k, v in record.items()
     }
 
@@ -893,9 +889,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return None
         return Money(Decimal(str(rows[0]["price"])))
 
-    def get_price_history(
-        self, symbol: str, days: int
-    ) -> list[tuple[datetime, Money]]:
+    def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         cutoff = datetime.now(UTC) - timedelta(days=days)
         # PORT-22: radar czyta 90 dni — paginacja (#8), bo PostgREST tnie SELECT
         # do ~1000 wierszy bez błędu i najstarsze snapshoty znikałyby po cichu.
@@ -912,9 +906,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             price = row.get("price")
             if not isinstance(ts, str) or price is None:
                 continue
-            out.append(
-                (datetime.fromisoformat(ts), Money(Decimal(str(price))))
-            )
+            out.append((datetime.fromisoformat(ts), Money(Decimal(str(price)))))
         return out
 
     def get_last_prediction_price(
@@ -923,11 +915,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # Cena ostatniej zalogowanej predykcji — referencja dla cechy price_delta
         # w inference (musi pokrywać się z LAG(price_at_prediction) w widoku
         # ml_feature_store, inaczej cecha ma inny rozkład w treningu i predykcji).
-        query = (
-            self._client.table(self._table)
-            .select("price_at_prediction")
-            .eq("symbol", symbol)
-        )
+        query = self._client.table(self._table).select("price_at_prediction").eq("symbol", symbol)
         if before is not None:
             # ML-18: bez wiersza z godziny, którą ten zapis nadpisze upsertem.
             query = query.lt("timestamp_hour", _utc_hour_start(before).isoformat())
@@ -1229,15 +1217,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 raise
             raise MissingColumnError(missing) from exc
 
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         # ML-34: rosnąco po czasie, bo replay ACI idzie chronologicznie. Paginacja
         # (#8) — okno kalibracyjne nie może być po cichu obcięte do ~1000 wierszy.
         cutoff = datetime.now(UTC) - timedelta(days=days)
         columns = (
-            "symbol, timestamp, price_at_prediction, predicted_target_price, "
-            "actual_price_after_12h"
+            "symbol, timestamp, price_at_prediction, predicted_target_price, actual_price_after_12h"
         )
         if with_intervals:
             columns += ", interval_low, interval_high"
@@ -1286,20 +1271,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             .not_.is_("is_trend_correct", "null")
             .order("timestamp", desc=True)
         )
-        rows = [
-            r
-            for r in _countable(_paginate(query))
-            if r.get("is_trend_correct") is not None
-        ]
-        calls = [
-            (str(r.get("predicted_trend") or ""), bool(r["is_trend_correct"]))
-            for r in rows
-        ]
+        rows = [r for r in _countable(_paginate(query)) if r.get("is_trend_correct") is not None]
+        calls = [(str(r.get("predicted_trend") or ""), bool(r["is_trend_correct"])) for r in rows]
         directional = directional_hit_rate(calls)
         n_eff = effective_n(
             group_by_cycle(
-                (_utc_day_key(r.get("timestamp")), bool(r["is_trend_correct"]))
-                for r in rows
+                (_utc_day_key(r.get("timestamp")), bool(r["is_trend_correct"])) for r in rows
             )
         )
 
@@ -1537,9 +1514,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             streak=streak,
         )
 
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         self._client.table(DEFAULT_REGIME_HISTORY_TABLE).insert(
             {
                 "cycle_at": cycle_at.isoformat(),
@@ -1561,9 +1536,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         )
         rows = _rows(response)
         if not rows:
-            raise RuntimeError(
-                f"Supabase upsert returned no data for {record.get('symbol')}"
-            )
+            raise RuntimeError(f"Supabase upsert returned no data for {record.get('symbol')}")
         return str(rows[0]["id"])
 
     def save_quota_alert(self, alert: QuotaAlert) -> None:
@@ -1673,15 +1646,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         )
         return _countable(_paginate(query))
 
-    def save_calibration_scores(
-        self, scores: Mapping[str, float], *, score_version: int
-    ) -> int:
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
         # WIA-65: jedno wywołanie RPC (migracja 077) zamiast UPDATE wiersz po wierszu.
         if not scores:
             return 0
-        payload = [
-            {"id": prediction_id, "score": score} for prediction_id, score in scores.items()
-        ]
+        payload = [{"id": prediction_id, "score": score} for prediction_id, score in scores.items()]
         data = (
             self._client.rpc(
                 "save_calibration_scores",
@@ -1726,9 +1695,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             out[str(name)] = float(weight)
         return out
 
-    def get_persona_track_record(
-        self, window_days: int = 90
-    ) -> dict[str, tuple[float, int]]:
+    def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
         # RPC `persona_accuracy_stats` (migracja 018) — ten sam JOIN co 015, ale
         # zwraca surowy hit-rate ORAZ COUNT(*) głosów. RPC z 015 niesie tylko
         # przeskalowaną wagę, z której nie da się odtworzyć wielkości próbki.
@@ -1950,9 +1917,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 .execute()
             )
         except Exception:
-            logger.warning(
-                "Commitment salt of %s unavailable — świeża sól", symbol, exc_info=True
-            )
+            logger.warning("Commitment salt of %s unavailable — świeża sól", symbol, exc_info=True)
             return None
         rows = _rows(response)
         return str(rows[0]["commitment_salt"]) if rows else None
@@ -2006,9 +1971,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         return True
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
-        self._client.table(self._table).update(
-            {"revealed_at": datetime.now(UTC).isoformat()}
-        ).eq("id", prediction_id).execute()
+        self._client.table(self._table).update({"revealed_at": datetime.now(UTC).isoformat()}).eq(
+            "id", prediction_id
+        ).execute()
 
     def _latest_timestamp(self, table: str) -> datetime | None:
         # Bez łagodzenia błędów: deadman musi odróżnić „job milczy” od „nie da się
@@ -2180,9 +2145,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 .execute()
             )
         except Exception as exc:
-            _log_degraded_read(
-                "shock_alerts", "debounce kept in memory only", "021", exc
-            )
+            _log_degraded_read("shock_alerts", "debounce kept in memory only", "021", exc)
             return set()
         sent: set[tuple[str, date]] = set()
         for row in _rows(response):
@@ -2203,9 +2166,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 .execute()
             )
         except Exception as exc:
-            _log_degraded_read(
-                "shock_alerts", "no 24 h crypto window this run", "021", exc
-            )
+            _log_degraded_read("shock_alerts", "no 24 h crypto window this run", "021", exc)
             return {}
         latest: dict[str, datetime] = {}
         for row in _rows(response):
@@ -2384,9 +2345,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 .execute()
             )
         except Exception as exc:
-            _log_degraded_read(
-                "model_scorecards", "model health card skipped", "019", exc
-            )
+            _log_degraded_read("model_scorecards", "model health card skipped", "019", exc)
             return []
         return list(_rows(response))
 
@@ -2473,9 +2432,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         try:
             rows = _paginate(query)
         except (APIError, httpx.HTTPError) as exc:
-            _log_degraded_read(
-                "council_votes", "council redundancy skipped", "007", exc
-            )
+            _log_degraded_read("council_votes", "council redundancy skipped", "007", exc)
             return []
         samples: list[CouncilVoteSample] = []
         for row in rows:
@@ -2487,9 +2444,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             samples.append(CouncilVoteSample(str(prediction_id), name, rec))
         return samples
 
-    def get_council_votes_for_prediction(
-        self, prediction_id: str
-    ) -> list[InvestorOpinion]:
+    def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         response = self._first_round_only(
             self._client.table(self._council_votes_table)
             .select("investor_name, recommendation, confidence, reasoning, key_factors")
@@ -2706,9 +2661,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
                 "settled_at": settled_at.isoformat(),
             }
         )
-        self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq(
-            "id", record_id
-        ).execute()
+        self._client.table(REFERENCE_PREDICTIONS_TABLE).update(record).eq("id", record_id).execute()
 
     def save_corporate_action(self, action: SplitSuspicion) -> None:
         record = _serialize_record(

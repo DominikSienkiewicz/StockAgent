@@ -32,9 +32,7 @@ class TestSubscriberWatches:
 
 class TestSymbolsFor:
     def test_returns_intersection_with_all_symbols(self) -> None:
-        sub = Subscriber(
-            email="a@example.com", symbols=frozenset({"AAPL", "TSLA", "ZZZ"})
-        )
+        sub = Subscriber(email="a@example.com", symbols=frozenset({"AAPL", "TSLA", "ZZZ"}))
         all_symbols = frozenset({"AAPL", "TSLA", "VOO"})
         # ZZZ nie ma w cyklu — wypada; VOO jest w cyklu, ale subskrybent go nie chce.
         assert symbols_for(sub, all_symbols) == frozenset({"AAPL", "TSLA"})
@@ -55,9 +53,7 @@ class TestSymbolsFor:
     def test_result_is_subset_of_all_symbols(self) -> None:
         # symbols_for nigdy nie "wymyśla" symboli spoza cyklu — wynik to zawsze
         # podzbiór all_symbols (re-slicing, nie rozszerzanie).
-        sub = Subscriber(
-            email="a@example.com", symbols=frozenset({"AAPL", "OUTSIDE"})
-        )
+        sub = Subscriber(email="a@example.com", symbols=frozenset({"AAPL", "OUTSIDE"}))
         all_symbols = frozenset({"AAPL", "VOO", "NVDA"})
         assert symbols_for(sub, all_symbols) <= all_symbols
 

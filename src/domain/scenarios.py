@@ -18,9 +18,7 @@ from dataclasses import dataclass
 _MIN_PAIRED = 2
 
 
-def beta_to_portfolio(
-    asset_returns: Sequence[float], market_returns: Sequence[float]
-) -> float:
+def beta_to_portfolio(asset_returns: Sequence[float], market_returns: Sequence[float]) -> float:
     """Beta symbolu względem rynku: cov(asset, market) / var(market).
 
     Kowariancja i wariancja populacyjne (dzielnik n). Serie o różnej długości są
@@ -98,9 +96,7 @@ def stress_test(
 
     impacts: list[ScenarioImpact] = []
     for scenario in scenarios:
-        per_symbol = {
-            symbol: beta * scenario.market_shock for symbol, beta in betas.items()
-        }
+        per_symbol = {symbol: beta * scenario.market_shock for symbol, beta in betas.items()}
         if per_symbol:
             portfolio_pnl = sum(per_symbol.values()) / len(per_symbol)
             worst_symbol, worst_pnl = min(per_symbol.items(), key=lambda kv: kv[1])

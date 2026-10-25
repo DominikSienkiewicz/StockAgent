@@ -90,9 +90,12 @@ class TestWatchCycle:
         repo = _repo("100", age_hours=48.0)
         push = MagicMock()
 
-        assert main_watch.run_watch(
-            settings, repository=repo, market=_market("90"), push_notifier=push
-        ) == 0
+        assert (
+            main_watch.run_watch(
+                settings, repository=repo, market=_market("90"), push_notifier=push
+            )
+            == 0
+        )
         push.send_report.assert_not_called()
 
     def test_stale_snapshot_skips_the_price_fetch(self, settings: Settings) -> None:
@@ -135,8 +138,11 @@ class TestWatchCycle:
 
         with caplog.at_level(logging.WARNING, logger="main_watch"):
             main_watch.run_watch(
-                settings, repository=repo, market=_market("99"),
-                push_notifier=MagicMock(), now=now,
+                settings,
+                repository=repo,
+                market=_market("99"),
+                push_notifier=MagicMock(),
+                now=now,
             )
 
         assert not any("ślepy" in r.getMessage() for r in caplog.records)
@@ -144,9 +150,12 @@ class TestWatchCycle:
     def test_small_move_is_not_a_shock(self, settings: Settings) -> None:
         repo = _repo("100", age_hours=1.0)
 
-        assert main_watch.run_watch(
-            settings, repository=repo, market=_market("97"), push_notifier=MagicMock()
-        ) == 0
+        assert (
+            main_watch.run_watch(
+                settings, repository=repo, market=_market("97"), push_notifier=MagicMock()
+            )
+            == 0
+        )
 
     def test_debounce_blocks_a_second_alert_the_same_day(self, settings: Settings) -> None:
         # Zegar zamrożony przez szew `now=`: `run_watch` liczy dzień alertu
@@ -162,13 +171,16 @@ class TestWatchCycle:
         repo.get_sent_shock_alerts.return_value = {("AAPL", moment.date())}
         push = MagicMock()
 
-        assert main_watch.run_watch(
-            settings,
-            repository=repo,
-            market=_market("90"),
-            push_notifier=push,
-            now=moment,
-        ) == 0
+        assert (
+            main_watch.run_watch(
+                settings,
+                repository=repo,
+                market=_market("90"),
+                push_notifier=push,
+                now=moment,
+            )
+            == 0
+        )
         push.send_report.assert_not_called()
 
     def test_per_symbol_failure_does_not_break_the_run(self, settings: Settings) -> None:
@@ -177,17 +189,23 @@ class TestWatchCycle:
         market = MagicMock()
         market.get_current_price.side_effect = [RuntimeError("429"), Money(Decimal("90"))]
 
-        assert main_watch.run_watch(
-            settings, repository=repo, market=market, push_notifier=MagicMock()
-        ) == 1
+        assert (
+            main_watch.run_watch(
+                settings, repository=repo, market=market, push_notifier=MagicMock()
+            )
+            == 1
+        )
 
     def test_flag_off_short_circuits(self, settings: Settings) -> None:
         settings.shock_alerts_enabled = False
         repo = _repo("100", age_hours=1.0)
 
-        assert main_watch.run_watch(
-            settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
-        ) == 0
+        assert (
+            main_watch.run_watch(
+                settings, repository=repo, market=_market("90"), push_notifier=MagicMock()
+            )
+            == 0
+        )
         repo.get_last_price_snapshot.assert_not_called()
 
 
@@ -368,7 +386,10 @@ class TestNyseClosedDayWatch:
         repo = _repo("100", age_hours=1.0, now=now)
         with caplog.at_level(logging.INFO, logger="main_watch"):
             outcome = main_watch.scan_watch(
-                settings, repository=repo, market=_market("100"), push_notifier=MagicMock(),
+                settings,
+                repository=repo,
+                market=_market("100"),
+                push_notifier=MagicMock(),
                 now=now,
             )
         return repo, outcome
@@ -665,14 +686,17 @@ class TestDailyChangeWatch:
         repo.get_sent_shock_alerts.return_value = {("AAPL", now.date())}
         daily = _daily("-0.09", now)
 
-        assert main_watch.run_watch(
-            settings,
-            repository=repo,
-            market=_market("90"),
-            push_notifier=MagicMock(),
-            now=now,
-            daily_change=daily,
-        ) == 0
+        assert (
+            main_watch.run_watch(
+                settings,
+                repository=repo,
+                market=_market("90"),
+                push_notifier=MagicMock(),
+                now=now,
+                daily_change=daily,
+            )
+            == 0
+        )
         daily.get_daily_change.assert_not_called()
 
 
@@ -866,9 +890,7 @@ class TestShockEscalationLadder:
         assert sent == 0
         repo.get_shock_alert_levels.assert_not_called()
 
-    def test_crypto_escalation_is_not_held_back_by_the_24h_window(
-        self, settings: Settings
-    ) -> None:
+    def test_crypto_escalation_is_not_held_back_by_the_24h_window(self, settings: Settings) -> None:
         # Okno 24 h chroni przed drugim alertem za TEN SAM ruch; eskalacja to ruch
         # dwa razy większy, więc rozstrzyga ją drabina.
         from src.domain.shock import SentShockLevel, ShockDirection
@@ -1161,7 +1183,9 @@ class TestPositionShareInZlotys:
             positions=(
                 Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
                 Position(
-                    symbol="PKN", quantity=Decimal("100"), purchase_price=Decimal("50"),
+                    symbol="PKN",
+                    quantity=Decimal("100"),
+                    purchase_price=Decimal("50"),
                     currency="PLN",
                 ),
             ),
@@ -1265,9 +1289,7 @@ class TestPriceLevelAlerts:
             last_seen_price=Decimal(last_seen) if last_seen is not None else None,
         )
 
-    def _scan(
-        self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None
-    ) -> int:
+    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None) -> int:
         return main_watch.scan_price_levels(
             settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
         )
@@ -1640,7 +1662,9 @@ class TestPortfolioShockInZlotys:
             positions=(
                 Position(symbol="AAPL", quantity=Decimal("10"), purchase_price=Decimal("80")),
                 Position(
-                    symbol="PKN", quantity=Decimal("100"), purchase_price=Decimal("50"),
+                    symbol="PKN",
+                    quantity=Decimal("100"),
+                    purchase_price=Decimal("50"),
                     currency="PLN",
                 ),
             ),
@@ -1686,9 +1710,7 @@ class TestPortfolioShockInZlotys:
         from src.domain.fx import FxRate
 
         fx = MagicMock(spec=FxRatePort)
-        fx.get_rate.side_effect = lambda currency, day: FxRate(
-            currency, day, day, Decimal("4.00")
-        )
+        fx.get_rate.side_effect = lambda currency, day: FxRate(currency, day, day, Decimal("4.00"))
 
         push = self._run(settings, fx)
 
@@ -1738,9 +1760,7 @@ class TestThesisInvalidationAlerts:
         repo.get_open_invalidations.return_value = list(open_predictions)
         return repo
 
-    def _scan(
-        self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None
-    ) -> int:
+    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None) -> int:
         return main_watch.scan_invalidations(
             settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
         )

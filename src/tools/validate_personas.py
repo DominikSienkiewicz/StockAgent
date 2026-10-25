@@ -11,6 +11,7 @@ Exit code:
 Używaj przed commitem (pre-commit hook w .pre-commit-config.yaml) lub po
 edycji ręcznej, by złapać literówki ZANIM agent wystartuje na produkcji.
 """
+
 from __future__ import annotations
 
 import argparse

@@ -438,9 +438,7 @@ def test_without_feature_set_filter_training_reads_the_whole_history(
 def test_feature_set_filter_reads_only_the_current_version(
     repository_port: Mock, ml_port: Mock
 ) -> None:
-    use_case = TrainModelUseCase(
-        ml_port=ml_port, db_port=repository_port, feature_set_version=2
-    )
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, feature_set_version=2)
     repository_port.get_feature_store_data.return_value = []
 
     use_case.run_pooled(["AAPL", "BTC"])
@@ -456,9 +454,7 @@ def test_version_cut_below_the_minimum_skips_the_pooled_model_explicitly(
 ) -> None:
     # Odcięcie historii po wersji zmniejsza próbkę — pominięcie ma mówić, ile
     # próbek zostało i dlaczego, a nie wyglądać jak zwykły brak danych.
-    use_case = TrainModelUseCase(
-        ml_port=ml_port, db_port=repository_port, feature_set_version=2
-    )
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, feature_set_version=2)
     repository_port.get_feature_store_data.return_value = _stamped_rows(
         "AAPL", 12, start_hour=0, step_hours=1
     )
@@ -581,10 +577,7 @@ def snapshot_use_case(
 
 
 def _train_call(ml_port: Mock, *, llm: bool) -> Any:
-    calls = [
-        c for c in ml_port.train.call_args_list
-        if ("llm_trend_signal" in c.args[0][0]) is llm
-    ]
+    calls = [c for c in ml_port.train.call_args_list if ("llm_trend_signal" in c.args[0][0]) is llm]
     assert len(calls) == 1
     return calls[0]
 

@@ -196,9 +196,10 @@ def test_v1_and_v2_commitments_of_the_same_payload_differ() -> None:
     v2 = attestation.commit(_PAYLOAD_1, _SALT_A, schema_version=attestation.SCHEMA_VERSION)
     assert v1 == _HASH_1
     assert v2 != v1
-    assert attestation.verify(
-        _PAYLOAD_1, _SALT_A, v2, schema_version=attestation.SCHEMA_VERSION
-    ) is True
+    assert (
+        attestation.verify(_PAYLOAD_1, _SALT_A, v2, schema_version=attestation.SCHEMA_VERSION)
+        is True
+    )
     assert attestation.verify(_PAYLOAD_1, _SALT_A, v2) is False
 
 

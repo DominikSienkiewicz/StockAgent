@@ -150,12 +150,7 @@ class SupabasePositionsAdapter(PortfolioPositionsPort, PositionsImportPort):
 
     def _query_rows(self) -> list[dict[str, Any]]:
         """Wszystkie wiersze tabeli `positions` (najświeższe pierwsze); błąd → wyjątek."""
-        response = (
-            self._client.table(self._table)
-            .select("*")
-            .order("as_of", desc=True)
-            .execute()
-        )
+        response = self._client.table(self._table).select("*").order("as_of", desc=True).execute()
         return cast(list[dict[str, Any]], response.data or [])
 
     def _parse_rows(self, rows: list[dict[str, Any]]) -> list[Position]:

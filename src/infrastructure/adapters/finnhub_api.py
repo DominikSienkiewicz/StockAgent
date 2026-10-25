@@ -135,8 +135,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                     "żeby spowolnić pętlę, albo podnieś plan Finnhub."
                 ),
                 log_message=(
-                    f"Finnhub returned 429 for '{symbol}' — free tier "
-                    "limit (60 req/min) exhausted."
+                    f"Finnhub returned 429 for '{symbol}' — free tier limit (60 req/min) exhausted."
                 ),
             )
         try:

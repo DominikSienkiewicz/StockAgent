@@ -65,9 +65,7 @@ class PredictionRecipe:
     def version(self) -> str:
         """sha256 kanonicznego JSON-a składników przepisu bez tożsamości przebiegu."""
         recipe = {
-            name: value
-            for name, value in asdict(self).items()
-            if name not in _RUN_IDENTITY_FIELDS
+            name: value for name, value in asdict(self).items() if name not in _RUN_IDENTITY_FIELDS
         }
         canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

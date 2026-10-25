@@ -53,8 +53,9 @@ class TestParse:
         )
 
     def test_purchase_date_column_is_optional(self) -> None:
-        lots = parse_positions_csv("symbol,quantity,avg_cost,currency\nAAPL,3,195.25,USD\n",
-                                   today=TODAY)
+        lots = parse_positions_csv(
+            "symbol,quantity,avg_cost,currency\nAAPL,3,195.25,USD\n", today=TODAY
+        )
 
         assert lots == (_lot("AAPL", "3", "195.25"),)
 
@@ -71,7 +72,7 @@ class TestParse:
             + "SAP.DE,1,10,EURO,\n"
             + "NVDA,1,10,USD,01.03.2025\n"
             + "AMD,1,10,USD,2026-10-20\n"
-            + "TSLA,\"1,5\",10,USD,\n"
+            + 'TSLA,"1,5",10,USD,\n'
             + ",1,10,USD,\n"
         )
 
@@ -94,9 +95,7 @@ class TestParse:
         )
 
     def test_rejects_a_row_with_too_many_fields(self) -> None:
-        assert _errors(HEADER + "AAPL,1,10,USD,2025-01-02,extra\n") == (
-            "linia 2: za dużo pól",
-        )
+        assert _errors(HEADER + "AAPL,1,10,USD,2025-01-02,extra\n") == ("linia 2: za dużo pól",)
 
     def test_header_must_name_the_required_columns(self) -> None:
         assert _errors("symbol,qty,avg_cost\nAAPL,1,10\n") == (

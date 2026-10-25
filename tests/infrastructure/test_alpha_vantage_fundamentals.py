@@ -84,8 +84,7 @@ def test_get_fundamentals_returns_none_on_http_error() -> None:
 # HTTP 200, ale zamiast danych pole `Information` (czasem `Note`).
 RATE_LIMITED_JSON: dict[str, Any] = {
     "Information": (
-        "Thank you for using Alpha Vantage! Our standard API rate limit "
-        "is 25 requests per day."
+        "Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day."
     )
 }
 
@@ -97,9 +96,7 @@ def test_get_fundamentals_emits_critical_alert_on_daily_quota() -> None:
     from src.domain.quota import QuotaSeverity
 
     monitor = QuotaMonitor()
-    adapter = AlphaVantageFundamentalsAdapter(
-        api_keys=["KEY1"], quota_monitor=monitor
-    )
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
     with patch.object(adapter._session, "get") as mock_get:
         mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
         result = adapter.get_fundamentals("AAPL")
@@ -120,9 +117,7 @@ def test_get_fundamentals_emits_critical_alert_on_note_key() -> None:
     from src.domain.quota import QuotaSeverity
 
     monitor = QuotaMonitor()
-    adapter = AlphaVantageFundamentalsAdapter(
-        api_keys=["KEY1"], quota_monitor=monitor
-    )
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
     note_json: dict[str, Any] = {
         "Note": "Thank you for using Alpha Vantage! ... 25 requests per day ..."
     }
@@ -141,9 +136,7 @@ def test_genuine_empty_response_does_not_emit_alert() -> None:
     from src.application.quota_monitor import QuotaMonitor
 
     monitor = QuotaMonitor()
-    adapter = AlphaVantageFundamentalsAdapter(
-        api_keys=["KEY1"], quota_monitor=monitor
-    )
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1"], quota_monitor=monitor)
     with patch.object(adapter._session, "get") as mock_get:
         mock_get.side_effect = [_mock_response({}), _mock_response({})]
         result = adapter.get_fundamentals("VOO")
@@ -186,9 +179,9 @@ class TestKeyRotation:
         adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
         with patch.object(adapter._session, "get") as mock_get:
             mock_get.side_effect = [
-                _mock_response(RATE_LIMITED_JSON),   # KEY1 / OVERVIEW — exhausted
-                _mock_response(OVERVIEW_JSON),       # KEY2 / OVERVIEW — OK
-                _mock_response(EARNINGS_JSON),       # KEY2 / EARNINGS — OK
+                _mock_response(RATE_LIMITED_JSON),  # KEY1 / OVERVIEW — exhausted
+                _mock_response(OVERVIEW_JSON),  # KEY2 / OVERVIEW — OK
+                _mock_response(EARNINGS_JSON),  # KEY2 / EARNINGS — OK
             ]
             result = adapter.get_fundamentals("AAPL")
 
@@ -201,9 +194,7 @@ class TestKeyRotation:
         from src.domain.quota import QuotaSeverity
 
         monitor = QuotaMonitor()
-        adapter = AlphaVantageFundamentalsAdapter(
-            api_keys=["KEY1", "KEY2"], quota_monitor=monitor
-        )
+        adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"], quota_monitor=monitor)
         with patch.object(adapter._session, "get") as mock_get:
             mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
             result = adapter.get_fundamentals("AAPL")
@@ -218,7 +209,7 @@ class TestKeyRotation:
         adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
         with patch.object(adapter._session, "get") as mock_get:
             mock_get.return_value = _mock_response(RATE_LIMITED_JSON)
-            adapter.get_fundamentals("AAPL")   # wyczerpuje oba klucze
+            adapter.get_fundamentals("AAPL")  # wyczerpuje oba klucze
             calls_after_first = mock_get.call_count
             result = adapter.get_fundamentals("MSFT")  # nie powinien wołać API
 
@@ -296,9 +287,9 @@ def test_note_soft_limit_backs_off_and_retries_the_same_key() -> None:
     adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
     with patch.object(adapter._session, "get") as mock_get, patch("time.sleep") as sleep_mock:
         mock_get.side_effect = [
-            _mock_response(NOTE_JSON),        # KEY1 / OVERVIEW — limit minutowy
-            _mock_response(OVERVIEW_JSON),    # KEY1 / OVERVIEW po backoffie — OK
-            _mock_response(EARNINGS_JSON),    # KEY1 / EARNINGS — OK
+            _mock_response(NOTE_JSON),  # KEY1 / OVERVIEW — limit minutowy
+            _mock_response(OVERVIEW_JSON),  # KEY1 / OVERVIEW po backoffie — OK
+            _mock_response(EARNINGS_JSON),  # KEY1 / EARNINGS — OK
         ]
         result = adapter.get_fundamentals("AAPL")
 

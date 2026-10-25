@@ -142,9 +142,7 @@ def _block_interval(
         )
         for e in effects
     ]
-    return cluster_bootstrap_statistic_ci(
-        group_by_cycle(keyed), _mean, n_boot=n_boot, seed=seed
-    )
+    return cluster_bootstrap_statistic_ci(group_by_cycle(keyed), _mean, n_boot=n_boot, seed=seed)
 
 
 def _marginal(name: str, effects: Sequence[_Effect], n_boot: int, seed: int) -> PersonaMarginal:

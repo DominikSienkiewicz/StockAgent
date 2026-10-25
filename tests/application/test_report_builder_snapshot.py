@@ -345,8 +345,9 @@ def _macro_risk_report() -> MacroRiskReport:
         ),
         overall_alert=MacroAlertLevel.ELEVATED,
         drawdowns=[
-            DrawdownSignal(symbol="AMD", current_price=Decimal("160.00"),
-                           peak_price=Decimal("186.00")),
+            DrawdownSignal(
+                symbol="AMD", current_price=Decimal("160.00"), peak_price=Decimal("186.00")
+            ),
         ],
     )
 
@@ -505,10 +506,12 @@ def _full_context() -> ReportContext:
         macro_risk_report=_macro_risk_report(),
         portfolio_risk_report=_portfolio_risk_report(),
         council_history=[
-            InvestorHistory(investor_name="Buffett", symbol="NVDA",
-                            recommendations=("BUY", "BUY", "HOLD")),
-            InvestorHistory(investor_name="Soros", symbol="NVDA",
-                            recommendations=("HOLD", "SELL", "SELL")),
+            InvestorHistory(
+                investor_name="Buffett", symbol="NVDA", recommendations=("BUY", "BUY", "HOLD")
+            ),
+            InvestorHistory(
+                investor_name="Soros", symbol="NVDA", recommendations=("HOLD", "SELL", "SELL")
+            ),
         ],
         persona_track_record=[
             PersonaTrackRecord(investor_name="Buffett", hit_rate=0.68, votes=25),
@@ -525,10 +528,8 @@ def _full_context() -> ReportContext:
         ],
         equity_curve=_equity_curve(),
         calibration_buckets=[
-            CalibrationBucket(lower=0.6, upper=0.7, count=14, mean_confidence=0.65,
-                              hit_rate=0.57),
-            CalibrationBucket(lower=0.8, upper=0.9, count=9, mean_confidence=0.84,
-                              hit_rate=0.67),
+            CalibrationBucket(lower=0.6, upper=0.7, count=14, mean_confidence=0.65, hit_rate=0.57),
+            CalibrationBucket(lower=0.8, upper=0.9, count=9, mean_confidence=0.84, hit_rate=0.67),
         ],
         lessons=LessonsReport(
             items=(
@@ -545,10 +546,12 @@ def _full_context() -> ReportContext:
         alpha_signals={
             "NVDA": AlphaSignals(
                 symbol="NVDA",
-                insider=InsiderFlowSnapshot(symbol="NVDA", net_shares=-12000.0,
-                                            buy_count=1, sell_count=4, window_days=90),
-                analyst=AnalystConsensus(symbol="NVDA", strong_buy=18, buy=22, hold=6,
-                                         sell=1, price_target=165.0),
+                insider=InsiderFlowSnapshot(
+                    symbol="NVDA", net_shares=-12000.0, buy_count=1, sell_count=4, window_days=90
+                ),
+                analyst=AnalystConsensus(
+                    symbol="NVDA", strong_buy=18, buy=22, hold=6, sell=1, price_target=165.0
+                ),
             ),
         },
         yield_curve=YieldCurveSnapshot(ten_year=4.12, two_year=3.94, fed_funds=4.33),
@@ -685,11 +688,20 @@ def _degraded_sources_cycle() -> tuple[str, str]:
         _model_scorecard(),
         snapshot_models=snapshot_model_cards(
             [
-                {"symbol": "ALL_FREE", "status": "trained_successfully",
-                 "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.021,
-                 "baseline_rmse": 0.024, "n_samples": 812},
-                {"symbol": "ALL_LLM", "status": "skipped",
-                 "timestamp": "2026-10-11T03:37:00+00:00", "n_samples": 37},
+                {
+                    "symbol": "ALL_FREE",
+                    "status": "trained_successfully",
+                    "timestamp": "2026-10-11T03:36:00+00:00",
+                    "candidate_holdout_rmse": 0.021,
+                    "baseline_rmse": 0.024,
+                    "n_samples": 812,
+                },
+                {
+                    "symbol": "ALL_LLM",
+                    "status": "skipped",
+                    "timestamp": "2026-10-11T03:37:00+00:00",
+                    "n_samples": 37,
+                },
             ]
         ),
     )

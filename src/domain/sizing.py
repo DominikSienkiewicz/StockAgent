@@ -154,9 +154,7 @@ def suggest_band(
 _DOWNGRADE = {"full": "standard", "standard": "starter", "starter": "starter"}
 
 
-def _apply_exposure(
-    tier: str, current_weight: float | None, cluster_exposure: float | None
-) -> str:
+def _apply_exposure(tier: str, current_weight: float | None, cluster_exposure: float | None) -> str:
     """Zwęża bandę o tyle stopni, ile każe istniejąca ekspozycja.
 
     Monotoniczność jest kontraktem: funkcja NIGDY nie podnosi bandy. Pusty
@@ -164,9 +162,7 @@ def _apply_exposure(
     informacji, a nie sygnał kupna.
     """
     weight = _clamp(current_weight, 0.0, 1.0) if current_weight is not None else 0.0
-    cluster = (
-        _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
-    )
+    cluster = _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
     if _saturated(weight, cluster):
         return "starter"
     if weight >= CROWDED_WEIGHT_THRESHOLD or cluster >= CROWDED_CLUSTER_THRESHOLD:
@@ -209,10 +205,7 @@ _TIER_LABEL_PREFIX = {
 def _band(tier: str, span: tuple[float, float]) -> SizeBand:
     """Składa SizeBand z gotową polską etykietą `Prefiks min-max% portfela`."""
     min_pct, max_pct = span
-    label = (
-        f"{_TIER_LABEL_PREFIX[tier]} "
-        f"{_fmt_pct(min_pct)}-{_fmt_pct(max_pct)}% portfela"
-    )
+    label = f"{_TIER_LABEL_PREFIX[tier]} {_fmt_pct(min_pct)}-{_fmt_pct(max_pct)}% portfela"
     return SizeBand(tier=tier, min_pct=min_pct, max_pct=max_pct, label=label)
 
 
@@ -271,8 +264,6 @@ def position_action(
     if trend == "BEARISH":
         return PositionAction.REDUCE if weight > 0.0 else PositionAction.AVOID
     if trend == "BULLISH":
-        cluster = (
-            _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
-        )
+        cluster = _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
         return PositionAction.HOLD if _saturated(weight, cluster) else PositionAction.BUY
     return PositionAction.WATCH

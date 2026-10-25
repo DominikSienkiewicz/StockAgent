@@ -95,9 +95,7 @@ def effective_threshold(
     mnożą się, a oba są >= 1.0 z kontraktu domeny — bramka tylko się zacieśnia.
     `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1."""
     chosen = (
-        crypto_override
-        if asset_type is AssetType.CRYPTO and crypto_override is not None
-        else base
+        crypto_override if asset_type is AssetType.CRYPTO and crypto_override is not None else base
     )
     multiplier = max(regime_multiplier * earnings_multiplier, 1.0)
     if math.isclose(multiplier, 1.0):
@@ -175,9 +173,7 @@ class Asset:
         # ALR-10: ten sam próg (z tymi samymi mnożnikami) dla ruchu od referencji dryfu.
         return drift is not None and abs(drift.fraction) >= threshold.value
 
-    def evaluate_valuation(
-        self, fundamentals: Fundamentals | None
-    ) -> ValuationVerdict:
+    def evaluate_valuation(self, fundamentals: Fundamentals | None) -> ValuationVerdict:
         if self.asset_type is not AssetType.STOCK:
             return ValuationVerdict.UNKNOWN
         if fundamentals is None or fundamentals.peg_ratio is None:
@@ -197,9 +193,7 @@ class Asset:
             return ValuationVerdict.UNDERVALUED
 
         if peg > PEG_OVERVALUED_THRESHOLD or (
-            forward is not None
-            and forward > FORWARD_PE_HIGH
-            and growth < EPS_GROWTH_LOW
+            forward is not None and forward > FORWARD_PE_HIGH and growth < EPS_GROWTH_LOW
         ):
             return ValuationVerdict.OVERVALUED
 

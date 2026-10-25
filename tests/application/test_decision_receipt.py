@@ -49,9 +49,7 @@ def test_v1_receipt_reads_without_a_recipe() -> None:
     assert receipt.schema_version == 1
     assert receipt.effective_threshold == "0.02"
     assert receipt.precedents == ({"id": "pred-1", "similarity": 0.9},)
-    assert receipt.feature_attribution == (
-        {"feature": "price_delta", "contribution": 0.01},
-    )
+    assert receipt.feature_attribution == ({"feature": "price_delta", "contribution": 0.01},)
     assert receipt.recipe == {}
     assert receipt.recipe_version is None
 

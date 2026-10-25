@@ -74,8 +74,13 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
     assert isinstance(data["symbol_concurrency"], int)
     assert data["symbol_concurrency"] >= 1
     # Sekrety NIE mogą wyciec do commitowanego pliku.
-    for secret in ("openai_api_key", "anthropic_api_key", "supabase_key",
-                   "finnhub_api_key", "digest_to_email"):
+    for secret in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "supabase_key",
+        "finnhub_api_key",
+        "digest_to_email",
+    ):
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
@@ -138,9 +143,7 @@ def test_config_toml_found_regardless_of_cwd(
     assert s.notifications_enabled is data["notifications_enabled"]
 
 
-def test_unknown_toml_key_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_unknown_toml_key_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """TEST-03 (G64): literówka w kluczu `config.toml` przerywa start, zamiast po
     cichu zostawić default (tu: `weekly_recap_enabled` zostałby wyłączony)."""
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
@@ -169,9 +172,7 @@ def test_every_real_config_toml_key_is_a_settings_field() -> None:
     assert set(data) - set(Settings.model_fields) == set()
 
 
-def test_env_overrides_toml(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_env_overrides_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     toml = tmp_path / "config.toml"
     toml.write_text("symbol_throttle_seconds = 7.5\n", encoding="utf-8")
@@ -204,8 +205,7 @@ def test_no_flag_set_to_true_sits_under_an_off_comment() -> None:
     contradicted = [
         line.split("=", 1)[0].strip()
         for index, line in enumerate(lines)
-        if line.replace(" ", "").endswith("=true")
-        and _comment_above(lines, index).endswith("Off.")
+        if line.replace(" ", "").endswith("=true") and _comment_above(lines, index).endswith("Off.")
     ]
     assert not contradicted, f"flagi = true pod komentarzem „Off.”: {contradicted}"
 
@@ -638,6 +638,7 @@ def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> Non
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["diagnosis_backfill_enabled"] is False
     assert data["diagnosis_backfill_max_calls"] == 5
+
 
 def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> None:
     """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""

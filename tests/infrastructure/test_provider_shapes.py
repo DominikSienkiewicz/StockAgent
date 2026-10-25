@@ -396,7 +396,6 @@ class TestNbpTableFixture:
         assert snapshot.usd_pln_30d_change_ratio == (latest - baseline) / baseline
 
 
-
 class TestSigstoreFixtures:
     """WIA-73: odpowiedzi Fulcio i Rekora przez publiczne API adaptera Rekora."""
 

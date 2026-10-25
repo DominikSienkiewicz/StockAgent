@@ -129,9 +129,7 @@ class TestSingleToolRound:
         tool_func = MagicMock(return_value={"pe": 18.5})
         tool = _make_tool(tool_func)
         client.chat.completions.create.side_effect = [
-            _tool_request_message(
-                [_tool_call("call_1", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_request_message([_tool_call("call_1", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_message(json.dumps({"trend_direction": "BEARISH"})),
         ]
 
@@ -148,9 +146,7 @@ class TestSingleToolRound:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 18.5}))
         client.chat.completions.create.side_effect = [
-            _tool_request_message(
-                [_tool_call("call_42", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_request_message([_tool_call("call_42", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_message("{}"),
         ]
 
@@ -177,9 +173,7 @@ class TestMaxRoundsCap:
         client.chat.completions.create.return_value = _tool_request_message(
             [_tool_call("call_x", "get_fundamentals", {"symbol": "AAPL"})]
         )
-        adapter = ToolCallingOpenAIAdapter(
-            api_key="sk-test", model="gpt-4o", max_rounds=2
-        )
+        adapter = ToolCallingOpenAIAdapter(api_key="sk-test", model="gpt-4o", max_rounds=2)
 
         # Nie może crashować — finalny parse na pustej/ostatniej wiadomości
         # może rzucić ValueError, ale liczba wywołań tool MUSI być ograniczona.
@@ -195,17 +189,11 @@ class TestMaxRoundsCap:
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         # Pierwsze 2 rundy: tool. Ostatnie (wymuszone) wywołanie: finalny JSON.
         client.chat.completions.create.side_effect = [
-            _tool_request_message(
-                [_tool_call("c1", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
-            _tool_request_message(
-                [_tool_call("c2", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_request_message([_tool_call("c1", "get_fundamentals", {"symbol": "AAPL"})]),
+            _tool_request_message([_tool_call("c2", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_message(json.dumps({"trend_direction": "NEUTRAL"})),
         ]
-        adapter = ToolCallingOpenAIAdapter(
-            api_key="sk-test", model="gpt-4o", max_rounds=2
-        )
+        adapter = ToolCallingOpenAIAdapter(api_key="sk-test", model="gpt-4o", max_rounds=2)
 
         result = adapter.analyze_with_tools("Predict.", [tool])
 
@@ -225,9 +213,7 @@ class TestToolErrorResilience:
 
         tool = _make_tool(boom)
         client.chat.completions.create.side_effect = [
-            _tool_request_message(
-                [_tool_call("call_err", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_request_message([_tool_call("call_err", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_message(json.dumps({"trend_direction": "BULLISH"})),
         ]
 
@@ -237,9 +223,7 @@ class TestToolErrorResilience:
         assert result == {"trend_direction": "BULLISH"}
         # Wynik narzędzia to {"error": ...}, podany z powrotem do modelu.
         second_call = client.chat.completions.create.call_args_list[1]
-        tool_messages = [
-            m for m in second_call.kwargs["messages"] if m.get("role") == "tool"
-        ]
+        tool_messages = [m for m in second_call.kwargs["messages"] if m.get("role") == "tool"]
         payload = json.loads(tool_messages[0]["content"])
         assert "error" in payload
         assert "network down" in payload["error"]
@@ -250,18 +234,14 @@ class TestToolErrorResilience:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.chat.completions.create.side_effect = [
-            _tool_request_message(
-                [_tool_call("call_u", "nonexistent_tool", {"x": 1})]
-            ),
+            _tool_request_message([_tool_call("call_u", "nonexistent_tool", {"x": 1})]),
             _final_message("{}"),
         ]
 
         adapter.analyze_with_tools("Predict.", [tool])
 
         second_call = client.chat.completions.create.call_args_list[1]
-        tool_messages = [
-            m for m in second_call.kwargs["messages"] if m.get("role") == "tool"
-        ]
+        tool_messages = [m for m in second_call.kwargs["messages"] if m.get("role") == "tool"]
         assert "error" in json.loads(tool_messages[0]["content"])
 
 

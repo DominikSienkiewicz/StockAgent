@@ -36,8 +36,7 @@ def _port(rates: dict[tuple[str, date], str]) -> Mock:
         raw = rates.get((currency, on_date))
         if raw is None:
             return None
-        return FxRate(currency=currency, on_date=on_date, effective_date=on_date,
-                      rate=Decimal(raw))
+        return FxRate(currency=currency, on_date=on_date, effective_date=on_date, rate=Decimal(raw))
 
     port.get_rate.side_effect = get_rate
     return port
@@ -53,10 +52,14 @@ def test_collects_current_and_purchase_day_rates_of_foreign_currencies() -> None
         ),
         as_of=datetime(2026, 10, 18, tzinfo=UTC),
     )
-    port = _port({
-        ("USD", TODAY): "3.70", ("EUR", TODAY): "4.25",
-        ("USD", date(2025, 3, 3)): "3.97", ("EUR", date(2024, 6, 3)): "4.29",
-    })
+    port = _port(
+        {
+            ("USD", TODAY): "3.70",
+            ("EUR", TODAY): "4.25",
+            ("USD", date(2025, 3, 3)): "3.97",
+            ("EUR", date(2024, 6, 3)): "4.29",
+        }
+    )
 
     rates = collect_pln_rates(portfolio, port, today=TODAY)
 
@@ -68,10 +71,14 @@ def test_collects_current_and_purchase_day_rates_of_foreign_currencies() -> None
         },
     )
     # Jedna para (waluta, dzień) = jedno zapytanie; PLN nie pyta wcale.
-    assert sorted(port.get_rate.call_args_list) == sorted([
-        call("EUR", TODAY), call("USD", TODAY),
-        call("EUR", date(2024, 6, 3)), call("USD", date(2025, 3, 3)),
-    ])
+    assert sorted(port.get_rate.call_args_list) == sorted(
+        [
+            call("EUR", TODAY),
+            call("USD", TODAY),
+            call("EUR", date(2024, 6, 3)),
+            call("USD", date(2025, 3, 3)),
+        ]
+    )
 
 
 def test_position_without_purchase_date_gets_no_purchase_day_rate() -> None:
@@ -114,8 +121,10 @@ def test_rates_collected_for_the_portfolio_win_over_risk_watch() -> None:
 
     collected = PlnRates(current={"USD": Decimal("3.70")})
     macro = PolishMacroSnapshot(
-        eur_pln=Decimal("4.27"), usd_pln=Decimal("3.68"),
-        eur_pln_30d_change_ratio=Ratio(Decimal("0")), usd_pln_30d_change_ratio=Ratio(Decimal("0")),
+        eur_pln=Decimal("4.27"),
+        usd_pln=Decimal("3.68"),
+        eur_pln_30d_change_ratio=Ratio(Decimal("0")),
+        usd_pln_30d_change_ratio=Ratio(Decimal("0")),
         fetched_at=datetime(2026, 10, 19, tzinfo=UTC),
     )
 

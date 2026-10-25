@@ -142,7 +142,7 @@ def test_per_symbol_failure_does_not_break_the_run() -> None:
 
     summary = _run(market, repository, ["AAPL", "BTC"])
 
-    (read, _), = [c.args for c in repository.save_reference_read.call_args_list]
+    ((read, _),) = [c.args for c in repository.save_reference_read.call_args_list]
     assert read.symbol == "BTC"
     assert summary.failures == 1 and summary.total == 2
 

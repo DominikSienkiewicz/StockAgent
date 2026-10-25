@@ -28,9 +28,7 @@ def test_header_links_the_archived_digest() -> None:
 
 def test_no_link_without_an_archive_or_with_an_unsafe_url() -> None:
     for archive_url in (None, "javascript:alert(1)"):
-        html, text = build_html_report(
-            RESULTS, AT, 1.0, ReportContext(archive_url=archive_url)
-        )
+        html, text = build_html_report(RESULTS, AT, 1.0, ReportContext(archive_url=archive_url))
 
         assert "Otwórz w przeglądarce" not in html
         assert "Wersja w przeglądarce" not in text

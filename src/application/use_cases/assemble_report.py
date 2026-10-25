@@ -142,9 +142,7 @@ class ReportFlags:
     open_entry_curve_enabled: bool = False
 
 
-def portfolio_sectors(
-    results: list[SymbolResult], sector_map: Mapping[str, str]
-) -> dict[str, int]:
+def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
     """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
     Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
@@ -616,9 +614,7 @@ def fetch_report_context(
     # U5: historia głosów rady per inwestor (panel drill-down w raporcie).
     council_history: list[InvestorHistory] = []
     try:
-        council_history = repository.get_council_vote_history(
-            all_symbols, window_days=30
-        )
+        council_history = repository.get_council_vote_history(all_symbols, window_days=30)
     except Exception:
         logger.exception("Failed to fetch council vote history")
 
@@ -729,9 +725,7 @@ class ReportAssembler:
         equity_curve, calibration_buckets, lessons = build_track_record(
             flags, repository, self._costs, reads=reads
         )
-        track_record_stats = build_track_record_stats(
-            flags, repository, self._costs, reads=reads
-        )
+        track_record_stats = build_track_record_stats(flags, repository, self._costs, reads=reads)
         persona_track_record = assess_personas(persona_track_record, track_record_stats)
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).

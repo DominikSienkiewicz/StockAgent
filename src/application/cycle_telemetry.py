@@ -106,9 +106,7 @@ class CycleTelemetry:
         with self._lock:
             self._paid_calls[source] += 1
 
-    def reserve_paid_call(
-        self, source: str, admits: Callable[[Mapping[str, int]], bool]
-    ) -> bool:
+    def reserve_paid_call(self, source: str, admits: Callable[[Mapping[str, int]], bool]) -> bool:
         """EXP-26: liczy wywołanie `source` tylko, gdy `admits` (reguła domeny) wpuści
         je przy bieżących licznikach. Decyzja i inkrement idą pod jednym lockiem, więc
         równoległe symbole nie przebiją limitu sprawdzonego tuż przed wywołaniem."""

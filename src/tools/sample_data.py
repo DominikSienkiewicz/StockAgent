@@ -94,9 +94,7 @@ def _council(recommendation: Recommendation, consensus: float) -> CouncilVerdict
         final_recommendation=recommendation,
         consensus_strength=consensus,
         summary=f"Przykładowa rada skłania się ku {recommendation}.",
-        dissenting_views=(
-            "Makro i refleksyjność: część dobrych wiadomości jest już w cenie.",
-        ),
+        dissenting_views=("Makro i refleksyjność: część dobrych wiadomości jest już w cenie.",),
         # MAIL-38: przykład trafia do publicznych docs, więc persony jako archetypy
         # (`data/council_personas/archetypes.toml`), nie nazwiska.
         investor_opinions=(
@@ -229,8 +227,11 @@ def sample_results() -> list[SymbolResult]:
             confidence=0.69,
             reasoning="Przykład: słabsze prognozy segmentu klienckiego.",
             av_agreement=0.25,
-            sentiment={"av_sentiment_score": -0.2, "av_sentiment_label": "Somewhat-Bearish",
-                       "degraded_reason": "av_keys_exhausted"},
+            sentiment={
+                "av_sentiment_score": -0.2,
+                "av_sentiment_label": "Somewhat-Bearish",
+                "degraded_reason": "av_keys_exhausted",
+            },
             data_quality_flags=("av_keys_exhausted",),
             fundamentals=_fundamentals(age_hours=200),
             council_verdict=_council("SELL", 0.6),
@@ -406,8 +407,7 @@ def sample_context() -> ReportContext:
         ],
         equity_curve=_equity_curve(),
         calibration_buckets=[
-            CalibrationBucket(lower=0.6, upper=0.7, count=12, mean_confidence=0.65,
-                              hit_rate=0.58),
+            CalibrationBucket(lower=0.6, upper=0.7, count=12, mean_confidence=0.65, hit_rate=0.58),
         ],
         lessons=LessonsReport(
             items=(

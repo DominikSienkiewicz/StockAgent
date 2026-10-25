@@ -81,9 +81,7 @@ def test_concurrent_records_are_not_lost() -> None:
     assert len(records) == 2000
     # Zakres jest per wątek: żaden rekord nie dostał symbolu innego wątku w złej liczbie.
     assert {record.symbol for record in records} == {f"S{i}" for i in range(8)}
-    assert all(
-        sum(1 for record in records if record.symbol == f"S{i}") == 250 for i in range(8)
-    )
+    assert all(sum(1 for record in records if record.symbol == f"S{i}") == 250 for i in range(8))
 
 
 def test_token_costs_price_each_source_and_skip_partially_unpriced_ones() -> None:

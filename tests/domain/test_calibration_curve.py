@@ -118,9 +118,7 @@ class TestExpectedCalibrationError:
         assert abs(ece - 0.1) < 1e-9
 
 
-def _bucket(
-    lower: float, upper: float, count: int, hit_rate: float
-) -> CalibrationBucket:
+def _bucket(lower: float, upper: float, count: int, hit_rate: float) -> CalibrationBucket:
     # Pomocnik: mean_confidence nieistotny dla kalibracji, ustawiamy w środku.
     return CalibrationBucket(
         lower=lower,
@@ -231,13 +229,8 @@ class TestProbabilityScores:
     def test_murphy_components_reconstruct_brier_when_forecasts_constant_within_bucket(
         self,
     ) -> None:
-        samples = (
-            [(0.85, True)] * 3 + [(0.85, False)]
-            + [(0.35, True)] + [(0.35, False)] * 3
-        )
-        reliability, resolution, uncertainty = murphy_decomposition(
-            reliability_curve(samples)
-        )
+        samples = [(0.85, True)] * 3 + [(0.85, False)] + [(0.35, True)] + [(0.35, False)] * 3
+        reliability, resolution, uncertainty = murphy_decomposition(reliability_curve(samples))
 
         assert reliability - resolution + uncertainty == pytest.approx(brier_score(samples))
         assert uncertainty == pytest.approx(0.25)
@@ -377,7 +370,6 @@ class TestCalibrationErrorEvidence:
         assert calibration_error_evidence([]) is None
 
 
-
 class TestDiscrimination:
     """WIA-38: kalibracja (#9) zakłada, że pewność niesie informację. Jeśli LLM
     zawsze mówi ~0.7, kalibracja tylko przesuwa wszystkich do stopy bazowej,
@@ -504,6 +496,7 @@ class TestDiscriminationEvidence:
         from src.domain.calibration_curve import discrimination_evidence
 
         assert discrimination_evidence([]) is None
+
 
 class TestOutOfRangeConfidence:
     """PORT-09: pewność spoza [0, 1] (skala 0–100 albo NaN) wypada z diagramu

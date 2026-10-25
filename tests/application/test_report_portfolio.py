@@ -197,9 +197,7 @@ class TestInsufficientHistory:
         assert "za mało historii (9/20)" in text
 
     def test_text_carries_the_var_when_it_exists(self) -> None:
-        report = PortfolioRiskReport(
-            watchlist_size=3, var=0.021, cvar=0.034, var_confidence=0.95
-        )
+        report = PortfolioRiskReport(watchlist_size=3, var=0.021, cvar=0.034, var_confidence=0.95)
 
         text = render_correlation_text(report)
 

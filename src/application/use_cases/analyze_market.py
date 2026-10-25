@@ -219,9 +219,7 @@ class AnalyzeMarketUseCase:
     def paid_phase(self, *, sentiment_port: SentimentPort, news_port: NewsPort) -> PaidPhase:
         """EXP-27 faza 2 na porty feedu zbudowane po fazie 1 (klient AV tylko dla
         symboli za bramką). Reszta zależności, w tym telemetria cyklu, ta sama."""
-        deps = dataclasses.replace(
-            self._deps, sentiment_port=sentiment_port, news_port=news_port
-        )
+        deps = dataclasses.replace(self._deps, sentiment_port=sentiment_port, news_port=news_port)
         return PaidPhase(create_paid_graph(deps).compile())
 
     def _compiled_gate_graph(self) -> CompiledStateGraph[AgentState]:
@@ -280,9 +278,7 @@ class AnalyzeMarketUseCase:
         # DAT-17: tylko świeże 8-K (domena liczy wiek od dnia cyklu); brak snapshotu
         # (flaga off, ETF, EDGAR niedostępny) = brak klucza, czyli cecha „nie wiem”.
         if corporate_events is not None:
-            initial_state["fresh_corporate_events"] = corporate_events.fresh_events(
-                clock.date()
-            )
+            initial_state["fresh_corporate_events"] = corporate_events.fresh_events(clock.date())
         # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
         arms = active_arms(self._experiments, symbol, _utc_day(clock))
         if arms:

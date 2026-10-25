@@ -164,9 +164,7 @@ def test_every_report_context_field_has_exactly_one_consumer() -> None:
         for name in section.context_fields:
             consumers.setdefault(name, []).append(section.key)
 
-    assert {
-        name: owners for name, owners in consumers.items() if len(owners) != 1
-    } == {}
+    assert {name: owners for name, owners in consumers.items() if len(owners) != 1} == {}
     assert set(consumers) == CONTEXT_FIELDS, "deklaracja pola, którego ReportContext nie ma"
 
 

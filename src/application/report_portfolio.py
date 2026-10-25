@@ -60,10 +60,7 @@ def render_correlation_html(report: PortfolioRiskReport) -> str:
     if not subsections:
         return ""
 
-    header = (
-        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        f"{_HEADING}</h2>"
-    )
+    header = f"<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>{_HEADING}</h2>"
     return header + "".join(subsections)
 
 
@@ -91,9 +88,7 @@ def render_correlation_text(report: PortfolioRiskReport) -> str:
         if report.verdict:
             lines.append(f"  Werdykt: {report.verdict}")
         for idx, cluster in enumerate(report.clusters, start=1):
-            lines.append(
-                f"  Klaster {idx} ({len(cluster)} symboli): {' · '.join(cluster)}"
-            )
+            lines.append(f"  Klaster {idx} ({len(cluster)} symboli): {' · '.join(cluster)}")
     if report.var is not None:
         conf_pct = round(report.var_confidence * 100)
         lines.append(
@@ -162,11 +157,7 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
         return ""
     rows: list[str] = []
     for impact in report.scenarios:
-        worst = (
-            _html.escape(impact.worst_symbol)
-            if impact.worst_symbol is not None
-            else "—"
-        )
+        worst = _html.escape(impact.worst_symbol) if impact.worst_symbol is not None else "—"
         rows.append(
             "<tr>"
             "<td style='padding: 6px 8px;'><strong>"
@@ -191,9 +182,7 @@ def _render_stress_html(report: PortfolioRiskReport) -> str:
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Szok</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: right;'>Watchlista</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Najsłabszy</th>"
-        "</tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
 
 
@@ -211,9 +200,7 @@ def _render_clusters_html(clusters: list[tuple[str, ...]]) -> str:
             "</li>"
         )
     return (
-        "<ul style='list-style: none; padding: 0; margin: 0 0 16px 0;'>"
-        + "".join(rows)
-        + "</ul>"
+        "<ul style='list-style: none; padding: 0; margin: 0 0 16px 0;'>" + "".join(rows) + "</ul>"
     )
 
 

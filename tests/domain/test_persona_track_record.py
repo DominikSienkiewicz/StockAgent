@@ -39,25 +39,19 @@ class TestRankPersonas:
         assert rank_personas({}) == []
 
     def test_ranks_personas_by_hit_rate_descending(self) -> None:
-        ranking = rank_personas(
-            {"Wood": (0.41, 18), "Buffett": (0.68, 22), "Lynch": (0.55, 10)}
-        )
+        ranking = rank_personas({"Wood": (0.41, 18), "Buffett": (0.68, 22), "Lynch": (0.55, 10)})
 
         assert [r.investor_name for r in ranking] == ["Buffett", "Lynch", "Wood"]
 
     def test_record_carries_hit_rate_and_vote_count(self) -> None:
         (record,) = rank_personas({"Buffett": (0.68, 22)})
 
-        assert record == PersonaTrackRecord(
-            investor_name="Buffett", hit_rate=0.68, votes=22
-        )
+        assert record == PersonaTrackRecord(investor_name="Buffett", hit_rate=0.68, votes=22)
 
     def test_persona_below_min_votes_is_excluded(self) -> None:
         # Persona z jednym trafionym głosem miałaby 100% hit-rate i stała na
         # czele rankingu — próg odcina ten szum, zanim dojdzie do renderera.
-        ranking = rank_personas(
-            {"Nowicjusz": (1.0, 1), "Buffett": (0.68, 22)}, min_votes=5
-        )
+        ranking = rank_personas({"Nowicjusz": (1.0, 1), "Buffett": (0.68, 22)}, min_votes=5)
 
         assert [r.investor_name for r in ranking] == ["Buffett"]
 
@@ -99,9 +93,7 @@ class TestRankPersonas:
         ("raw", "expected"),
         [(1.4, 1.0), (-0.2, 0.0), (0.0, 0.0), (1.0, 1.0)],
     )
-    def test_hit_rate_is_clamped_to_unit_interval(
-        self, raw: float, expected: float
-    ) -> None:
+    def test_hit_rate_is_clamped_to_unit_interval(self, raw: float, expected: float) -> None:
         (record,) = rank_personas({"Buffett": (raw, 22)}, min_votes=0)
 
         assert record.hit_rate == expected
@@ -167,9 +159,7 @@ class TestPersonaSignificance:
         return rank_personas(stats, min_votes=0)
 
     def test_persona_clearly_above_the_baseline_is_significant(self) -> None:
-        records = self._records(
-            {"Buffett": (0.8, 100), "Wood": (0.5, 100), "Soros": (0.52, 100)}
-        )
+        records = self._records({"Buffett": (0.8, 100), "Wood": (0.5, 100), "Soros": (0.52, 100)})
 
         assessed = assess_persona_significance(records, baseline=0.5)
 
@@ -341,10 +331,19 @@ class TestPersonaWeightsAsOf:
     def test_weights_as_of_ignore_votes_settled_after_cutoff(self) -> None:
         cutoff = _T0 + timedelta(days=2)
         outcomes = [
-            _outcome(investor="Wood", recommendation="BUY", actual="110",
-                     settled_at=_T0 + timedelta(days=1)),
-            _outcome(investor="Burry", recommendation="BUY", actual="110",
-                     settled_at=cutoff + timedelta(hours=1), prediction_id="p-2"),
+            _outcome(
+                investor="Wood",
+                recommendation="BUY",
+                actual="110",
+                settled_at=_T0 + timedelta(days=1),
+            ),
+            _outcome(
+                investor="Burry",
+                recommendation="BUY",
+                actual="110",
+                settled_at=cutoff + timedelta(hours=1),
+                prediction_id="p-2",
+            ),
         ]
 
         weights = persona_accuracy_weights_as_of(outcomes, as_of=cutoff, window_days=90)
@@ -359,9 +358,10 @@ class TestPersonaWeightsAsOf:
 
         assert outcome_known_at(floor) == _T0 + timedelta(hours=12)
         assert outcome_known_at(missing) == _T0 + timedelta(hours=12)
-        assert persona_accuracy_weights_as_of(
-            [floor], as_of=_T0 + timedelta(hours=11), window_days=90
-        ) == {}
+        assert (
+            persona_accuracy_weights_as_of([floor], as_of=_T0 + timedelta(hours=11), window_days=90)
+            == {}
+        )
 
     def test_window_counts_back_from_the_cutoff(self) -> None:
         cutoff = _T0 + timedelta(days=30)

@@ -68,9 +68,7 @@ class TestEvaluateEdge:
         assert isinstance(result, ImpliedEdge)
         assert result.label is EdgeLabel.MODEL_AHEAD
         assert result.edge_sigma is not None
-        assert result.edge_sigma == pytest.approx(
-            abs(0.031) / implied_move_12h(0.324, 12.0)
-        )
+        assert result.edge_sigma == pytest.approx(abs(0.031) / implied_move_12h(0.324, 12.0))
         assert result.edge_sigma > 1.5
 
     def test_market_ahead_when_market_prices_move_and_model_sleeps(self) -> None:

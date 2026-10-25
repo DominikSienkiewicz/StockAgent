@@ -37,7 +37,5 @@ def parse_json_object(text: str) -> dict[str, Any]:
     """
     value = json.loads(text)
     if not isinstance(value, dict):
-        raise ValueError(
-            f"LLM returned a JSON {type(value).__name__}, expected a JSON object."
-        )
+        raise ValueError(f"LLM returned a JSON {type(value).__name__}, expected a JSON object.")
     return value

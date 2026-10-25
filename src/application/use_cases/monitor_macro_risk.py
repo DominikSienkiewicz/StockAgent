@@ -97,9 +97,7 @@ class MonitorMacroRiskUseCase:
         self._book_symbols = tuple(book_symbols)
         self._hedge_enabled = hedge_enabled
 
-    def run(
-        self, symbol_types: dict[str, MacroRiskInstrumentType]
-    ) -> MacroRiskReport:
+    def run(self, symbol_types: dict[str, MacroRiskInstrumentType]) -> MacroRiskReport:
         signals = self._collect_signals(symbol_types)
         drawdowns = self._collect_drawdowns(symbol_types)
         hedges = self._collect_hedge_assessments(symbol_types)
@@ -129,9 +127,7 @@ class MonitorMacroRiskUseCase:
         raw: dict[str, list[tuple[datetime, Money]]] = {}
         for symbol in all_symbols:
             try:
-                history = self._repository.get_price_history(
-                    symbol, days=_DRAWDOWN_HISTORY_DAYS
-                )
+                history = self._repository.get_price_history(symbol, days=_DRAWDOWN_HISTORY_DAYS)
             except Exception:
                 logger.exception("hedge history fetch failed for %s", symbol)
                 continue
@@ -155,10 +151,7 @@ class MonitorMacroRiskUseCase:
                 continue
             count = len(book_series)
             length = len(hedge_returns)
-            book_returns = [
-                sum(series[t] for series in book_series) / count
-                for t in range(length)
-            ]
+            book_returns = [sum(series[t] for series in book_series) / count for t in range(length)]
             out.append(
                 assess_hedge(
                     hedge_symbol,
@@ -210,8 +203,7 @@ class MonitorMacroRiskUseCase:
                 if previous is None:
                     # Cold start: brak referencji — nie da się policzyć zmiany.
                     logger.info(
-                        "risk_watch cold-start for %s — snapshot saved, "
-                        "signal skipped",
+                        "risk_watch cold-start for %s — snapshot saved, signal skipped",
                         symbol,
                     )
                     continue
@@ -239,9 +231,7 @@ class MonitorMacroRiskUseCase:
         out: list[DrawdownSignal] = []
         for symbol in symbol_types:
             try:
-                history = self._repository.get_price_history(
-                    symbol, days=_DRAWDOWN_HISTORY_DAYS
-                )
+                history = self._repository.get_price_history(symbol, days=_DRAWDOWN_HISTORY_DAYS)
                 if not history:
                     continue
                 prices = [price.amount for _, price in history]

@@ -35,9 +35,7 @@ def _ok_response(payload: object) -> Mock:
 def _error_response(status_code: int) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
-    response.raise_for_status.side_effect = requests.HTTPError(
-        f"{status_code} error"
-    )
+    response.raise_for_status.side_effect = requests.HTTPError(f"{status_code} error")
     return response
 
 
@@ -79,9 +77,7 @@ class TestFetchPolishMacro:
         assert snap.eur_pln == Decimal("4.40")
         assert snap.usd_pln == Decimal("4.10")
         # (4.40 - 4.30) / 4.30 ≈ 0.0233
-        assert snap.eur_pln_30d_change_ratio.quantize(Decimal("0.0001")) == Decimal(
-            "0.0233"
-        )
+        assert snap.eur_pln_30d_change_ratio.quantize(Decimal("0.0001")) == Decimal("0.0233")
         # (4.10 - 4.00) / 4.00 == 0.025
         assert snap.usd_pln_30d_change_ratio == Decimal("0.025")
 
@@ -133,9 +129,7 @@ class TestFetchPolishMacro:
 
         assert snap is None
 
-    def test_returns_none_on_single_rate_no_baseline(
-        self, client: NbpClient, mocker: Any
-    ) -> None:
+    def test_returns_none_on_single_rate_no_baseline(self, client: NbpClient, mocker: Any) -> None:
         """Jeden punkt = brak referencji do liczenia zmiany 30d."""
         mocker.patch(
             "requests.Session.get",
@@ -146,9 +140,7 @@ class TestFetchPolishMacro:
 
         assert snap is None
 
-    def test_url_path_uses_table_a_and_30_days(
-        self, client: NbpClient, mocker: Any
-    ) -> None:
+    def test_url_path_uses_table_a_and_30_days(self, client: NbpClient, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_nbp_rates_payload("x", [4.0, 4.1])),
@@ -218,10 +210,15 @@ class TestFxRateForDay:
 
         assert rate is not None
         assert (rate.currency, rate.on_date, rate.effective_date, rate.rate) == (
-            "EUR", date(2025, 3, 2), date(2025, 2, 28), Decimal("4.1512"),
+            "EUR",
+            date(2025, 3, 2),
+            date(2025, 2, 28),
+            Decimal("4.1512"),
         )
         assert [url.split("/")[-2] for url in _urls(mock_get)] == [
-            "2025-03-02", "2025-03-01", "2025-02-28",
+            "2025-03-02",
+            "2025-03-01",
+            "2025-02-28",
         ]
 
     def test_gives_up_after_the_lookback_window(self, mocker: Any) -> None:

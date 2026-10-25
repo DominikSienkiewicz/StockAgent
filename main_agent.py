@@ -543,11 +543,7 @@ def build_notifier(
     (`build_legacy_push_notifier`), bo kwoty P/L nie mają trafiać do komunikatorów.
     """
     channels: list[ReportNotifierPort] = []
-    if (
-        settings.notifications_enabled
-        and settings.resend_api_key
-        and settings.digest_to_email
-    ):
+    if settings.notifications_enabled and settings.resend_api_key and settings.digest_to_email:
         channels.append(
             ResendNotifier(
                 api_key=settings.resend_api_key,
@@ -671,9 +667,7 @@ def _dispatch_push_digest(
             ranked_signals=ranked_signals,
             archive_url=archive_url,
         )
-        push_notifier.send_report(
-            subject=subject, html_body=digest, plain_text=digest
-        )
+        push_notifier.send_report(subject=subject, html_body=digest, plain_text=digest)
     except Exception:
         logger.exception("Failed to send messenger digest")
         return False
@@ -1074,9 +1068,7 @@ def snapshot_muted_symbols(
         try:
             repository.save_price_snapshot(symbol, market.get_current_price(symbol))
         except (PortError, ValueError) as exc:
-            logger.warning(
-                "%s: muted — price snapshot skipped (%s)", symbol, type(exc).__name__
-            )
+            logger.warning("%s: muted — price snapshot skipped (%s)", symbol, type(exc).__name__)
 
 
 def build_digest_archive(settings: Settings) -> DigestArchivePort | None:
@@ -1164,9 +1156,7 @@ def build_council_llm_adapter(
     provider = settings.council_llm_provider or settings.llm_provider
     if provider == "anthropic":
         if not settings.anthropic_api_key:
-            raise ValueError(
-                "council_llm_provider=anthropic but ANTHROPIC_API_KEY is not set."
-            )
+            raise ValueError("council_llm_provider=anthropic but ANTHROPIC_API_KEY is not set.")
         from src.infrastructure.llm.anthropic_client import (
             DEFAULT_MODEL as ANTHROPIC_DEFAULT,
         )
@@ -1447,9 +1437,7 @@ def _main_llm_identity(settings: Settings) -> tuple[str, str]:
     return settings.llm_provider, _provider_default_model(settings.llm_provider)
 
 
-def _council_llm_identity(
-    settings: Settings, main_identity: tuple[str, str]
-) -> tuple[str, str]:
+def _council_llm_identity(settings: Settings, main_identity: tuple[str, str]) -> tuple[str, str]:
     """(provider, model) rady — te same reguły co `build_council_llm_adapter`."""
     if settings.council_llm_provider is None and settings.council_llm_model is None:
         return main_identity
@@ -1572,9 +1560,7 @@ def build_move_calibration(
     except Exception:
         logger.exception("Settled moves unavailable — cykl bez przedziałów ruchu")
         return None
-    return calibration_windows(
-        rows, lambda symbol: classify_asset(symbol, crypto_set, etf_set)
-    )
+    return calibration_windows(rows, lambda symbol: classify_asset(symbol, crypto_set, etf_set))
 
 
 class _PaidPorts(NamedTuple):
@@ -1660,9 +1646,7 @@ def _alpha_vantage_client(
 # EXP-27: porty feedu fazy 2 dla symboli za bramką (w kolejności fazy 2).
 
 
-def build_phase_two_feeds(
-    settings: Settings, quota_monitor: QuotaMonitor | None
-) -> PhaseTwoFeeds:
+def build_phase_two_feeds(settings: Settings, quota_monitor: QuotaMonitor | None) -> PhaseTwoFeeds:
     """EXP-27: fabryka feedu fazy 2 — `AlphaVantageClient` z samymi symbolami za
     bramką, w trybie leniwym FIN-04: request idzie tylko dla symbolu, który
     faktycznie dostaje analizę (odcięty sufitem FIN-12 nie kosztuje AV), a cechy
@@ -1797,37 +1781,28 @@ def build_agent_graph_deps(
         crypto_symbols=settings.crypto_symbols,
     )
     crypto_threshold = (
-        Threshold(settings.crypto_volatility_threshold)
-        if settings.crypto_symbols
-        else None
+        Threshold(settings.crypto_volatility_threshold) if settings.crypto_symbols else None
     )
     # Próg rady dla krypto — używamy tego samego co głównego (5%), bo i tak
     # bramka volatility już odsiała pierwszy poziom; council ma jedynie
     # drugie sito kosztowe i nie ma sensu robić go ostrzejszego.
     crypto_council_threshold = (
-        Threshold(settings.crypto_volatility_threshold)
-        if settings.crypto_symbols
-        else None
+        Threshold(settings.crypto_volatility_threshold) if settings.crypto_symbols else None
     )
     # #6: tool-use research agent — adapter + read-only toole (fundamenty z cache,
     # makro NBP). Budowane tylko gdy włączony. Toole NIE robią nowych płatnych
     # wywołań: fast loop czyta fundamenty z cache, a NBP jest darmowe i bezkluczowe.
     tool_use_port = paid.tool_use
     research_tools = (
-        build_research_tools(fundamentals_port, NbpClient())
-        if tool_use_port is not None
-        else []
+        build_research_tools(fundamentals_port, NbpClient()) if tool_use_port is not None else []
     )
     tool_use_threshold = (
-        Threshold(settings.tool_use_volatility_threshold)
-        if tool_use_port is not None
-        else None
+        Threshold(settings.tool_use_volatility_threshold) if tool_use_port is not None else None
     )
     # FIN-08: osobny próg tool-use krypto; brak = krypto bierze `tool_use_threshold`.
     crypto_tool_use_threshold = (
         Threshold(settings.crypto_tool_use_volatility_threshold)
-        if tool_use_port is not None
-        and settings.crypto_tool_use_volatility_threshold is not None
+        if tool_use_port is not None and settings.crypto_tool_use_volatility_threshold is not None
         else None
     )
     return AgentGraphDeps(
@@ -2056,9 +2031,7 @@ def _regime_tagging_enabled(settings: Settings) -> bool:
     return settings.regime_tagging_enabled
 
 
-def _run_risk_watch(
-    settings: Settings, repository: RepositoryPort
-) -> MacroRiskReport | None:
+def _run_risk_watch(settings: Settings, repository: RepositoryPort) -> MacroRiskReport | None:
     """Risk Watch przed pętlą (zasila też reżim rynku #7). Off / błąd → None."""
     risk_use_case = build_macro_risk_use_case(settings, repository)
     if risk_use_case is None:
@@ -2127,9 +2100,7 @@ def _resolve_regime(
     detector = RegimeDetector()
     raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
     regime, previous_regime = (
-        _apply_regime_hysteresis(
-            settings, repository, raw_regime, cycle_at or datetime.now(UTC)
-        )
+        _apply_regime_hysteresis(settings, repository, raw_regime, cycle_at or datetime.now(UTC))
         if repository is not None
         else (raw_regime, None)
     )
@@ -2194,9 +2165,7 @@ def _apply_regime_hysteresis(
     try:
         repository.save_regime_state(cycle_at, raw_regime, state)
     except Exception:
-        logger.exception(
-            "regime_history write failed — następny cykl użyje starszego stanu"
-        )
+        logger.exception("regime_history write failed — następny cykl użyje starszego stanu")
     if state.regime is not raw_regime:
         logger.info(
             "Histereza reżimu — trzymam %s (surowy %s, potwierdzenia wyjścia %d/%d)",
@@ -2334,9 +2303,7 @@ def _build_portfolio_radar(
             var_enabled=settings.portfolio_var_enabled,
             stress_enabled=settings.stress_test_enabled,
             var_confidence=settings.var_confidence,
-            scenarios=(
-                DEFAULT_STRESS_SCENARIOS if settings.stress_test_enabled else ()
-            ),
+            scenarios=(DEFAULT_STRESS_SCENARIOS if settings.stress_test_enabled else ()),
         ).run(all_symbols)
         logger.info(
             "Portfolio Radar — clusters=%d watchlist=%d",
@@ -2966,10 +2933,10 @@ def _render_report(
         archive_url=context.archive_url if user_portfolio_in_text else None,
     )
     return build_html_report(
-        results, started_at, duration,
-        recipient_context
-        if include_portfolio
-        else _without_owner_portfolio(recipient_context),
+        results,
+        started_at,
+        duration,
+        recipient_context if include_portfolio else _without_owner_portfolio(recipient_context),
         compact=compact,
     )
 
@@ -3083,9 +3050,7 @@ def _record_weekly_budget_alert(settings: Settings, quota_monitor: QuotaMonitor)
     try:
         personas = load_council_personas(Path(settings.council_personas_dir))
     except (OSError, ValueError) as exc:
-        logger.warning(
-            "Fast Loop weekly budget not checked: council personas unreadable (%s)", exc
-        )
+        logger.warning("Fast Loop weekly budget not checked: council personas unreadable (%s)", exc)
         return
     weekly = settings.fast_loop_weekly_budget(personas=min(len(personas), COUNCIL_MAX_PERSONAS))
     if weekly.ok:
@@ -3196,8 +3161,7 @@ def flag_undelivered_report(
         severity=QuotaSeverity.CRITICAL,
         message="Raport z tego przebiegu nie dotarł do właściciela.",
         action=(
-            "Sprawdź log przebiegu w GitHub Actions: klucz Resend, domenę nadawcy "
-            "i kanały push."
+            "Sprawdź log przebiegu w GitHub Actions: klucz Resend, domenę nadawcy i kanały push."
         ),
         occurred_at=now,
     )
@@ -3280,18 +3244,14 @@ def run_with_heartbeat(settings: Settings, run: Callable[[], int]) -> int:
     return exit_code
 
 
-def main(
-    settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now
-) -> int:
+def main(settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now) -> int:
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     resolved = settings or Settings.from_env()
     configure_logging("main_agent", resolved.secret_values())
     return run_with_heartbeat(resolved, lambda: _run_fast_loop_metered(resolved, clock))
 
 
-def prediction_columns_missing(
-    repository: RepositoryPort, use_case: AnalyzeMarketUseCase
-) -> bool:
+def prediction_columns_missing(repository: RepositoryPort, use_case: AnalyzeMarketUseCase) -> bool:
     """FIN-05: preflight kolumn `prediction_logs` raz na cykl, przed płatnymi węzłami.
 
     Brak kolumny, którą ten config zapisuje (niezaaplikowana migracja), to ERROR

@@ -299,9 +299,7 @@ class TestResultInvariants:
 # ---------------------------------------------------------------------------
 class TestInsiderWithoutEvidence:
     def test_unparsed_filings_leave_the_insider_out_of_the_fusion(self) -> None:
-        insider = InsiderFlowSnapshot(
-            "AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0
-        )
+        insider = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0)
 
         result = fuse_alpha_signals(insider=insider, options=_options(0.5))
 
@@ -311,9 +309,7 @@ class TestInsiderWithoutEvidence:
         assert result.score == pytest.approx(fuse_alpha_signals(options=_options(0.5)).score)
 
     def test_insider_without_evidence_alone_gives_no_sources(self) -> None:
-        insider = InsiderFlowSnapshot(
-            "AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0
-        )
+        insider = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=3, filings_parsed=0)
 
         result = fuse_alpha_signals(insider=insider)
 
@@ -321,16 +317,12 @@ class TestInsiderWithoutEvidence:
         assert result.score == pytest.approx(0.0)
 
     def test_window_without_form4_is_evidence_of_no_trades(self) -> None:
-        insider = InsiderFlowSnapshot(
-            "AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0
-        )
+        insider = InsiderFlowSnapshot("AAPL", 0.0, 0, 0, 90, filings_seen=0, filings_parsed=0)
 
         assert fuse_alpha_signals(insider=insider).available_sources == ("insider",)
 
     def test_partially_parsed_filings_still_vote(self) -> None:
-        insider = InsiderFlowSnapshot(
-            "AAPL", 500.0, 1, 0, 90, filings_seen=3, filings_parsed=1
-        )
+        insider = InsiderFlowSnapshot("AAPL", 500.0, 1, 0, 90, filings_seen=3, filings_parsed=1)
 
         result = fuse_alpha_signals(insider=insider)
 

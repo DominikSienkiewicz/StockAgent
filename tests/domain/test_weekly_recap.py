@@ -23,9 +23,7 @@ from src.domain.weekly_recap import (
 )
 
 
-def _opinion(
-    name: str, rec: str, confidence: float = 0.8
-) -> InvestorOpinion:
+def _opinion(name: str, rec: str, confidence: float = 0.8) -> InvestorOpinion:
     return InvestorOpinion(
         investor_name=name,
         recommendation=rec,  # type: ignore[arg-type]
@@ -197,9 +195,7 @@ def _recorded(closed: ClosedPrediction, verdict: bool) -> ClosedPrediction:
 
 def _btc_sideways_up_1_5pct() -> ClosedPrediction:
     # SIDEWAYS, ruch +1.5%: pasmo akcyjne ±0.5% mówi „pudło”, krypto ±2.5% „trafienie”.
-    return _closed(
-        "BTC", trend=TrendDirection.SIDEWAYS, base="100", target="100", actual="101.5"
-    )
+    return _closed("BTC", trend=TrendDirection.SIDEWAYS, base="100", target="100", actual="101.5")
 
 
 class TestRecordedDirectionVerdict:

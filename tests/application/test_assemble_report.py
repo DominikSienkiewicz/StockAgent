@@ -209,10 +209,17 @@ def test_model_scorecard_carries_the_snapshot_model_cards() -> None:
     # okna karty trafiają do maila jedną linią obok werdyktu modelu wspólnego.
     repo = _repo()
     repo.get_recent_model_scorecards.return_value = [
-        {"symbol": "ALL", "status": "trained_successfully",
-         "timestamp": "2026-10-17T03:35:00+00:00"},
-        {"symbol": "ALL_FREE", "status": "skipped", "n_samples": 12,
-         "timestamp": "2026-10-17T03:36:00+00:00"},
+        {
+            "symbol": "ALL",
+            "status": "trained_successfully",
+            "timestamp": "2026-10-17T03:35:00+00:00",
+        },
+        {
+            "symbol": "ALL_FREE",
+            "status": "skipped",
+            "n_samples": 12,
+            "timestamp": "2026-10-17T03:36:00+00:00",
+        },
     ]
 
     context = _assemble(
@@ -239,9 +246,7 @@ class TestPersonaBrierRanking:
 
     def _fetch(self, repo: Mock, *, enabled: bool) -> list[PersonaTrackRecord]:
         monitor = QuotaMonitor()
-        *_, ranking = fetch_report_context(
-            repo, monitor, ["AAPL"], persona_brier_ranking=enabled
-        )
+        *_, ranking = fetch_report_context(repo, monitor, ["AAPL"], persona_brier_ranking=enabled)
         return ranking
 
     def test_flag_orders_the_leaderboard_by_brier_skill(self) -> None:
@@ -581,9 +586,7 @@ def test_class_isotonic_maps_reach_the_ranking_when_enabled() -> None:
 def test_class_isotonic_flag_off_keeps_the_global_map_only() -> None:
     repo = _history_repo(_classed_history())
 
-    context = _assemble(
-        repo, dataclasses.replace(_isotonic_flags(), crypto_symbols=("BTC",))
-    )
+    context = _assemble(repo, dataclasses.replace(_isotonic_flags(), crypto_symbols=("BTC",)))
 
     assert context.signal_isotonic_class_calibration is None
     assert context.signal_isotonic_calibration is not None

@@ -127,7 +127,9 @@ class TestCouncilSectionUsesDomainBehavior:
     """
 
     def _result_with_opinions(
-        self, opinions: list[InvestorOpinion], final: Recommendation = "BUY",
+        self,
+        opinions: list[InvestorOpinion],
+        final: Recommendation = "BUY",
         consensus: float = 0.6,
     ) -> SymbolResult:
         verdict = CouncilVerdict(
@@ -156,12 +158,16 @@ class TestCouncilSectionUsesDomainBehavior:
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
-                confidence=0.9, reasoning="x", key_factors=(),
+                confidence=0.9,
+                reasoning="x",
+                key_factors=(),
             ),
             InvestorOpinion(
                 investor_name="George Soros",
                 recommendation="SELL",
-                confidence=0.7, reasoning="x", key_factors=(),
+                confidence=0.7,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         html = self._build(opinions)
@@ -173,12 +179,16 @@ class TestCouncilSectionUsesDomainBehavior:
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
-                confidence=0.9, reasoning="x", key_factors=(),
+                confidence=0.9,
+                reasoning="x",
+                key_factors=(),
             ),
             InvestorOpinion(
                 investor_name="Charlie Munger",
                 recommendation="HOLD",
-                confidence=0.6, reasoning="x", key_factors=(),
+                confidence=0.6,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         html = self._build(opinions)
@@ -188,12 +198,17 @@ class TestCouncilSectionUsesDomainBehavior:
     def test_vote_distribution_displayed(self) -> None:
         # Trzy głosy: 2 BUY, 1 SELL → rozkład widoczny w raporcie
         votes: list[tuple[str, Recommendation]] = [
-            ("A", "BUY"), ("B", "BUY"), ("C", "SELL"),
+            ("A", "BUY"),
+            ("B", "BUY"),
+            ("C", "SELL"),
         ]
         opinions = [
             InvestorOpinion(
-                investor_name=name, recommendation=rec,
-                confidence=0.8, reasoning="x", key_factors=(),
+                investor_name=name,
+                recommendation=rec,
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             )
             for name, rec in votes
         ]
@@ -209,7 +224,9 @@ class TestCouncilSectionUsesDomainBehavior:
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
-                confidence=0.9, reasoning="x", key_factors=(),
+                confidence=0.9,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         html = self._build(opinions, consensus=0.85)
@@ -220,7 +237,9 @@ class TestCouncilSectionUsesDomainBehavior:
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
-                confidence=0.7, reasoning="x", key_factors=(),
+                confidence=0.7,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         html = self._build(opinions, consensus=0.5)
@@ -287,8 +306,13 @@ class TestStrongConsensusBadgeAndRedundancy:
     @staticmethod
     def _redundancy(n_eff: float) -> CouncilRedundancy:
         return CouncilRedundancy(
-            personas=7, predictions=40, pairs=(), llm_pairs=(),
-            mean_kappa=0.9, mean_agreement=0.95, n_eff=n_eff,
+            personas=7,
+            predictions=40,
+            pairs=(),
+            llm_pairs=(),
+            mean_kappa=0.9,
+            mean_agreement=0.95,
+            n_eff=n_eff,
         )
 
     @staticmethod
@@ -302,8 +326,12 @@ class TestStrongConsensusBadgeAndRedundancy:
         )
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved", delta=Decimal("0.035"),
-                current_price=Decimal("180.00"), trend="BULLISH", council_verdict=verdict,
+                symbol="AAPL",
+                status="saved",
+                delta=Decimal("0.035"),
+                current_price=Decimal("180.00"),
+                trend="BULLISH",
+                council_verdict=verdict,
             )
         ]
         return build_html_report(results, datetime.now(UTC), 1.0, context)[0]

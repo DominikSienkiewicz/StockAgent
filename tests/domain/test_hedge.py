@@ -105,9 +105,7 @@ def test_label_at_effective_threshold_boundary() -> None:
     hedge = [3.0, 2.5, 1.4]
     corr = realized_correlation(book, hedge)
     threshold = -corr  # tak by effectiveness == próg
-    assessment = assess_hedge(
-        "SH", book, hedge, expect_inverse=True, effective_threshold=threshold
-    )
+    assessment = assess_hedge("SH", book, hedge, expect_inverse=True, effective_threshold=threshold)
     assert assessment.label == "skuteczny"
 
 
@@ -116,9 +114,7 @@ def test_label_just_below_threshold_is_ineffective() -> None:
     book = [1.0, 2.0, 3.0, 4.0]
     # Korelacja bliska zera → effectiveness bliskie zera, w środku pasma.
     hedge = [2.0, 1.0, 2.5, 1.5]
-    assessment = assess_hedge(
-        "DUMMY", book, hedge, expect_inverse=True, effective_threshold=0.9
-    )
+    assessment = assess_hedge("DUMMY", book, hedge, expect_inverse=True, effective_threshold=0.9)
     assert assessment.label == "nieskuteczny"
 
 
@@ -144,21 +140,28 @@ class TestEquityHedgeSymbols:
         from src.domain.hedge import EQUITY_HEDGE_TYPES
         from src.domain.macro_risk import MacroRiskInstrumentType
 
-        assert frozenset({
-            MacroRiskInstrumentType.INVERSE_EQUITY,
-            MacroRiskInstrumentType.VOLATILITY,
-        }) == EQUITY_HEDGE_TYPES
+        assert (
+            frozenset(
+                {
+                    MacroRiskInstrumentType.INVERSE_EQUITY,
+                    MacroRiskInstrumentType.VOLATILITY,
+                }
+            )
+            == EQUITY_HEDGE_TYPES
+        )
 
     def test_picks_hedge_symbols_by_instrument_type(self) -> None:
         from src.domain.hedge import equity_hedge_symbols
         from src.domain.macro_risk import MacroRiskInstrumentType as T
 
-        symbols = equity_hedge_symbols({
-            "SH": T.INVERSE_EQUITY,
-            "VIXY": T.VOLATILITY,
-            "TBT": T.INVERSE_TREASURY,
-            "GLD": T.SAFE_HAVEN,
-            "EPOL": T.SOVEREIGN_PROXY,
-        })
+        symbols = equity_hedge_symbols(
+            {
+                "SH": T.INVERSE_EQUITY,
+                "VIXY": T.VOLATILITY,
+                "TBT": T.INVERSE_TREASURY,
+                "GLD": T.SAFE_HAVEN,
+                "EPOL": T.SOVEREIGN_PROXY,
+            }
+        )
 
         assert symbols == frozenset({"SH", "VIXY"})

@@ -53,8 +53,15 @@ def test_hit_returns_the_cached_rate_without_asking_the_source(
     client: MagicMock, source: Mock
 ) -> None:
     query = _cached_rows(
-        client, [{"currency": "USD", "on_date": "2025-03-02", "effective_date": "2025-02-28",
-                  "rate": "3.9725"}]
+        client,
+        [
+            {
+                "currency": "USD",
+                "on_date": "2025-03-02",
+                "effective_date": "2025-02-28",
+                "rate": "3.9725",
+            }
+        ],
     )
 
     rate = _cache(source).get_rate("usd", BOUGHT)

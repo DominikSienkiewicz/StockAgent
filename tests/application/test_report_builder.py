@@ -72,18 +72,27 @@ def _error_result() -> SymbolResult:
 
 def _crypto_saved() -> SymbolResult:
     return SymbolResult(
-        symbol="BTC", status="saved", delta=Decimal("0.07"),
-        current_price=Decimal("65000"), trend="BULLISH",
-        target_price=Decimal("68000"), confidence_score=0.7,
-        sentiment_score=0.5, sentiment_label="Bullish", news_volume=4,
+        symbol="BTC",
+        status="saved",
+        delta=Decimal("0.07"),
+        current_price=Decimal("65000"),
+        trend="BULLISH",
+        target_price=Decimal("68000"),
+        confidence_score=0.7,
+        sentiment_score=0.5,
+        sentiment_label="Bullish",
+        news_volume=4,
         asset_class="CRYPTO",
     )
 
 
 def _crypto_ignored() -> SymbolResult:
     return SymbolResult(
-        symbol="ETH", status="ignored", delta=Decimal("0.01"),
-        current_price=Decimal("3200"), asset_class="CRYPTO",
+        symbol="ETH",
+        status="ignored",
+        delta=Decimal("0.01"),
+        current_price=Decimal("3200"),
+        asset_class="CRYPTO",
     )
 
 
@@ -108,7 +117,8 @@ class TestCryptoSection:
     def test_html_has_dedicated_crypto_section(self) -> None:
         html, _ = build_html_report(
             [_saved_result(), _crypto_saved(), _crypto_ignored()],
-            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC),
+            1.0,
         )
         # Wyróżnik sekcji (emoji), niezależny od taga sektora "Krypto" w treści.
         assert "🪙" in html
@@ -119,7 +129,8 @@ class TestCryptoSection:
         # lista 'Pominięte' pokazuje tylko deltę, nie cenę.
         html, _ = build_html_report(
             [_crypto_ignored()],
-            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC),
+            1.0,
         )
         assert "🪙" in html
         assert "$3\u00a0200,00" in html
@@ -127,7 +138,8 @@ class TestCryptoSection:
     def test_crypto_section_in_plain_text(self) -> None:
         _, text = build_html_report(
             [_crypto_saved(), _crypto_ignored()],
-            datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0,
+            datetime(2026, 5, 14, 12, 0, tzinfo=UTC),
+            1.0,
         )
         assert "KRYPTO" in text.upper()
         assert "BTC" in text
@@ -142,15 +154,17 @@ class TestCryptoSection:
     def test_crypto_section_shows_prediction_reasoning(self) -> None:
         # "dlaczego wzrośnie/spadnie" dla krypto — widoczne w sekcji krypto.
         btc = SymbolResult(
-            symbol="BTC", status="saved", delta=Decimal("0.07"),
-            current_price=Decimal("65000"), trend="BULLISH",
-            target_price=Decimal("68000"), confidence_score=0.7,
+            symbol="BTC",
+            status="saved",
+            delta=Decimal("0.07"),
+            current_price=Decimal("65000"),
+            trend="BULLISH",
+            target_price=Decimal("68000"),
+            confidence_score=0.7,
             reasoning="Napływy do ETF-ów spot napędzają popyt.",
             asset_class="CRYPTO",
         )
-        html, text = build_html_report(
-            [btc], datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0
-        )
+        html, text = build_html_report([btc], datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0)
         assert "Napływy do ETF-ów spot napędzają popyt" in html
         assert "Napływy do ETF-ów spot napędzają popyt" in text
 
@@ -158,9 +172,7 @@ class TestCryptoSection:
 class TestBuildHtmlReport:
     def test_returns_html_and_plain_text(self) -> None:
         results = [_saved_result(), _ignored_result(), _error_result()]
-        html, text = build_html_report(
-            results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 12.5
-        )
+        html, text = build_html_report(results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 12.5)
         assert isinstance(html, str)
         assert isinstance(text, str)
         assert len(html) > 100
@@ -168,31 +180,31 @@ class TestBuildHtmlReport:
 
     def test_html_contains_summary_counts(self) -> None:
         results = [_saved_result(), _ignored_result(), _ignored_result("GOOGL")]
-        html, _ = build_html_report(
-            results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report(results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0)
         # 1 saved, 2 ignored, 0 errors
         assert ">1<" in html  # saved count
         assert ">2<" in html  # ignored count
         assert "AAPL" in html
 
     def test_html_contains_reasoning_for_saved(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "macro tailwinds" in html
 
     def test_html_shows_sector_in_predictions(self) -> None:
         # AAPL → Big Tech, doklejony przy nazwie spółki w sekcji PREDYKCJE.
         html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in html
 
     def test_plain_text_shows_sector_in_predictions(self) -> None:
         _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [_saved_result()],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(sector_map={"AAPL": "Big Tech"}),
         )
         assert "Big Tech" in text
@@ -200,13 +212,20 @@ class TestBuildHtmlReport:
     def test_suggestions_section_appears_for_hot_sector(self) -> None:
         # CRWD +6% → gorący sektor cyber → sekcja WARTE UWAGI z peerami.
         hot = SymbolResult(
-            symbol="CRWD", status="saved", delta=Decimal("0.06"),
-            current_price=Decimal("769"), trend="BULLISH",
-            target_price=Decimal("780"), confidence_score=0.75,
-            sentiment_score=0.3, sentiment_label="Bullish",
+            symbol="CRWD",
+            status="saved",
+            delta=Decimal("0.06"),
+            current_price=Decimal("769"),
+            trend="BULLISH",
+            target_price=Decimal("780"),
+            confidence_score=0.75,
+            sentiment_score=0.3,
+            sentiment_label="Bullish",
         )
         html, text = build_html_report(
-            [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [hot],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(
                 sector_map={"CRWD": "Cyberbezpieczeństwo"},
                 sector_peers={"Cyberbezpieczeństwo": ["ZS", "FTNT", "CYBR", "TENB", "QLYS"]},
@@ -221,13 +240,20 @@ class TestBuildHtmlReport:
     def test_no_suggestions_section_when_no_hot_sector(self) -> None:
         # Mały ruch, neutralny sentyment → brak sekcji i brak markera.
         cold = SymbolResult(
-            symbol="AAPL", status="saved", delta=Decimal("0.004"),
-            current_price=Decimal("100"), trend="SIDEWAYS",
-            target_price=Decimal("100"), confidence_score=0.6,
-            sentiment_score=0.05, sentiment_label="Neutral",
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.004"),
+            current_price=Decimal("100"),
+            trend="SIDEWAYS",
+            target_price=Decimal("100"),
+            confidence_score=0.6,
+            sentiment_score=0.05,
+            sentiment_label="Neutral",
         )
         html, text = build_html_report(
-            [cold], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [cold],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(
                 sector_map={"AAPL": "Big Tech"},
                 sector_peers={"Big Tech": ["NFLX", "DIS"]},
@@ -239,17 +265,13 @@ class TestBuildHtmlReport:
         assert "SUGGESTIONS_SLOT" not in text
 
     def test_html_shows_errors_section_when_present(self) -> None:
-        html, _ = build_html_report(
-            [_error_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_error_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Błędy" in html
         assert "429" in html
 
     def test_plain_text_includes_all_sections(self) -> None:
         results = [_saved_result(), _ignored_result(), _error_result()]
-        _, text = build_html_report(
-            results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0
-        )
+        _, text = build_html_report(results, datetime(2026, 5, 14, 12, 0, tzinfo=UTC), 1.0)
         assert "PREDYKCJE" in text
         assert "POMINIĘTE" in text
         assert "BŁĘDY" in text
@@ -258,16 +280,12 @@ class TestBuildHtmlReport:
         assert "ASMIY" in text
 
     def test_plain_text_formatted_price_and_delta(self) -> None:
-        _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "$298,87" in text
         assert "2,50%" in text
 
     def test_handles_empty_results(self) -> None:
-        html, text = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 0.0
-        )
+        html, text = build_html_report([], datetime(2026, 5, 14, tzinfo=UTC), 0.0)
         # Brak crasha, nadal generuje strukturę
         assert ">0<" in html  # zero predykcji
         assert "Symboli:" in text
@@ -276,32 +294,24 @@ class TestBuildHtmlReport:
 
 class TestPolishLabels:
     def test_html_uses_polish_trend_label(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # BULLISH → "Wzrostowy"
         assert "Wzrostowy" in html
         assert "BULLISH" not in html
 
     def test_html_uses_polish_sentiment_label(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # "Somewhat-Bullish" → "Lekko pozytywny"
         assert "Lekko pozytywny" in html
         assert "Somewhat-Bullish" not in html
 
     def test_plain_text_uses_polish_trend(self) -> None:
-        _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Wzrostowy" in text
         assert "BULLISH" not in text
 
     def test_polish_field_labels_in_table(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Label horyzontu jest uczciwy względem realnej kadencji (dziennej,
         # weekend ~72h) — "(cykl)" zamiast mylącego sztywnego "12h".
         assert "Zmiana (cykl)" in html
@@ -364,31 +374,23 @@ class TestForecastDetails:
         assert r.expected_change is None
 
     def test_html_table_shows_signed_forecast_change(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Prognoza pokazana jako "$305.00 (+2.05%)"
         assert "$305,00" in html
         assert "+2,05%" in html or "+2,04%" in html
 
     def test_html_shows_confidence_percent(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "85%" in html
         assert "Pewność" in html
 
     def test_plain_text_shows_expected_move_and_confidence(self) -> None:
-        _, text = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "prognoza" in text.lower()
         assert "pewność 85%" in text.lower()
 
     def test_reasoning_section_includes_expected_move(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Oczekiwany ruch" in html
         assert "$298,87 → $305,00" in html
 
@@ -397,8 +399,10 @@ class TestForecastChart:
     def test_renders_inline_bars_for_saved(self) -> None:
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved",
-                current_price=Decimal("100"), target_price=Decimal("105"),
+                symbol="AAPL",
+                status="saved",
+                current_price=Decimal("100"),
+                target_price=Decimal("105"),
             )
         ]
         chart = build_forecast_chart_html(results)
@@ -416,9 +420,7 @@ class TestForecastChart:
         assert build_forecast_chart_html(results) == ""
 
     def test_report_contains_both_charts_when_saved_present(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Dwa wykresy: Δ cyklu + prognoza. Oba inline, zero <img>.
         assert "Zmiana ceny (cykl)" in html
         assert "<img" not in html
@@ -538,41 +540,49 @@ class TestReflectionAndTopNews:
 class TestAccuracyStats:
     def test_html_renders_accuracy_when_provided(self) -> None:
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(
-                         accuracy_stats={
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            ReportContext(
+                accuracy_stats={
                     "mean_accuracy": 0.72,
                     "sample_count": 50,
                     "correct_count": 38,
                     "days_window": 30,
                 },
-                     ))
+            ),
+        )
         assert "72,0%" in html or "72%" in html
         assert "50" in html
         assert "30 dni" in html
 
     def test_html_renders_no_data_placeholder(self) -> None:
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(
-                         accuracy_stats={
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
+            ReportContext(
+                accuracy_stats={
                     "mean_accuracy": None,
                     "sample_count": 0,
                     "correct_count": 0,
                     "days_window": 30,
                 },
-                     ))
+            ),
+        )
         assert "brak ocenionych predykcji" in html.lower()
 
     def test_no_accuracy_section_when_none(self) -> None:
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=None))
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(accuracy_stats=None)
+        )
         assert "Historia trafności" not in html
 
 
 class TestCorrelationChart:
     def test_renders_quadrant_table_for_3_plus_points(self) -> None:
         results = [
-            SymbolResult(symbol=s, status="saved",
-                         sentiment_score=v, delta=Decimal(str(v / 2)))
+            SymbolResult(symbol=s, status="saved", sentiment_score=v, delta=Decimal(str(v / 2)))
             for s, v in [("A", 0.3), ("B", -0.2), ("C", 0.1)]
         ]
         chart = build_correlation_chart_html(results)
@@ -582,10 +592,8 @@ class TestCorrelationChart:
 
     def test_returns_empty_for_less_than_3(self) -> None:
         results = [
-            SymbolResult(symbol="A", status="saved",
-                         sentiment_score=0.3, delta=Decimal("0.05")),
-            SymbolResult(symbol="B", status="saved",
-                         sentiment_score=-0.2, delta=Decimal("-0.03")),
+            SymbolResult(symbol="A", status="saved", sentiment_score=0.3, delta=Decimal("0.05")),
+            SymbolResult(symbol="B", status="saved", sentiment_score=-0.2, delta=Decimal("-0.03")),
         ]
         assert build_correlation_chart_html(results) == ""
 
@@ -593,13 +601,19 @@ class TestCorrelationChart:
 class TestTradeSignals:
     def test_sorts_by_strength_desc(self) -> None:
         weak = SymbolResult(
-            symbol="W", status="saved", trend="BULLISH",
-            confidence_score=0.4, current_price=Decimal("100"),
+            symbol="W",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.4,
+            current_price=Decimal("100"),
             target_price=Decimal("101"),  # +1% × 0.4 = 0.4
         )
         strong = SymbolResult(
-            symbol="S", status="saved", trend="BULLISH",
-            confidence_score=0.9, current_price=Decimal("100"),
+            symbol="S",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.9,
+            current_price=Decimal("100"),
             target_price=Decimal("106"),  # +6% × 0.9 = 5.4
         )
         signals = build_trade_signals([weak, strong])
@@ -610,18 +624,27 @@ class TestTradeSignals:
     def test_maps_trend_to_polish_direction(self) -> None:
         results = [
             SymbolResult(
-                symbol="A", status="saved", trend="BULLISH",
-                confidence_score=0.8, current_price=Decimal("100"),
+                symbol="A",
+                status="saved",
+                trend="BULLISH",
+                confidence_score=0.8,
+                current_price=Decimal("100"),
                 target_price=Decimal("105"),
             ),
             SymbolResult(
-                symbol="B", status="saved", trend="BEARISH",
-                confidence_score=0.7, current_price=Decimal("100"),
+                symbol="B",
+                status="saved",
+                trend="BEARISH",
+                confidence_score=0.7,
+                current_price=Decimal("100"),
                 target_price=Decimal("95"),
             ),
             SymbolResult(
-                symbol="C", status="saved", trend="SIDEWAYS",
-                confidence_score=0.5, current_price=Decimal("100"),
+                symbol="C",
+                status="saved",
+                trend="SIDEWAYS",
+                confidence_score=0.5,
+                current_price=Decimal("100"),
                 target_price=Decimal("100.5"),
             ),
         ]
@@ -640,8 +663,11 @@ class TestTradeSignals:
 
     def test_html_renders_strongest_signals_section(self) -> None:
         r = SymbolResult(
-            symbol="NVDA", status="saved", trend="BULLISH",
-            confidence_score=0.85, current_price=Decimal("225"),
+            symbol="NVDA",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.85,
+            current_price=Decimal("225"),
             target_price=Decimal("232.50"),
         )
         html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -653,8 +679,10 @@ class TestTradeSignals:
 class TestRiskSignals:
     def test_detects_divergence_up(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved",
-            delta=Decimal("0.04"), sentiment_score=-0.4,
+            symbol="X",
+            status="saved",
+            delta=Decimal("0.04"),
+            sentiment_score=-0.4,
         )
         signals = detect_risk_signals([r])
         types = [s.type for s in signals]
@@ -662,15 +690,18 @@ class TestRiskSignals:
 
     def test_detects_divergence_down(self) -> None:
         r = SymbolResult(
-            symbol="Y", status="saved",
-            delta=Decimal("-0.04"), sentiment_score=0.4,
+            symbol="Y",
+            status="saved",
+            delta=Decimal("-0.04"),
+            sentiment_score=0.4,
         )
         types = [s.type for s in detect_risk_signals([r])]
         assert "DIVERGENCE" in types
 
     def test_detects_av_llm_conflict(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved",
+            symbol="X",
+            status="saved",
             av_llm_agreement=0.15,
         )
         types = [s.type for s in detect_risk_signals([r])]
@@ -683,16 +714,21 @@ class TestRiskSignals:
 
     def test_no_signals_for_healthy_prediction(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved",
-            delta=Decimal("0.02"), sentiment_score=0.3,
-            av_llm_agreement=0.85, news_volume=20,
+            symbol="X",
+            status="saved",
+            delta=Decimal("0.02"),
+            sentiment_score=0.3,
+            av_llm_agreement=0.85,
+            news_volume=20,
         )
         assert detect_risk_signals([r]) == []
 
     def test_html_renders_risk_section(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved",
-            delta=Decimal("0.05"), sentiment_score=-0.4,
+            symbol="X",
+            status="saved",
+            delta=Decimal("0.05"),
+            sentiment_score=-0.4,
         )
         html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Sygnały ostrzegawcze" in html or "SYGNAŁY OSTRZEGAWCZE" in text
@@ -702,8 +738,8 @@ class TestDayOverDay:
     def test_parses_resolved_predictions(self) -> None:
         rows: list[dict[str, Any]] = [
             {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": True},
-            {"symbol": "SAP",  "predicted_trend": "BEARISH", "is_trend_correct": False},
-            {"symbol": "Z",    "predicted_trend": "BULLISH", "is_trend_correct": None},  # filtered
+            {"symbol": "SAP", "predicted_trend": "BEARISH", "is_trend_correct": False},
+            {"symbol": "Z", "predicted_trend": "BULLISH", "is_trend_correct": None},  # filtered
         ]
         resolved = parse_resolved_predictions(rows)
         assert len(resolved) == 2
@@ -718,8 +754,12 @@ class TestDayOverDay:
         Bug: 'trafność' liczono z accuracy_score (odległość od celu +0.00%
         z cold-startu), więc kierunkowo błędne prognozy dostawały ~100%."""
         rows = [
-            {"symbol": "AMD", "predicted_trend": "BULLISH",
-             "accuracy_score": 0.995, "is_trend_correct": False},
+            {
+                "symbol": "AMD",
+                "predicted_trend": "BULLISH",
+                "accuracy_score": 0.995,
+                "is_trend_correct": False,
+            },
         ]
         resolved = parse_resolved_predictions(rows)
         assert len(resolved) == 1
@@ -727,13 +767,13 @@ class TestDayOverDay:
 
     def test_html_renders_resolved_section(self) -> None:
         resolved = [
-            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH",
-                               is_correct=True),
-            ResolvedPrediction(symbol="SAP", predicted_trend="BEARISH",
-                               is_correct=False),
+            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True),
+            ResolvedPrediction(symbol="SAP", predicted_trend="BEARISH", is_correct=False),
         ]
         html, text = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         assert "Zamknięte predykcje" in html
@@ -747,7 +787,8 @@ class TestDayOverDay:
 
     def test_empty_settlements_say_so(self) -> None:
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[]))
+            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(resolved_predictions=[])
+        )
         assert "Brak rozliczeń predykcji z ostatnich 24h." in html
 
 
@@ -760,7 +801,8 @@ class TestResolvedPostMortem:
     def test_parse_enriches_with_reasoning_move_and_insight(self) -> None:
         rows = [
             {
-                "symbol": "NVDA", "predicted_trend": "BULLISH",
+                "symbol": "NVDA",
+                "predicted_trend": "BULLISH",
                 "is_trend_correct": True,
                 "reasoning_text": "Silny popyt na GPU AI.",
                 "correction_insights": "Trafiona predykcja.",
@@ -793,7 +835,9 @@ class TestResolvedPostMortem:
     def test_miss_shows_reasoning_actual_move_and_diagnosis(self) -> None:
         resolved = [
             ResolvedPrediction(
-                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                symbol="SAP",
+                predicted_trend="BEARISH",
+                is_correct=False,
                 reasoning="Słabe wyniki kwartalne.",
                 insight="Zignorowałem odbicie całego sektora chmury.",
                 price_at_prediction=Decimal("100"),
@@ -801,7 +845,9 @@ class TestResolvedPostMortem:
             )
         ]
         html, text = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         # (1) dlaczego prognoza mówiła spadek
@@ -819,7 +865,9 @@ class TestResolvedPostMortem:
         # „dlaczego” mówi uczciwie, że kierunek się nie potwierdził.
         resolved = [
             ResolvedPrediction(
-                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                symbol="SAP",
+                predicted_trend="BEARISH",
+                is_correct=False,
                 reasoning="Słabe wyniki kwartalne.",
                 insight="Niska zmienność — diagnoza LLM odłożona.",
                 price_at_prediction=Decimal("100"),
@@ -827,7 +875,9 @@ class TestResolvedPostMortem:
             )
         ]
         html, text = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         assert "diagnoza LLM odłożona" not in html
@@ -840,14 +890,18 @@ class TestResolvedPostMortem:
         # prawdziwa diagnoza o „nietrafionej” prognozie nie może zniknąć.
         resolved = [
             ResolvedPrediction(
-                symbol="SAP", predicted_trend="BEARISH", is_correct=False,
+                symbol="SAP",
+                predicted_trend="BEARISH",
+                is_correct=False,
                 insight="Prognoza nietrafiona, bo zignorowałem odbicie sektora.",
                 price_at_prediction=Decimal("100"),
                 actual_price=Decimal("104"),
             )
         ]
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         assert "zignorowałem odbicie sektora" in html
@@ -855,7 +909,9 @@ class TestResolvedPostMortem:
     def test_hit_shows_reasoning_and_confirmation(self) -> None:
         resolved = [
             ResolvedPrediction(
-                symbol="NVDA", predicted_trend="BULLISH", is_correct=True,
+                symbol="NVDA",
+                predicted_trend="BULLISH",
+                is_correct=True,
                 reasoning="Popyt na GPU do AI rośnie.",
                 insight="Trafiona predykcja.",
                 price_at_prediction=Decimal("100"),
@@ -863,7 +919,9 @@ class TestResolvedPostMortem:
             )
         ]
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         assert "Popyt na GPU do AI rośnie" in html
@@ -873,7 +931,9 @@ class TestResolvedPostMortem:
     def test_crypto_closed_prediction_is_covered_and_tagged(self) -> None:
         resolved = [
             ResolvedPrediction(
-                symbol="BTC", predicted_trend="BULLISH", is_correct=True,
+                symbol="BTC",
+                predicted_trend="BULLISH",
+                is_correct=True,
                 reasoning="Napływy do ETF-ów spot.",
                 insight="Trafiona predykcja.",
                 price_at_prediction=Decimal("60000"),
@@ -881,7 +941,9 @@ class TestResolvedPostMortem:
             )
         ]
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved, sector_map={"BTC": "Krypto"}),
         )
         assert "BTC" in html
@@ -890,13 +952,11 @@ class TestResolvedPostMortem:
 
     def test_backward_compatible_without_new_fields(self) -> None:
         # Stary kształt (bez reasoning/insight/cen) wciąż się renderuje.
-        resolved = [
-            ResolvedPrediction(
-                symbol="AMD", predicted_trend="BULLISH", is_correct=True
-            )
-        ]
+        resolved = [ResolvedPrediction(symbol="AMD", predicted_trend="BULLISH", is_correct=True)]
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         assert "AMD" in html
@@ -906,14 +966,17 @@ class TestResolvedPostMortem:
 class TestClickableNewsLinks:
     def test_top_news_with_url_renders_as_anchor(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", reasoning="r",
+            symbol="X",
+            status="saved",
+            reasoning="r",
             sentiment_score=0.3,
             top_news=[
                 TopNewsItem(
                     title="Big news",
                     source="Reuters",
                     url="https://reuters.com/abc",
-                    relevance=0.95, sentiment=0.5,
+                    relevance=0.95,
+                    sentiment=0.5,
                 )
             ],
         )
@@ -923,11 +986,12 @@ class TestClickableNewsLinks:
 
     def test_news_without_url_falls_back_to_plain_text(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", reasoning="r",
+            symbol="X",
+            status="saved",
+            reasoning="r",
             sentiment_score=0.3,
             top_news=[
-                TopNewsItem(title="No URL news", source="X",
-                            url=None, relevance=0.9, sentiment=0.1)
+                TopNewsItem(title="No URL news", source="X", url=None, relevance=0.9, sentiment=0.1)
             ],
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -958,9 +1022,7 @@ class TestHtmlEscaping:
             error_message="<img src=x onerror=alert(1)>",
         )
 
-        html, _ = build_html_report(
-            [r, err], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([r, err], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
         assert "<script>" not in html
         assert "<img src=x" not in html
@@ -1005,9 +1067,7 @@ class TestHtmlEscaping:
             severity="high",
             description="<i>desc</i>",
         )
-        monkeypatch.setattr(
-            report_risk_signals, "detect_risk_signals", lambda results: [injected]
-        )
+        monkeypatch.setattr(report_risk_signals, "detect_risk_signals", lambda results: [injected])
         r = SymbolResult(symbol="X", status="saved", delta=Decimal("0.02"))
 
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1055,30 +1115,53 @@ class TestHtmlEscapingRegression:
 
     def test_news_title_escaped(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", reasoning="r", sentiment_score=0.3,
-            current_price=Decimal("100"), target_price=Decimal("105"),
-            top_news=[TopNewsItem(title=_XSS_SCRIPT, source="Reuters",
-                                  url="https://example.com/1",
-                                  relevance=0.9, sentiment=0.2)],
+            symbol="X",
+            status="saved",
+            reasoning="r",
+            sentiment_score=0.3,
+            current_price=Decimal("100"),
+            target_price=Decimal("105"),
+            top_news=[
+                TopNewsItem(
+                    title=_XSS_SCRIPT,
+                    source="Reuters",
+                    url="https://example.com/1",
+                    relevance=0.9,
+                    sentiment=0.2,
+                )
+            ],
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
 
     def test_news_source_escaped(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", reasoning="r", sentiment_score=0.3,
-            current_price=Decimal("100"), target_price=Decimal("105"),
-            top_news=[TopNewsItem(title="ok", source=_XSS_IMG,
-                                  url="https://example.com/1",
-                                  relevance=0.9, sentiment=0.2)],
+            symbol="X",
+            status="saved",
+            reasoning="r",
+            sentiment_score=0.3,
+            current_price=Decimal("100"),
+            target_price=Decimal("105"),
+            top_news=[
+                TopNewsItem(
+                    title="ok",
+                    source=_XSS_IMG,
+                    url="https://example.com/1",
+                    relevance=0.9,
+                    sentiment=0.2,
+                )
+            ],
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
 
     def test_llm_reasoning_escaped(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", reasoning=_XSS_SCRIPT,
-            sentiment_score=0.3, current_price=Decimal("100"),
+            symbol="X",
+            status="saved",
+            reasoning=_XSS_SCRIPT,
+            sentiment_score=0.3,
+            current_price=Decimal("100"),
             target_price=Decimal("105"),
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1086,7 +1169,9 @@ class TestHtmlEscapingRegression:
 
     def test_reflection_insight_escaped(self) -> None:
         r = SymbolResult(
-            symbol="X", status="saved", sentiment_score=0.3,
+            symbol="X",
+            status="saved",
+            sentiment_score=0.3,
             reflection_insight=_XSS_IMG,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1094,7 +1179,9 @@ class TestHtmlEscapingRegression:
 
     def test_error_message_escaped(self) -> None:
         r = SymbolResult(
-            symbol="X", status="error", error_message=_XSS_SCRIPT,
+            symbol="X",
+            status="error",
+            error_message=_XSS_SCRIPT,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
@@ -1102,13 +1189,19 @@ class TestHtmlEscapingRegression:
     def test_resolved_prediction_reasoning_and_insight_escaped(self) -> None:
         resolved = [
             ResolvedPrediction(
-                symbol="X", predicted_trend="BEARISH", is_correct=False,
-                reasoning=_XSS_SCRIPT, insight=_XSS_IMG,
-                price_at_prediction=Decimal("100"), actual_price=Decimal("104"),
+                symbol="X",
+                predicted_trend="BEARISH",
+                is_correct=False,
+                reasoning=_XSS_SCRIPT,
+                insight=_XSS_IMG,
+                price_at_prediction=Decimal("100"),
+                actual_price=Decimal("104"),
             )
         ]
         html, _ = build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
         _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
@@ -1117,7 +1210,9 @@ class TestHtmlEscapingRegression:
     def test_unknown_symbol_in_ignored_chip_escaped(self) -> None:
         # Symbol w chipie 'Pominięte' renderowany przez _html(r.symbol).
         r = SymbolResult(
-            symbol=_XSS_IMG, status="ignored", delta=Decimal("0.001"),
+            symbol=_XSS_IMG,
+            status="ignored",
+            delta=Decimal("0.001"),
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         _assert_escaped(html, _XSS_IMG, _XSS_IMG_MARKER)
@@ -1126,14 +1221,18 @@ class TestHtmlEscapingRegression:
         # Q5: news_summary analogu pochodzi z LLM-a (dane zewnętrzne) — musi
         # być escapowany w bloku "Na podstawie analogów".
         raw = {
-            "status": "saved", "delta": Decimal("0.03"),
-            "current_price": Decimal("100"), "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH",
-                             "confidence_score": 0.8, "reasoning": "r"},
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
             "sentiment": {"av_sentiment_score": 0.2},
             "similar_precedents": [
-                {"summary": _XSS_SCRIPT, "predicted_trend": "BEARISH",
-                 "is_trend_correct": True},
+                {"summary": _XSS_SCRIPT, "predicted_trend": "BEARISH", "is_trend_correct": True},
             ],
         }
         result = to_symbol_result("X", raw)
@@ -1144,12 +1243,16 @@ class TestHtmlEscapingRegression:
         # Q6: degraded_reason / nazwy flag trafiają do detalu chipa (title) —
         # muszą być escapowane.
         raw = {
-            "status": "saved", "delta": Decimal("0.03"),
-            "current_price": Decimal("100"), "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH",
-                             "confidence_score": 0.8, "reasoning": "r"},
-            "sentiment": {"av_sentiment_score": 0.0,
-                          "degraded_reason": _XSS_IMG},
+            "status": "saved",
+            "delta": Decimal("0.03"),
+            "current_price": Decimal("100"),
+            "ml_target_price": Decimal("103"),
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
+            "sentiment": {"av_sentiment_score": 0.0, "degraded_reason": _XSS_IMG},
             "data_quality_flags": [_XSS_IMG],
         }
         result = to_symbol_result("X", raw)
@@ -1235,17 +1338,25 @@ class TestRagPrecedentReceipts:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
             "sentiment": {"av_sentiment_score": 0.2},
             "similar_precedents": precedents,
         }
 
     def test_to_symbol_result_maps_precedents(self) -> None:
-        raw = self._raw_with_precedents([
-            {"summary": "Fed hawkish surprise", "predicted_trend": "BEARISH",
-             "is_trend_correct": True},
-        ])
+        raw = self._raw_with_precedents(
+            [
+                {
+                    "summary": "Fed hawkish surprise",
+                    "predicted_trend": "BEARISH",
+                    "is_trend_correct": True,
+                },
+            ]
+        )
         result = to_symbol_result("AAPL", raw)
         assert len(result.similar_precedents) == 1
         assert result.similar_precedents[0].summary == "Fed hawkish surprise"
@@ -1253,17 +1364,24 @@ class TestRagPrecedentReceipts:
         assert result.similar_precedents[0].is_trend_correct is True
 
     def test_missing_precedents_yields_empty_list(self) -> None:
-        result = to_symbol_result("AAPL", {"status": "saved", "llm_analysis": {},
-                                           "sentiment": {}})
+        result = to_symbol_result("AAPL", {"status": "saved", "llm_analysis": {}, "sentiment": {}})
         assert result.similar_precedents == []
 
     def test_html_renders_analog_block_with_outcomes(self) -> None:
-        raw = self._raw_with_precedents([
-            {"summary": "Fed hawkish surprise spooks tech",
-             "predicted_trend": "BEARISH", "is_trend_correct": True},
-            {"summary": "Strong earnings beat", "predicted_trend": "BULLISH",
-             "is_trend_correct": False},
-        ])
+        raw = self._raw_with_precedents(
+            [
+                {
+                    "summary": "Fed hawkish surprise spooks tech",
+                    "predicted_trend": "BEARISH",
+                    "is_trend_correct": True,
+                },
+                {
+                    "summary": "Strong earnings beat",
+                    "predicted_trend": "BULLISH",
+                    "is_trend_correct": False,
+                },
+            ]
+        )
         result = to_symbol_result("AAPL", raw)
         html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Na podstawie analogów" in html
@@ -1277,20 +1395,30 @@ class TestRagPrecedentReceipts:
         assert "Na podstawie analogów" not in html
 
     def test_plain_text_shows_analog_summary(self) -> None:
-        raw = self._raw_with_precedents([
-            {"summary": "Fed hawkish surprise spooks tech",
-             "predicted_trend": "BEARISH", "is_trend_correct": True},
-        ])
+        raw = self._raw_with_precedents(
+            [
+                {
+                    "summary": "Fed hawkish surprise spooks tech",
+                    "predicted_trend": "BEARISH",
+                    "is_trend_correct": True,
+                },
+            ]
+        )
         result = to_symbol_result("AAPL", raw)
         _, text = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Fed hawkish surprise spooks tech" in text
         assert "analog" in text
 
     def test_analog_summary_escaped(self) -> None:
-        raw = self._raw_with_precedents([
-            {"summary": "<script>alert(1)</script>", "predicted_trend": "BULLISH",
-             "is_trend_correct": True},
-        ])
+        raw = self._raw_with_precedents(
+            [
+                {
+                    "summary": "<script>alert(1)</script>",
+                    "predicted_trend": "BULLISH",
+                    "is_trend_correct": True,
+                },
+            ]
+        )
         result = to_symbol_result("AAPL", raw)
         html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "<script>alert(1)</script>" not in html
@@ -1306,10 +1434,12 @@ class TestProvenanceBadgesInReport:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
-            "sentiment": {"av_sentiment_score": 0.0,
-                          "degraded_reason": "av_keys_exhausted"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
+            "sentiment": {"av_sentiment_score": 0.0, "degraded_reason": "av_keys_exhausted"},
             "data_quality_flags": ["av_keys_exhausted"],
         }
         result = to_symbol_result("AAPL", raw)
@@ -1322,8 +1452,11 @@ class TestProvenanceBadgesInReport:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
             "sentiment": {"av_sentiment_score": 0.2},
             "data_quality_flags": [],
         }
@@ -1337,10 +1470,12 @@ class TestProvenanceBadgesInReport:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
-            "sentiment": {"av_sentiment_score": 0.0,
-                          "degraded_reason": "av_keys_exhausted"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
+            "sentiment": {"av_sentiment_score": 0.0, "degraded_reason": "av_keys_exhausted"},
             "data_quality_flags": ["av_keys_exhausted"],
         }
         result = to_symbol_result("AAPL", raw)
@@ -1353,8 +1488,11 @@ class TestProvenanceBadgesInReport:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
             "sentiment": {"av_sentiment_score": 0.2},
             "data_quality_flags": [],
         }
@@ -1368,10 +1506,12 @@ class TestProvenanceBadgesInReport:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
-            "sentiment": {"av_sentiment_score": 0.0,
-                          "degraded_reason": "av_keys_exhausted"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
+            "sentiment": {"av_sentiment_score": 0.0, "degraded_reason": "av_keys_exhausted"},
             "data_quality_flags": ["av_keys_exhausted"],
         }
         result = to_symbol_result("AAPL", raw)
@@ -1405,12 +1545,18 @@ class TestInjectedClock:
             "delta": Decimal("0.03"),
             "current_price": Decimal("100"),
             "ml_target_price": Decimal("103"),
-            "llm_analysis": {"trend_direction": "BULLISH", "confidence_score": 0.8,
-                             "reasoning": "r"},
+            "llm_analysis": {
+                "trend_direction": "BULLISH",
+                "confidence_score": 0.8,
+                "reasoning": "r",
+            },
             "sentiment": {"av_sentiment_score": 0.2},
             "data_quality_flags": [],
             "fundamentals": Fundamentals(
-                trailing_pe=None, forward_pe=None, peg_ratio=None, eps_growth_yoy=None,
+                trailing_pe=None,
+                forward_pe=None,
+                peg_ratio=None,
+                eps_growth_yoy=None,
                 fetched_at=self._NOW - fundamentals_age,
             ),
         }
@@ -1470,10 +1616,14 @@ class TestCompanyLabel:
 class TestCompanyNamesInReport:
     def test_html_shows_company_name_in_predictions_table(self) -> None:
         r = SymbolResult(
-            symbol="AAPL", status="saved",
-            delta=Decimal("0.025"), current_price=Decimal("298.87"),
-            trend="BULLISH", target_price=Decimal("305.00"),
-            confidence_score=0.85, reasoning="strong macro",
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.025"),
+            current_price=Decimal("298.87"),
+            trend="BULLISH",
+            target_price=Decimal("305.00"),
+            confidence_score=0.85,
+            reasoning="strong macro",
             sentiment_score=0.42,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1481,18 +1631,25 @@ class TestCompanyNamesInReport:
 
     def test_html_shows_company_name_in_reasoning_section(self) -> None:
         r = SymbolResult(
-            symbol="MSFT", status="saved",
-            trend="BULLISH", confidence_score=0.7,
-            current_price=Decimal("400"), target_price=Decimal("420"),
-            reasoning="cloud growth", sentiment_score=0.3,
+            symbol="MSFT",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.7,
+            current_price=Decimal("400"),
+            target_price=Decimal("420"),
+            reasoning="cloud growth",
+            sentiment_score=0.3,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Microsoft Corporation" in html
 
     def test_html_shows_company_name_in_trade_signals(self) -> None:
         r = SymbolResult(
-            symbol="NVDA", status="saved", trend="BULLISH",
-            confidence_score=0.9, current_price=Decimal("900"),
+            symbol="NVDA",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.9,
+            current_price=Decimal("900"),
             target_price=Decimal("950"),
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1512,10 +1669,14 @@ class TestCompanyNamesInReport:
 
     def test_plain_text_shows_company_name_in_predictions(self) -> None:
         r = SymbolResult(
-            symbol="AAPL", status="saved",
-            delta=Decimal("0.025"), current_price=Decimal("298.87"),
-            trend="BULLISH", target_price=Decimal("305.00"),
-            confidence_score=0.85, reasoning="strong macro",
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.025"),
+            current_price=Decimal("298.87"),
+            trend="BULLISH",
+            target_price=Decimal("305.00"),
+            confidence_score=0.85,
+            reasoning="strong macro",
             sentiment_score=0.42,
         )
         _, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1523,9 +1684,12 @@ class TestCompanyNamesInReport:
 
     def test_unknown_symbol_shows_only_ticker(self) -> None:
         r = SymbolResult(
-            symbol="ZZZZ", status="saved",
-            trend="SIDEWAYS", confidence_score=0.5,
-            current_price=Decimal("10"), reasoning="no data",
+            symbol="ZZZZ",
+            status="saved",
+            trend="SIDEWAYS",
+            confidence_score=0.5,
+            current_price=Decimal("10"),
+            reasoning="no data",
             sentiment_score=0.0,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1536,56 +1700,66 @@ class TestCompanyNamesInReport:
 class TestRecommendationInReport:
     def test_html_shows_kup_for_bullish(self) -> None:
         r = SymbolResult(
-            symbol="AAPL", status="saved", trend="BULLISH",
-            confidence_score=0.8, current_price=Decimal("100"),
-            target_price=Decimal("106"), reasoning="positive outlook",
+            symbol="AAPL",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.8,
+            current_price=Decimal("100"),
+            target_price=Decimal("106"),
+            reasoning="positive outlook",
             sentiment_score=0.4,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         # Rekomendacja KUP musi pojawić się w sekcji predykcji/uzasadnień
         after_header = (
-            html.split("Wygenerowane predykcje")[1]
-            if "Wygenerowane predykcje" in html
-            else html
+            html.split("Wygenerowane predykcje")[1] if "Wygenerowane predykcje" in html else html
         )
         assert "KUP" in after_header
 
     def test_html_shows_sprzedaj_for_bearish(self) -> None:
         r = SymbolResult(
-            symbol="TSLA", status="saved", trend="BEARISH",
-            confidence_score=0.75, current_price=Decimal("200"),
-            target_price=Decimal("190"), reasoning="negative outlook",
+            symbol="TSLA",
+            status="saved",
+            trend="BEARISH",
+            confidence_score=0.75,
+            current_price=Decimal("200"),
+            target_price=Decimal("190"),
+            reasoning="negative outlook",
             sentiment_score=-0.3,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         after_header = (
-            html.split("Wygenerowane predykcje")[1]
-            if "Wygenerowane predykcje" in html
-            else html
+            html.split("Wygenerowane predykcje")[1] if "Wygenerowane predykcje" in html else html
         )
         assert "SPRZEDAJ" in after_header
 
     def test_html_shows_trzymaj_for_sideways(self) -> None:
         r = SymbolResult(
-            symbol="IBM", status="saved", trend="SIDEWAYS",
-            confidence_score=0.6, current_price=Decimal("150"),
-            target_price=Decimal("151"), reasoning="mixed signals",
+            symbol="IBM",
+            status="saved",
+            trend="SIDEWAYS",
+            confidence_score=0.6,
+            current_price=Decimal("150"),
+            target_price=Decimal("151"),
+            reasoning="mixed signals",
             sentiment_score=0.0,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         after_header = (
-            html.split("Wygenerowane predykcje")[1]
-            if "Wygenerowane predykcje" in html
-            else html
+            html.split("Wygenerowane predykcje")[1] if "Wygenerowane predykcje" in html else html
         )
         assert "TRZYMAJ" in after_header
 
     def test_sideways_signal_uses_the_council_hold_label(self) -> None:
         # Decyzja 2026-10-19: ruch boczny i HOLD rady to jedna etykieta — TRZYMAJ.
         r = SymbolResult(
-            symbol="IBM", status="saved", trend="SIDEWAYS",
-            confidence_score=0.6, current_price=Decimal("150"),
-            target_price=Decimal("151"), reasoning="mixed signals",
+            symbol="IBM",
+            status="saved",
+            trend="SIDEWAYS",
+            confidence_score=0.6,
+            current_price=Decimal("150"),
+            target_price=Decimal("151"),
+            reasoning="mixed signals",
             sentiment_score=0.0,
         )
         html, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1597,9 +1771,13 @@ class TestRecommendationInReport:
 
     def test_html_recommendation_includes_why_reason(self) -> None:
         r = SymbolResult(
-            symbol="AAPL", status="saved", trend="BULLISH",
-            confidence_score=0.8, current_price=Decimal("100"),
-            target_price=Decimal("106"), reasoning="positive outlook",
+            symbol="AAPL",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.8,
+            current_price=Decimal("100"),
+            target_price=Decimal("106"),
+            reasoning="positive outlook",
             sentiment_score=0.4,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1609,9 +1787,13 @@ class TestRecommendationInReport:
 
     def test_plain_text_includes_recommendation(self) -> None:
         r = SymbolResult(
-            symbol="AAPL", status="saved", trend="BULLISH",
-            confidence_score=0.8, current_price=Decimal("100"),
-            target_price=Decimal("106"), reasoning="positive outlook",
+            symbol="AAPL",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.8,
+            current_price=Decimal("100"),
+            target_price=Decimal("106"),
+            reasoning="positive outlook",
             sentiment_score=0.4,
         )
         _, text = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -1645,7 +1827,9 @@ class TestBuildReportWithRiskWatch:
     def test_html_contains_risk_watch_section_when_report_provided(self) -> None:
         r = _saved_result()
         html, _ = build_html_report(
-            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [r],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(macro_risk_report=self._make_macro_report()),
         )
         assert "Risk Watch" in html
@@ -1663,7 +1847,9 @@ class TestBuildReportWithRiskWatch:
     def test_plain_text_contains_risk_watch_block(self) -> None:
         r = _saved_result()
         _, text = build_html_report(
-            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [r],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(macro_risk_report=self._make_macro_report()),
         )
         assert "Risk Watch" in text
@@ -1684,7 +1870,9 @@ class TestPersonaLeaderboardSection:
     def test_html_contains_leaderboard_and_fills_slot(self) -> None:
         r = _saved_result()
         html, _ = build_html_report(
-            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [r],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(persona_track_record=self._records()),
         )
         assert "ranking wiarygodności" in html
@@ -1704,7 +1892,8 @@ class TestPersonaLeaderboardSection:
     def test_html_suppresses_section_for_empty_track_record(self) -> None:
         r = _saved_result()
         html, _ = build_html_report(
-            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(persona_track_record=[]))
+            [r], datetime(2026, 5, 14, tzinfo=UTC), 1.0, ReportContext(persona_track_record=[])
+        )
         assert "ranking wiarygodności" not in html
         assert "PERSONA_LEADERBOARD_SLOT" not in html
 
@@ -1737,7 +1926,9 @@ class TestLeadSection:
         html, _ = build_html_report(
             [_ignored_result("MSFT")],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
+            1.0,
+            ReportContext(quota_alerts=[self._critical_alert()]),
+        )
 
         assert self._HEADING in html
         assert "Alpha Vantage" in html
@@ -1747,7 +1938,9 @@ class TestLeadSection:
         _, text = build_html_report(
             [_ignored_result("MSFT")],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
+            1.0,
+            ReportContext(quota_alerts=[self._critical_alert()]),
+        )
 
         # Wariant plain-text niesie nagłówek sekcji wersalikami.
         assert self._HEADING.upper() in text
@@ -1759,7 +1952,9 @@ class TestLeadSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0, ReportContext(quota_alerts=[self._critical_alert()]))
+            1.0,
+            ReportContext(quota_alerts=[self._critical_alert()]),
+        )
 
         assert html.index(self._HEADING) < html.index("AAPL")
 
@@ -1774,18 +1969,27 @@ class TestLeadSection:
             dissenting_views=(),
             investor_opinions=(
                 InvestorOpinion(
-                    investor_name="A", recommendation="BUY",
-                    confidence=0.8, reasoning="x", key_factors=(),
+                    investor_name="A",
+                    recommendation="BUY",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
                 ),
                 InvestorOpinion(
-                    investor_name="B", recommendation="SELL",
-                    confidence=0.8, reasoning="x", key_factors=(),
+                    investor_name="B",
+                    recommendation="SELL",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
                 ),
             ),
         )
         r = SymbolResult(
-            symbol="NVDA", status="saved", delta=Decimal("-0.042"),
-            current_price=Decimal("180.00"), trend="BEARISH",
+            symbol="NVDA",
+            status="saved",
+            delta=Decimal("-0.042"),
+            current_price=Decimal("180.00"),
+            trend="BEARISH",
             council_verdict=verdict,
         )
 
@@ -1816,25 +2020,34 @@ class TestLeadSection:
             dissenting_views=(),
             investor_opinions=(
                 InvestorOpinion(
-                    investor_name="A", recommendation="SELL",
-                    confidence=0.8, reasoning="x", key_factors=(),
+                    investor_name="A",
+                    recommendation="SELL",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
                 ),
             ),
         )
         flipped = SymbolResult(
-            symbol="NVDA", status="saved", delta=Decimal("-0.042"),
-            current_price=Decimal("180.00"), trend="BEARISH", council_verdict=verdict,
+            symbol="NVDA",
+            status="saved",
+            delta=Decimal("-0.042"),
+            current_price=Decimal("180.00"),
+            trend="BEARISH",
+            council_verdict=verdict,
         )
         shift = ConsensusShift(
-            kind=ShiftKind.FLIP, previous_recommendation="BUY",
-            current_recommendation="SELL", votes_changed=1,
-            sentiment_delta=-0.3, consensus_delta=0.0, gap_hours=24.0,
+            kind=ShiftKind.FLIP,
+            previous_recommendation="BUY",
+            current_recommendation="SELL",
+            votes_changed=1,
+            sentiment_delta=-0.3,
+            consensus_delta=0.0,
+            gap_hours=24.0,
         )
         context = ReportContext(consensus_shifts=[("NVDA", shift)])
 
-        html, text = build_html_report(
-            [flipped], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context
-        )
+        html, text = build_html_report([flipped], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context)
 
         headline = "NVDA -4,2%: rada odwróciła się KUP→SPRZEDAJ"
         assert headline in html
@@ -1897,9 +2110,7 @@ class TestUserPortfolioSection:
         )
 
     def test_section_suppressed_without_a_portfolio(self) -> None:
-        html, _ = build_html_report(
-            [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-        )
+        html, _ = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
         assert "USER_PORTFOLIO_SLOT" not in html
 
@@ -1907,7 +2118,9 @@ class TestUserPortfolioSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0, ReportContext(user_portfolio=self._portfolio(days_old=0)))
+            1.0,
+            ReportContext(user_portfolio=self._portfolio(days_old=0)),
+        )
 
         assert "AAPL" in html
         assert "USER_PORTFOLIO_SLOT" not in html
@@ -1917,7 +2130,9 @@ class TestUserPortfolioSection:
         html, _ = build_html_report(
             [_saved_result()],
             datetime(2026, 5, 14, tzinfo=UTC),
-            1.0, ReportContext(user_portfolio=self._portfolio(days_old=30)))
+            1.0,
+            ReportContext(user_portfolio=self._portfolio(days_old=30)),
+        )
 
         assert "STALE" in html.upper()
 
@@ -2087,8 +2302,12 @@ class TestResolvedPredictionTimestamp:
 
     def test_unparseable_timestamp_is_none(self) -> None:
         rows = [
-            {"symbol": "NVDA", "predicted_trend": "BULLISH", "is_trend_correct": True,
-             "timestamp": "not-a-date"},
+            {
+                "symbol": "NVDA",
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "timestamp": "not-a-date",
+            },
         ]
 
         assert parse_resolved_predictions(rows)[0].predicted_at is None
@@ -2112,18 +2331,20 @@ def _signal(**overrides: object) -> TradeSignal:
 def test_trade_signal_shows_calibrated_confidence() -> None:
     """WIA-12: ranking liczy się na pewności skalibrowanej, a mail pokazywał
     tylko surową — `TradeSignal` obiecywał format „85% → 58%”."""
-    html = report_trade_signals._render_trade_signals_html([
-        TradeSignal(
-            symbol="AAPL",
-            direction="KUP",
-            confidence=0.85,
-            expected_change=Decimal("0.031"),
-            strength=0.58 * 3.1,
-            current_price=Decimal("100"),
-            target_price=Decimal("103.1"),
-            calibrated_confidence=0.58,
-        )
-    ])
+    html = report_trade_signals._render_trade_signals_html(
+        [
+            TradeSignal(
+                symbol="AAPL",
+                direction="KUP",
+                confidence=0.85,
+                expected_change=Decimal("0.031"),
+                strength=0.58 * 3.1,
+                current_price=Decimal("100"),
+                target_price=Decimal("103.1"),
+                calibrated_confidence=0.58,
+            )
+        ]
+    )
 
     assert "58%" in html
 
@@ -2144,10 +2365,12 @@ class TestTradeSignalCalibrationAndStrength:
         assert "n kubełka: 12" in html
 
     def test_html_replaces_bare_strength_with_rank_and_components(self) -> None:
-        html = report_trade_signals._render_trade_signals_html([
-            _signal(symbol="AAPL"),
-            _signal(symbol="MSFT", calibrated_confidence=None, strength=0.85 * 3.1),
-        ])
+        html = report_trade_signals._render_trade_signals_html(
+            [
+                _signal(symbol="AAPL"),
+                _signal(symbol="MSFT", calibrated_confidence=None, strength=0.85 * 3.1),
+            ]
+        )
 
         assert "siła sygnału" not in html
         assert "#1" in html
@@ -2164,14 +2387,16 @@ class TestTradeSignalCalibrationAndStrength:
         assert "po kalibracji" not in html
 
     def test_html_cold_start_strength_is_the_confidence_alone(self) -> None:
-        html = report_trade_signals._render_trade_signals_html([
-            _signal(
-                expected_change=Decimal("0"),
-                target_price=Decimal("100"),
-                strength=0.58,
-                ml_cold_start=True,
-            )
-        ])
+        html = report_trade_signals._render_trade_signals_html(
+            [
+                _signal(
+                    expected_change=Decimal("0"),
+                    target_price=Decimal("100"),
+                    strength=0.58,
+                    ml_cold_start=True,
+                )
+            ]
+        )
 
         assert "wg pewności skalibrowanej 58%" in html
         assert "ruch 0,0%" not in html
@@ -2239,9 +2464,7 @@ class TestAccuracyHistoryBothDefinitions:
 
     def test_stats_without_directional_counts_show_the_labelled_total_only(self) -> None:
         stats = {
-            key: value
-            for key, value in self._STATS.items()
-            if not key.startswith("directional")
+            key: value for key, value in self._STATS.items() if not key.startswith("directional")
         }
 
         html = self._html(stats)
@@ -2294,16 +2517,20 @@ class TestResolvedSummaryBothDefinitions:
 
     def _report(self, resolved: list[ResolvedPrediction]) -> tuple[str, str]:
         return build_html_report(
-            [], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 5, 14, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=resolved),
         )
 
     def test_summary_shows_directional_next_to_total(self) -> None:
-        html, text = self._report([
-            self._resolved("NVDA", "BULLISH", True),
-            self._resolved("AMD", "BEARISH", False),
-            self._resolved("SPY", "SIDEWAYS", True),
-        ])
+        html, text = self._report(
+            [
+                self._resolved("NVDA", "BULLISH", True),
+                self._resolved("AMD", "BEARISH", False),
+                self._resolved("SPY", "SIDEWAYS", True),
+            ]
+        )
 
         for body in (html, text):
             assert "Trafność kierunkowa (bez prognoz „bez ruchu”): 50% (n=2)" in body
@@ -2327,36 +2554,53 @@ def _strong_buy_result() -> SymbolResult:
         dissenting_views=(),
         investor_opinions=(
             InvestorOpinion(
-                investor_name="A", recommendation="BUY",
-                confidence=0.9, reasoning="x", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning="x",
+                key_factors=(),
             ),
             InvestorOpinion(
-                investor_name="B", recommendation="BUY",
-                confidence=0.9, reasoning="x", key_factors=(),
+                investor_name="B",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning="x",
+                key_factors=(),
             ),
         ),
     )
     return SymbolResult(
-        symbol="NVDA", status="saved", delta=Decimal("0.04"),
-        current_price=Decimal("100"), trend="BULLISH",
-        target_price=Decimal("106"), confidence_score=0.85,
+        symbol="NVDA",
+        status="saved",
+        delta=Decimal("0.04"),
+        current_price=Decimal("100"),
+        trend="BULLISH",
+        target_price=Decimal("106"),
+        confidence_score=0.85,
         council_verdict=verdict,
     )
 
 
 def _sizing_report(accuracy_stats: dict[str, object]) -> tuple[str, str]:
     return build_html_report(
-        [_strong_buy_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_strong_buy_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(accuracy_stats=accuracy_stats),
     )
 
 
 def test_full_band_not_suggested_on_tiny_accuracy_sample() -> None:
     # PORT-01 (G31): jedno trafienie (100%, n_eff = 1) nie jest track recordem.
-    html, text = _sizing_report({
-        "mean_accuracy": 1.0, "sample_count": 1, "correct_count": 1,
-        "days_window": 30, "n_eff": 1.0,
-    })
+    html, text = _sizing_report(
+        {
+            "mean_accuracy": 1.0,
+            "sample_count": 1,
+            "correct_count": 1,
+            "days_window": 30,
+            "n_eff": 1.0,
+        }
+    )
 
     assert "Pozycja pełna" not in html
     assert "Pozycja pełna" not in text
@@ -2366,19 +2610,28 @@ def test_full_band_not_suggested_on_tiny_accuracy_sample() -> None:
 def test_full_band_not_suggested_when_accuracy_stats_have_no_effective_sample() -> None:
     # Bez n_eff nie wiadomo, ile niezależnych zakładów stoi za hit-rate —
     # 40 trafień jednego dnia spadku NASDAQ to jeden zakład.
-    html, _ = _sizing_report({
-        "mean_accuracy": 0.9, "sample_count": 40, "correct_count": 36,
-        "days_window": 30,
-    })
+    html, _ = _sizing_report(
+        {
+            "mean_accuracy": 0.9,
+            "sample_count": 40,
+            "correct_count": 36,
+            "days_window": 30,
+        }
+    )
 
     assert "Pozycja pełna" not in html
 
 
 def test_full_band_suggested_on_a_sufficient_effective_sample() -> None:
-    html, _ = _sizing_report({
-        "mean_accuracy": 0.7, "sample_count": 200, "correct_count": 140,
-        "days_window": 30, "n_eff": 25.0,
-    })
+    html, _ = _sizing_report(
+        {
+            "mean_accuracy": 0.7,
+            "sample_count": 200,
+            "correct_count": 140,
+            "days_window": 30,
+            "n_eff": 25.0,
+        }
+    )
 
     assert "Pozycja pełna 4-5% portfela" in html
 
@@ -2388,10 +2641,15 @@ def test_plain_text_report_says_var_lacks_history() -> None:
     from src.application.use_cases.portfolio_risk import PortfolioRiskReport
 
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
-        ReportContext(portfolio_risk_report=PortfolioRiskReport(
-            watchlist_size=3, insufficient=(("var", 9, 60),),
-        )),
+        [_saved_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
+        ReportContext(
+            portfolio_risk_report=PortfolioRiskReport(
+                watchlist_size=3,
+                insufficient=(("var", 9, 60),),
+            )
+        ),
     )
 
     assert "za mało historii (9/60)" in html
@@ -2404,19 +2662,31 @@ def test_user_portfolio_lists_a_position_the_cycle_could_not_price() -> None:
     as_of = datetime(2026, 5, 14, tzinfo=UTC)
     portfolio = Portfolio(
         positions=(
-            Position(symbol="AAPL", quantity=Decimal("10"),
-                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
-            Position(symbol="XDWD.DE", quantity=Decimal("20"),
-                     purchase_price=Decimal("100"), purchase_date=as_of.date()),
+            Position(
+                symbol="AAPL",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("250"),
+                purchase_date=as_of.date(),
+            ),
+            Position(
+                symbol="XDWD.DE",
+                quantity=Decimal("20"),
+                purchase_price=Decimal("100"),
+                purchase_date=as_of.date(),
+            ),
         ),
         as_of=as_of,
     )
     unsupported = SymbolResult(
-        symbol="XDWD.DE", status="ignored", skip_reason=SkipReason.UNSUPPORTED_PRICE,
+        symbol="XDWD.DE",
+        status="ignored",
+        skip_reason=SkipReason.UNSUPPORTED_PRICE,
     )
 
     html, _ = build_html_report(
-        [_saved_result(), unsupported], as_of, 1.0,
+        [_saved_result(), unsupported],
+        as_of,
+        1.0,
         ReportContext(user_portfolio=portfolio),
     )
 
@@ -2429,16 +2699,26 @@ def test_held_price_outside_the_watchlist_prices_the_position() -> None:
     as_of = datetime(2026, 5, 14, tzinfo=UTC)
     portfolio = Portfolio(
         positions=(
-            Position(symbol="AAPL", quantity=Decimal("10"),
-                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
-            Position(symbol="MSFT", quantity=Decimal("2"),
-                     purchase_price=Decimal("400"), purchase_date=as_of.date()),
+            Position(
+                symbol="AAPL",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("250"),
+                purchase_date=as_of.date(),
+            ),
+            Position(
+                symbol="MSFT",
+                quantity=Decimal("2"),
+                purchase_price=Decimal("400"),
+                purchase_date=as_of.date(),
+            ),
         ),
         as_of=as_of,
     )
 
     html, _ = build_html_report(
-        [_saved_result()], as_of, 1.0,
+        [_saved_result()],
+        as_of,
+        1.0,
         ReportContext(user_portfolio=portfolio, held_prices={"MSFT": Decimal("410")}),
     )
 
@@ -2451,34 +2731,61 @@ def test_lead_warns_about_a_council_signal_against_a_large_position() -> None:
     # na spółce, której użytkownik nie ma.
     def verdict(rec: Literal["BUY", "SELL", "HOLD"]) -> CouncilVerdict:
         return CouncilVerdict(
-            final_recommendation=rec, consensus_strength=0.9, summary=f"Rada: {rec}.",
+            final_recommendation=rec,
+            consensus_strength=0.9,
+            summary=f"Rada: {rec}.",
             dissenting_views=(),
             investor_opinions=tuple(
-                InvestorOpinion(investor_name=n, recommendation=rec,
-                                confidence=0.9, reasoning="x", key_factors=())
+                InvestorOpinion(
+                    investor_name=n,
+                    recommendation=rec,
+                    confidence=0.9,
+                    reasoning="x",
+                    key_factors=(),
+                )
                 for n in ("A", "B")
             ),
         )
 
     as_of = datetime(2026, 5, 14, tzinfo=UTC)
     results = [
-        SymbolResult(symbol="NVDA", status="saved", delta=Decimal("-0.042"),
-                     current_price=Decimal("100"), council_verdict=verdict("SELL")),
-        SymbolResult(symbol="AMD", status="saved", delta=Decimal("0.08"),
-                     current_price=Decimal("50"), council_verdict=verdict("BUY")),
+        SymbolResult(
+            symbol="NVDA",
+            status="saved",
+            delta=Decimal("-0.042"),
+            current_price=Decimal("100"),
+            council_verdict=verdict("SELL"),
+        ),
+        SymbolResult(
+            symbol="AMD",
+            status="saved",
+            delta=Decimal("0.08"),
+            current_price=Decimal("50"),
+            council_verdict=verdict("BUY"),
+        ),
     ]
     portfolio = Portfolio(
         positions=(
-            Position(symbol="NVDA", quantity=Decimal("10"),
-                     purchase_price=Decimal("90"), purchase_date=as_of.date()),
-            Position(symbol="AAPL", quantity=Decimal("1"),
-                     purchase_price=Decimal("3000"), purchase_date=as_of.date()),
+            Position(
+                symbol="NVDA",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("90"),
+                purchase_date=as_of.date(),
+            ),
+            Position(
+                symbol="AAPL",
+                quantity=Decimal("1"),
+                purchase_price=Decimal("3000"),
+                purchase_date=as_of.date(),
+            ),
         ),
         as_of=as_of,
     )
 
     html, text = build_html_report(
-        results, as_of, 1.0,
+        results,
+        as_of,
+        1.0,
         ReportContext(user_portfolio=portfolio, held_prices={"AAPL": Decimal("3000")}),
     )
 
@@ -2492,8 +2799,12 @@ def _held_aapl_portfolio() -> Portfolio:
     as_of = datetime(2026, 5, 14, tzinfo=UTC)
     return Portfolio(
         positions=(
-            Position(symbol="AAPL", quantity=Decimal("10"),
-                     purchase_price=Decimal("250"), purchase_date=as_of.date()),
+            Position(
+                symbol="AAPL",
+                quantity=Decimal("10"),
+                purchase_price=Decimal("250"),
+                purchase_date=as_of.date(),
+            ),
         ),
         as_of=as_of,
     )
@@ -2502,7 +2813,9 @@ def _held_aapl_portfolio() -> Portfolio:
 def test_plain_text_email_carries_the_user_portfolio_section() -> None:
     # Decyzja 2026-10-19: wersja tekstowa maila ma sekcję portfela jak HTML.
     _, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(user_portfolio=_held_aapl_portfolio()),
     )
 
@@ -2514,7 +2827,9 @@ def test_plain_text_email_carries_the_user_portfolio_section() -> None:
 def test_plain_text_without_user_portfolio_keeps_the_html_section() -> None:
     # Stary push (pełny tekst do Telegram/Slack) dostaje tekst BEZ kwot portfela.
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(user_portfolio=_held_aapl_portfolio(), user_portfolio_in_text=False),
     )
 
@@ -2534,9 +2849,7 @@ def test_plain_text_without_risk_watch_data_has_no_slot_marker(
 ) -> None:
     # Pusty slot = brak sekcji. Komentarz HTML jest w mailu HTML niewidoczny,
     # ale w wersji tekstowej był dosłowną linią „<!-- RISK_WATCH_SLOT -->”.
-    _, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context
-    )
+    _, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0, context)
 
     assert "RISK_WATCH_SLOT" not in text
     assert "<!--" not in text
@@ -2553,13 +2866,17 @@ def test_plain_text_without_quota_alerts_has_no_slot_marker() -> None:
 
 def test_plain_text_with_quota_alert_still_starts_with_the_banner() -> None:
     alert = QuotaAlert(
-        source="OpenAI", severity=QuotaSeverity.CRITICAL,
-        message="OpenAI 429: insufficient_quota", action="Doładuj konto OpenAI.",
+        source="OpenAI",
+        severity=QuotaSeverity.CRITICAL,
+        message="OpenAI 429: insufficient_quota",
+        action="Doładuj konto OpenAI.",
         occurred_at=datetime(2026, 5, 14, tzinfo=UTC),
     )
 
     _, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(quota_alerts=[alert]),
     )
 
@@ -2571,13 +2888,17 @@ def test_quota_banner_shows_the_alert_in_the_display_timezone() -> None:
     # MAIL-59: baner kwot mówi czasem lokalnym, jak nagłówek, a nie „05:30 UTC”.
     # Londyn zamiast domyślnej Warszawy, żeby test łapał brak przekazania strefy.
     alert = QuotaAlert(
-        source="OpenAI", severity=QuotaSeverity.CRITICAL,
-        message="OpenAI 429: insufficient_quota", action="Doładuj konto OpenAI.",
+        source="OpenAI",
+        severity=QuotaSeverity.CRITICAL,
+        message="OpenAI 429: insufficient_quota",
+        action="Doładuj konto OpenAI.",
         occurred_at=datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
     )
 
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 16, 8, 0, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 16, 8, 0, tzinfo=UTC),
+        1.0,
         ReportContext(quota_alerts=[alert], display_timezone="Europe/London"),
     )
 
@@ -2590,7 +2911,9 @@ def test_quota_banner_shows_the_alert_in_the_display_timezone() -> None:
 def test_header_shows_the_cycle_start_in_the_display_timezone() -> None:
     # MAIL-14: nagłówek HTML i tekstu w czasie lokalnym, nie „… UTC”.
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(display_timezone="Europe/Warsaw"),
     )
 
@@ -2603,7 +2926,9 @@ def test_header_shows_the_cycle_start_in_the_display_timezone() -> None:
 def test_header_session_line_gives_the_nyse_open_in_the_display_timezone() -> None:
     # MAIL-29: sobota → „pon 19.10 09:30 ET” plus godzina polska, w HTML i w tekście.
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 17, 12, 0, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 17, 12, 0, tzinfo=UTC),
+        1.0,
         ReportContext(display_timezone="Europe/Warsaw"),
     )
 
@@ -2627,7 +2952,9 @@ def test_header_shows_regime_and_multiplier() -> None:
     )
 
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(regime=banner),
     )
 
@@ -2649,7 +2976,9 @@ def test_header_without_multiplier_shows_one_threshold() -> None:
     )
 
     _, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(regime=banner),
     )
 
@@ -2677,7 +3006,9 @@ def test_regime_reason_is_escaped_in_html() -> None:
     )
 
     html, _ = build_html_report(
-        [_saved_result()], datetime(2026, 10, 16, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 16, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(regime=banner),
     )
 
@@ -2687,11 +3018,14 @@ def test_regime_reason_is_escaped_in_html() -> None:
 
 def _consensus(summary: str) -> CouncilVerdict:
     return CouncilVerdict(
-        final_recommendation="BUY", consensus_strength=0.9, summary=summary,
+        final_recommendation="BUY",
+        consensus_strength=0.9,
+        summary=summary,
         dissenting_views=(),
         investor_opinions=tuple(
-            InvestorOpinion(investor_name=n, recommendation="BUY",
-                            confidence=0.9, reasoning="x", key_factors=())
+            InvestorOpinion(
+                investor_name=n, recommendation="BUY", confidence=0.9, reasoning="x", key_factors=()
+            )
             for n in ("A", "B")
         ),
     )
@@ -2699,7 +3033,7 @@ def _consensus(summary: str) -> CouncilVerdict:
 
 def _first_element(html: str) -> str:
     # MAIL-57: mail jest kompletnym dokumentem — preheader to pierwszy element <body>.
-    body = html[html.index("<body>") + len("<body>"):]
+    body = html[html.index("<body>") + len("<body>") :]
     return body[: body.index("</div>") + len("</div>")]
 
 
@@ -2707,8 +3041,11 @@ def test_html_starts_with_hidden_preheader_from_lead() -> None:
     # MAIL-13: podgląd w Gmailu/Apple Mail był „📊 StockAgent — raport cyklu Czas
     # rozpoczęcia: …”. Teraz pierwszy element to ukryty preheader z detail leadu.
     result = SymbolResult(
-        symbol="AMD", status="saved", delta=Decimal("0.08"),
-        current_price=Decimal("50"), council_verdict=_consensus("Popyt na GPU rośnie."),
+        symbol="AMD",
+        status="saved",
+        delta=Decimal("0.08"),
+        current_price=Decimal("50"),
+        council_verdict=_consensus("Popyt na GPU rośnie."),
     )
 
     html, _ = build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
@@ -2724,7 +3061,10 @@ def test_html_starts_with_hidden_preheader_from_lead() -> None:
 def test_preheader_escapes_the_lead_detail() -> None:
     # Detail pochodzi z rady i newsów — w preheaderze przechodzi przez html.escape.
     result = SymbolResult(
-        symbol="AMD", status="saved", delta=Decimal("0.08"), current_price=Decimal("50"),
+        symbol="AMD",
+        status="saved",
+        delta=Decimal("0.08"),
+        current_price=Decimal("50"),
         council_verdict=_consensus("<img src=x onerror=alert(1)> & marże"),
     )
 
@@ -2743,7 +3083,9 @@ def test_preheader_without_lead_counts_closed_predictions() -> None:
     ]
 
     html, _ = build_html_report(
-        [_ignored_result("MSFT")], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_ignored_result("MSFT")],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(resolved_predictions=resolved),
     )
 
@@ -2768,7 +3110,9 @@ class TestResolvedSectionWindowHeading:
 
     def test_cycle_window_heading(self) -> None:
         html, text = build_html_report(
-            [], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=self._RESOLVED, resolved_this_cycle=True),
         )
 
@@ -2779,7 +3123,9 @@ class TestResolvedSectionWindowHeading:
 
     def test_default_heading_keeps_the_24h_window(self) -> None:
         html, text = build_html_report(
-            [], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+            [],
+            datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+            1.0,
             ReportContext(resolved_predictions=self._RESOLVED),
         )
 
@@ -2801,9 +3147,7 @@ class TestFooter:
     )
 
     def test_footer_links_run_and_commit(self) -> None:
-        html, _ = build_html_report(
-            [], self._STARTED, 1.0, ReportContext(run_context=self._GHA)
-        )
+        html, _ = build_html_report([], self._STARTED, 1.0, ReportContext(run_context=self._GHA))
 
         assert 'href="https://github.com/x/y/actions/runs/77"' in html
         assert "przebieg #77" in html
@@ -2812,9 +3156,7 @@ class TestFooter:
         assert "abc1234def" not in html
 
     def test_plain_text_footer_carries_run_commit_and_logs_url(self) -> None:
-        _, text = build_html_report(
-            [], self._STARTED, 1.0, ReportContext(run_context=self._GHA)
-        )
+        _, text = build_html_report([], self._STARTED, 1.0, ReportContext(run_context=self._GHA))
 
         assert text.rstrip().endswith(
             "przebieg #77 · commit abc1234 · logi: https://github.com/x/y/actions/runs/77"
@@ -2840,12 +3182,10 @@ class TestFooter:
 
     def test_footer_escapes_values_and_drops_unsafe_url(self) -> None:
         hostile = RunContext(
-            run_id='<script>1</script>', git_sha="abc1234", run_url="javascript:alert(1)"
+            run_id="<script>1</script>", git_sha="abc1234", run_url="javascript:alert(1)"
         )
 
-        html, text = build_html_report(
-            [], self._STARTED, 1.0, ReportContext(run_context=hostile)
-        )
+        html, text = build_html_report([], self._STARTED, 1.0, ReportContext(run_context=hostile))
 
         assert "<script>1" not in html
         assert "&lt;script&gt;" in html
@@ -2866,9 +3206,7 @@ class TestMoveIntervalInReport:
 
         from src.domain.conformal import MoveInterval
 
-        return dataclasses.replace(
-            _saved_result(), move_interval=MoveInterval(**interval_fields)
-        )
+        return dataclasses.replace(_saved_result(), move_interval=MoveInterval(**interval_fields))
 
     def test_interval_reaches_html_and_text(self) -> None:
         result = self._with_interval(low=-0.021, high=0.024, calibration_size=57)
@@ -3030,7 +3368,6 @@ def test_plain_text_says_model_signal_not_recommendation() -> None:
     assert "Rekomendacja" not in text
 
 
-
 class TestLeadInPolish:
     """MAIL-15: lead i temat maila mówią po polsku — angielskie BULLISH/BUY
     zostają w logach i w bazie, nie w treści."""
@@ -3059,9 +3396,7 @@ class TestLeadInPolish:
 
     def test_closed_prediction_lead_has_no_english_trend(self) -> None:
         results = [SymbolResult(symbol="NVDA", status="saved", delta=Decimal("0.03"))]
-        resolved = [
-            ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True)
-        ]
+        resolved = [ResolvedPrediction(symbol="NVDA", predicted_trend="BULLISH", is_correct=True)]
 
         html, text = build_html_report(
             results, self._STARTED, 1.0, ReportContext(resolved_predictions=resolved)
@@ -3074,20 +3409,19 @@ class TestLeadInPolish:
 
     def test_quota_banner_severity_is_polish(self) -> None:
         alert = QuotaAlert(
-            source="Resend", severity=QuotaSeverity.CRITICAL,
-            message="Resend zwrócił 429.", action="Poczekaj na reset.",
+            source="Resend",
+            severity=QuotaSeverity.CRITICAL,
+            message="Resend zwrócił 429.",
+            action="Poczekaj na reset.",
             occurred_at=self._STARTED,
         )
 
-        html, text = build_html_report(
-            [], self._STARTED, 1.0, ReportContext(quota_alerts=[alert])
-        )
+        html, text = build_html_report([], self._STARTED, 1.0, ReportContext(quota_alerts=[alert]))
 
         assert "KRYTYCZNY" in html
         assert "KRYTYCZNY" in text
         assert "CRITICAL" not in html
         assert "CRITICAL" not in text
-
 
 
 class TestResolvedSectionWhenNothingSettled:
@@ -3099,7 +3433,9 @@ class TestResolvedSectionWhenNothingSettled:
 
     def test_cycle_window_says_nothing_settled_in_this_cycle(self) -> None:
         html, text = build_html_report(
-            [], self._STARTED, 1.0,
+            [],
+            self._STARTED,
+            1.0,
             ReportContext(resolved_predictions=[], resolved_this_cycle=True),
         )
 
@@ -3121,7 +3457,9 @@ class TestResolvedSectionWhenNothingSettled:
 
     def test_read_failure_is_not_dressed_up_as_no_settlements(self) -> None:
         html, text = build_html_report(
-            [], self._STARTED, 1.0,
+            [],
+            self._STARTED,
+            1.0,
             ReportContext(resolved_predictions=[], resolved_unavailable=True),
         )
 
@@ -3196,9 +3534,13 @@ class TestStaleReferenceReport:
 
     def test_crypto_section_calls_a_stale_symbol_a_new_reference_point(self) -> None:
         result = SymbolResult(
-            symbol="BTC", status="ignored", delta=Decimal("0.12"),
-            current_price=Decimal("65000"), asset_class="CRYPTO",
-            skip_reason=SkipReason.STALE_REFERENCE, reference_at=self._REFERENCE_AT,
+            symbol="BTC",
+            status="ignored",
+            delta=Decimal("0.12"),
+            current_price=Decimal("65000"),
+            asset_class="CRYPTO",
+            skip_reason=SkipReason.STALE_REFERENCE,
+            reference_at=self._REFERENCE_AT,
         )
 
         html, text = build_html_report([result], self._STARTED, 1.0)
@@ -3220,8 +3562,12 @@ class TestPortfolioChangeInReport:
     def _portfolio(*positions: tuple[str, str]) -> Portfolio:
         return Portfolio(
             positions=tuple(
-                Position(symbol=symbol, quantity=Decimal(qty), purchase_price=Decimal("5"),
-                         purchase_date=datetime(2026, 3, 2).date())
+                Position(
+                    symbol=symbol,
+                    quantity=Decimal(qty),
+                    purchase_price=Decimal("5"),
+                    purchase_date=datetime(2026, 3, 2).date(),
+                )
                 for symbol, qty in positions
             ),
             as_of=datetime(2026, 10, 18, tzinfo=UTC),
@@ -3229,13 +3575,20 @@ class TestPortfolioChangeInReport:
 
     def _results(self, **overrides: Any) -> list[SymbolResult]:
         nvda = SymbolResult(
-            symbol="NVDA", status="saved", delta=Decimal("0.10"),
-            current_price=Decimal("11"), trend="BULLISH", confidence_score=0.7,
+            symbol="NVDA",
+            status="saved",
+            delta=Decimal("0.10"),
+            current_price=Decimal("11"),
+            trend="BULLISH",
+            confidence_score=0.7,
             target_price=Decimal("12"),
         )
         aapl = SymbolResult(
-            symbol="AAPL", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD,
-            delta=Decimal("-0.02"), current_price=Decimal("9.80"),
+            symbol="AAPL",
+            status="ignored",
+            skip_reason=SkipReason.BELOW_THRESHOLD,
+            delta=Decimal("-0.02"),
+            current_price=Decimal("9.80"),
         )
         return [dataclasses.replace(nvda, **overrides), aapl]
 
@@ -3264,8 +3617,11 @@ class TestPortfolioChangeInReport:
             user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25"), ("NEW", "1"))
         )
         new = SymbolResult(
-            symbol="NEW", status="ignored", skip_reason=SkipReason.COLD_START,
-            delta=Decimal("0"), current_price=Decimal("50"),
+            symbol="NEW",
+            status="ignored",
+            skip_reason=SkipReason.COLD_START,
+            delta=Decimal("0"),
+            current_price=Decimal("50"),
         )
 
         html, _ = build_html_report([*self._results(), new], self._STARTED, 1.0, context)
@@ -3278,7 +3634,9 @@ class TestPortfolioChangeInReport:
         context = ReportContext(user_portfolio=self._portfolio(("NVDA", "75"), ("AAPL", "25")))
         results = [
             dataclasses.replace(
-                r, status="ignored", skip_reason=SkipReason.STALE_REFERENCE,
+                r,
+                status="ignored",
+                skip_reason=SkipReason.STALE_REFERENCE,
                 reference_at=reference_at,
             )
             for r in self._results()
@@ -3332,8 +3690,12 @@ class TestFirstScreenReaderNumbers:
     @staticmethod
     def _saved(symbol: str, trend: str) -> SymbolResult:
         return SymbolResult(
-            symbol=symbol, status="saved", delta=Decimal("0.03"),
-            current_price=Decimal("100"), trend=trend, target_price=Decimal("102"),
+            symbol=symbol,
+            status="saved",
+            delta=Decimal("0.03"),
+            current_price=Decimal("100"),
+            trend=trend,
+            target_price=Decimal("102"),
             confidence_score=0.7,
         )
 
@@ -3364,14 +3726,16 @@ class TestFirstScreenReaderNumbers:
     def test_reader_boxes_come_in_order_portfolio_signals_settlements(self) -> None:
         portfolio = Portfolio(
             positions=(
-                Position(symbol="AAPL", quantity=Decimal("2"), purchase_price=Decimal("90"),
-                         purchase_date=datetime(2026, 3, 2).date()),
+                Position(
+                    symbol="AAPL",
+                    quantity=Decimal("2"),
+                    purchase_price=Decimal("90"),
+                    purchase_date=datetime(2026, 3, 2).date(),
+                ),
             ),
             as_of=datetime(2026, 10, 18, tzinfo=UTC),
         )
-        context = ReportContext(
-            user_portfolio=portfolio, resolved_predictions=self._resolved(1, 1)
-        )
+        context = ReportContext(user_portfolio=portfolio, resolved_predictions=self._resolved(1, 1))
 
         html, text = build_html_report(
             [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0, context
@@ -3390,7 +3754,9 @@ class TestFirstScreenReaderNumbers:
 
     def test_without_a_portfolio_the_portfolio_box_is_hidden(self) -> None:
         html, text = build_html_report(
-            [self._saved("AAPL", "BULLISH")], self._STARTED, 1.0,
+            [self._saved("AAPL", "BULLISH")],
+            self._STARTED,
+            1.0,
             ReportContext(resolved_predictions=self._resolved(1, 0)),
         )
 
@@ -3407,13 +3773,13 @@ class TestFirstScreenReaderNumbers:
         header = html[: html.index("Sygnały ponad próg")]
         assert "Czas trwania" not in header
         assert "Liczba symboli" not in header
-        footer = html[html.index(self._DISCLAIMER):]
+        footer = html[html.index(self._DISCLAIMER) :]
         assert "Symboli: <strong>4</strong>" in footer
         assert "Predykcje: <strong>1</strong>" in footer
         assert "Pominięte: <strong>2</strong>" in footer
         assert "Błędy: <strong>1</strong>" in footer
         assert "Czas trwania: 12,5s" in footer
-        text_footer = text[text.index(self._DISCLAIMER):]
+        text_footer = text[text.index(self._DISCLAIMER) :]
         assert (
             "Symboli: 4 · predykcji: 1 · pominiętych: 2 · błędów: 1 · czas trwania: 12,5s"
             in text_footer
@@ -3430,7 +3796,9 @@ class TestFirstScreenReaderNumbers:
 
     def test_unreadable_settlements_box_says_unavailable(self) -> None:
         html, text = build_html_report(
-            [], self._STARTED, 1.0,
+            [],
+            self._STARTED,
+            1.0,
             ReportContext(resolved_predictions=None, resolved_unavailable=True),
         )
 
@@ -3444,11 +3812,16 @@ def test_trade_signals_precede_track_record() -> None:
     # dolna część maila znika pierwsza, więc akcyjne sygnały muszą być wyżej.
     curve = EquityCurve(
         points=(EquityPoint(index=0, period_return=0.01, equity=1.01),),
-        total_return=0.01, win_rate=1.0, max_drawdown=0.0, n_trades=1,
+        total_return=0.01,
+        win_rate=1.0,
+        max_drawdown=0.0,
+        n_trades=1,
     )
 
     html, _ = build_html_report(
-        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(equity_curve=curve),
     )
 
@@ -3459,8 +3832,11 @@ def test_trade_signals_precede_track_record() -> None:
 # pozycjach. Orkiestrator podaje `position_risk` tylko za `portfolio_var_enabled`.
 
 _SUFFICIENT_ACCURACY = {
-    "mean_accuracy": 0.7, "sample_count": 200, "correct_count": 140,
-    "days_window": 30, "n_eff": 25.0,
+    "mean_accuracy": 0.7,
+    "sample_count": 200,
+    "correct_count": 140,
+    "days_window": 30,
+    "n_eff": 25.0,
 }
 
 
@@ -3474,7 +3850,9 @@ def _owner_portfolio() -> Portfolio:
 
 def _risk_sizing_report(**context: object) -> str:
     html, _ = build_html_report(
-        [_strong_buy_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_strong_buy_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(accuracy_stats=_SUFFICIENT_ACCURACY, **context),  # type: ignore[arg-type]
     )
     return html
@@ -3520,15 +3898,12 @@ def test_equal_weight_radar_var_never_narrows_the_band() -> None:
     assert "Pozycja pełna 4-5% portfela" in html
 
 
-
 # PORT-05: etykiety sektorów i peerzy Warte uwagi idą wyłącznie z mapy configu
 # w `ReportContext` — w kodzie nie ma zapasowej kopii.
 
 
 def test_sector_label_comes_only_from_the_context_map() -> None:
-    html, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-    )
+    html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
     assert "Big Tech" not in html
     assert "Big Tech" not in text
@@ -3536,13 +3911,19 @@ def test_sector_label_comes_only_from_the_context_map() -> None:
 
 def test_renamed_sector_keeps_its_suggestions() -> None:
     hot = SymbolResult(
-        symbol="CRWD", status="saved", delta=Decimal("0.06"),
-        current_price=Decimal("769"), trend="BULLISH",
-        target_price=Decimal("780"), confidence_score=0.75,
+        symbol="CRWD",
+        status="saved",
+        delta=Decimal("0.06"),
+        current_price=Decimal("769"),
+        trend="BULLISH",
+        target_price=Decimal("780"),
+        confidence_score=0.75,
     )
 
     html, _ = build_html_report(
-        [hot], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [hot],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(sector_map={"CRWD": "Cyber"}, sector_peers={"Cyber": ["ZS"]}),
     )
 
@@ -3579,11 +3960,19 @@ class TestPortfolioInOneCurrency:
     @staticmethod
     def _results(aapl_delta: str = "0.05") -> list[SymbolResult]:
         return [
-            SymbolResult(symbol="AAPL", status="saved", delta=Decimal(aapl_delta),
-                         current_price=Decimal("100")),
-            SymbolResult(symbol="SAP.DE", status="ignored",
-                         skip_reason=SkipReason.BELOW_THRESHOLD, delta=Decimal("0"),
-                         current_price=Decimal("100")),
+            SymbolResult(
+                symbol="AAPL",
+                status="saved",
+                delta=Decimal(aapl_delta),
+                current_price=Decimal("100"),
+            ),
+            SymbolResult(
+                symbol="SAP.DE",
+                status="ignored",
+                skip_reason=SkipReason.BELOW_THRESHOLD,
+                delta=Decimal("0"),
+                current_price=Decimal("100"),
+            ),
         ]
 
     def _context(self, rates: PlnRates | None = None) -> ReportContext:
@@ -3749,8 +4138,11 @@ class TestBudgetExhaustedReport:
 
     def test_crypto_section_names_the_budget_cutoff(self) -> None:
         result = SymbolResult(
-            symbol="BTC", status="ignored", delta=Decimal("0.12"),
-            current_price=Decimal("65000"), asset_class="CRYPTO",
+            symbol="BTC",
+            status="ignored",
+            delta=Decimal("0.12"),
+            current_price=Decimal("65000"),
+            asset_class="CRYPTO",
             skip_reason=SkipReason.BUDGET_EXHAUSTED,
         )
 
@@ -3787,8 +4179,11 @@ class TestColdStartReport:
     @staticmethod
     def _flat(symbol: str) -> SymbolResult:
         return SymbolResult(
-            symbol=symbol, status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD,
-            delta=Decimal("0"), current_price=Decimal("100"),
+            symbol=symbol,
+            status="ignored",
+            skip_reason=SkipReason.BELOW_THRESHOLD,
+            delta=Decimal("0"),
+            current_price=Decimal("100"),
         )
 
     def test_cold_start_symbol_has_no_reference_point_not_a_small_move(self) -> None:
@@ -3867,8 +4262,12 @@ class TestPositionAwareSignals:
     @staticmethod
     def _bearish(symbol: str) -> SymbolResult:
         return SymbolResult(
-            symbol=symbol, status="saved", trend="BEARISH", delta=Decimal("-0.03"),
-            confidence_score=0.8, current_price=Decimal("100"),
+            symbol=symbol,
+            status="saved",
+            trend="BEARISH",
+            delta=Decimal("-0.03"),
+            confidence_score=0.8,
+            current_price=Decimal("100"),
             target_price=Decimal("95"),
         )
 
@@ -3881,10 +4280,18 @@ class TestPositionAwareSignals:
     def _portfolio(self) -> Portfolio:
         return Portfolio(
             positions=(
-                Position(symbol="AAPL", quantity=Decimal("12"),
-                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
-                Position(symbol="MSFT", quantity=Decimal("88"),
-                         purchase_price=Decimal("100"), purchase_date=self._AS_OF.date()),
+                Position(
+                    symbol="AAPL",
+                    quantity=Decimal("12"),
+                    purchase_price=Decimal("100"),
+                    purchase_date=self._AS_OF.date(),
+                ),
+                Position(
+                    symbol="MSFT",
+                    quantity=Decimal("88"),
+                    purchase_price=Decimal("100"),
+                    purchase_date=self._AS_OF.date(),
+                ),
             ),
             as_of=self._AS_OF,
         )
@@ -3892,10 +4299,12 @@ class TestPositionAwareSignals:
     def _signals_html(self, context: ReportContext) -> str:
         html, _ = build_html_report(
             [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
-            self._AS_OF, 1.0, context,
+            self._AS_OF,
+            1.0,
+            context,
         )
         start = html.index("🎯 Najsilniejsze sygnały")
-        return html[start:html.index("<h2", start + 1)]
+        return html[start : html.index("<h2", start + 1)]
 
     def test_bearish_signal_says_reduce_on_a_holding_and_avoid_elsewhere(self) -> None:
         section = self._signals_html(ReportContext(user_portfolio=self._portfolio()))
@@ -3908,7 +4317,9 @@ class TestPositionAwareSignals:
     def test_plain_text_uses_the_same_position_labels(self) -> None:
         _, text = build_html_report(
             [self._bearish("AAPL"), self._bearish("TSLA"), self._flat_msft()],
-            self._AS_OF, 1.0, ReportContext(user_portfolio=self._portfolio()),
+            self._AS_OF,
+            1.0,
+            ReportContext(user_portfolio=self._portfolio()),
         )
 
         signals = text.split("NAJSILNIEJSZE SYGNAŁY")[1].split("\n\n")[0]
@@ -3925,11 +4336,18 @@ class TestPositionAwareSignals:
 
     def test_avoid_signal_does_not_suggest_a_position_size(self) -> None:
         verdict = CouncilVerdict(
-            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            final_recommendation="SELL",
+            consensus_strength=0.9,
+            summary="Rada: SELL.",
             dissenting_views=(),
             investor_opinions=(
-                InvestorOpinion(investor_name="A", recommendation="SELL",
-                                confidence=0.9, reasoning="x", key_factors=()),
+                InvestorOpinion(
+                    investor_name="A",
+                    recommendation="SELL",
+                    confidence=0.9,
+                    reasoning="x",
+                    key_factors=(),
+                ),
             ),
         )
         unheld = dataclasses.replace(self._bearish("TSLA"), council_verdict=verdict)
@@ -3939,7 +4357,7 @@ class TestPositionAwareSignals:
         )
 
         start = html.index("🎯 Najsilniejsze sygnały")
-        section = html[start:html.index("<h2", start + 1)]
+        section = html[start : html.index("<h2", start + 1)]
         assert "UNIKAJ" in section
         assert "% portfela" not in section
 
@@ -3949,16 +4367,23 @@ def test_consensus_shift_sell_to_buy_reads_sprzedaj_kup_in_the_mail() -> None:
     from src.domain.consensus_shift import ConsensusShift, ShiftKind
 
     shift = ConsensusShift(
-        kind=ShiftKind.FLIP, previous_recommendation="SELL", current_recommendation="BUY",
-        votes_changed=3, sentiment_delta=0.0, consensus_delta=0.0, gap_hours=1.0,
+        kind=ShiftKind.FLIP,
+        previous_recommendation="SELL",
+        current_recommendation="BUY",
+        votes_changed=3,
+        sentiment_delta=0.0,
+        consensus_delta=0.0,
+        gap_hours=1.0,
     )
 
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 5, 14, tzinfo=UTC),
+        1.0,
         ReportContext(consensus_shifts=[("AAPL", shift)]),
     )
 
-    section = html[html.index("🔄 Zmiany nastawienia"):]
+    section = html[html.index("🔄 Zmiany nastawienia") :]
     assert "SPRZEDAJ" in section.split("</table>")[0]
     assert "SELL" not in section.split("</table>")[0]
     assert "Odwrócenie SPRZEDAJ → KUP" in text
@@ -3968,9 +4393,7 @@ def test_consensus_shift_sell_to_buy_reads_sprzedaj_kup_in_the_mail() -> None:
 def test_watchlist_mood_section_not_called_portfolio() -> None:
     # MAIL-31: sentyment liczy się po symbolach watchlisty; „portfel” to od #15
     # sekcja „💼 Twój portfel” z realnymi pozycjami.
-    html, text = build_html_report(
-        [_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0
-    )
+    html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 
     assert "Nastroje portfela" not in html
     assert "NASTROJE PORTFELA" not in text
@@ -3997,9 +4420,7 @@ class TestDegradedDayMood:
         assert "0 / 0" not in html
 
     def test_saved_cycle_without_sentiment_shows_no_average(self) -> None:
-        degraded = dataclasses.replace(
-            _saved_result(), sentiment_score=None, sentiment_label=None
-        )
+        degraded = dataclasses.replace(_saved_result(), sentiment_score=None, sentiment_label=None)
 
         html, text = build_html_report([degraded], self._STARTED, 1.0)
 
@@ -4021,7 +4442,9 @@ def test_footer_lists_data_sources() -> None:
     run = RunContext(run_id="77", git_sha="abc1234def")
 
     html, text = build_html_report(
-        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0,
+        [_saved_result()],
+        datetime(2026, 10, 19, 5, 30, tzinfo=UTC),
+        1.0,
         ReportContext(run_context=run),
     )
 
@@ -4039,8 +4462,7 @@ _FRED_NOTICE = (
     "Federal Reserve Bank of St. Louis."
 )
 _DO_NOT_FORWARD = (
-    "Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj "
-    "tego maila dalej."
+    "Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj tego maila dalej."
 )
 
 
@@ -4055,7 +4477,7 @@ def test_footer_carries_provider_attribution_and_terms_notice() -> None:
     )
 
     for body in (html, text):
-        footer = body[body.index("Źródła danych"):]
+        footer = body[body.index("Źródła danych") :]
         assert "Powered by CoinGecko" in footer
         assert _FRED_NOTICE in footer
         assert _DO_NOT_FORWARD in footer
@@ -4066,14 +4488,10 @@ def test_footer_links_coingecko_and_fred_attribution_in_html() -> None:
     # MAIL-07: w HTML atrybucja CoinGecko linkuje do coingecko.com (przewodnik marki
     # CoinGecko), a „FRED” z listy źródeł do fred.stlouisfed.org. Nota FRED zostaje
     # zwykłym tekstem, żeby jej brzmienie było dosłowne.
-    html, _ = build_html_report(
-        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0
-    )
-    footer = html[html.index("Źródła danych"):]
+    html, _ = build_html_report([_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0)
+    footer = html[html.index("Źródła danych") :]
 
-    assert re.search(
-        r'<a href="https://www\.coingecko\.com"[^>]*>Powered by CoinGecko</a>', footer
-    )
+    assert re.search(r'<a href="https://www\.coingecko\.com"[^>]*>Powered by CoinGecko</a>', footer)
     assert re.search(r'<a href="https://fred\.stlouisfed\.org/"[^>]*>FRED</a>', footer)
     assert _FRED_NOTICE in footer
 
@@ -4102,9 +4520,13 @@ class TestPlainTextSlots:
         from src.domain.consensus_shift import ConsensusShift, ShiftKind
 
         shift = ConsensusShift(
-            kind=ShiftKind.FLIP, previous_recommendation="SELL",
-            current_recommendation="BUY", votes_changed=2,
-            sentiment_delta=0.3, consensus_delta=0.1, gap_hours=24.0,
+            kind=ShiftKind.FLIP,
+            previous_recommendation="SELL",
+            current_recommendation="BUY",
+            votes_changed=2,
+            sentiment_delta=0.3,
+            consensus_delta=0.1,
+            gap_hours=24.0,
         )
 
         text = self._text(ReportContext(consensus_shifts=[("AAPL", shift)]))
@@ -4120,8 +4542,9 @@ class TestPlainTextSlots:
             trained_at=datetime(2026, 5, 13, tzinfo=UTC),
         )
         history = [
-            InvestorHistory(investor_name="Soros", symbol="AAPL",
-                            recommendations=("HOLD", "SELL", "SELL")),
+            InvestorHistory(
+                investor_name="Soros", symbol="AAPL", recommendations=("HOLD", "SELL", "SELL")
+            ),
         ]
 
         text = self._text(ReportContext(model_scorecard=view, council_history=history))
@@ -4136,6 +4559,7 @@ class TestPlainTextSlots:
         assert "SLOT" not in text
         assert "KOSZT CYKLU" not in text
         assert "\n\n\n" not in text
+
 
 class TestAnalystRevisionLead:
     """DAT-13: rewizja konsensusu z sekcji alfy trafia do leadu tym samym tekstem."""
@@ -4294,9 +4718,7 @@ class TestIgnoredEffectiveThreshold:
     _AT = datetime(2026, 10, 15, 10, 30, tzinfo=UTC)
 
     @staticmethod
-    def _ignored(
-        symbol: str, delta: str, threshold: str | None, **kwargs: Any
-    ) -> SymbolResult:
+    def _ignored(symbol: str, delta: str, threshold: str | None, **kwargs: Any) -> SymbolResult:
         return SymbolResult(
             symbol=symbol,
             status="ignored",
@@ -4306,9 +4728,7 @@ class TestIgnoredEffectiveThreshold:
         )
 
     def test_ignored_chip_shows_effective_threshold(self) -> None:
-        html, text = build_html_report(
-            [self._ignored("AAPL", "0.012", "0.02")], self._AT, 1.0
-        )
+        html, text = build_html_report([self._ignored("AAPL", "0.012", "0.02")], self._AT, 1.0)
 
         ignored_html = html.split("⏸ Pominięte")[1]
         assert "AAPL" in ignored_html

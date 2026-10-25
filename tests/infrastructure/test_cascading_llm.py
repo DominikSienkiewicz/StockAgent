@@ -46,9 +46,7 @@ class TestNoEscalation:
         self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result(0.9, "cheap")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, routing_floor=0.6
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, routing_floor=0.6)
 
         result = adapter.analyze("prompt")
 
@@ -56,14 +54,10 @@ class TestNoEscalation:
         cheap.analyze.assert_called_once_with("prompt")
         frontier.analyze.assert_not_called()
 
-    def test_confidence_equal_to_floor_does_not_escalate(
-        self, cheap: Mock, frontier: Mock
-    ) -> None:
+    def test_confidence_equal_to_floor_does_not_escalate(self, cheap: Mock, frontier: Mock) -> None:
         # Próg jest WŁĄCZAJĄCY: confidence == floor liczymy jako wystarczające.
         cheap.analyze.return_value = _result(0.6, "cheap")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, routing_floor=0.6
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, routing_floor=0.6)
 
         result = adapter.analyze("p")
 
@@ -77,9 +71,7 @@ class TestEscalation:
     ) -> None:
         cheap.analyze.return_value = _result(0.3, "cheap")
         frontier.analyze.return_value = _result(0.95, "frontier")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, routing_floor=0.6
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, routing_floor=0.6)
 
         result = adapter.analyze("prompt")
 
@@ -97,9 +89,7 @@ class TestEscalation:
         with caplog.at_level(logging.INFO):
             adapter.analyze("p")
 
-        assert any(
-            "escalat" in record.message.lower() for record in caplog.records
-        )
+        assert any("escalat" in record.message.lower() for record in caplog.records)
 
 
 class TestMissingOrInvalidConfidence:
@@ -141,16 +131,12 @@ class TestMissingOrInvalidConfidence:
 
 
 class TestEscalationBudget:
-    def test_budget_caps_number_of_escalations(
-        self, cheap: Mock, frontier: Mock
-    ) -> None:
+    def test_budget_caps_number_of_escalations(self, cheap: Mock, frontier: Mock) -> None:
         # Wszystkie wyniki taniego są mało pewne → każde wywołanie CHCE eskalować,
         # ale budżet = 2 pozwala tylko na 2 realne eskalacje.
         cheap.analyze.return_value = _result(0.1, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, max_escalations=2
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, max_escalations=2)
 
         # 2 pierwsze wywołania eskalują (zwracają frontier).
         assert adapter.analyze("p1")["_source"] == "frontier"
@@ -165,9 +151,7 @@ class TestEscalationBudget:
     def test_zero_budget_never_escalates(self, cheap: Mock, frontier: Mock) -> None:
         cheap.analyze.return_value = _result(0.0, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, max_escalations=0
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, max_escalations=0)
 
         result = adapter.analyze("p")
 
@@ -179,9 +163,7 @@ class TestEscalationBudget:
     ) -> None:
         cheap.analyze.return_value = _result(0.0, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, max_escalations=1
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, max_escalations=1)
 
         with caplog.at_level(logging.WARNING):
             adapter.analyze("p1")  # eskaluje (ostatnia z budżetu)
@@ -189,18 +171,15 @@ class TestEscalationBudget:
             adapter.analyze("p3")  # chce eskalować, budżet pusty → BEZ kolejnego logu
 
         exhaustion_logs = [
-            r for r in caplog.records if "budget" in r.message.lower()
-            or "exhaust" in r.message.lower()
+            r
+            for r in caplog.records
+            if "budget" in r.message.lower() or "exhaust" in r.message.lower()
         ]
         assert len(exhaustion_logs) == 1
 
-    def test_high_confidence_does_not_consume_budget(
-        self, cheap: Mock, frontier: Mock
-    ) -> None:
+    def test_high_confidence_does_not_consume_budget(self, cheap: Mock, frontier: Mock) -> None:
         # Pewny wynik nie zużywa budżetu — kolejne niepewne wciąż mogą eskalować.
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, max_escalations=1
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, max_escalations=1)
         frontier.analyze.return_value = _result(0.9, "frontier")
 
         cheap.analyze.return_value = _result(0.9, "cheap")
@@ -238,9 +217,7 @@ class TestFrontierFailure:
         cheap.analyze.return_value = _result(0.2, "cheap")
         frontier.analyze.side_effect = RuntimeError("frontier 400: model not found")
         monitor = QuotaMonitor()
-        adapter = CascadingLLMAdapter(
-            cheap=cheap, frontier=frontier, quota_monitor=monitor
-        )
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, quota_monitor=monitor)
 
         with caplog.at_level(logging.WARNING):
             result = adapter.analyze("p")

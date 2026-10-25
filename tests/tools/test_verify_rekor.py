@@ -59,9 +59,7 @@ def test_a_proof_that_does_not_reach_the_tree_root_fails() -> None:
     assert "inclusion proof does not reach" in _problems(line)
 
 
-@pytest.mark.parametrize(
-    "field", ["hashes", "logIndex", "treeSize", "rootHash"]
-)
+@pytest.mark.parametrize("field", ["hashes", "logIndex", "treeSize", "rootHash"])
 def test_an_incomplete_proof_fails(field: str) -> None:
     line = _line()
     del line["rekor"]["verification"]["inclusionProof"][field]

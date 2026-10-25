@@ -362,8 +362,7 @@ def _run_import_positions(args: argparse.Namespace) -> int:
     print(format_plan(plan, file_lots=len(incoming)))
     if not args.apply:
         print(
-            "To był dry-run — nic nie zapisano. "
-            "--apply zastąpi tabelę positions (as_of = teraz)."
+            "To był dry-run — nic nie zapisano. --apply zastąpi tabelę positions (as_of = teraz)."
         )
         return 0
     if not settings.db_writes_enabled:

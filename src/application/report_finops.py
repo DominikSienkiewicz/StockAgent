@@ -35,8 +35,7 @@ _HEADING = "💸 Koszt cyklu"
 # Zastrzeżenie doklejane pod kwotą — bez niego prezentowalibyśmy szacunek jak
 # rachunek, co byłoby nieuczciwe.
 _DISCLAIMER = (
-    "Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, "
-    "nie faktura od dostawcy."
+    "Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy."
 )
 
 # FIN-13: zastrzeżenie sekcji z kwotami z tokenów — to ceny katalogowe, nie faktura.
@@ -44,17 +43,12 @@ _TOKEN_DISCLAIMER = (
     "Kwoty „z tokenów” to tokeny zwrócone przez dostawcę wycenione cennikiem "
     "katalogowym z config.toml (standard tier) — to wciąż nie faktura od dostawcy."
 )
-_MIXED_DISCLAIMER_SUFFIX = (
-    " Pozycje oznaczone „(szacunek)” liczy cennik jednostkowy na wywołanie."
-)
+_MIXED_DISCLAIMER_SUFFIX = " Pozycje oznaczone „(szacunek)” liczy cennik jednostkowy na wywołanie."
 _ESTIMATE_MARKER = "(szacunek)"
 _MIXED_NOTE = "część z tokenów, reszta szacunkiem"
 
 # Komunikat cyklu darmowego — sedno FinOps repo, renderowany jawnie.
-_FREE_CYCLE = (
-    "0 płatnych wywołań — bramka volatility odcięła wszystkie symbole "
-    "(cykl darmowy)."
-)
+_FREE_CYCLE = "0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy)."
 
 # Czytelne etykiety źródeł. Domena trzyma techniczne klucze, prezentacja —
 # ludzkie nazwy po polsku. Nieznany klucz renderujemy dosłownie (po escape).

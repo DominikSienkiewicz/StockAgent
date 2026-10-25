@@ -195,9 +195,7 @@ class InMemoryRepository(RepositoryPort):
 
     def _current_hour_row(self, symbol: str) -> Row | None:
         hour = _utc_hour_start(self._now()).isoformat()
-        return next(
-            (r for r in self._rows(symbol) if r.get("timestamp_hour") == hour), None
-        )
+        return next((r for r in self._rows(symbol) if r.get("timestamp_hour") == hour), None)
 
     # ------------------------------------------------------------------
     # price_snapshots
@@ -350,9 +348,7 @@ class InMemoryRepository(RepositoryPort):
     def count_expired_unverified(self, days: int) -> int:
         rows = _since(self._rows(), "timestamp", self._now() - timedelta(days=days))
         return sum(
-            1
-            for row in rows
-            if row.get("actual_price_after_12h") is None and not _not_expired(row)
+            1 for row in rows if row.get("actual_price_after_12h") is None and not _not_expired(row)
         )
 
     def update_prediction_accuracy(
@@ -446,9 +442,7 @@ class InMemoryRepository(RepositoryPort):
         rows = self._resolved(self._now() - timedelta(days=days))
         return _countable([r for r in rows if r.get("confidence_score") is not None])
 
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         start = self._now() - timedelta(days=days)
         rows = [r for r in self._rows() if r.get("actual_price_after_12h") is not None]
         return _without_stale_quote(_oldest_first(_since(rows, "timestamp", start)))
@@ -481,9 +475,7 @@ class InMemoryRepository(RepositoryPort):
         ]
         return [_stored_receipt(row) for row in _oldest_first(rows)]
 
-    def save_calibration_scores(
-        self, scores: Mapping[str, float], *, score_version: int
-    ) -> int:
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
         updated = 0
         with self._lock:
             for prediction_id, score in scores.items():
@@ -681,9 +673,7 @@ class InMemoryRepository(RepositoryPort):
                     "model_version": forecast.model_version,
                     "predicted_return": forecast.predicted_return,
                     "proba": forecast.proba,
-                    "created_at": (
-                        previous["created_at"] if previous else self._now().isoformat()
-                    ),
+                    "created_at": (previous["created_at"] if previous else self._now().isoformat()),
                 }
 
     def save_shadow_trend_prediction(
@@ -701,9 +691,7 @@ class InMemoryRepository(RepositoryPort):
                 "proba": None,
                 "predicted_trend": forecast.predicted_trend.value,
                 "confidence_score": forecast.confidence,
-                "created_at": (
-                    previous["created_at"] if previous else self._now().isoformat()
-                ),
+                "created_at": (previous["created_at"] if previous else self._now().isoformat()),
             }
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
@@ -722,9 +710,7 @@ class InMemoryRepository(RepositoryPort):
             return None
         return max(enumerate(self._regime), key=lambda item: (item[1][0], item[0]))[1][2]
 
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         with self._lock:
             self._regime.append((cycle_at, raw, state))
 

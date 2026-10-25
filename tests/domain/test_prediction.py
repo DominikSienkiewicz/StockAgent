@@ -217,9 +217,7 @@ class TestCryptoSidewaysTolerance:
         # 2% na BTC to szum w paśmie dziennej zmienności 3–5%.
         pred = self._sideways("100")
 
-        assert pred.is_trend_correct(
-            Decimal("102"), tolerance=CRYPTO_SIDEWAYS_TOLERANCE
-        )
+        assert pred.is_trend_correct(Decimal("102"), tolerance=CRYPTO_SIDEWAYS_TOLERANCE)
 
     def test_same_move_is_not_sideways_for_equity(self) -> None:
         # Kontrola: ta sama delta na akcji to realny ruch.

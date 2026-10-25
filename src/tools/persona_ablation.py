@@ -73,9 +73,7 @@ def _opinions(votes: Iterable[PersonaVoteOutcome]) -> list[InvestorOpinion]:
     return opinions
 
 
-def _verdict_hit(
-    recommendation: str, sample: PersonaVoteOutcome, crypto: Collection[str]
-) -> bool:
+def _verdict_hit(recommendation: str, sample: PersonaVoteOutcome, crypto: Collection[str]) -> bool:
     """Trafność werdyktu rady na cenach predykcji — reguła głosu persony."""
     asset_type = AssetType.CRYPTO if sample.symbol.upper() in crypto else None
     return persona_vote_correct(

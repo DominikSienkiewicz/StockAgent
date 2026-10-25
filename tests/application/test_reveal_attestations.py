@@ -237,9 +237,7 @@ class TestRevealReconciliationWithTheDurableLedger:
             self._row("b", "bb" * 32),
         ]
         repo.mark_commitment_revealed.side_effect = [RuntimeError("db down"), None]
-        use_case = RevealAttestationsUseCase(
-            repo, MagicMock(), self._ledger("aa" * 32, "bb" * 32)
-        )
+        use_case = RevealAttestationsUseCase(repo, MagicMock(), self._ledger("aa" * 32, "bb" * 32))
 
         assert use_case.reconcile() == 1
 

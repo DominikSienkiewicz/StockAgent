@@ -29,7 +29,9 @@ def test_node_skips_for_etf() -> None:
 def test_node_fetches_and_evaluates_for_stock() -> None:
     port = Mock(spec=FundamentalsPort)
     port.get_fundamentals.return_value = Fundamentals(
-        trailing_pe=25.0, forward_pe=20.0, peg_ratio=0.8,
+        trailing_pe=25.0,
+        forward_pe=20.0,
+        peg_ratio=0.8,
         eps_growth_yoy=0.20,
         fetched_at=datetime.datetime(2026, 5, 17, tzinfo=datetime.UTC),
     )

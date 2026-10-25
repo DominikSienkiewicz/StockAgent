@@ -82,9 +82,7 @@ def render_alpha_html(
 ) -> str:
     """Fragment HTML sekcji Alpha Signals. Pusty string, gdy brak danych."""
     prices = current_prices or {}
-    rows = [
-        sig for sig in signals_by_symbol.values() if sig.has_any()
-    ]
+    rows = [sig for sig in signals_by_symbol.values() if sig.has_any()]
     has_yield = yield_curve is not None and (
         yield_curve.ten_year is not None or yield_curve.two_year is not None
     )
@@ -169,10 +167,7 @@ def _significant_buy_line(symbol: str, buy: InsiderBuy) -> str:
         if url is not None and url.startswith(_SEC_URL_PREFIX)
         else ""
     )
-    return (
-        "<p style='font-size: 13px; margin: 4px 0;'>🟢 "
-        f"{_html.escape(text)}{link}</p>"
-    )
+    return f"<p style='font-size: 13px; margin: 4px 0;'>🟢 {_html.escape(text)}{link}</p>"
 
 
 def _usd_amount(value_usd: float) -> str:
@@ -201,18 +196,12 @@ def _render_yield_curve_html(curve: YieldCurveSnapshot) -> str:
         f"{_YIELD_STATE_LABEL[state]}</span> · "
         f"10Y {fmt(curve.ten_year)} · 2Y {fmt(curve.two_year)} · "
         f"spread 10Y-2Y {spread_txt}"
-        + (
-            f" · Fed funds {fmt(curve.fed_funds)}"
-            if curve.fed_funds is not None
-            else ""
-        )
+        + (f" · Fed funds {fmt(curve.fed_funds)}" if curve.fed_funds is not None else "")
         + "</div>"
     )
 
 
-def _render_signals_table_html(
-    rows: list[AlphaSignals], prices: dict[str, Decimal]
-) -> str:
+def _render_signals_table_html(rows: list[AlphaSignals], prices: dict[str, Decimal]) -> str:
     """Tabela sygnałów alpha per symbol (tylko symbole z jakimkolwiek sygnałem)."""
     body: list[str] = []
     for sig in rows:
@@ -248,9 +237,7 @@ def _render_signal_row_html(sig: AlphaSignals, price: Decimal | None) -> str:
         upside = sig.analyst.upside(price) if price is not None else None
         if upside is not None:
             analyst_txt += f" ({pct(upside, signed=True, decimals=0)})"
-    options_txt = (
-        _OPTIONS_LABEL[sig.options.sentiment()] if sig.options else _DASH
-    )
+    options_txt = _OPTIONS_LABEL[sig.options.sentiment()] if sig.options else _DASH
     social_txt = _DASH
     if sig.social is not None:
         social_txt = (

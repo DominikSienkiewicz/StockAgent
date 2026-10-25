@@ -63,9 +63,7 @@ def _row(
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch(
-        "src.infrastructure.adapters.positions_repo.create_client"
-    )
+    create = mocker.patch("src.infrastructure.adapters.positions_repo.create_client")
     client = MagicMock()
     create.return_value = client
     return client
@@ -73,9 +71,7 @@ def mock_client(mocker: Any) -> MagicMock:
 
 @pytest.fixture
 def repo(mock_client: MagicMock) -> SupabasePositionsAdapter:
-    return SupabasePositionsAdapter(
-        url="https://test.supabase.co", key="anon-key"
-    )
+    return SupabasePositionsAdapter(url="https://test.supabase.co", key="anon-key")
 
 
 class TestGetPositions:
@@ -230,13 +226,9 @@ class TestGetAsOf:
             ],
         )
 
-        assert repo.get_as_of() == datetime.fromisoformat(
-            "2026-07-05T00:00:00+00:00"
-        )
+        assert repo.get_as_of() == datetime.fromisoformat("2026-07-05T00:00:00+00:00")
 
-    def test_none_when_empty(
-        self, repo: SupabasePositionsAdapter, mock_client: MagicMock
-    ) -> None:
+    def test_none_when_empty(self, repo: SupabasePositionsAdapter, mock_client: MagicMock) -> None:
         _set_chain_response(mock_client, ["table", "select", "order"], [])
         assert repo.get_as_of() is None
 
@@ -256,9 +248,7 @@ class TestNullPositionsAdapter:
 
     def test_does_no_io(self, mocker: Any) -> None:
         # Zero I/O: Null adapter nie może tknąć klienta Supabase.
-        create = mocker.patch(
-            "src.infrastructure.adapters.positions_repo.create_client"
-        )
+        create = mocker.patch("src.infrastructure.adapters.positions_repo.create_client")
 
         adapter = NullPositionsAdapter()
         adapter.get_positions()
@@ -284,8 +274,12 @@ class TestCurrencyColumns:
             ["table", "select", "order"],
             [
                 {
-                    **_row(symbol="SAP.DE", quantity="10", avg_cost="120.50",
-                           as_of="2026-07-10T12:00:00+00:00"),
+                    **_row(
+                        symbol="SAP.DE",
+                        quantity="10",
+                        avg_cost="120.50",
+                        as_of="2026-07-10T12:00:00+00:00",
+                    ),
                     "currency": "EUR",
                     "purchase_date": "2025-03-01",
                 }
@@ -416,9 +410,7 @@ class TestReplacePositions:
 
         currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
 
-        mock_client.table.return_value.delete.return_value.in_.assert_called_once_with(
-            "id", [7, 9]
-        )
+        mock_client.table.return_value.delete.return_value.in_.assert_called_once_with("id", [7, 9])
 
     def test_empty_table_needs_no_delete(
         self, currency_repo: SupabasePositionsAdapter, mock_client: MagicMock

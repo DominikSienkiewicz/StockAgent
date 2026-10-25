@@ -70,9 +70,7 @@ class TestFileAttestationPublisher:
         assert commitment.exists()
         assert result == str(commitment.resolve())
 
-    def test_commitment_and_reveal_go_to_different_files(
-        self, tmp_path: Path
-    ) -> None:
+    def test_commitment_and_reveal_go_to_different_files(self, tmp_path: Path) -> None:
         commitment = tmp_path / "commitments.jsonl"
         reveal = tmp_path / "reveals.jsonl"
         publisher = self._make(tmp_path)
@@ -111,9 +109,7 @@ class TestFileAttestationPublisher:
 
 
 class TestNullAttestationPublisher:
-    def test_commitment_returns_empty_without_writing(
-        self, mocker: Any
-    ) -> None:
+    def test_commitment_returns_empty_without_writing(self, mocker: Any) -> None:
         opener = mocker.patch("builtins.open")
         publisher = NullAttestationPublisher()
 

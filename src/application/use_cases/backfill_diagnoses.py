@@ -92,8 +92,9 @@ class BackfillDiagnosesUseCase:
         diagnosis = parse_mistake_diagnosis(answer)
         prediction_id = row.prediction.id
         if prediction_id is None or not is_substantive_insight(diagnosis.insight):
-            logger.warning("Diagnosis backfill — pusta diagnoza dla %s, placeholder zostaje",
-                           prediction_id)
+            logger.warning(
+                "Diagnosis backfill — pusta diagnoza dla %s, placeholder zostaje", prediction_id
+            )
             return False
         try:
             self._repo.save_backfilled_diagnosis(

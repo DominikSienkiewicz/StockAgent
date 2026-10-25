@@ -43,12 +43,14 @@ class TestAnalyze:
     ) -> None:
         adapter, client = adapter_with_client
         client.chat.completions.create.return_value = _completion(
-            json.dumps({
-                "trend_direction": "BULLISH",
-                "confidence_score": 0.85,
-                "target_price_12h": 110.0,
-                "reasoning": "Strong macro tailwinds.",
-            })
+            json.dumps(
+                {
+                    "trend_direction": "BULLISH",
+                    "confidence_score": 0.85,
+                    "target_price_12h": 110.0,
+                    "reasoning": "Strong macro tailwinds.",
+                }
+            )
         )
 
         result = adapter.analyze("Predict AAPL trend.")
@@ -206,9 +208,7 @@ class TestRetryOn429:
         self, adapter_with_client: tuple[OpenAIAdapter, MagicMock], mocker: Any
     ) -> None:
         adapter, client = adapter_with_client
-        mocker.patch(
-            "src.infrastructure.llm.openai_client.time.sleep"
-        )  # bez realnego spania
+        mocker.patch("src.infrastructure.llm.openai_client.time.sleep")  # bez realnego spania
         client.chat.completions.create.side_effect = [
             _rate_limit_error(),
             _rate_limit_error(),
@@ -239,9 +239,7 @@ class TestRetryOn429:
         self, adapter_with_client: tuple[OpenAIAdapter, MagicMock], mocker: Any
     ) -> None:
         adapter, client = adapter_with_client
-        mock_sleep = mocker.patch(
-            "src.infrastructure.llm.openai_client.time.sleep"
-        )
+        mock_sleep = mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         client.chat.completions.create.side_effect = RuntimeError("network down")
 
         with pytest.raises(RuntimeError):
@@ -254,9 +252,7 @@ class TestRetryOn429:
         self, adapter_with_client: tuple[OpenAIAdapter, MagicMock], mocker: Any
     ) -> None:
         adapter, client = adapter_with_client
-        mock_sleep = mocker.patch(
-            "src.infrastructure.llm.openai_client.time.sleep"
-        )
+        mock_sleep = mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         client.chat.completions.create.side_effect = [
             _rate_limit_error(retry_after_seconds=7.5),
             _completion("{}"),
@@ -295,9 +291,7 @@ class TestOpenAILive:
             pytest.skip("OPENAI_API_KEY not set")
 
         adapter = OpenAIAdapter(api_key=api_key, model="gpt-4o-mini")
-        result = adapter.analyze(
-            'Return JSON: {"answer": 42}. Only JSON, nothing else.'
-        )
+        result = adapter.analyze('Return JSON: {"answer": 42}. Only JSON, nothing else.')
         assert isinstance(result, dict)
 
 
@@ -311,9 +305,7 @@ class TestQuotaAlertEmit:
         monitor = QuotaMonitor()
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
-        adapter = OpenAIAdapter(
-            api_key="sk-test", model="gpt-4o", quota_monitor=monitor
-        )
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o", quota_monitor=monitor)
         mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         mock_client.chat.completions.create.side_effect = [
             _rate_limit_error(),
@@ -338,9 +330,7 @@ class TestQuotaAlertEmit:
         monitor = QuotaMonitor()
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
-        adapter = OpenAIAdapter(
-            api_key="sk-test", model="gpt-4o", quota_monitor=monitor
-        )
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o", quota_monitor=monitor)
         mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         mock_client.chat.completions.create.side_effect = _rate_limit_error()
 
@@ -514,9 +504,7 @@ class TestReasoningModelBudget:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("{}")
-        adapter = OpenAIAdapter(
-            api_key="sk-test", model="gpt-5-mini", max_tokens=512
-        )
+        adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini", max_tokens=512)
 
         adapter.analyze("x")
 
@@ -535,9 +523,7 @@ class TestEmptyContentDiagnostics:
     ) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
-        client.chat.completions.create.return_value = _completion(
-            None, finish_reason="length"
-        )
+        client.chat.completions.create.return_value = _completion(None, finish_reason="length")
         adapter = OpenAIAdapter(api_key="sk-test", model="gpt-5-mini")
 
         with pytest.raises(ValueError, match="truncat|max_completion_tokens"):

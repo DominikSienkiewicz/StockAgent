@@ -16,9 +16,7 @@ class TestRenderLeadHtml:
         assert render_lead_html([]) == ""
 
     def test_renders_headline_and_detail(self) -> None:
-        html = render_lead_html(
-            [_item("🔥", "AAPL +4.2%, rada zgodna: BUY", "Konsensus 6/7")]
-        )
+        html = render_lead_html([_item("🔥", "AAPL +4.2%, rada zgodna: BUY", "Konsensus 6/7")])
 
         assert "AAPL +4.2%, rada zgodna: BUY" in html
         assert "Konsensus 6/7" in html
@@ -71,9 +69,7 @@ class TestRenderLeadText:
         assert render_lead_text([]) == ""
 
     def test_renders_headline_and_detail(self) -> None:
-        text = render_lead_text(
-            [_item("🔥", "AAPL +4.2%, rada zgodna: BUY", "Konsensus 6/7")]
-        )
+        text = render_lead_text([_item("🔥", "AAPL +4.2%, rada zgodna: BUY", "Konsensus 6/7")])
 
         assert "AAPL +4.2%, rada zgodna: BUY" in text
         assert "Konsensus 6/7" in text

@@ -38,9 +38,7 @@ _unit = st.floats(min_value=0.0, max_value=1.0, allow_nan=False)
 
 
 @given(returns=_returns, first=_confidence, second=_confidence)
-def test_var_is_monotonic_in_confidence(
-    returns: list[float], first: float, second: float
-) -> None:
+def test_var_is_monotonic_in_confidence(returns: list[float], first: float, second: float) -> None:
     lower, higher = sorted((first, second))
 
     assert historical_var(returns, lower) <= historical_var(returns, higher) + _TOLERANCE
@@ -48,10 +46,7 @@ def test_var_is_monotonic_in_confidence(
 
 @given(returns=_returns, confidence=_confidence)
 def test_cvar_is_at_least_var(returns: list[float], confidence: float) -> None:
-    assert (
-        conditional_var(returns, confidence)
-        >= historical_var(returns, confidence) - _TOLERANCE
-    )
+    assert conditional_var(returns, confidence) >= historical_var(returns, confidence) - _TOLERANCE
 
 
 @given(first=_series, second=_series)

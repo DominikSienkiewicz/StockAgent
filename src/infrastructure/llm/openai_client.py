@@ -135,9 +135,7 @@ class OpenAIAdapter(LLMPort):
     def _supports_custom_temperature(self) -> bool:
         """GPT-5 / o-series akceptują tylko default temperature (=1)."""
         model = self._model.lower()
-        return not any(
-            model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES
-        )
+        return not any(model.startswith(p) for p in _NO_CUSTOM_TEMPERATURE_PREFIXES)
 
     def _is_reasoning_model(self) -> bool:
         """Reasoning models (gpt-5, o-series) różnią się nazwą parametru capa
@@ -208,8 +206,7 @@ class OpenAIAdapter(LLMPort):
                     output_tokens=_completion_tokens(response),
                 )
             raise MalformedPayload(
-                "OpenAI returned empty content for analyze() "
-                f"(finish_reason={finish_reason!r})."
+                f"OpenAI returned empty content for analyze() (finish_reason={finish_reason!r})."
             )
 
         try:
@@ -229,9 +226,7 @@ class OpenAIAdapter(LLMPort):
                     f"{self._resolved_max_tokens()} tokens: {content[:200]!r}",
                     output_tokens=_completion_tokens(response),
                 ) from exc
-            raise MalformedPayload(
-                f"OpenAI returned invalid JSON: {content[:200]!r}"
-            ) from exc
+            raise MalformedPayload(f"OpenAI returned invalid JSON: {content[:200]!r}") from exc
 
     def analyze_mistake(self, prompt: str) -> str:
         response = self._call_with_retry(

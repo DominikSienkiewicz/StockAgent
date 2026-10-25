@@ -471,9 +471,7 @@ class TestShadowTrendPrediction:
             ("llm_variant", self.VERSION, "BULLISH", 0.6, None, None)
         ]
 
-    def test_the_ml_leg_read_skips_variant_rows(
-        self, repository: SupabaseRepository
-    ) -> None:
+    def test_the_ml_leg_read_skips_variant_rows(self, repository: SupabaseRepository) -> None:
         from src.domain.prediction import TrendDirection
         from src.domain.promotion import ShadowForecast
         from src.domain.shadow_prompt import ShadowTrendForecast
@@ -493,7 +491,8 @@ class TestShadowTrendPrediction:
         )
 
         settled = [
-            row for row in repository.get_settled_shadow_predictions(since)
+            row
+            for row in repository.get_settled_shadow_predictions(since)
             if row.prediction_id == prediction_id
         ]
 
@@ -562,15 +561,13 @@ class TestCouncilVoteRounds:
             )
             stored = cur.fetchall()
         assert stored == [(1, "HOLD"), (2, "BUY")]
-        assert [vote.recommendation for vote in rounds.get_council_votes_for_prediction(
-            prediction_id
-        )] == ["HOLD"]
+        assert [
+            vote.recommendation for vote in rounds.get_council_votes_for_prediction(prediction_id)
+        ] == ["HOLD"]
 
 
 class TestSchemaAndRoles:
-    def test_unknown_column_is_rejected_as_not_found(
-        self, repository: SupabaseRepository
-    ) -> None:
+    def test_unknown_column_is_rejected_as_not_found(self, repository: SupabaseRepository) -> None:
         # Incydent 013: klucz bez migracji → PGRST204 i cały zapis predykcji przepada.
         with pytest.raises(NotFound) as excinfo:
             repository.save_prediction(prediction_record("T17NC", not_a_column=1))
@@ -578,9 +575,7 @@ class TestSchemaAndRoles:
         assert isinstance(excinfo.value, APIError)
         assert excinfo.value.code == "PGRST204"
 
-    def test_anon_key_cannot_write_predictions(
-        self, postgrest_stack: PostgrestStack
-    ) -> None:
+    def test_anon_key_cannot_write_predictions(self, postgrest_stack: PostgrestStack) -> None:
         # 038: RLS bez polityk i granty odebrane rolom publicznym — klucz anon
         # nie zapisze ani nie przeczyta niczego.
         anonymous = make_repository(postgrest_stack, role="anon")
@@ -623,9 +618,7 @@ class TestCalibrationScoresRpc:
         self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
     ) -> None:
         first = repository.save_prediction(prediction_record("T17CAL"))
-        second = repository.save_prediction(
-            prediction_record("T17CAL", timestamp=_hours_ago(2))
-        )
+        second = repository.save_prediction(prediction_record("T17CAL", timestamp=_hours_ago(2)))
 
         updated = repository.save_calibration_scores(
             {str(first): 0.19, str(second): 0.96}, score_version=2

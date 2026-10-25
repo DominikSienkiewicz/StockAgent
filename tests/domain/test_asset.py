@@ -171,9 +171,7 @@ class TestEffectiveThreshold:
 
         base = Threshold(Decimal("0.02"))
 
-        assert effective_threshold(base, None, None, regime_multiplier=0.5).value == Decimal(
-            "0.02"
-        )
+        assert effective_threshold(base, None, None, regime_multiplier=0.5).value == Decimal("0.02")
 
 
 class TestNearThreshold:

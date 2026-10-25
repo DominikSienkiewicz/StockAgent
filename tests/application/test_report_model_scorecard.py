@@ -35,15 +35,11 @@ def _summary(accepted: int, rejected: int, skipped: int) -> RunSummary:
 class TestSelfSuppression:
     def test_none_summary_suppresses_html(self) -> None:
         # Brak danych = brak sekcji, nie pusty nagłówek.
-        out = render_model_scorecard_html(
-            None, trained_at=_FRESH, now=_NOW
-        )
+        out = render_model_scorecard_html(None, trained_at=_FRESH, now=_NOW)
         assert out == ""
 
     def test_none_summary_suppresses_text(self) -> None:
-        out = render_model_scorecard_text(
-            None, trained_at=_FRESH, now=_NOW
-        )
+        out = render_model_scorecard_text(None, trained_at=_FRESH, now=_NOW)
         assert out == ""
 
 
@@ -78,12 +74,8 @@ class TestBrutalHonestyOnRejects:
     def test_all_rejected_renders_and_does_not_fake_success(self) -> None:
         # accepted == 0: sekcja MUSI się wyrenderować i jawnie przyznać odrzut.
         summary = _summary(0, 4, 0)
-        html = render_model_scorecard_html(
-            summary, trained_at=_FRESH, now=_NOW
-        )
-        text = render_model_scorecard_text(
-            summary, trained_at=_FRESH, now=_NOW
-        )
+        html = render_model_scorecard_html(summary, trained_at=_FRESH, now=_NOW)
+        text = render_model_scorecard_text(summary, trained_at=_FRESH, now=_NOW)
         assert html != ""
         assert text != ""
         # Jawny komunikat: nowy model odrzucony, jedziemy na sprawdzonym.
@@ -97,29 +89,21 @@ class TestBrutalHonestyOnRejects:
 
     def test_rejects_shown_even_when_some_accepted(self) -> None:
         summary = _summary(2, 1, 0)
-        html = render_model_scorecard_html(
-            summary, trained_at=_FRESH, now=_NOW
-        )
+        html = render_model_scorecard_html(summary, trained_at=_FRESH, now=_NOW)
         assert "odrzucon" in html.lower()
 
 
 class TestStaleBadge:
     def test_model_older_than_21_days_shows_stale_badge_html(self) -> None:
-        out = render_model_scorecard_html(
-            _summary(1, 0, 0), trained_at=_STALE, now=_NOW
-        )
+        out = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_STALE, now=_NOW)
         assert "STALE" in out
 
     def test_model_older_than_21_days_shows_stale_badge_text(self) -> None:
-        out = render_model_scorecard_text(
-            _summary(1, 0, 0), trained_at=_STALE, now=_NOW
-        )
+        out = render_model_scorecard_text(_summary(1, 0, 0), trained_at=_STALE, now=_NOW)
         assert "STALE" in out
 
     def test_fresh_model_has_no_stale_badge(self) -> None:
-        out = render_model_scorecard_html(
-            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW
-        )
+        out = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
         assert "STALE" not in out
 
 
@@ -154,9 +138,7 @@ class TestCandidateMetrics:
 
     def test_metrics_optional_render_without_them(self) -> None:
         # Bez metryk kandydata sekcja i tak pokazuje przebieg treningu.
-        out = render_model_scorecard_html(
-            _summary(2, 0, 0), trained_at=_FRESH, now=_NOW
-        )
+        out = render_model_scorecard_html(_summary(2, 0, 0), trained_at=_FRESH, now=_NOW)
         assert out != ""
         assert "zaakceptowano 2" in out
 
@@ -164,9 +146,7 @@ class TestCandidateMetrics:
 class TestHtmlEscaping:
     def test_escapes_metric_note_context(self) -> None:
         # Sekcja nie wstrzykuje surowego HTML — sanity check na braku '<script>'.
-        out = render_model_scorecard_html(
-            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW
-        )
+        out = render_model_scorecard_html(_summary(1, 0, 0), trained_at=_FRESH, now=_NOW)
         assert "<script>" not in out
 
 
@@ -205,8 +185,11 @@ class TestBuildScorecardView:
 
     def test_all_rejected_run_is_not_dressed_up(self) -> None:
         rows = [
-            {"symbol": s, "status": "skipped_validation_failed",
-             "timestamp": "2026-07-09T10:00:00+00:00"}
+            {
+                "symbol": s,
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-07-09T10:00:00+00:00",
+            }
             for s in ("AAPL", "MSFT")
         ]
 
@@ -224,14 +207,26 @@ class TestBuildScorecardView:
         # ML-03: okno 30 dni niesie kilka tygodniowych przebiegów; karta liczyła
         # je razem („zaakceptowano 2 z 4"), choć ostatni trening miał 2 wiersze.
         rows = [
-            {"symbol": "AAPL", "status": "trained_successfully",
-             "timestamp": "2026-10-11T03:40:00+00:00"},
-            {"symbol": "MSFT", "status": "skipped_validation_failed",
-             "timestamp": "2026-10-11T03:35:00+00:00"},
-            {"symbol": "AAPL", "status": "trained_successfully",
-             "timestamp": "2026-10-04T03:40:00+00:00"},
-            {"symbol": "MSFT", "status": "skipped_validation_failed",
-             "timestamp": "2026-10-04T03:35:00+00:00"},
+            {
+                "symbol": "AAPL",
+                "status": "trained_successfully",
+                "timestamp": "2026-10-11T03:40:00+00:00",
+            },
+            {
+                "symbol": "MSFT",
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-10-11T03:35:00+00:00",
+            },
+            {
+                "symbol": "AAPL",
+                "status": "trained_successfully",
+                "timestamp": "2026-10-04T03:40:00+00:00",
+            },
+            {
+                "symbol": "MSFT",
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-10-04T03:35:00+00:00",
+            },
         ]
 
         view = build_scorecard_view(rows)
@@ -244,10 +239,18 @@ class TestBuildScorecardView:
         # ML-24: re-run 10 minut po cronie sklejał się z nim („zaakceptowano 1,
         # odrzucono 1" z dwóch przebiegów); z `run_id` liczy się tylko ostatni.
         rows = [
-            {"symbol": "ALL", "status": "trained_successfully", "run_id": "rerun",
-             "timestamp": "2026-10-11T03:50:00+00:00"},
-            {"symbol": "ALL", "status": "skipped_validation_failed", "run_id": "cron",
-             "timestamp": "2026-10-11T03:40:00+00:00"},
+            {
+                "symbol": "ALL",
+                "status": "trained_successfully",
+                "run_id": "rerun",
+                "timestamp": "2026-10-11T03:50:00+00:00",
+            },
+            {
+                "symbol": "ALL",
+                "status": "skipped_validation_failed",
+                "run_id": "cron",
+                "timestamp": "2026-10-11T03:40:00+00:00",
+            },
         ]
 
         view = build_scorecard_view(rows)
@@ -260,15 +263,25 @@ class TestBuildScorecardView:
         # Najnowszy wiersz z metrykami to odrzucony kandydat MSFT — dawniej karta
         # pokazywała jego RMSE bez nazwy, jakby to był wdrożony model.
         rows = [
-            {"symbol": "MSFT", "status": "skipped_validation_failed",
-             "timestamp": "2026-10-11T03:45:00+00:00",
-             "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025,
-             "n_folds": 4, "n_samples": 80},
-            {"symbol": "ALL", "status": "trained_successfully",
-             "timestamp": "2026-10-11T03:40:00+00:00",
-             "candidate_holdout_rmse": 0.021, "baseline_rmse": 0.024,
-             "candidate_holdout_directional_hit_rate": 0.58,
-             "n_folds": 4, "n_samples": 243},
+            {
+                "symbol": "MSFT",
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-10-11T03:45:00+00:00",
+                "candidate_holdout_rmse": 0.030,
+                "baseline_rmse": 0.025,
+                "n_folds": 4,
+                "n_samples": 80,
+            },
+            {
+                "symbol": "ALL",
+                "status": "trained_successfully",
+                "timestamp": "2026-10-11T03:40:00+00:00",
+                "candidate_holdout_rmse": 0.021,
+                "baseline_rmse": 0.024,
+                "candidate_holdout_directional_hit_rate": 0.58,
+                "n_folds": 4,
+                "n_samples": 243,
+            },
         ]
 
         view = build_scorecard_view(rows)
@@ -280,9 +293,14 @@ class TestBuildScorecardView:
 
     def test_rejected_only_run_still_names_the_candidate(self) -> None:
         rows = [
-            {"symbol": "ALL", "status": "skipped_validation_failed",
-             "timestamp": "2026-10-11T03:45:00+00:00",
-             "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025, "n_samples": 243},
+            {
+                "symbol": "ALL",
+                "status": "skipped_validation_failed",
+                "timestamp": "2026-10-11T03:45:00+00:00",
+                "candidate_holdout_rmse": 0.030,
+                "baseline_rmse": 0.025,
+                "n_samples": 243,
+            },
         ]
 
         view = build_scorecard_view(rows)
@@ -319,26 +337,38 @@ class TestMetricsProvenance:
 
     def test_html_names_the_symbol_and_sample_size(self) -> None:
         html = render_model_scorecard_html(
-            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
-            candidate_rmse=0.021, baseline_rmse=0.024,
-            metrics_symbol="ALL", n_samples=243,
+            _summary(1, 0, 0),
+            trained_at=_FRESH,
+            now=_NOW,
+            candidate_rmse=0.021,
+            baseline_rmse=0.024,
+            metrics_symbol="ALL",
+            n_samples=243,
         )
         assert "ALL" in html
         assert "n=243" in html
 
     def test_text_names_the_symbol_and_sample_size(self) -> None:
         text = render_model_scorecard_text(
-            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
-            candidate_rmse=0.021, baseline_rmse=0.024,
-            metrics_symbol="ALL", n_samples=243,
+            _summary(1, 0, 0),
+            trained_at=_FRESH,
+            now=_NOW,
+            candidate_rmse=0.021,
+            baseline_rmse=0.024,
+            metrics_symbol="ALL",
+            n_samples=243,
         )
         assert "ALL" in text
         assert "n=243" in text
 
     def test_symbol_is_escaped(self) -> None:
         html = render_model_scorecard_html(
-            _summary(1, 0, 0), trained_at=_FRESH, now=_NOW,
-            candidate_rmse=0.021, baseline_rmse=0.024, metrics_symbol="<b>X</b>",
+            _summary(1, 0, 0),
+            trained_at=_FRESH,
+            now=_NOW,
+            candidate_rmse=0.021,
+            baseline_rmse=0.024,
+            metrics_symbol="<b>X</b>",
         )
         assert "<b>X</b>" not in html
 
@@ -346,15 +376,29 @@ class TestMetricsProvenance:
 def _pooled_run_rows(pooled_status: str) -> list[dict[str, object]]:
     """Przebieg po ML-13: trzy ewaluacje per symbol, potem wiersz modelu wspólnego."""
     return [
-        {"symbol": "AAPL", "status": "evaluated_passed_gate",
-         "timestamp": "2026-10-11T03:30:00+00:00"},
-        {"symbol": "MSFT", "status": "evaluated_passed_gate",
-         "timestamp": "2026-10-11T03:31:00+00:00"},
-        {"symbol": "NVDA", "status": "evaluated_failed_gate",
-         "timestamp": "2026-10-11T03:32:00+00:00"},
-        {"symbol": "ALL", "status": pooled_status,
-         "timestamp": "2026-10-11T03:35:00+00:00",
-         "candidate_holdout_rmse": 0.030, "baseline_rmse": 0.025, "n_samples": 243},
+        {
+            "symbol": "AAPL",
+            "status": "evaluated_passed_gate",
+            "timestamp": "2026-10-11T03:30:00+00:00",
+        },
+        {
+            "symbol": "MSFT",
+            "status": "evaluated_passed_gate",
+            "timestamp": "2026-10-11T03:31:00+00:00",
+        },
+        {
+            "symbol": "NVDA",
+            "status": "evaluated_failed_gate",
+            "timestamp": "2026-10-11T03:32:00+00:00",
+        },
+        {
+            "symbol": "ALL",
+            "status": pooled_status,
+            "timestamp": "2026-10-11T03:35:00+00:00",
+            "candidate_holdout_rmse": 0.030,
+            "baseline_rmse": 0.025,
+            "n_samples": 243,
+        },
     ]
 
 
@@ -382,10 +426,13 @@ class TestPooledVerdict:
         # modele ewaluacyjne — nie mogą zmieniać werdyktu ani liczby ewaluacji.
         rows: list[dict[str, Any]] = [
             *_pooled_run_rows("trained_successfully"),
-            {"symbol": "ALL_FREE", "status": "evaluated_failed_gate",
-             "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.5},
-            {"symbol": "ALL_LLM", "status": "skipped",
-             "timestamp": "2026-10-11T03:36:00+00:00"},
+            {
+                "symbol": "ALL_FREE",
+                "status": "evaluated_failed_gate",
+                "timestamp": "2026-10-11T03:36:00+00:00",
+                "candidate_holdout_rmse": 0.5,
+            },
+            {"symbol": "ALL_LLM", "status": "skipped", "timestamp": "2026-10-11T03:36:00+00:00"},
         ]
 
         view = build_scorecard_view(rows)
@@ -409,8 +456,11 @@ class TestPooledVerdict:
 
     def test_run_without_pooled_row_keeps_the_legacy_aggregate(self) -> None:
         rows = [
-            {"symbol": "AAPL", "status": "trained_successfully",
-             "timestamp": "2026-07-09T10:00:00+00:00"},
+            {
+                "symbol": "AAPL",
+                "status": "trained_successfully",
+                "timestamp": "2026-07-09T10:00:00+00:00",
+            },
         ]
 
         view = build_scorecard_view(rows)
@@ -423,9 +473,7 @@ class TestPooledVerdict:
         assert view is not None
 
         for render in (render_model_scorecard_html, render_model_scorecard_text):
-            out = render(
-                view.summary, trained_at=_FRESH, now=_NOW, evaluations=view.evaluations
-            )
+            out = render(view.summary, trained_at=_FRESH, now=_NOW, evaluations=view.evaluations)
             assert "model wspólny" in out
             assert "zaakceptowano 1, odrzucono 0, pominięto 0" in out
             assert "Ewaluacje per symbol" in out
@@ -512,6 +560,7 @@ class TestDataCoverageLine:
 
         assert "Pokrycie danych" not in plain
 
+
 class TestFeatureDriftWarning:
     """ML-21: wiersz modelu wspólnego z `feature_stats` (migracja 052) niesie PSI
     ostatnich 30 dni próbki względem jej starszej części; PSI > 0.25 to ostrzeżenie
@@ -572,15 +621,31 @@ class TestSnapshotModelCardsLine:
     bez wpływu na werdykt i ewaluacje per symbol."""
 
     _ROWS: list[dict[str, object]] = [
-        {"symbol": "ALL_FREE", "status": "evaluated_failed_gate",
-         "timestamp": "2026-10-04T03:36:00+00:00", "candidate_holdout_rmse": 0.5},
-        {"symbol": "ALL_FREE", "status": "trained_successfully",
-         "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.021,
-         "baseline_rmse": 0.024, "n_samples": 812},
-        {"symbol": "ALL_LLM", "status": "skipped",
-         "timestamp": "2026-10-11T03:37:00+00:00", "n_samples": 37},
-        {"symbol": "ALL", "status": "trained_successfully",
-         "timestamp": "2026-10-11T03:35:00+00:00"},
+        {
+            "symbol": "ALL_FREE",
+            "status": "evaluated_failed_gate",
+            "timestamp": "2026-10-04T03:36:00+00:00",
+            "candidate_holdout_rmse": 0.5,
+        },
+        {
+            "symbol": "ALL_FREE",
+            "status": "trained_successfully",
+            "timestamp": "2026-10-11T03:36:00+00:00",
+            "candidate_holdout_rmse": 0.021,
+            "baseline_rmse": 0.024,
+            "n_samples": 812,
+        },
+        {
+            "symbol": "ALL_LLM",
+            "status": "skipped",
+            "timestamp": "2026-10-11T03:37:00+00:00",
+            "n_samples": 37,
+        },
+        {
+            "symbol": "ALL",
+            "status": "trained_successfully",
+            "timestamp": "2026-10-11T03:35:00+00:00",
+        },
     ]
 
     def test_newest_card_of_each_snapshot_model_free_first(self) -> None:

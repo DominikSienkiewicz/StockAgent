@@ -46,6 +46,7 @@ from src.domain.weekly_recap import (
 
 logger = logging.getLogger(__name__)
 
+
 def _to_decimal(value: Any) -> Decimal | None:
     """Bezpieczna koercja do `Decimal` — None gdy wartość skażona / brak."""
     if value is None:
@@ -95,9 +96,7 @@ def _parse_council(
             )
         )
 
-    final = _recommendation_or_hold(
-        raw.get("final_recommendation", "HOLD"), "final_recommendation"
-    )
+    final = _recommendation_or_hold(raw.get("final_recommendation", "HOLD"), "final_recommendation")
     return tuple(opinions), final
 
 

@@ -321,9 +321,7 @@ def format_report(report: LedgerReport) -> str:
             )
     bad = sum(1 for check in report.checks if not check.valid)
     if report.ok:
-        lines.append(
-            f"OK: all {len(report.checks)} reveals reproduce their published commitments"
-        )
+        lines.append(f"OK: all {len(report.checks)} reveals reproduce their published commitments")
     else:
         lines.append(
             f"FAIL: {bad} of {len(report.checks)} reveals do not reproduce their commitments"

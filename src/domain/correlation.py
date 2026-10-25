@@ -49,9 +49,7 @@ def align_by_utc_day(
         return {}
     common = set.intersection(*(set(days) for days in by_day.values()))
     ordered = sorted(common)
-    return {
-        symbol: [days[day] for day in ordered] for symbol, days in by_day.items()
-    }
+    return {symbol: [days[day] for day in ordered] for symbol, days in by_day.items()}
 
 
 def returns_from_prices(prices: list[float]) -> list[float]:
@@ -109,15 +107,11 @@ def correlation_matrix(
     nich policzyć sensownej korelacji. Klucz to zawsze `(min, max)` symboli,
     więc para występuje raz: `(A,B)`, nigdy `(B,A)`.
     """
-    usable = sorted(
-        sym for sym, rets in returns_by_symbol.items() if len(rets) >= _MIN_RETURNS
-    )
+    usable = sorted(sym for sym, rets in returns_by_symbol.items() if len(rets) >= _MIN_RETURNS)
     matrix: dict[tuple[str, str], float] = {}
     for i, left in enumerate(usable):
         for right in usable[i + 1 :]:
-            matrix[(left, right)] = pearson(
-                returns_by_symbol[left], returns_by_symbol[right]
-            )
+            matrix[(left, right)] = pearson(returns_by_symbol[left], returns_by_symbol[right])
     return matrix
 
 
@@ -157,9 +151,7 @@ def detect_clusters(
     for sym in symbols:
         groups.setdefault(find(sym), []).append(sym)
 
-    clusters = [
-        tuple(sorted(members)) for members in groups.values() if len(members) >= 2
-    ]
+    clusters = [tuple(sorted(members)) for members in groups.values() if len(members) >= 2]
     # Stabilny porządek wyniku — sort po pierwszym członku klastra.
     clusters.sort()
     return clusters

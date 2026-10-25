@@ -15,9 +15,9 @@ from src.domain.macro_risk import MacroAlertLevel
 class YieldCurveState(Enum):
     """Stan krzywej rentowności wyprowadzony ze spreadu 10Y-2Y."""
 
-    INVERTED = "INVERTED"   # 10Y < 2Y — sygnał recesyjny
-    FLAT = "FLAT"           # spread dodatni, ale wąski
-    NORMAL = "NORMAL"       # zdrowy dodatni spread
+    INVERTED = "INVERTED"  # 10Y < 2Y — sygnał recesyjny
+    FLAT = "FLAT"  # spread dodatni, ale wąski
+    NORMAL = "NORMAL"  # zdrowy dodatni spread
 
 
 @dataclass(frozen=True)
@@ -38,9 +38,7 @@ class YieldCurveSnapshot:
             return None
         return self.ten_year - self.two_year
 
-    def state(
-        self, invert_below: float = 0.0, flat_below: float = 0.5
-    ) -> YieldCurveState:
+    def state(self, invert_below: float = 0.0, flat_below: float = 0.5) -> YieldCurveState:
         """Klasyfikuje krzywą. Spread < `invert_below` → INVERTED; <
         `flat_below` → FLAT; w pozostałych przypadkach (też brak danych,
         traktowany neutralnie) → NORMAL."""

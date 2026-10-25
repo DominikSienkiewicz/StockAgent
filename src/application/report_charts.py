@@ -68,9 +68,7 @@ def _render_bar_chart_html(title: str, rows: list[tuple[str, Decimal]]) -> str:
     return (
         "<div class='gw'>"
         f"<div class='gt'>{_html.escape(title)}</div>"
-        "<table role='presentation' class='bt'><tbody>"
-        + "".join(cells)
-        + "</tbody></table></div>"
+        "<table role='presentation' class='bt'><tbody>" + "".join(cells) + "</tbody></table></div>"
     )
 
 
@@ -109,9 +107,7 @@ def build_forecast_chart_html(results: list[SymbolResult]) -> str:
     ]
     if not saved:
         return ""
-    saved_sorted = sorted(
-        saved, key=lambda r: abs(r.expected_change or Decimal("0")), reverse=True
-    )
+    saved_sorted = sorted(saved, key=lambda r: abs(r.expected_change or Decimal("0")), reverse=True)
     rows = [(r.symbol, r.expected_change or Decimal("0")) for r in saved_sorted]
     return _render_bar_chart_html("Prognoza ruchu ceny (cykl)", rows)
 
@@ -145,7 +141,8 @@ def build_correlation_chart_html(results: list[SymbolResult]) -> str:
     Mniej niż 3 punkty (sentyment + Δ) → "".
     """
     points = [
-        r for r in results
+        r
+        for r in results
         if r.sentiment_score is not None and r.delta is not None and r.status != "error"
     ]
     if len(points) < 3:
@@ -153,18 +150,17 @@ def build_correlation_chart_html(results: list[SymbolResult]) -> str:
 
     # (cena_rośnie, sentyment_pozytywny) → lista chipów
     quadrants: dict[tuple[bool, bool], list[str]] = {
-        (True, True): [], (True, False): [],
-        (False, True): [], (False, False): [],
+        (True, True): [],
+        (True, False): [],
+        (False, True): [],
+        (False, False): [],
     }
     for r in points:
         delta = r.delta or Decimal("0")
         sentiment = r.sentiment_score or 0.0
         is_divergence = (
-            (delta > DIVERGENCE_PRICE_THRESHOLD
-             and sentiment < -DIVERGENCE_SENTIMENT_THRESHOLD)
-            or (delta < -DIVERGENCE_PRICE_THRESHOLD
-                and sentiment > DIVERGENCE_SENTIMENT_THRESHOLD)
-        )
+            delta > DIVERGENCE_PRICE_THRESHOLD and sentiment < -DIVERGENCE_SENTIMENT_THRESHOLD
+        ) or (delta < -DIVERGENCE_PRICE_THRESHOLD and sentiment > DIVERGENCE_SENTIMENT_THRESHOLD)
         chip = _render_quadrant_chip(r.symbol, delta, is_divergence)
         quadrants[(delta >= 0, sentiment >= 0)].append(chip)
 

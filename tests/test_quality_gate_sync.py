@@ -316,8 +316,8 @@ def test_sonarcloud_coverage_run_does_not_inherit_the_domain_floor() -> None:
 
 
 def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
-    dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
-        "dependency-groups"
-    ]["dev"]
+    dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["dependency-groups"][
+        "dev"
+    ]
 
     assert any(str(requirement).startswith("pytest-cov") for requirement in dev)

@@ -45,9 +45,7 @@ def render_lead_html(items: list[LeadItem]) -> str:
         f"margin-bottom: 16px;'>"
         f"<div style='font-size: 13px; font-weight: 700; color: {_ACCENT_COLOR}; "
         f"text-transform: uppercase; letter-spacing: 0.03em; "
-        f"margin-bottom: 8px;'>⚡ Najważniejsze w tym cyklu</div>"
-        + "".join(rows)
-        + "</div>"
+        f"margin-bottom: 8px;'>⚡ Najważniejsze w tym cyklu</div>" + "".join(rows) + "</div>"
     )
 
 
@@ -59,8 +57,7 @@ def _render_item_html(item: LeadItem) -> str:
     if item.detail:
         detail = _html.escape(item.detail)
         detail_html = (
-            f"<div style='font-size: 12px; color: #6b7280; "
-            f"margin: 2px 0 0 24px;'>{detail}</div>"
+            f"<div style='font-size: 12px; color: #6b7280; margin: 2px 0 0 24px;'>{detail}</div>"
         )
     return (
         f"<div style='margin-bottom: 6px;'>"

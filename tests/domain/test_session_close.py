@@ -80,7 +80,8 @@ class TestSessionCloseOf:
 
         assert close is not None
         assert (close.session_day, close.source) == (
-            date(2026, 11, 25), SessionCloseSource.QUOTE_CLOSE
+            date(2026, 11, 25),
+            SessionCloseSource.QUOTE_CLOSE,
         )
 
     def test_early_close_counts_from_13_00_et(self) -> None:
@@ -93,7 +94,9 @@ class TestSessionCloseOf:
 
         assert close is not None
         assert (close.price, close.session_day, close.source) == (
-            Money(Decimal("111")), date(2026, 11, 27), SessionCloseSource.QUOTE_CLOSE
+            Money(Decimal("111")),
+            date(2026, 11, 27),
+            SessionCloseSource.QUOTE_CLOSE,
         )
 
 

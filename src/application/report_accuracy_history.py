@@ -106,12 +106,14 @@ def _render_accuracy_history_text(accuracy_stats: dict[str, Any] | None) -> list
     directional = _directional_accuracy(accuracy_stats)
     if directional is not None:
         lines.append(f"  {DIRECTIONAL_ACCURACY_LABEL}: {directional[0]} ({directional[1]})")
-    lines.extend([
-        f"  {TOTAL_ACCURACY_LABEL}: {_pct(accuracy_stats['mean_accuracy'], decimals=1)}"
-        f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
-        f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
-        f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
-    ])
+    lines.extend(
+        [
+            f"  {TOTAL_ACCURACY_LABEL}: {_pct(accuracy_stats['mean_accuracy'], decimals=1)}"
+            f" ({wilson_label(accuracy_stats['correct_count'], accuracy_stats['sample_count'])})"
+            f"  ·  Predykcji ocenionych: {accuracy_stats['sample_count']}"
+            f"  ·  Poprawnych: {accuracy_stats['correct_count']}",
+        ]
+    )
     session_close = _session_close_accuracy(accuracy_stats)
     if session_close is not None:
         lines.append(f"  {session_close}")

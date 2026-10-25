@@ -50,8 +50,6 @@ def test_every_mapped_flag_is_a_boolean_setting() -> None:
 
 
 def test_every_mapped_migration_is_a_file_in_the_migrations_directory() -> None:
-    numbers = {
-        int(path.name[:3]) for path in (ROOT / "supabase" / "migrations").glob("*.sql")
-    }
+    numbers = {int(path.name[:3]) for path in (ROOT / "supabase" / "migrations").glob("*.sql")}
 
     assert sorted(set(FLAG_REQUIRED_MIGRATION.values()) - numbers) == []

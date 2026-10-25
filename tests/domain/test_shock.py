@@ -32,18 +32,13 @@ class TestDetectShock:
         asset = Asset("NVDA", AssetType.STOCK)
         delta = PriceDelta(Decimal("-0.05"))
         alert = detect_shock(asset, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS)
-        assert alert == ShockAlert(
-            symbol="NVDA", delta=delta, direction=ShockDirection.DOWN
-        )
+        assert alert == ShockAlert(symbol="NVDA", delta=delta, direction=ShockDirection.DOWN)
 
     def test_no_alert_when_equity_delta_below_shock_threshold(self) -> None:
         # 3% mieści się w bramce volatility × 2 (4%) → to nie jest szok.
         asset = Asset("NVDA", AssetType.STOCK)
         delta = PriceDelta(Decimal("0.03"))
-        assert (
-            detect_shock(asset, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS)
-            is None
-        )
+        assert detect_shock(asset, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS) is None
 
     def test_upward_shock_reports_up_direction(self) -> None:
         asset = Asset("NVDA", AssetType.STOCK)
@@ -59,12 +54,8 @@ class TestDetectShock:
         stock = Asset("NVDA", AssetType.STOCK)
         crypto = Asset("BTC", AssetType.CRYPTO)
 
-        stock_alert = detect_shock(
-            stock, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS
-        )
-        crypto_alert = detect_shock(
-            crypto, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS
-        )
+        stock_alert = detect_shock(stock, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS)
+        crypto_alert = detect_shock(crypto, delta, FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS)
 
         assert stock_alert is not None
         assert crypto_alert is None
@@ -89,17 +80,13 @@ class TestDetectShock:
         # Wiek dokładnie na granicy nie jest jeszcze stęchły — alert dozwolony.
         asset = Asset("NVDA", AssetType.STOCK)
         delta = PriceDelta(Decimal("-0.10"))
-        alert = detect_shock(
-            asset, delta, FAST_LOOP_THRESHOLD, SNAPSHOT_MAX_AGE_HOURS
-        )
+        alert = detect_shock(asset, delta, FAST_LOOP_THRESHOLD, SNAPSHOT_MAX_AGE_HOURS)
         assert alert is not None
 
     def test_zero_delta_never_shocks(self) -> None:
         asset = Asset("NVDA", AssetType.STOCK)
         assert (
-            detect_shock(
-                asset, PriceDelta(Decimal("0")), FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS
-            )
+            detect_shock(asset, PriceDelta(Decimal("0")), FAST_LOOP_THRESHOLD, FRESH_SNAPSHOT_HOURS)
             is None
         )
 
@@ -258,9 +245,12 @@ class TestDailyChangeFreshness:
 
         from src.domain.shock import is_daily_change_fresh
 
-        assert is_daily_change_fresh(
-            datetime(2026, 10, 16, 23, 0), datetime(2026, 10, 16, 23, 30, tzinfo=UTC)
-        ) is True
+        assert (
+            is_daily_change_fresh(
+                datetime(2026, 10, 16, 23, 0), datetime(2026, 10, 16, 23, 30, tzinfo=UTC)
+            )
+            is True
+        )
 
 
 class TestRollingWindowCooldown:
@@ -353,12 +343,16 @@ class TestPortfolioShock:
 
     def test_movers_are_the_largest_contributors_in_the_direction_of_the_shock(self) -> None:
         weights = {
-            "NVDA": Decimal("0.5"), "AMD": Decimal("0.3"),
-            "AVGO": Decimal("0.1"), "TSM": Decimal("0.1"),
+            "NVDA": Decimal("0.5"),
+            "AMD": Decimal("0.3"),
+            "AVGO": Decimal("0.1"),
+            "TSM": Decimal("0.1"),
         }
         deltas = {
-            "NVDA": Decimal("-0.08"), "AMD": Decimal("-0.05"),
-            "AVGO": Decimal("-0.01"), "TSM": Decimal("0.04"),
+            "NVDA": Decimal("-0.08"),
+            "AMD": Decimal("-0.05"),
+            "AVGO": Decimal("-0.01"),
+            "TSM": Decimal("0.04"),
         }
 
         shock = detect_portfolio_shock(weights, deltas, self.THRESHOLD, top=2)

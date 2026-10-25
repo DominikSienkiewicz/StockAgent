@@ -139,11 +139,13 @@ def render_cost_envelope(envelope: CostEnvelope) -> str:
         f"| **Total** | 0 | {envelope.max_calls} |  "
         f"| {_usd(envelope.min_usd)} | {_usd(envelope.max_usd)} |"
     )
-    lines.extend([
-        "",
-        f"Alpha Vantage NEWS_SENTIMENT requests: 0–{envelope.av_requests} per cycle "
-        "(key quota, not priced).",
-    ])
+    lines.extend(
+        [
+            "",
+            f"Alpha Vantage NEWS_SENTIMENT requests: 0–{envelope.av_requests} per cycle "
+            "(key quota, not priced).",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -159,6 +161,4 @@ def render_weekly_budget(weekly: WeeklyCostBudget) -> str:
     if weekly.budget_usd is None:
         return f"{line}; no `fast_loop_weekly_budget_usd` set."
     verdict = "within the budget" if weekly.ok else "OVER the budget"
-    return (
-        f"{line}; `fast_loop_weekly_budget_usd` = {weekly.budget_usd:.2f} USD, {verdict}."
-    )
+    return f"{line}; `fast_loop_weekly_budget_usd` = {weekly.budget_usd:.2f} USD, {verdict}."
