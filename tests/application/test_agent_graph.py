@@ -5915,6 +5915,85 @@ class TestPaidCallBudget:
         repository_port.save_price_snapshot.assert_called_once()
 
 
+class TestLedgerBudgetSpent:
+    """FIN-25: limit USD doby albo miesiąca wyczerpany przed cyklem. Cykl nie płaci
+    za nic: symbol ponad progiem idzie ścieżką FIN-12 (`budget_exhausted`, bez
+    snapshotu ceny), diagnoza pomyłki w reflect jest pominięta, a symbol pod progiem
+    kończy jak zawsze — ze snapshotem."""
+
+    def _deps(self, graph_ports: GraphPorts) -> AgentGraphDeps:
+        return make_deps(**graph_ports, llm_budget_spent=True)
+
+    def test_symbol_past_the_gate_pays_nothing_and_keeps_its_reference(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(graph_ports)
+
+        final = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+        assert final["status"] == "ignored"
+        assert final["budget_exhausted"] is True
+        llm_port.analyze.assert_not_called()
+        sentiment_port.get_social_score.assert_not_called()
+        news_port.get_news_context.assert_not_called()
+        repository_port.save_price_snapshot.assert_not_called()
+        assert dict(deps.telemetry.snapshot().gate_reasons) == {"budget_exhausted": 1}
+
+    def test_mistake_diagnosis_is_skipped_but_the_settlement_runs(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        from src.domain.prediction import DIAGNOSIS_SKIPPED_INSIGHT
+
+        # Ruch −10% za bramką i błędna predykcja — bez limitu płatna diagnoza poszłaby.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+
+        create_agent_graph(self._deps(graph_ports)).compile().invoke(_initial_state("100.0"))
+
+        llm_port.analyze_mistake.assert_not_called()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["is_trend_correct"] is False
+        assert kwargs["insight"] == DIAGNOSIS_SKIPPED_INSIGHT
+
+    def test_symbol_below_the_gate_ends_with_its_snapshot(
+        self,
+        market_port: Mock,
+        repository_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+
+        final = create_agent_graph(self._deps(graph_ports)).compile().invoke(
+            _initial_state("100.0")
+        )
+
+        assert final["status"] == "ignored"
+        assert "budget_exhausted" not in final
+        repository_port.save_price_snapshot.assert_called_once()
+
+
 class TestUsageAttribution:
     """FIN-13: graf otacza każde płatne wywołanie zakresem `usage_scope`, więc
     tokeny zgłoszone przez adapter trafiają do ledgera ze źródłem cennika,

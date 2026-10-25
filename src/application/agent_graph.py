@@ -912,6 +912,11 @@ class AgentGraphDeps:
     # FIN-12: sufit płatnych wywołań LLM cyklu (`PAID_LLM_SOURCES`). None = bez
     # limitu. Decyzję podejmuje domena (`paid_budget_allows`) po bramce volatility.
     paid_call_cap: int | None = None
+    # FIN-25: limit USD doby albo miesiąca z ledgera `llm_calls` wyczerpany przed
+    # cyklem (odczyt raz, w entry poincie). True = cykl nie płaci za nic: symbol za
+    # bramką idzie ścieżką `budget_exhausted` (bez snapshotu), diagnoza w reflect
+    # jest pominięta. Domyślnie False — zachowanie jak przed FIN-25.
+    llm_budget_spent: bool = False
     # ML-18: chwila predykcji. Referencja `price_delta` pomija wiersz z jej godziny
     # UTC, który zapis tej predykcji nadpisze upsertem. Testy wstrzykują stały zegar.
     clock: Callable[[], datetime] = _utc_now
@@ -1266,7 +1271,15 @@ def _gate_reason(passes: bool, stale: bool, *, by_drift: bool = False) -> str:
 def _budget_exhausted(deps: AgentGraphDeps, symbol: str) -> bool:
     """FIN-12: czy cykl wyczerpał sufit płatnych wywołań LLM. Licznik jest wspólny
     dla wszystkich symboli cyklu (także równoległych), więc czytamy go pod lockiem
-    telemetrii; reguła miękkiego sufitu żyje w domenie."""
+    telemetrii; reguła miękkiego sufitu żyje w domenie. FIN-25: limit USD doby albo
+    miesiąca wyczerpany przed cyklem zamyka tę samą ścieżkę dla każdego symbolu."""
+    if deps.llm_budget_spent:
+        logger.warning(
+            "LLM budget of the day or month spent before %s — symbol skipped without "
+            "analysis, price reference kept for the next cycle",
+            symbol,
+        )
+        return True
     spent = deps.telemetry.paid_calls_of(PAID_LLM_SOURCES)
     if paid_budget_allows(spent, deps.paid_call_cap):
         return False
@@ -1607,7 +1620,9 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     # kosztowna diagnoza LLM jest teraz związana z progiem volatility.
     # FIN-14: ta sama bramka — ruch od stęchłej referencji nie płaci za diagnozę.
     # ALR-10: i ten sam dryf — powolny zjazd też odsłania błąd predykcji.
-    diagnose_paid = _gate_verdict(
+    # FIN-25: wyczerpany limit USD doby albo miesiąca — cykl nie płaci także za
+    # diagnozę; rozliczenie (tania część) idzie jak zawsze.
+    diagnose_paid = not deps.llm_budget_spent and _gate_verdict(
         state,
         threshold,
         crypto_threshold,
