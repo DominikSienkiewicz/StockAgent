@@ -750,12 +750,53 @@ def _llm_budget_spent_cycle() -> tuple[str, str]:
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 
 
+def _quiet_day_compact_cycle() -> tuple[str, str]:
+    """MAIL-35: cichy dzień z polityką `compact_when_quiet` — nagłówek, sesja, blok
+    trzech linijek (największy ruch z progiem, nic za bramką, portfel właściciela)
+    i pełna stopka ze źródłami i warunkami dostawców."""
+    results = [
+        _mapped(
+            "NVDA",
+            {
+                **_ignored_raw("NVDA", AssetType.STOCK, "140.00", "0.004"),
+                "effective_threshold": Decimal("0.02"),
+            },
+        ),
+        _mapped(
+            "AMD",
+            {
+                **_ignored_raw("AMD", AssetType.STOCK, "160.00", "-0.012"),
+                "effective_threshold": Decimal("0.02"),
+            },
+        ),
+        _mapped(
+            "ETH",
+            {
+                **_ignored_raw("ETH", AssetType.CRYPTO, "3200", "-0.011"),
+                "effective_threshold": Decimal("0.05"),
+            },
+        ),
+    ]
+    context = ReportContext(
+        cycle_maturity=CycleMaturity.STEADY_STATE,
+        cycle_cost=estimate_cycle_cost({}),
+        display_timezone=DISPLAY_TIMEZONE,
+        run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
+        user_portfolio=_user_portfolio(),
+        resolved_predictions=[],
+    )
+    return build_html_report(results, STARTED, DURATION_SECONDS, context, compact=True)
+
+
 SCENARIOS: dict[str, Callable[[], tuple[str, str]]] = {
     "full_cycle": _full_cycle,
     "all_ignored": _all_ignored_cycle,
     "first_run": _first_run_cycle,
     "degraded_sources": _degraded_sources_cycle,
     "llm_budget_spent": _llm_budget_spent_cycle,
+    "quiet_day_compact": _quiet_day_compact_cycle,
 }
 
 

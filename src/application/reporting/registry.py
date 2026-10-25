@@ -29,6 +29,7 @@ from src.application.report_open_entry import OPEN_ENTRY_SECTION
 from src.application.report_persona_leaderboard import PERSONA_LEADERBOARD_SECTION
 from src.application.report_portfolio import PORTFOLIO_RADAR_SECTION
 from src.application.report_predictions import PREDICTIONS_SECTION
+from src.application.report_quiet_day import QUIET_DAY_SECTION
 from src.application.report_quota_banner import QUOTA_BANNER_SECTION
 from src.application.report_reflections import REFLECTIONS_SECTION
 from src.application.report_resolved import RESOLVED_PREDICTIONS_SECTION
@@ -86,5 +87,15 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     BUDGET_EXHAUSTED_SECTION,
     IGNORED_SECTION,
     ERRORS_SECTION,
+    FOOTER_SECTION,
+)
+
+COMPACT_REPORT_SECTIONS: tuple[ReportSection, ...] = (
+    PREHEADER_SECTION,
+    MASTHEAD_SECTION,
+    QUOTA_BANNER_SECTION,
+    SOURCE_HEALTH_SECTION,
+    SESSION_SECTION,
+    QUIET_DAY_SECTION,
     FOOTER_SECTION,
 )

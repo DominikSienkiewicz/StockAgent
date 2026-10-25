@@ -57,8 +57,8 @@ from src.application.report_styles import EMAIL_STYLESHEET
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
 from src.application.report_track_record import TrackRecordStats
 from src.application.report_user_portfolio import portfolio_change_view
-from src.application.reporting.registry import REPORT_SECTIONS
-from src.application.reporting.section import SectionInput
+from src.application.reporting.registry import COMPACT_REPORT_SECTIONS, REPORT_SECTIONS
+from src.application.reporting.section import ReportSection, SectionInput
 from src.application.run_context import RunContext
 from src.application.source_health import SourceHealth
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
@@ -604,25 +604,32 @@ def build_html_report(
     started_at: datetime,
     duration_seconds: float,
     context: ReportContext | None = None,
+    *,
+    compact: bool = False,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
     `context` niesie opcjonalne dane sekcji (patrz `ReportContext`). Brak
     kontekstu = raport z samych wyników cyklu: sekcje bez danych się chowają.
+    `compact` (MAIL-35) = zwarty mail cichego dnia (`COMPACT_REPORT_SECTIONS`).
     """
     context = context or ReportContext()
     data = _section_input(results, started_at, duration_seconds, context)
-    return _email_document(_compact_markup(_render_html(data))), _render_text(data)
+    sections = COMPACT_REPORT_SECTIONS if compact else REPORT_SECTIONS
+    return (
+        _email_document(_compact_markup(_render_html(data, sections))),
+        _render_text(data, sections),
+    )
 
 
-def _render_html(data: SectionInput) -> str:
+def _render_html(data: SectionInput, sections: Sequence[ReportSection]) -> str:
     """ARCH-12: HTML maila — fragmenty sekcji rejestru w jego kolejności."""
-    return "".join(section.render_html(data) for section in REPORT_SECTIONS)
+    return "".join(section.render_html(data) for section in sections)
 
 
-def _render_text(data: SectionInput) -> str:
+def _render_text(data: SectionInput, sections: Sequence[ReportSection]) -> str:
     """ARCH-12: wersja tekstowa — linie sekcji rejestru w tej samej kolejności."""
-    return "\n".join(line for section in REPORT_SECTIONS for line in section.render_text(data))
+    return "\n".join(line for section in sections for line in section.render_text(data))
 
 
 # ---------------------------------------------------------------------------
