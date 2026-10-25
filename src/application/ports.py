@@ -783,8 +783,20 @@ class RepositoryPort(ABC):
     def save_shock_alert(
         self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
-        """#11 — persystuje wysłany alert szoku (migracja 021).
-        `UNIQUE(symbol, alert_date)` egzekwuje debounce po stronie bazy."""
+        """#11 — persystuje alert szoku PO jego wysyłce (migracja 021).
+
+        Kontrakt at-least-once (ALR-14, ALR-23): watch wysyła push PRZED zapisem, więc
+        `UNIQUE(symbol, alert_date)` — od migracji 081 `UNIQUE(symbol, alert_date, level)`
+        — chroni tylko przed drugim WIERSZEM, nie przed drugim pushem. Dwa nakładające się
+        przebiegi albo nieudany zapis mogą wysłać ten sam alert (ten sam szczebel) dwa
+        razy; kolizja klucza kończy się wyjątkiem, który watch tylko loguje. Nie polegaj
+        na tym zapisie jako blokadzie wysyłki — debounce przed wysyłką robią
+        `should_emit` / `should_escalate` na odczycie `get_sent_shock_alerts` /
+        `get_shock_alert_levels`.
+
+        `level` (ALR-16) to szczebel drabiny eskalacji: 1 = pierwszy alert dnia, zapisany
+        bez klucza `level` (DEFAULT z 081, zapis jak przed migracją); 2 = eskalacja,
+        tylko za flagą `shock_escalation_enabled` po migracji 081."""
 
     @abstractmethod
     def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:

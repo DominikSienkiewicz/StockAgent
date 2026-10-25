@@ -2128,8 +2128,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     def save_shock_alert(
         self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
-        # UNIQUE(symbol, alert_date) w migracji 021 jest twardym debounce'em —
-        # nawet gdy dwa przebiegi watcha wystartują równolegle.
+        # At-least-once (ALR-14, ALR-23): watch woła ten zapis PO wysłaniu pusha, więc
+        # UNIQUE(symbol, alert_date) z 021 — od 081 UNIQUE(symbol, alert_date, level) —
+        # odrzuca tylko drugi WIERSZ szczebla, nie drugi push. Dwa równoległe przebiegi
+        # mogą wysłać ten sam alert dwa razy; kolizja klucza wraca jako PortError, który
+        # watch loguje. Komentarz 021 („przed wysłaniem”) opisuje odwrotną kolejność.
         row: dict[str, Any] = {
             "symbol": symbol,
             "alert_date": alert_date.isoformat(),
@@ -2166,8 +2169,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         }
 
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
-        # Graceful: brak migracji 021 → pusty zbiór (debounce zostaje tylko
-        # w pamięci przebiegu, a UNIQUE i tak zablokuje duplikat przy zapisie).
+        # Graceful: brak migracji 021 → pusty zbiór (debounce zostaje tylko w pamięci
+        # przebiegu; UNIQUE odrzuci najwyżej drugi wiersz, push i tak już poszedł).
         try:
             response = (
                 self._client.table("shock_alerts")
