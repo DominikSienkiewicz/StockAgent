@@ -2,40 +2,41 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from src.application.report_builder import ReportContext, build_html_report, to_symbol_result
 from src.application.report_models import SymbolResult
-from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.council import CouncilVerdict, InvestorOpinion, Recommendation
 from src.domain.council_redundancy import CouncilRedundancy
 
 
-def _make_verdict(rec: str = "BUY") -> CouncilVerdict:
+def _make_verdict(rec: Recommendation = "BUY") -> CouncilVerdict:
     return CouncilVerdict(
-        final_recommendation=rec,  # type: ignore[arg-type]
+        final_recommendation=rec,
         consensus_strength=0.73,
         summary="Rada radzi kupować akcje AAPL.",
-        dissenting_views=["Soros: zbyt ryzykowne"],
-        investor_opinions=[
+        dissenting_views=("Soros: zbyt ryzykowne",),
+        investor_opinions=(
             InvestorOpinion(
                 investor_name="Warren Buffett",
-                recommendation="BUY",  # type: ignore[arg-type]
+                recommendation="BUY",
                 confidence=0.9,
                 reasoning="Silna fosa.",
-                key_factors=["moat", "FCF"],
+                key_factors=("moat", "FCF"),
             ),
             InvestorOpinion(
                 investor_name="George Soros",
-                recommendation="SELL",  # type: ignore[arg-type]
+                recommendation="SELL",
                 confidence=0.7,
                 reasoning="Reflexivity wskazuje korektę.",
-                key_factors=["makro", "momentum"],
+                key_factors=("makro", "momentum"),
             ),
-        ],
+        ),
     )
 
 
 class TestSymbolResultHasCouncilVerdict:
-    def test_symbol_result_accepts_council_verdict(self):
+    def test_symbol_result_accepts_council_verdict(self) -> None:
         r = SymbolResult(
             symbol="AAPL",
             status="saved",
@@ -44,13 +45,13 @@ class TestSymbolResultHasCouncilVerdict:
         assert r.council_verdict is not None
         assert r.council_verdict.final_recommendation == "BUY"
 
-    def test_symbol_result_council_verdict_defaults_none(self):
+    def test_symbol_result_council_verdict_defaults_none(self) -> None:
         r = SymbolResult(symbol="AAPL", status="saved")
         assert r.council_verdict is None
 
 
 class TestToSymbolResultExtractsCouncil:
-    def test_extracts_council_verdict_from_raw(self):
+    def test_extracts_council_verdict_from_raw(self) -> None:
         verdict = _make_verdict()
         raw = {
             "status": "saved",
@@ -68,19 +69,19 @@ class TestToSymbolResultExtractsCouncil:
         result = to_symbol_result("AAPL", raw)
         assert result.council_verdict is verdict
 
-    def test_council_verdict_none_when_absent_from_raw(self):
+    def test_council_verdict_none_when_absent_from_raw(self) -> None:
         raw = {"status": "saved", "llm_analysis": {}}
         result = to_symbol_result("AAPL", raw)
         assert result.council_verdict is None
 
-    def test_council_verdict_none_when_raw_contains_dict_not_verdict(self):
+    def test_council_verdict_none_when_raw_contains_dict_not_verdict(self) -> None:
         raw = {"status": "saved", "llm_analysis": {}, "council_verdict": {"some": "dict"}}
         result = to_symbol_result("AAPL", raw)
         assert result.council_verdict is None
 
 
 class TestCouncilHtmlSection:
-    def _build_report_with_verdict(self, rec: str = "BUY") -> str:
+    def _build_report_with_verdict(self, rec: Recommendation = "BUY") -> str:
         verdict = _make_verdict(rec)
         results = [
             SymbolResult(
@@ -95,25 +96,25 @@ class TestCouncilHtmlSection:
         html, _ = build_html_report(results, datetime.now(UTC), 1.0)
         return html
 
-    def test_report_contains_rada_doradcza(self):
+    def test_report_contains_rada_doradcza(self) -> None:
         assert "RADA DORADCZA" in self._build_report_with_verdict()
 
-    def test_report_contains_investor_name(self):
+    def test_report_contains_investor_name(self) -> None:
         assert "Warren Buffett" in self._build_report_with_verdict()
 
-    def test_report_contains_consensus_label_buy(self):
+    def test_report_contains_consensus_label_buy(self) -> None:
         assert "KUP" in self._build_report_with_verdict("BUY")
 
-    def test_report_contains_consensus_label_sell(self):
+    def test_report_contains_consensus_label_sell(self) -> None:
         assert "SPRZEDAJ" in self._build_report_with_verdict("SELL")
 
-    def test_report_contains_consensus_label_hold(self):
+    def test_report_contains_consensus_label_hold(self) -> None:
         assert "TRZYMAJ" in self._build_report_with_verdict("HOLD")
 
-    def test_report_contains_dissenting_view(self):
+    def test_report_contains_dissenting_view(self) -> None:
         assert "Soros" in self._build_report_with_verdict()
 
-    def test_no_council_section_when_verdict_none(self):
+    def test_no_council_section_when_verdict_none(self) -> None:
         results = [SymbolResult(symbol="AAPL", status="saved")]
         html, _ = build_html_report(results, datetime.now(UTC), 1.0)
         assert "RADA DORADCZA" not in html
@@ -126,15 +127,15 @@ class TestCouncilSectionUsesDomainBehavior:
     """
 
     def _result_with_opinions(
-        self, opinions: list[InvestorOpinion], final: str = "BUY",
+        self, opinions: list[InvestorOpinion], final: Recommendation = "BUY",
         consensus: float = 0.6,
     ) -> SymbolResult:
         verdict = CouncilVerdict(
-            final_recommendation=final,  # type: ignore[arg-type]
+            final_recommendation=final,
             consensus_strength=consensus,
             summary="Test.",
-            dissenting_views=[],
-            investor_opinions=opinions,
+            dissenting_views=(),
+            investor_opinions=tuple(opinions),
         )
         return SymbolResult(
             symbol="AAPL",
@@ -145,55 +146,56 @@ class TestCouncilSectionUsesDomainBehavior:
             council_verdict=verdict,
         )
 
-    def _build(self, opinions: list[InvestorOpinion], **kw: object) -> str:
-        results = [self._result_with_opinions(opinions, **kw)]  # type: ignore[arg-type]
+    def _build(self, opinions: list[InvestorOpinion], **kw: Any) -> str:
+        results = [self._result_with_opinions(opinions, **kw)]
         html, _ = build_html_report(results, datetime.now(UTC), 1.0)
         return html
 
-    def test_split_decision_warning_shown_when_buy_and_sell_present(self):
+    def test_split_decision_warning_shown_when_buy_and_sell_present(self) -> None:
         opinions = [
             InvestorOpinion(
                 investor_name="Warren Buffett",
-                recommendation="BUY",  # type: ignore[arg-type]
-                confidence=0.9, reasoning="x", key_factors=[],
+                recommendation="BUY",
+                confidence=0.9, reasoning="x", key_factors=(),
             ),
             InvestorOpinion(
                 investor_name="George Soros",
-                recommendation="SELL",  # type: ignore[arg-type]
-                confidence=0.7, reasoning="x", key_factors=[],
+                recommendation="SELL",
+                confidence=0.7, reasoning="x", key_factors=(),
             ),
         ]
         html = self._build(opinions)
         # Marker dla "split decision" — fundamentalny brak zgody w radzie.
         assert "SPLIT" in html or "PODZIELONA" in html
 
-    def test_no_split_warning_when_only_buy_and_hold(self):
+    def test_no_split_warning_when_only_buy_and_hold(self) -> None:
         opinions = [
             InvestorOpinion(
                 investor_name="Warren Buffett",
-                recommendation="BUY",  # type: ignore[arg-type]
-                confidence=0.9, reasoning="x", key_factors=[],
+                recommendation="BUY",
+                confidence=0.9, reasoning="x", key_factors=(),
             ),
             InvestorOpinion(
                 investor_name="Charlie Munger",
-                recommendation="HOLD",  # type: ignore[arg-type]
-                confidence=0.6, reasoning="x", key_factors=[],
+                recommendation="HOLD",
+                confidence=0.6, reasoning="x", key_factors=(),
             ),
         ]
         html = self._build(opinions)
         assert "SPLIT" not in html
         assert "PODZIELONA" not in html
 
-    def test_vote_distribution_displayed(self):
+    def test_vote_distribution_displayed(self) -> None:
         # Trzy głosy: 2 BUY, 1 SELL → rozkład widoczny w raporcie
+        votes: list[tuple[str, Recommendation]] = [
+            ("A", "BUY"), ("B", "BUY"), ("C", "SELL"),
+        ]
         opinions = [
             InvestorOpinion(
-                investor_name=name, recommendation=rec,  # type: ignore[arg-type]
-                confidence=0.8, reasoning="x", key_factors=[],
+                investor_name=name, recommendation=rec,
+                confidence=0.8, reasoning="x", key_factors=(),
             )
-            for name, rec in [
-                ("A", "BUY"), ("B", "BUY"), ("C", "SELL"),
-            ]
+            for name, rec in votes
         ]
         html = self._build(opinions)
         # Format "2 BUY" / "1 SELL" — albo polski odpowiednik. Niech będzie elastyczne.
@@ -202,23 +204,23 @@ class TestCouncilSectionUsesDomainBehavior:
         assert "KUP" in html
         assert "SPRZEDAJ" in html
 
-    def test_strong_consensus_badge_when_above_threshold(self):
+    def test_strong_consensus_badge_when_above_threshold(self) -> None:
         opinions = [
             InvestorOpinion(
                 investor_name="Warren Buffett",
-                recommendation="BUY",  # type: ignore[arg-type]
-                confidence=0.9, reasoning="x", key_factors=[],
+                recommendation="BUY",
+                confidence=0.9, reasoning="x", key_factors=(),
             ),
         ]
         html = self._build(opinions, consensus=0.85)
         assert "SILNY KONSENSUS" in html or "STRONG CONSENSUS" in html
 
-    def test_no_strong_consensus_badge_when_below_threshold(self):
+    def test_no_strong_consensus_badge_when_below_threshold(self) -> None:
         opinions = [
             InvestorOpinion(
                 investor_name="Warren Buffett",
-                recommendation="BUY",  # type: ignore[arg-type]
-                confidence=0.7, reasoning="x", key_factors=[],
+                recommendation="BUY",
+                confidence=0.7, reasoning="x", key_factors=(),
             ),
         ]
         html = self._build(opinions, consensus=0.5)
@@ -235,17 +237,17 @@ class TestCouncilPartialFailure:
             final_recommendation="BUY",
             consensus_strength=0.8,
             summary="Rada radzi kupować.",
-            dissenting_views=[],
-            investor_opinions=[
+            dissenting_views=(),
+            investor_opinions=tuple(
                 InvestorOpinion(
                     investor_name=f"Persona {i}",
                     recommendation="BUY",
                     confidence=0.8,
                     reasoning="x",
-                    key_factors=[],
+                    key_factors=(),
                 )
                 for i in range(answered)
-            ],
+            ),
             failed_personas=failed,
         )
 
@@ -261,15 +263,15 @@ class TestCouncilPartialFailure:
         html, _ = build_html_report([result], datetime.now(UTC), 1.0)
         return html
 
-    def test_council_section_shows_answered_ratio_when_personas_failed(self):
+    def test_council_section_shows_answered_ratio_when_personas_failed(self) -> None:
         html = self._html(self._verdict(answered=4, failed=3))
 
         assert "odpowiedziało 4/7" in html
 
-    def test_full_council_has_no_answered_ratio(self):
+    def test_full_council_has_no_answered_ratio(self) -> None:
         assert "odpowiedziało" not in self._html(self._verdict(answered=7, failed=0))
 
-    def test_compact_council_line_shows_answered_ratio(self):
+    def test_compact_council_line_shows_answered_ratio(self) -> None:
         # Rada spoza top N sygnałów jest jedną linią (MAIL-06 b) — też z X/N.
         from src.application.report_reasoning import render_council_line
 
@@ -295,10 +297,8 @@ class TestStrongConsensusBadgeAndRedundancy:
             final_recommendation="BUY",
             consensus_strength=0.85,
             summary="Test.",
-            dissenting_views=[],
-            investor_opinions=[
-                InvestorOpinion("Warren Buffett", "BUY", 0.9, "x", ()),
-            ],
+            dissenting_views=(),
+            investor_opinions=(InvestorOpinion("Warren Buffett", "BUY", 0.9, "x", ()),),
         )
         results = [
             SymbolResult(
@@ -308,17 +308,17 @@ class TestStrongConsensusBadgeAndRedundancy:
         ]
         return build_html_report(results, datetime.now(UTC), 1.0, context)[0]
 
-    def test_badge_is_dropped_when_the_council_is_effectively_one_voter(self):
+    def test_badge_is_dropped_when_the_council_is_effectively_one_voter(self) -> None:
         html = self._html(ReportContext(council_redundancy=self._redundancy(1.1)))
 
         assert "SILNY KONSENSUS" not in html
         assert "Zgodność: 85%" in html
 
-    def test_badge_stays_when_the_voters_are_independent_enough(self):
+    def test_badge_stays_when_the_voters_are_independent_enough(self) -> None:
         html = self._html(ReportContext(council_redundancy=self._redundancy(3.2)))
 
         assert "SILNY KONSENSUS" in html
 
-    def test_badge_stays_without_a_redundancy_measurement(self):
+    def test_badge_stays_without_a_redundancy_measurement(self) -> None:
         assert "SILNY KONSENSUS" in self._html(ReportContext())
         assert "SILNY KONSENSUS" in self._html(ReportContext(council_redundancy=None))
