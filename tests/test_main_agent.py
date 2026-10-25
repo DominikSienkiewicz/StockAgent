@@ -27,7 +27,12 @@ from src.domain.macro_risk import MacroAlertLevel
 from src.domain.macro_series import MacroSeriesSnapshot, SeriesObservation
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Threshold
-from tests.entrypoint_support import UNDELIVERED_ANNOTATION, build_quota_alert, build_usage
+from tests.entrypoint_support import (
+    UNDELIVERED_ANNOTATION,
+    build_quota_alert,
+    build_settings,
+    build_usage,
+)
 
 # ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
 ASSEMBLY = "src.application.use_cases.assemble_report"
@@ -1037,14 +1042,13 @@ class TestResolveRegimeYieldCurveVote:
     ELEVATED, nie jako weto i nie przez `_compute_overall_alert`."""
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.regime_aware_enabled = True
-        settings.yield_curve_enabled = True
-        settings.regime_threshold_max_multiplier = 2.0
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "regime_aware_enabled": True,
+            "yield_curve_enabled": True,
+            "regime_threshold_max_multiplier": 2.0,
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _macro(level: MacroAlertLevel) -> MagicMock:
@@ -1115,15 +1119,14 @@ class TestResolveRegimeMacroSeriesVotes:
     snapshotu nie może głosować nawet przy prawdziwej fladze)."""
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.regime_aware_enabled = True
-        settings.yield_curve_enabled = False
-        settings.macro_series_enabled = True
-        settings.regime_threshold_max_multiplier = 2.0
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "regime_aware_enabled": True,
+            "yield_curve_enabled": False,
+            "macro_series_enabled": True,
+            "regime_threshold_max_multiplier": 2.0,
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _stressed_vix() -> MacroSeriesSnapshot:
@@ -1310,11 +1313,12 @@ class TestBuildSignalCalibration:
     Track Record i degradują gracefully."""
 
     @staticmethod
-    def _settings(enabled: bool) -> MagicMock:
-        settings = MagicMock()
-        settings.calibrated_confidence_enabled = enabled
-        settings.track_record_days = 30
-        return settings
+    def _settings(enabled: bool) -> Settings:
+        values: dict[str, object] = {
+            "calibrated_confidence_enabled": enabled,
+            "track_record_days": 30,
+        }
+        return build_settings(**values)
 
     def test_flag_off_reads_nothing(self) -> None:
         repo = MagicMock(spec=RepositoryPort)
@@ -1985,17 +1989,16 @@ class TestPublicScorecard:
     prywatnego digestu!) i metryki liczone niezależnie od flag track-recordu."""
 
     @staticmethod
-    def _settings(enabled: bool, **overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.public_scorecard_enabled = enabled
-        settings.public_scorecard_path = "public/scorecard/index.html"
-        settings.track_record_days = 30
-        # Flagi sekcji track-recordu w mailu — scorecard NIE MOŻE od nich zależeć.
-        settings.equity_curve_enabled = False
-        settings.calibration_curve_enabled = False
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(enabled: bool, **overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "public_scorecard_enabled": enabled,
+            "public_scorecard_path": "public/scorecard/index.html",
+            "track_record_days": 30,
+            # Flagi sekcji track-recordu w mailu — scorecard NIE MOŻE od nich zależeć.
+            "equity_curve_enabled": False,
+            "calibration_curve_enabled": False,
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _repo() -> MagicMock:
@@ -2188,16 +2191,15 @@ class TestHonestTrackRecordWiring:
     ujawnia okno scorecardu i liczy metryki pewności z surowych próbek."""
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.public_scorecard_enabled = True
-        settings.track_record_days = 30
-        settings.equity_curve_enabled = True
-        settings.lessons_enabled = False
-        settings.calibration_curve_enabled = True
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "public_scorecard_enabled": True,
+            "track_record_days": 30,
+            "equity_curve_enabled": True,
+            "lessons_enabled": False,
+            "calibration_curve_enabled": True,
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _repo() -> MagicMock:
@@ -2266,11 +2268,12 @@ class TestBuildTrackRecord:
         }
 
     def test_equity_points_are_chronological_when_repo_returns_newest_first(self) -> None:
-        settings = MagicMock()
-        settings.track_record_days = 30
-        settings.equity_curve_enabled = True
-        settings.lessons_enabled = False
-        settings.calibration_curve_enabled = False
+        settings = build_settings(
+            track_record_days=30,
+            equity_curve_enabled=True,
+            lessons_enabled=False,
+            calibration_curve_enabled=False,
+        )
         repo = MagicMock(spec=RepositoryPort)
         # Najnowszy cykl to strata, najstarszy — zysk; kolejność jak z adaptera.
         repo.get_resolved_predictions.return_value = [
@@ -3624,16 +3627,15 @@ class TestResolveRegimeHysteresis:
     _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.regime_aware_enabled = True
-        settings.yield_curve_enabled = False
-        settings.regime_threshold_max_multiplier = 2.0
-        settings.regime_hysteresis_enabled = True
-        settings.regime_exit_confirmations = 2
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "regime_aware_enabled": True,
+            "yield_curve_enabled": False,
+            "regime_threshold_max_multiplier": 2.0,
+            "regime_hysteresis_enabled": True,
+            "regime_exit_confirmations": 2,
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _calm_macro() -> MagicMock:
@@ -3648,7 +3650,7 @@ class TestResolveRegimeHysteresis:
         repo.get_latest_regime_state.return_value = previous
         return repo
 
-    def _resolve(self, settings: MagicMock, repo: MagicMock) -> tuple[str, float]:
+    def _resolve(self, settings: Settings, repo: MagicMock) -> tuple[str, float]:
         return main_agent._resolve_regime(
             settings, self._calm_macro(), None, repository=repo, cycle_at=self._CYCLE_AT
         )
@@ -3773,16 +3775,15 @@ class TestRegimeBannerWiring:
     _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.regime_aware_enabled = True
-        settings.yield_curve_enabled = False
-        settings.regime_threshold_max_multiplier = 1.5
-        settings.regime_hysteresis_enabled = False
-        settings.volatility_threshold = Decimal("0.02")
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "regime_aware_enabled": True,
+            "yield_curve_enabled": False,
+            "regime_threshold_max_multiplier": 1.5,
+            "regime_hysteresis_enabled": False,
+            "volatility_threshold": Decimal("0.02"),
+        }
+        return build_settings(**(values | overrides))
 
     @staticmethod
     def _macro(level: MacroAlertLevel) -> MagicMock:
@@ -4529,10 +4530,10 @@ class TestBenchmarkWiring:
     samych oknach i z tymi samymi kosztami co krzywa agenta — zero płatnych."""
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = TestHonestTrackRecordWiring._settings(**overrides)
-        settings.reflection_min_age_hours = 6
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        return TestHonestTrackRecordWiring._settings(
+            **(overrides | {"reflection_min_age_hours": 6})
+        )
 
     @staticmethod
     def _repo() -> MagicMock:
@@ -6576,19 +6577,18 @@ class TestRegimeChangeWiring:
     _CYCLE_AT = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)
 
     @staticmethod
-    def _settings(**overrides: object) -> MagicMock:
-        settings = MagicMock()
-        settings.regime_aware_enabled = True
-        settings.yield_curve_enabled = False
-        settings.regime_threshold_max_multiplier = 1.5
-        settings.regime_hysteresis_enabled = True
-        settings.regime_exit_confirmations = 1
-        settings.volatility_threshold = Decimal("0.02")
-        for name, value in overrides.items():
-            setattr(settings, name, value)
-        return settings
+    def _settings(**overrides: object) -> Settings:
+        values: dict[str, object] = {
+            "regime_aware_enabled": True,
+            "yield_curve_enabled": False,
+            "regime_threshold_max_multiplier": 1.5,
+            "regime_hysteresis_enabled": True,
+            "regime_exit_confirmations": 1,
+            "volatility_threshold": Decimal("0.02"),
+        }
+        return build_settings(**(values | overrides))
 
-    def _banner(self, settings: MagicMock, level: MacroAlertLevel, previous: object) -> object:
+    def _banner(self, settings: Settings, level: MacroAlertLevel, previous: object) -> object:
         repo = MagicMock(spec=RepositoryPort)
         repo.get_latest_regime_state.return_value = previous
         macro = MagicMock()

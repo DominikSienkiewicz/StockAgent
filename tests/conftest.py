@@ -12,12 +12,12 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 
 import os
 from collections.abc import Iterator
-from decimal import Decimal
 
 import pytest
 from hypothesis import settings as hypothesis_settings
 
 from src.config import Settings
+from tests.entrypoint_support import build_settings
 
 os.environ["STOCKAGENT_DISABLE_TOML"] = "1"
 # NIEZ-22: w CI (GitHub Actions) zmienna wskazuje summary jobu testów — testy
@@ -82,21 +82,7 @@ def _closed_http_circuits() -> Iterator[None]:
 
 @pytest.fixture
 def settings() -> Settings:
-    # _env_file=None odcina pydantic-settings od loadowania .env (developerzy
-    # mają w nim klucze, risk_symbols itp. — testy muszą być deterministyczne).
-    return Settings(
-        _env_file=None,
-        openai_api_key="sk-test",
-        finnhub_api_key="fh",
-        alpha_vantage_api_keys=["av1", "av2"],
-        supabase_url="https://test.supabase.co",
-        supabase_key="anon",
-        symbols=["AAPL", "VOO"],
-        volatility_threshold=Decimal("0.02"),
-        ml_model_path="data/models/missing.ubj",
-        db_writes_enabled=True,  # BEZ-08: smoke testy odwzorowują workflowy GHA
-        paid_calls_enabled=True,  # FIN-35: jak wyżej — workflowy GHA płacą jawnie
-    )
+    return build_settings()
 
 
 @pytest.fixture
