@@ -4,9 +4,12 @@ wszystkimi pudłami tygodnia zamiast diagnozy per błąd w `reflect`."""
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
+
+import pytest
 
 from src.application.errors import ProviderUnavailable
 from src.application.metering import PaidBudgetExhausted
@@ -134,18 +137,25 @@ def test_correct_predictions_and_rows_without_a_time_are_not_diagnosed() -> None
     llm.analyze_mistake.assert_not_called()
 
 
-def test_plain_text_answer_is_the_shared_diagnosis_of_every_miss() -> None:
-    # Odpowiedź bez JSON-a nie przepada — ten sam fallback co diagnoza per błąd (OTHER).
+def test_plain_text_answer_saves_nothing_and_keeps_every_placeholder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Odpowiedź bez listy JSON nie mówi, które pudło czego dotyczy — ten sam tekst
+    # z OTHER przy każdym pudle zamazałby tydzień. Placeholdery zostają: pudła wrócą
+    # w następnym tygodniu albo w spłacie diagnoz (WIA-53).
     repo = _repo([_miss("AAPL"), _miss("MSFT")])
     llm = Mock(spec=LLMPort)
     llm.analyze_mistake.return_value = "Rynek zignorował makro."
 
-    result = _use_case(repo, llm).run()
+    with caplog.at_level(logging.WARNING):
+        result = _use_case(repo, llm).run()
 
-    saved = repo.save_backfilled_diagnosis.call_args_list
-    assert [call.args[1] for call in saved] == ["Rynek zignorował makro."] * 2
-    assert all(call.kwargs["correction_category"] is MistakeCategory.OTHER for call in saved)
-    assert result["diagnosed"] == 2
+    repo.save_backfilled_diagnosis.assert_not_called()
+    assert result == {"status": "no_diagnoses", "misses": 2}
+    assert any(
+        record.levelno == logging.WARNING and "placeholdery zostają" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_a_miss_without_its_entry_keeps_the_placeholder() -> None:

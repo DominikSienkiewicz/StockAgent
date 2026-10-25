@@ -7,7 +7,8 @@ diagnozę, i diagnozuje je JEDNYM wywołaniem LLM (wzorzec `WeeklyRecapUseCase`)
 prompt wylicza pudła po numerach, odpowiedź daje diagnozę per numer, a każda
 trafia do swojego wiersza (`save_backfilled_diagnosis` podmienia tylko placeholder,
 który job przeczytał). Pudło bez wpisu w odpowiedzi zostaje z placeholderem — po
-tygodniu przejmuje je spłata długu diagnoz (WIA-53).
+tygodniu przejmuje je spłata długu diagnoz (WIA-53). Odpowiedź bez żadnej diagnozy
+per numer (np. nie lista JSON) nie zapisuje nic i kończy się WARNING-iem.
 
 FinOps (FIN-30, wyjątek od bramki volatility): `PAID_LLM_CALLS_PER_RUN` = 1 w
 tygodniowym budżecie Slow Loopa; `BudgetedLLMPort` odrzuca wywołanie ponad przydział.
@@ -89,8 +90,9 @@ def _miss_block(position: int, miss: DeferredDiagnosis) -> str:
 class BatchDiagnosisUseCase:
     """Jedno wywołanie LLM nad pudłami ostatnich `days` dni bez diagnozy.
 
-    0 pudeł → 0 wywołań. Wyczerpany przydział albo błąd LLM zostawia wszystkie
-    placeholdery; błąd zapisu jednego wiersza nie zatrzymuje pozostałych."""
+    0 pudeł → 0 wywołań. Wyczerpany przydział, błąd LLM albo odpowiedź bez diagnoz
+    zostawia wszystkie placeholdery; błąd zapisu jednego wiersza nie zatrzymuje
+    pozostałych."""
 
     def __init__(
         self,
@@ -120,6 +122,13 @@ class BatchDiagnosisUseCase:
             logger.warning("Batch diagnosis — LLM failed, placeholdery zostają", exc_info=True)
             return {"status": "llm_failed", "misses": len(misses)}
         diagnoses = parse_batch_diagnoses(answer, len(misses))
+        if all(diagnosis is None for diagnosis in diagnoses):
+            logger.warning(
+                "Batch diagnosis — odpowiedź LLM bez diagnozy per numer (%d pudeł), "
+                "placeholdery zostają",
+                len(misses),
+            )
+            return {"status": "no_diagnoses", "misses": len(misses)}
         diagnosed = sum(
             self._save(miss, diagnosis)
             for miss, diagnosis in zip(misses, diagnoses, strict=True)

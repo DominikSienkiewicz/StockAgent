@@ -123,13 +123,11 @@ class TestParseBatchDiagnoses:
             MistakeDiagnosis(MistakeCategory.OTHER, "Inne."),
         )
 
-    def test_answer_without_a_list_is_shared_by_every_position(self) -> None:
-        shared = MistakeDiagnosis(MistakeCategory.OTHER, "Makro.")
-
-        assert parse_batch_diagnoses("Makro.", 2) == (shared, shared)
-        assert parse_batch_diagnoses('{"diagnoses": "x", "insight": "Makro."}', 1) == (
-            shared,
-        )
+    def test_answer_without_a_list_diagnoses_nothing(self) -> None:
+        # Bez listy `diagnoses` nie wiadomo, którego pudła dotyczy tekst — żadna
+        # pozycja nie dostaje diagnozy, placeholdery zostają.
+        assert parse_batch_diagnoses("Makro.", 2) == (None, None)
+        assert parse_batch_diagnoses('{"diagnoses": "x", "insight": "Makro."}', 1) == (None,)
 
     def test_empty_answer_diagnoses_nothing(self) -> None:
         assert parse_batch_diagnoses("   ", 2) == (None, None)

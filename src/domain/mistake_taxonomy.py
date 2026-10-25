@@ -97,13 +97,13 @@ def parse_batch_diagnoses(raw: str, count: int) -> tuple[MistakeDiagnosis | None
 
     JSON `{"diagnoses": [{"n", "category", "insight"}, …]}` daje diagnozę tym
     pozycjom, które w nim są (bez wpisu albo z pustym `insight` → None, placeholder
-    zostaje). Odpowiedź bez listy `diagnoses` to wspólna diagnoza wszystkich pozycji
-    z fallbackiem `parse_mistake_diagnosis` — treść, za którą zapłaciliśmy, nie ginie."""
+    zostaje). Odpowiedź bez listy `diagnoses` nie mówi, którego pudła dotyczy tekst,
+    więc żadna pozycja nie dostaje diagnozy — ten sam tekst z OTHER przy każdym pudle
+    zamazałby tydzień, a pudła z placeholderem wrócą w spłacie diagnoz (WIA-53)."""
     payload = _json_object(raw.strip())
     entries = payload.get("diagnoses") if payload is not None else None
     if not isinstance(entries, list):
-        shared = parse_mistake_diagnosis(raw)
-        return tuple(shared if shared.insight else None for _ in range(count))
+        return (None,) * count
     by_position: dict[int, MistakeDiagnosis] = {}
     for entry in entries:
         if not isinstance(entry, dict):
