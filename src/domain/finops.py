@@ -140,7 +140,7 @@ def estimate_cycle_cost(
                 )
             )
             continue
-        unit_cost = UNIT_COST_USD.get(source)
+        unit_cost = _unit_cost_usd(source)
         if unit_cost is None:
             unknown.append(source)
             continue
@@ -295,6 +295,9 @@ class CycleCallBound:
 
 # Diagnoza pomyłki w reflect: jeden request `llm` na symbol za bramką, przed sufitem FIN-12.
 _DIAGNOSIS_REQUESTS = 1
+# FIN-21: predykcja bez tool-use to jedno `analyze` kaskady routingu (pętla tool-use
+# idzie własnym adapterem), więc na symbol eskalować może najwyżej jedna predykcja.
+_CASCADE_PREDICTION_ANSWERS = 1
 
 
 def cycle_call_upper_bound(
@@ -303,6 +306,9 @@ def cycle_call_upper_bound(
     personas: int,
     debate: bool,
     tool_rounds: int,
+    *,
+    max_escalations: int = 0,
+    max_shadow_calls: int = 0,
 ) -> CycleCallBound:
     """Najgorszy przypadek cyklu, w którym `n_gated` symboli przechodzi bramkę.
 
@@ -322,15 +328,25 @@ def cycle_call_upper_bound(
     tickerów, które AV przyjmuje. Cykl, w którym bramka odcina wszystko, ma
     granicę zero.
 
-    Wynik to szacunek tak jak cennik: model routing może dołożyć eskalację do
-    modelu frontier w `analyze`, a rotacja kluczy AV ponawia request po
-    odpowiedzi rate-limit — ani jedno, ani drugie nie jest tu liczone.
+    Na cykl (WIA-11), oba 0 = granica sprzed flag:
+      - `llm` += eskalacje kaskady do frontiera (FIN-21): najwyżej
+                        `max_escalations` (`routing_max_escalations`) i nie więcej
+                        niż odpowiedzi taniego modelu, które mogą eskalować —
+                        predykcja i każdy request rady, gdy rada dzieli główny LLM;
+      - `shadow_llm`  — wywołania wariantu w cieniu (EXP-26): jedno na symbol za
+                        bramką, najwyżej `max_shadow_calls`, nigdy ponad
+                        `SHADOW_PROMPT_MAX_PER_CYCLE`; klucz tylko, gdy > 0.
+
+    Wynik to szacunek tak jak cennik: rotacja kluczy AV ponawia request po
+    odpowiedzi rate-limit i tego tu nie liczymy.
     """
     for name, value in (
         ("n_gated", n_gated),
         ("n_av_symbols", n_av_symbols),
         ("personas", personas),
         ("tool_rounds", tool_rounds),
+        ("max_escalations", max_escalations),
+        ("max_shadow_calls", max_shadow_calls),
     ):
         if value < 0:
             raise ValueError(f"{name} must be non-negative (got {value})")
@@ -344,10 +360,14 @@ def cycle_call_upper_bound(
         "news": 1,
         "embedding": 2,
     }
+    calls = {source: n_gated * requests for source, requests in per_symbol.items()}
+    escalating_answers = n_gated * (_CASCADE_PREDICTION_ANSWERS + council_requests)
+    calls["llm"] += min(max_escalations, escalating_answers)
+    shadow_calls = min(max_shadow_calls, SHADOW_PROMPT_MAX_PER_CYCLE, n_gated)
+    if shadow_calls > 0:
+        calls[SHADOW_LLM_SOURCE] = shadow_calls
     return CycleCallBound(
-        calls=MappingProxyType(
-            {source: n_gated * requests for source, requests in per_symbol.items()}
-        ),
+        calls=MappingProxyType(calls),
         av_requests=min(n_gated, n_av_symbols),
     )
 
@@ -360,6 +380,9 @@ def capped_cycle_call_upper_bound(
     tool_rounds: int,
     cap: int | None,
     concurrency: int,
+    *,
+    max_escalations: int = 0,
+    max_shadow_calls: int = 0,
 ) -> CycleCallBound:
     """WIA-11: `cycle_call_upper_bound` przy miękkim suficie FIN-12 (`cap`).
 
@@ -374,8 +397,14 @@ def capped_cycle_call_upper_bound(
     Diagnoza pomyłki w reflect idzie przed sufitem, więc płaci ją także symbol
     odcięty budżetem. `cap` None = granica bez sufitu. Każde źródło dostaje
     osobno swoje maksimum, więc suma to górna granica, nie scenariusz.
+    Eskalacje frontiera (FIN-21) liczą się do licznika, więc tylko zmniejszają
+    liczbę wpuszczonych symboli; wariant w cieniu (EXP-26) idzie wyłącznie w luzie
+    sufitu (`shadow_call_allowed`), więc nigdy nie ma go więcej niż `cap`.
     """
-    bound = cycle_call_upper_bound(n_gated, n_av_symbols, personas, debate, tool_rounds)
+    extras = {"max_escalations": max_escalations, "max_shadow_calls": max_shadow_calls}
+    bound = cycle_call_upper_bound(
+        n_gated, n_av_symbols, personas, debate, tool_rounds, **extras
+    )
     if cap is None:
         return bound
     for name, value in (("cap", cap), ("concurrency", concurrency)):
@@ -386,12 +415,16 @@ def capped_cycle_call_upper_bound(
     council_per_symbol = cycle_call_upper_bound(
         1, 1, personas, debate, tool_rounds
     ).calls["council_llm"]
-    analysed_bound = cycle_call_upper_bound(analysed, n_av_symbols, personas, debate, tool_rounds)
+    analysed_bound = cycle_call_upper_bound(
+        analysed, n_av_symbols, personas, debate, tool_rounds, **extras
+    )
     calls = dict(analysed_bound.calls)
     calls["llm"] += (n_gated - analysed) * _DIAGNOSIS_REQUESTS
     calls["council_llm"] = min(
         calls["council_llm"], cap - 1 + concurrency * council_per_symbol
     )
+    if SHADOW_LLM_SOURCE in calls:
+        calls[SHADOW_LLM_SOURCE] = min(calls[SHADOW_LLM_SOURCE], cap)
     return CycleCallBound(
         calls=MappingProxyType(calls), av_requests=analysed_bound.av_requests
     )
@@ -558,6 +591,17 @@ def budget_window_start(window: BudgetWindow, now: datetime) -> datetime:
 # EXP-26: klucz cennika wywołań wariantu promptu albo modelu w cieniu. Poza
 # `PAID_LLM_SOURCES`, więc sufit produkcji (`paid_budget_allows`) go nie widzi.
 SHADOW_LLM_SOURCE = "shadow_llm"
+
+# WIA-11: stałe źródeł eksperymentów za flagą. Wariant w cieniu to prompt albo model
+# głównego LLM, więc kosztuje jak predykcja. Poza `UNIT_COST_USD`, bo cykl bez flagi
+# nie ma tego źródła — tabela koperty FIN-06 i jej kolejność zostają jak przed EXP-26.
+EXPERIMENT_UNIT_COST_USD: dict[str, float] = {SHADOW_LLM_SOURCE: UNIT_COST_USD["llm"]}
+
+
+def _unit_cost_usd(source: str) -> float | None:
+    """Stała źródła z cennika produkcji albo eksperymentów; None = spoza cennika."""
+    unit_cost = UNIT_COST_USD.get(source)
+    return EXPERIMENT_UNIT_COST_USD.get(source) if unit_cost is None else unit_cost
 
 
 def shadow_call_allowed(
