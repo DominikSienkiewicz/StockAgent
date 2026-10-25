@@ -13,6 +13,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 
+from src.domain.value_objects import Ratio
+
 
 class MacroStressLevel(Enum):
     NORMAL = "NORMAL"
@@ -28,10 +30,15 @@ _DEFAULT_CRITICAL = Decimal("0.05")
 
 @dataclass(frozen=True)
 class PolishMacroSnapshot:
+    """Kursy referencyjne NBP i ich zmiana w oknie 30 dni.
+
+    `eur_pln_30d_change_ratio` i `usd_pln_30d_change_ratio` to zmiany kursu jako
+    UŁAMEK (`Ratio`: 0.02 = +2%, ARCH-04) — tak jak progi stresu."""
+
     eur_pln: Decimal
     usd_pln: Decimal
-    eur_pln_30d_change_pct: Decimal
-    usd_pln_30d_change_pct: Decimal
+    eur_pln_30d_change_ratio: Ratio
+    usd_pln_30d_change_ratio: Ratio
     fetched_at: datetime
 
     def evaluate_stress_level(
@@ -56,7 +63,7 @@ class PolishMacroSnapshot:
                 f"({elevated_threshold} >= {critical_threshold})"
             )
 
-        worst = max(self.eur_pln_30d_change_pct, self.usd_pln_30d_change_pct)
+        worst = max(self.eur_pln_30d_change_ratio, self.usd_pln_30d_change_ratio)
         if worst >= critical_threshold:
             return MacroStressLevel.CRITICAL
         if worst >= elevated_threshold:

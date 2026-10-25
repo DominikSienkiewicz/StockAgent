@@ -37,6 +37,7 @@ from src.application.ports import FxRatePort, MacroIndicatorsPort
 from src.domain.fx import FxRate
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import HOME_CURRENCY
+from src.domain.value_objects import Ratio
 from src.infrastructure.adapters._http import (
     build_session,
     json_payload,
@@ -86,8 +87,8 @@ class NbpClient(MacroIndicatorsPort):
         return PolishMacroSnapshot(
             eur_pln=eur_latest,
             usd_pln=usd_latest,
-            eur_pln_30d_change_pct=(eur_latest - eur_baseline) / eur_baseline,
-            usd_pln_30d_change_pct=(usd_latest - usd_baseline) / usd_baseline,
+            eur_pln_30d_change_ratio=Ratio((eur_latest - eur_baseline) / eur_baseline),
+            usd_pln_30d_change_ratio=Ratio((usd_latest - usd_baseline) / usd_baseline),
             fetched_at=datetime.now(UTC),
         )
 

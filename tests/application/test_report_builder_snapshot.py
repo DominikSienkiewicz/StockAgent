@@ -337,8 +337,8 @@ def _macro_risk_report() -> MacroRiskReport:
         polish_macro=PolishMacroSnapshot(
             eur_pln=Decimal("4.2710"),
             usd_pln=Decimal("3.6820"),
-            eur_pln_30d_change_pct=Decimal("0.012"),
-            usd_pln_30d_change_pct=Decimal("0.021"),
+            eur_pln_30d_change_ratio=Decimal("0.012"),
+            usd_pln_30d_change_ratio=Decimal("0.021"),
             fetched_at=STARTED - timedelta(hours=2),
         ),
         overall_alert=MacroAlertLevel.ELEVATED,

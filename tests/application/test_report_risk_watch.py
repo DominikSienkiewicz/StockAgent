@@ -168,8 +168,8 @@ class TestHtmlRendering:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.45"),
             usd_pln=Decimal("4.10"),
-            eur_pln_30d_change_pct=Decimal("0.035"),
-            usd_pln_30d_change_pct=Decimal("0.02"),
+            eur_pln_30d_change_ratio=Decimal("0.035"),
+            usd_pln_30d_change_ratio=Decimal("0.02"),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)
@@ -206,8 +206,8 @@ class TestPlainTextRendering:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.45"),
             usd_pln=Decimal("4.10"),
-            eur_pln_30d_change_pct=Decimal("0.035"),
-            usd_pln_30d_change_pct=Decimal("0.02"),
+            eur_pln_30d_change_ratio=Decimal("0.035"),
+            usd_pln_30d_change_ratio=Decimal("0.02"),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)

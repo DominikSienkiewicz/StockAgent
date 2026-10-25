@@ -159,8 +159,8 @@ class TestOverallAlert:
         macro_port.fetch_polish_macro.return_value = PolishMacroSnapshot(
             eur_pln=Decimal("4.55"),
             usd_pln=Decimal("4.20"),
-            eur_pln_30d_change_pct=Decimal("0.06"),  # +6% → CRITICAL stress
-            usd_pln_30d_change_pct=Decimal("0.04"),
+            eur_pln_30d_change_ratio=Decimal("0.06"),  # +6% → CRITICAL stress
+            usd_pln_30d_change_ratio=Decimal("0.04"),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
 
@@ -212,8 +212,8 @@ class TestPolishMacroIntegration:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.40"),
             usd_pln=Decimal("4.05"),
-            eur_pln_30d_change_pct=Decimal("0.025"),
-            usd_pln_30d_change_pct=Decimal("0.01"),
+            eur_pln_30d_change_ratio=Decimal("0.025"),
+            usd_pln_30d_change_ratio=Decimal("0.01"),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         macro_port.fetch_polish_macro.return_value = snap

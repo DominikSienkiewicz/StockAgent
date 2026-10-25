@@ -38,8 +38,8 @@ def _make_macro() -> PolishMacroSnapshot:
     return PolishMacroSnapshot(
         eur_pln=Decimal("4.30"),
         usd_pln=Decimal("3.95"),
-        eur_pln_30d_change_pct=Decimal("0.021"),
-        usd_pln_30d_change_pct=Decimal("0.048"),
+        eur_pln_30d_change_ratio=Decimal("0.021"),
+        usd_pln_30d_change_ratio=Decimal("0.048"),
         fetched_at=datetime(2026, 6, 21, 12, 0, 0),
     )
 

@@ -380,7 +380,7 @@ class TestNbpTableFixture:
         assert snapshot is not None
         latest, baseline = Decimal(str(rates[-1]["mid"])), Decimal(str(rates[0]["mid"]))
         assert snapshot.usd_pln == latest
-        assert snapshot.usd_pln_30d_change_pct == (latest - baseline) / baseline
+        assert snapshot.usd_pln_30d_change_ratio == (latest - baseline) / baseline
 
 
 # ---------------------------------------------------------------------------

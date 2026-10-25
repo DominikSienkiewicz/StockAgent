@@ -59,7 +59,7 @@ def client() -> NbpClient:
 
 
 class TestFetchPolishMacro:
-    def test_returns_snapshot_with_latest_and_change_pct(
+    def test_returns_snapshot_with_latest_and_change_ratio(
         self, client: NbpClient, mocker
     ) -> None:
         eur = _nbp_rates_payload("euro", [4.30, 4.32, 4.35, 4.40])
@@ -78,11 +78,11 @@ class TestFetchPolishMacro:
         assert snap.eur_pln == Decimal("4.40")
         assert snap.usd_pln == Decimal("4.10")
         # (4.40 - 4.30) / 4.30 ≈ 0.0233
-        assert snap.eur_pln_30d_change_pct.quantize(Decimal("0.0001")) == Decimal(
+        assert snap.eur_pln_30d_change_ratio.quantize(Decimal("0.0001")) == Decimal(
             "0.0233"
         )
         # (4.10 - 4.00) / 4.00 == 0.025
-        assert snap.usd_pln_30d_change_pct == Decimal("0.025")
+        assert snap.usd_pln_30d_change_ratio == Decimal("0.025")
 
     def test_calls_both_currencies(self, client: NbpClient, mocker) -> None:
         mock_get = mocker.patch(

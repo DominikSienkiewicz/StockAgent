@@ -246,9 +246,9 @@ def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
         "border-radius: 4px; font-size: 13px; margin-bottom: 16px;'>"
         "<strong>Polska — kursy referencyjne (NBP, 30d):</strong><br>"
         f"EUR/PLN: <strong>{number_exact(snap.eur_pln)}</strong> "
-        f"({_format_pct(snap.eur_pln_30d_change_pct)}) · "
+        f"({_format_pct(snap.eur_pln_30d_change_ratio)}) · "
         f"USD/PLN: <strong>{number_exact(snap.usd_pln)}</strong> "
-        f"({_format_pct(snap.usd_pln_30d_change_pct)})<br>"
+        f"({_format_pct(snap.usd_pln_30d_change_ratio)})<br>"
         f"Poziom stresu fiskalnego: <strong>{label}</strong>"
         "</div>"
     )
@@ -308,11 +308,11 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         snap = report.polish_macro
         lines.append(
             f"  EUR/PLN: {number_exact(snap.eur_pln)} "
-            f"({_format_pct(snap.eur_pln_30d_change_pct)} / 30d)"
+            f"({_format_pct(snap.eur_pln_30d_change_ratio)} / 30d)"
         )
         lines.append(
             f"  USD/PLN: {number_exact(snap.usd_pln)} "
-            f"({_format_pct(snap.usd_pln_30d_change_pct)} / 30d)"
+            f"({_format_pct(snap.usd_pln_30d_change_ratio)} / 30d)"
         )
         lines.append(
             f"  Stres fiskalny: {_STRESS_LABEL[snap.evaluate_stress_level()]}"
