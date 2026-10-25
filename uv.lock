@@ -2377,6 +2377,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "langgraph" },
@@ -2421,6 +2422,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.102.0" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.102.0" },
+    { name = "cryptography", specifier = ">=48" },
     { name = "httpx", specifier = ">=0.26" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langgraph", specifier = ">=1.2,<2" },

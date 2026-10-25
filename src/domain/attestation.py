@@ -390,6 +390,26 @@ def verify_inclusion(
     return sn == 0 and hmac.compare_digest(computed.hex(), root.lower())
 
 
+# WIA-73: artefakt wpisu `hashedrekord` w logu przejrzystości (Sigstore Rekor) to 32 bajty
+# rootu cyklu, nie jego tekst hex: wpis wiąże dokładnie root z linii ledgera, a weryfikator
+# liczy ten sam SHA-256. ZAMROŻONE jak kanonizacja — zmiana reguły odcina weryfikację
+# opublikowanych wpisów.
+_ROOT_BYTES = 32
+
+
+def root_artifact(root: str) -> bytes:
+    """32 bajty rootu cyklu — artefakt podpisywany i logowany w Rekorze."""
+    artifact = _hex_bytes(root)
+    if len(artifact) != _ROOT_BYTES:
+        raise ValueError(f"Root cyklu ma {len(artifact)} bajtów zamiast {_ROOT_BYTES}")
+    return artifact
+
+
+def root_artifact_sha256(root: str) -> str:
+    """SHA-256 (hex) artefaktu rootu — pole `spec.data.hash.value` wpisu `hashedrekord`."""
+    return hashlib.sha256(root_artifact(root)).hexdigest()
+
+
 def cycle_leaves(commitments: Iterable[str]) -> tuple[str, ...]:
     """Liście cyklu: commitmenty małymi literami, posortowane, bez powtórzeń (retry
     zapisu tej samej predykcji daje ten sam hash)."""
