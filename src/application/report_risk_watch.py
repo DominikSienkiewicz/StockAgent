@@ -181,7 +181,7 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
             f"<td style='padding: 6px 8px; color: #6b7280;'>"
             f"{_INSTRUMENT_LABEL[sig.instrument_type]}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{_format_pct(sig.change_pct)}</td>"
+            f"{_format_pct(sig.change_ratio)}</td>"
             f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
             f"{_ALERT_LABEL[alert]}</td>"
             f"</tr>"
@@ -276,7 +276,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
             lines.append(
                 f"  {company_label(sig.symbol):40s} "
                 f"{_INSTRUMENT_LABEL[sig.instrument_type]:18s} "
-                f"Δ={_format_pct(sig.change_pct):>7s} "
+                f"Δ={_format_pct(sig.change_ratio):>7s} "
                 f"[{_ALERT_LABEL[alert]}]"
             )
         lines.append("")

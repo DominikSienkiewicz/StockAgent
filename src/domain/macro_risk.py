@@ -41,9 +41,9 @@ class MacroRiskSignal:
     previous_price: Money
 
     @property
-    def change_pct(self) -> Ratio:
-        """Zmiana ceny vs poprzedni snapshot jako UŁAMEK (`Ratio`: 0.03 = +3%),
-        mimo sufiksu `_pct` — progi alertu też są ułamkami (ARCH-04).
+    def change_ratio(self) -> Ratio:
+        """Zmiana ceny vs poprzedni snapshot jako UŁAMEK (`Ratio`: 0.03 = +3%);
+        progi alertu też są ułamkami (ARCH-04).
 
         Cold-start guard: gdy previous=0 zwraca 0 (brak referencji), żeby
         nie wywoływać alertu pierwszego cyklu.
@@ -64,7 +64,7 @@ class MacroRiskSignal:
 
         Dla SOVEREIGN_PROXY interpretujemy spadek jako alert (inwersja znaku).
         """
-        change = self.change_pct
+        change = self.change_ratio
         if self.instrument_type is MacroRiskInstrumentType.SOVEREIGN_PROXY:
             change = Ratio(-change)
 

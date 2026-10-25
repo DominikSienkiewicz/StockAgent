@@ -32,19 +32,19 @@ def _signal(
     )
 
 
-class TestChangePct:
-    def test_change_pct_positive_when_price_rises(self) -> None:
+class TestChangeRatio:
+    def test_change_ratio_positive_when_price_rises(self) -> None:
         sig = _signal(MacroRiskInstrumentType.VOLATILITY, "100", "105")
-        assert sig.change_pct == Decimal("0.05")
+        assert sig.change_ratio == Decimal("0.05")
 
-    def test_change_pct_negative_when_price_falls(self) -> None:
+    def test_change_ratio_negative_when_price_falls(self) -> None:
         sig = _signal(MacroRiskInstrumentType.SOVEREIGN_PROXY, "100", "97")
-        assert sig.change_pct == Decimal("-0.03")
+        assert sig.change_ratio == Decimal("-0.03")
 
-    def test_change_pct_zero_when_previous_is_zero_cold_start(self) -> None:
+    def test_change_ratio_zero_when_previous_is_zero_cold_start(self) -> None:
         sig = _signal(MacroRiskInstrumentType.VOLATILITY, "0", "10")
         # Cold-start guard — bez referencji nie można liczyć zmiany.
-        assert sig.change_pct == Decimal("0")
+        assert sig.change_ratio == Decimal("0")
 
 
 class TestInverseAndSafeHavenAlerts:
