@@ -1,5 +1,6 @@
 import contextlib
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -45,7 +46,7 @@ def _tool_use_response(blocks: list[MagicMock]) -> MagicMock:
 
 
 @pytest.fixture
-def mock_anthropic_class(mocker):
+def mock_anthropic_class(mocker: Any):
     return mocker.patch(
         "src.infrastructure.llm.tool_calling_anthropic.Anthropic"
     )
@@ -79,7 +80,9 @@ def _make_tool(func) -> Tool:
 class TestImmediateAnswer:
     """(a) Model odpowiada od razu, bez tool-use → parsed JSON, brak pętli."""
 
-    def test_returns_parsed_json_without_calling_tools(self, adapter_with_client):
+    def test_returns_parsed_json_without_calling_tools(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _final_response(
             json.dumps({"trend_direction": "BULLISH", "confidence_score": 0.9})
@@ -93,7 +96,9 @@ class TestImmediateAnswer:
         called.assert_not_called()
         assert client.messages.create.call_count == 1
 
-    def test_tools_mapped_to_anthropic_schema(self, adapter_with_client):
+    def test_tools_mapped_to_anthropic_schema(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _final_response("{}")
         tool = _make_tool(MagicMock(return_value={}))
@@ -111,7 +116,9 @@ class TestImmediateAnswer:
 class TestSingleToolRound:
     """(b) Model prosi o jeden tool, dostaje wynik, potem odpowiada."""
 
-    def test_tool_func_invoked_with_input_then_final_json(self, adapter_with_client):
+    def test_tool_func_invoked_with_input_then_final_json(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         tool_func = MagicMock(return_value={"pe": 18.5})
         tool = _make_tool(tool_func)
@@ -128,7 +135,9 @@ class TestSingleToolRound:
         assert result == {"trend_direction": "BEARISH"}
         assert client.messages.create.call_count == 2
 
-    def test_tool_result_fed_back_as_tool_result_block(self, adapter_with_client):
+    def test_tool_result_fed_back_as_tool_result_block(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 18.5}))
         client.messages.create.side_effect = [
@@ -152,7 +161,9 @@ class TestSingleToolRound:
         assert tool_results[0]["tool_use_id"] == "tu_42"
         assert json.loads(tool_results[0]["content"]) == {"pe": 18.5}
 
-    def test_assistant_tool_use_turn_appended(self, adapter_with_client):
+    def test_assistant_tool_use_turn_appended(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         # Pętla musi dołożyć turę asystenta (z blokiem tool_use) przed wynikami.
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
@@ -174,7 +185,7 @@ class TestSingleToolRound:
 class TestMaxRoundsCap:
     """(c) FinOps — model w kółko prosi o tool; pętla kończy po max_rounds."""
 
-    def test_tool_calls_bounded_by_max_rounds(self, mock_anthropic_class):
+    def test_tool_calls_bounded_by_max_rounds(self, mock_anthropic_class) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         tool_func = MagicMock(return_value={"pe": 1.0})
@@ -191,7 +202,7 @@ class TestMaxRoundsCap:
 
         assert tool_func.call_count <= 2
 
-    def test_forces_final_answer_after_cap(self, mock_anthropic_class):
+    def test_forces_final_answer_after_cap(self, mock_anthropic_class) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
@@ -212,7 +223,7 @@ class TestMaxRoundsCap:
 
         assert result == {"trend_direction": "NEUTRAL"}
 
-    def test_last_forced_call_drops_tools_to_force_text(self, mock_anthropic_class):
+    def test_last_forced_call_drops_tools_to_force_text(self, mock_anthropic_class) -> None:
         # Po wyczerpaniu rund wymuszamy finalną odpowiedź — bez `tools`,
         # żeby model nie mógł znowu poprosić o narzędzie.
         client = MagicMock()
@@ -239,8 +250,8 @@ class TestToolErrorResilience:
     """(d) Funkcja narzędzia rzuca → pętla żyje, błąd jako wynik narzędzia."""
 
     def test_tool_exception_surfaced_as_error_result_no_crash(
-        self, adapter_with_client
-    ):
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
 
         def boom(_args: dict) -> dict:
@@ -266,7 +277,9 @@ class TestToolErrorResilience:
         assert "error" in payload
         assert "network down" in payload["error"]
 
-    def test_unknown_tool_name_surfaced_as_error(self, adapter_with_client):
+    def test_unknown_tool_name_surfaced_as_error(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.messages.create.side_effect = [
@@ -288,7 +301,9 @@ class TestToolErrorResilience:
 class TestJsonParsing:
     """Reuse parsowania jak w AnthropicAdapter — proza/code-block wokół JSON."""
 
-    def test_extracts_json_from_prose(self, adapter_with_client):
+    def test_extracts_json_from_prose(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         prose = 'Here is the analysis: {"trend_direction":"BULLISH"} hope it helps'
         client.messages.create.return_value = _final_response(prose)
@@ -298,7 +313,9 @@ class TestJsonParsing:
 
         assert result == {"trend_direction": "BULLISH"}
 
-    def test_strips_markdown_code_block(self, adapter_with_client):
+    def test_strips_markdown_code_block(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         wrapped = '```json\n{"trend_direction": "BEARISH"}\n```'
         client.messages.create.return_value = _final_response(wrapped)
@@ -308,7 +325,9 @@ class TestJsonParsing:
 
         assert result == {"trend_direction": "BEARISH"}
 
-    def test_raises_on_genuine_non_json(self, adapter_with_client):
+    def test_raises_on_genuine_non_json(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _final_response("cannot analyze now")
         tool = _make_tool(MagicMock(return_value={}))
@@ -316,7 +335,9 @@ class TestJsonParsing:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze_with_tools("Predict.", [tool])
 
-    def test_rejects_top_level_json_scalar(self, adapter_with_client):
+    def test_rejects_top_level_json_scalar(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         # ARCH-01: liczba to poprawny JSON, ale werdykt musi być obiektem.
         adapter, client = adapter_with_client
         client.messages.create.return_value = _final_response("42")
@@ -327,24 +348,26 @@ class TestJsonParsing:
 
 
 class TestConfiguration:
-    def test_is_tool_use_llm_port(self):
+    def test_is_tool_use_llm_port(self) -> None:
         assert issubclass(ToolCallingAnthropicAdapter, ToolUseLLMPort)
 
-    def test_initializes_client_with_api_key_and_timeout(self, mock_anthropic_class):
+    def test_initializes_client_with_api_key_and_timeout(self, mock_anthropic_class) -> None:
         ToolCallingAnthropicAdapter(api_key="sk-ant-secret")
         call = mock_anthropic_class.call_args
         assert call.kwargs["api_key"] == "sk-ant-secret"
         assert call.kwargs["timeout"] > 0
 
-    def test_default_model_constructs_fine(self, mock_anthropic_class):
+    def test_default_model_constructs_fine(self, mock_anthropic_class) -> None:
         adapter = ToolCallingAnthropicAdapter(api_key="sk-ant-test")
         assert adapter._model == DEFAULT_MODEL
 
-    def test_wrong_prefix_model_raises(self, mock_anthropic_class):
+    def test_wrong_prefix_model_raises(self, mock_anthropic_class) -> None:
         with pytest.raises(ValueError, match="claude-"):
             ToolCallingAnthropicAdapter(api_key="sk-ant-test", model="gpt-4o")
 
-    def test_passes_model_and_prompt(self, adapter_with_client):
+    def test_passes_model_and_prompt(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _final_response("{}")
         tool = _make_tool(MagicMock(return_value={}))
@@ -399,7 +422,7 @@ class TestUsageReporting:
         response.usage.output_tokens = output_tokens
         return response
 
-    def test_every_round_reports_its_usage(self, mock_anthropic_class):
+    def test_every_round_reports_its_usage(self, mock_anthropic_class) -> None:
         from src.application.ports import UsageSink
 
         client = MagicMock()
@@ -445,7 +468,9 @@ class TestPortErrorTaxonomy:
         ("status", "kind_name"),
         [(529, "ProviderUnavailable"), (429, "QuotaExhausted"), (400, "PortError")],
     )
-    def test_sdk_error_maps_to_its_kind(self, adapter_with_client, status, kind_name):
+    def test_sdk_error_maps_to_its_kind(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock], status, kind_name
+    ) -> None:
         from anthropic import APIStatusError
 
         from src.application import errors
@@ -458,7 +483,9 @@ class TestPortErrorTaxonomy:
 
         assert isinstance(excinfo.value, APIStatusError)
 
-    def test_unparseable_verdict_is_malformed_payload(self, adapter_with_client):
+    def test_unparseable_verdict_is_malformed_payload(
+        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
+    ) -> None:
         from src.application.errors import MalformedPayload
 
         adapter, client = adapter_with_client

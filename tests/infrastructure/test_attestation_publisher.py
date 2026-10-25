@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -86,7 +87,7 @@ class TestFileAttestationPublisher:
         assert "commit" not in reveal.read_text(encoding="utf-8")
 
     def test_write_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker: Any
     ) -> None:
         publisher = self._make(tmp_path)
         # Symulujemy błąd I/O — publikacja nie może wywalić cyklu.
@@ -99,7 +100,7 @@ class TestFileAttestationPublisher:
         assert "disk full" in caplog.text or "publish" in caplog.text.lower()
 
     def test_mkdir_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, mocker
+        self, tmp_path: Path, mocker: Any
     ) -> None:
         publisher = self._make(tmp_path)
         mocker.patch.object(Path, "mkdir", side_effect=OSError("perm denied"))
@@ -111,7 +112,7 @@ class TestFileAttestationPublisher:
 
 class TestNullAttestationPublisher:
     def test_commitment_returns_empty_without_writing(
-        self, mocker
+        self, mocker: Any
     ) -> None:
         opener = mocker.patch("builtins.open")
         publisher = NullAttestationPublisher()
@@ -121,7 +122,7 @@ class TestNullAttestationPublisher:
         assert result == ""
         opener.assert_not_called()
 
-    def test_reveal_returns_empty_without_writing(self, mocker) -> None:
+    def test_reveal_returns_empty_without_writing(self, mocker: Any) -> None:
         opener = mocker.patch("builtins.open")
         publisher = NullAttestationPublisher()
 

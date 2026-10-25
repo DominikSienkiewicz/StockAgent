@@ -6,6 +6,7 @@ na WARNING, bo błąd sieci to nie wycofany model.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import anthropic
@@ -29,7 +30,7 @@ def _not_found(module: object) -> Exception:
     )
 
 
-def test_anthropic_catalog_reports_an_existing_model(mocker) -> None:
+def test_anthropic_catalog_reports_an_existing_model(mocker: Any) -> None:
     client = MagicMock()
     mocker.patch("src.infrastructure.llm.model_catalog.Anthropic", return_value=client)
 
@@ -37,7 +38,7 @@ def test_anthropic_catalog_reports_an_existing_model(mocker) -> None:
     client.models.retrieve.assert_called_once_with("claude-sonnet-4-6")
 
 
-def test_anthropic_catalog_maps_404_to_unavailable(mocker) -> None:
+def test_anthropic_catalog_maps_404_to_unavailable(mocker: Any) -> None:
     client = MagicMock()
     client.models.retrieve.side_effect = _not_found(anthropic)
     mocker.patch("src.infrastructure.llm.model_catalog.Anthropic", return_value=client)
@@ -45,7 +46,7 @@ def test_anthropic_catalog_maps_404_to_unavailable(mocker) -> None:
     assert AnthropicModelCatalog(api_key="sk-ant-test").is_available("claude-old") is False
 
 
-def test_anthropic_catalog_lets_network_errors_through(mocker) -> None:
+def test_anthropic_catalog_lets_network_errors_through(mocker: Any) -> None:
     client = MagicMock()
     client.models.retrieve.side_effect = anthropic.APIConnectionError(request=_REQUEST)
     mocker.patch("src.infrastructure.llm.model_catalog.Anthropic", return_value=client)
@@ -54,7 +55,7 @@ def test_anthropic_catalog_lets_network_errors_through(mocker) -> None:
         AnthropicModelCatalog(api_key="sk-ant-test").is_available("claude-sonnet-4-6")
 
 
-def test_openai_catalog_maps_404_to_unavailable(mocker) -> None:
+def test_openai_catalog_maps_404_to_unavailable(mocker: Any) -> None:
     client = MagicMock()
     client.models.retrieve.side_effect = _not_found(openai)
     mocker.patch("src.infrastructure.llm.model_catalog.OpenAI", return_value=client)
@@ -62,7 +63,7 @@ def test_openai_catalog_maps_404_to_unavailable(mocker) -> None:
     assert OpenAIModelCatalog(api_key="sk-test").is_available("gpt-old") is False
 
 
-def test_openai_catalog_reports_an_existing_model(mocker) -> None:
+def test_openai_catalog_reports_an_existing_model(mocker: Any) -> None:
     client = MagicMock()
     mocker.patch("src.infrastructure.llm.model_catalog.OpenAI", return_value=client)
 
@@ -70,7 +71,7 @@ def test_openai_catalog_reports_an_existing_model(mocker) -> None:
     client.models.retrieve.assert_called_once_with("gpt-5-mini")
 
 
-def test_clients_do_not_retry_on_their_own(mocker) -> None:
+def test_clients_do_not_retry_on_their_own(mocker: Any) -> None:
     anthropic_cls = mocker.patch("src.infrastructure.llm.model_catalog.Anthropic")
     openai_cls = mocker.patch("src.infrastructure.llm.model_catalog.OpenAI")
 

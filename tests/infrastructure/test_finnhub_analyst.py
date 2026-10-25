@@ -8,6 +8,7 @@ jak inne adaptery HTTP w projekcie. Adapter jest graceful: każdy błąd → Non
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -66,7 +67,7 @@ def adapter() -> FinnhubAnalystAdapter:
 
 class TestGetConsensus:
     def test_picks_most_recent_recommendation_snapshot(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -88,7 +89,7 @@ class TestGetConsensus:
         assert consensus.strong_sell == 0
 
     def test_sets_price_target_from_target_median(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -104,7 +105,7 @@ class TestGetConsensus:
         assert consensus.price_target == pytest.approx(220.0)
 
     def test_price_target_403_premium_leaves_target_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         # price-target bywa płatny → 403. Konsensus dalej zwracany, tylko bez celu.
         mocker.patch(
@@ -122,7 +123,7 @@ class TestGetConsensus:
         assert consensus.strong_buy == 13
 
     def test_empty_price_target_leaves_target_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         # 200 + pusty payload → brak celu, konsensus dalej zwracany.
         mocker.patch(
@@ -139,7 +140,7 @@ class TestGetConsensus:
         assert consensus.price_target is None
 
     def test_falls_back_to_target_mean_when_median_missing(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -155,14 +156,14 @@ class TestGetConsensus:
         assert consensus.price_target == pytest.approx(215.0)
 
     def test_empty_recommendation_list_returns_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch("requests.Session.get", side_effect=[_ok_response([])])
 
         assert adapter.get_consensus("AAPL") is None
 
     def test_non_200_on_recommendation_returns_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get", side_effect=[_status_response(403)]
@@ -171,7 +172,7 @@ class TestGetConsensus:
         assert adapter.get_consensus("AAPL") is None
 
     def test_network_error_returns_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -181,7 +182,7 @@ class TestGetConsensus:
         assert adapter.get_consensus("AAPL") is None
 
     def test_passes_symbol_and_token_and_timeout(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -207,7 +208,7 @@ class TestAdapterImplementsPort:
 
 
 class TestNullAdapter:
-    def test_null_returns_none_with_no_io(self, mocker) -> None:
+    def test_null_returns_none_with_no_io(self, mocker: Any) -> None:
         mock_get = mocker.patch("requests.Session.get")
 
         null = NullAnalystConsensusAdapter()
@@ -219,7 +220,7 @@ class TestNullAdapter:
         assert issubclass(NullAnalystConsensusAdapter, AnalystConsensusPort)
 
 
-def test_network_error_log_omits_token(mocker, caplog) -> None:
+def test_network_error_log_omits_token(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: `logger.exception` drukuje komunikat i traceback błędu sieci, a ten
     # niesie URL z `&token=` — logi GHA są publiczne.
     import logging
@@ -263,7 +264,9 @@ def test_429_on_recommendation_emits_quota_alert() -> None:
     assert "test-token-123" not in alert.message + alert.action
 
 
-def test_repeated_429_on_one_endpoint_is_one_critical_alert(caplog) -> None:
+def test_repeated_429_on_one_endpoint_is_one_critical_alert(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # DAT-12 (decyzja 2026-10-24): CRITICAL raz na endpoint na cykl, kolejne 429 w logu.
     import logging
     from unittest.mock import patch
@@ -284,7 +287,9 @@ def test_repeated_429_on_one_endpoint_is_one_critical_alert(caplog) -> None:
 
 
 @pytest.mark.parametrize("status", [401, 403])
-def test_auth_error_on_recommendation_warns_once(status: int, caplog) -> None:
+def test_auth_error_on_recommendation_warns_once(
+    status: int, caplog: pytest.LogCaptureFixture
+) -> None:
     import logging
     from unittest.mock import patch
 
@@ -305,7 +310,7 @@ def test_auth_error_on_recommendation_warns_once(status: int, caplog) -> None:
     assert monitor.alerts == []
 
 
-def test_every_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
+def test_every_request_takes_a_token_from_the_shared_limiter(mocker: Any) -> None:
     limiter = Mock()
     adapter = FinnhubAnalystAdapter(api_key="test-token-123", rate_limiter=limiter)
     mocker.patch(
@@ -326,7 +331,7 @@ class TestPortErrorTaxonomy:
     śmieciowa treść → None); błąd programisty nie znika jako „brak konsensusu”."""
 
     def test_unparseable_recommendation_body_degrades_to_none(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         broken = _ok_response([])
         broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
@@ -335,7 +340,7 @@ class TestPortErrorTaxonomy:
         assert adapter.get_consensus("AAPL") is None
 
     def test_programming_error_is_not_swallowed(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch("requests.Session.get", side_effect=TypeError("bug in the adapter"))
 
@@ -352,7 +357,7 @@ class TestRevision:
         return {"period": period, **counts}
 
     def test_revision_up_when_latest_period_has_more_buy_votes(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         from src.domain.analyst_consensus import RevisionDirection
 
@@ -373,7 +378,7 @@ class TestRevision:
         assert get.call_count == 2
 
     def test_duplicate_latest_period_is_not_its_own_previous(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         payload = [
             self._period("2026-10-01", strongBuy=3, buy=12, hold=5),
@@ -390,7 +395,7 @@ class TestRevision:
         assert consensus.previous is not None and consensus.previous.buy == 10
 
     def test_single_period_has_no_previous(
-        self, adapter: FinnhubAnalystAdapter, mocker
+        self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",

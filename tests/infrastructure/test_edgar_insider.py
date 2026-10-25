@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -130,7 +131,7 @@ def adapter() -> EdgarInsiderAdapter:
 
 class TestGetInsiderFlow:
     def test_aggregates_buy_and_sell(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy_xml = _form4_xml(code="P", shares=1000.0)
         sell_xml = _form4_xml(code="S", shares=400.0)
@@ -160,7 +161,7 @@ class TestGetInsiderFlow:
         assert snap.evaluate_signal() is InsiderSignal.NET_BUYING
 
     def test_net_selling_when_sales_dominate(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy_xml = _form4_xml(code="P", shares=100.0)
         sell_xml = _form4_xml(code="S", shares=900.0)
@@ -182,7 +183,7 @@ class TestGetInsiderFlow:
         assert snap.net_shares == pytest.approx(-800.0)
         assert snap.evaluate_signal() is InsiderSignal.NET_SELLING
 
-    def test_skips_filings_outside_window(self, mocker) -> None:
+    def test_skips_filings_outside_window(self, mocker: Any) -> None:
         # window_days=15: filing sprzed 20 dni wypada poza okno.
         adapter = EdgarInsiderAdapter(user_agent=USER_AGENT, window_days=15)
         buy_xml = _form4_xml(code="P", shares=1000.0)
@@ -204,7 +205,7 @@ class TestGetInsiderFlow:
         assert snap.sell_count == 0
 
     def test_sets_user_agent_header_on_every_call(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy_xml = _form4_xml(code="P", shares=1.0)
 
@@ -223,7 +224,7 @@ class TestGetInsiderFlow:
         assert USER_AGENT in adapter._session.headers.get("User-Agent", "")
 
     def test_sets_timeout_on_every_call(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy_xml = _form4_xml(code="P", shares=1.0)
 
@@ -243,7 +244,7 @@ class TestGetInsiderFlow:
             assert call.kwargs["timeout"] > 0
 
     def test_zero_pads_cik_in_submissions_url(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy_xml = _form4_xml(code="P", shares=1.0)
 
@@ -266,7 +267,7 @@ class TestGetInsiderFlow:
         assert any("CIK0000320193.json" in u for u in urls)
 
     def test_unknown_ticker_returns_none(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -278,7 +279,7 @@ class TestGetInsiderFlow:
         assert snap is None
 
     def test_ticker_lookup_http_error_returns_none(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get", return_value=_error_response(503)
@@ -289,7 +290,7 @@ class TestGetInsiderFlow:
         assert snap is None
 
     def test_submissions_http_error_returns_none(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         def get(url: str, **_: object) -> Mock:
             if "company_tickers.json" in url:
@@ -303,7 +304,7 @@ class TestGetInsiderFlow:
         assert snap is None
 
     def test_malformed_xml_is_skipped_partial_aggregation(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # Jeden Form 4 ma zepsuty XML — pomijamy go, drugi liczy się normalnie.
         # form4_buy.xml jest zepsuty; form4_sell.xml to poprawna sprzedaż.
@@ -329,7 +330,7 @@ class TestGetInsiderFlow:
         assert snap.net_shares == pytest.approx(-500.0)
 
     def test_all_xml_failing_still_returns_snapshot_with_counts(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # Wszystkie Form-4 XML padają na fetchu → snapshot z zerowymi licznikami.
         def get(url: str, **_: object) -> Mock:
@@ -350,7 +351,7 @@ class TestGetInsiderFlow:
         assert snap.evaluate_signal() is InsiderSignal.NEUTRAL
 
     def test_no_form4_filings_returns_zero_snapshot(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         only_10k = _submissions(
             forms=["10-K", "8-K"],
@@ -373,7 +374,7 @@ class TestGetInsiderFlow:
         assert snap.sell_count == 0
         assert snap.evaluate_signal() is InsiderSignal.NEUTRAL
 
-    def test_respects_max_form4_cap(self, mocker) -> None:
+    def test_respects_max_form4_cap(self, mocker: Any) -> None:
         # max_form4=1: bierzemy tylko najnowszy Form 4 (kupno sprzed 5 dni).
         adapter = EdgarInsiderAdapter(
             user_agent=USER_AGENT, window_days=90, max_form4=1
@@ -400,7 +401,7 @@ class TestGetInsiderFlow:
         assert snap.net_shares == pytest.approx(1000.0)
 
     def test_strips_xsl_rendering_prefix(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # Kształt z prawdziwego submissions API: primaryDocument Form 4 wskazuje
         # widok renderowany przez XSL (HTML), a surowy XML leży w tym samym
@@ -434,7 +435,7 @@ class TestGetInsiderFlow:
         assert snap.net_shares == pytest.approx(1000.0)
 
     def test_keeps_non_xsl_subdirectory_in_primary_document(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # Zdejmujemy wyłącznie prefiks renderera XSL; inny podkatalog zostaje.
         submissions = _submissions(
@@ -470,7 +471,7 @@ class TestFilingEvidence:
     odróżniła awarię parsowania od braku transakcji."""
 
     @staticmethod
-    def _patch(mocker, form4_body: dict[str, str]) -> None:
+    def _patch(mocker: Any, form4_body: dict[str, str]) -> None:
         def get(url: str, **_: object) -> Mock:
             if "company_tickers.json" in url:
                 return _ok_json(_company_tickers())
@@ -483,7 +484,9 @@ class TestFilingEvidence:
 
         mocker.patch("requests.Session.get", side_effect=get)
 
-    def test_counts_seen_and_parsed_filings(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+    def test_counts_seen_and_parsed_filings(
+        self, adapter: EdgarInsiderAdapter, mocker: Any
+    ) -> None:
         self._patch(
             mocker,
             {
@@ -499,7 +502,7 @@ class TestFilingEvidence:
         assert snap.has_evidence()
 
     def test_all_failing_filings_are_seen_but_not_parsed(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         self._patch(mocker, {})
 
@@ -510,7 +513,7 @@ class TestFilingEvidence:
         assert not snap.has_evidence()
 
     def test_partial_parse_counts_only_the_parsed_filing(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         self._patch(
             mocker,
@@ -547,7 +550,7 @@ class TestTickerMapAndPacing:
 
         return urls, get
 
-    def test_ticker_map_fetched_once_per_instance(self, mocker) -> None:
+    def test_ticker_map_fetched_once_per_instance(self, mocker: Any) -> None:
         urls, get = self._get([200])
         mocker.patch("requests.Session.get", side_effect=get)
         adapter = EdgarInsiderAdapter(user_agent=USER_AGENT)
@@ -557,7 +560,7 @@ class TestTickerMapAndPacing:
 
         assert sum("company_tickers.json" in url for url in urls) == 1
 
-    def test_failed_ticker_map_fetch_is_not_cached(self, mocker) -> None:
+    def test_failed_ticker_map_fetch_is_not_cached(self, mocker: Any) -> None:
         urls, get = self._get([503, 200])
         mocker.patch("requests.Session.get", side_effect=get)
         adapter = EdgarInsiderAdapter(user_agent=USER_AGENT)
@@ -567,7 +570,7 @@ class TestTickerMapAndPacing:
 
         assert sum("company_tickers.json" in url for url in urls) == 2
 
-    def test_requests_to_sec_keep_the_minimum_interval(self, mocker) -> None:
+    def test_requests_to_sec_keep_the_minimum_interval(self, mocker: Any) -> None:
         _, get = self._get([200])
         mocker.patch("requests.Session.get", side_effect=get)
         clock = [100.0]
@@ -587,7 +590,7 @@ class TestTickerMapAndPacing:
         # pierwszy bez czekania, każdy kolejny czeka pełny odstęp 0.12 s.
         assert sleeps == pytest.approx([0.12, 0.12, 0.12])
 
-    def test_no_wait_when_requests_are_already_spaced(self, mocker) -> None:
+    def test_no_wait_when_requests_are_already_spaced(self, mocker: Any) -> None:
         _, get = self._get([200])
         clock = [0.0]
 
@@ -654,7 +657,7 @@ class TestDollarValueAndRole:
     10b5-1 z przepływu wartości i link do Form 4 — z tego samego XML-a."""
 
     @staticmethod
-    def _patch(mocker, buy_xml: str, sell_xml: str) -> None:
+    def _patch(mocker: Any, buy_xml: str, sell_xml: str) -> None:
         def get(url: str, **_: object) -> Mock:
             if "company_tickers.json" in url:
                 return _ok_json(_company_tickers())
@@ -666,7 +669,7 @@ class TestDollarValueAndRole:
 
         mocker.patch("requests.Session.get", side_effect=get)
 
-    def test_parses_officer_purchase_value(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+    def test_parses_officer_purchase_value(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         buy = _form4_owner_xml(
             transactions=[("P", 10_000.0, 120.0)], officer_title="CEO", is_officer=True
         )
@@ -685,7 +688,7 @@ class TestDollarValueAndRole:
         assert snap.significant_buy() == snap.largest_buy
 
     def test_10b5_1_sale_is_excluded_from_net_flow(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy = _form4_owner_xml(
             transactions=[("P", 100.0, 50.0)], officer_title="CFO", is_officer=True
@@ -707,7 +710,7 @@ class TestDollarValueAndRole:
         assert snap.net_shares == pytest.approx(-4_900.0)
 
     def test_filing_without_plan_marker_counts_as_discretionary(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # Starsze Form 4 nie mają aff10b5One — brak znacznika to nie dowód planu.
         sale = _form4_owner_xml(transactions=[("S", 1_000.0, 10.0)], is_director=True)
@@ -719,7 +722,7 @@ class TestDollarValueAndRole:
         assert snap.net_value_usd == pytest.approx(-10_000.0)
 
     def test_ten_percent_owner_purchase_is_not_an_insider_buy(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         fund = _form4_owner_xml(transactions=[("P", 50_000.0, 100.0)], ten_percent_owner=True)
         self._patch(mocker, fund, _form4_owner_xml(transactions=[]))
@@ -731,7 +734,7 @@ class TestDollarValueAndRole:
         assert snap.net_value_usd == pytest.approx(5_000_000.0)
 
     def test_grants_and_unpriced_rows_do_not_add_value(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         buy = _form4_owner_xml(
             transactions=[("A", 9_999.0, 0.0), ("P", 10.0, None)],
@@ -748,7 +751,7 @@ class TestDollarValueAndRole:
         assert snap.buy_count == 1
 
     def test_largest_buy_carries_its_filing_date(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         # DAT-21: lead zakupu insidera ma okno N dni od filingu — data z submissions.
         buy = _form4_owner_xml(
@@ -762,7 +765,7 @@ class TestDollarValueAndRole:
         assert snap.largest_buy.filed_on == date.fromisoformat(_recent_date(5))
 
     def test_latest_filing_url_points_to_the_newest_form4(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         self._patch(mocker, _form4_owner_xml(transactions=[]), _form4_owner_xml(transactions=[]))
 
@@ -781,7 +784,7 @@ class TestSecFairAccess:
     żądanie tylko przedłuża blokadę (od 2026-07 każdy symbol dostawał 403)."""
 
     def test_403_on_ticker_lookup_stops_requests_for_later_symbols(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_error_response(403)
@@ -793,7 +796,7 @@ class TestSecFairAccess:
         assert mock_get.call_count == 1
 
     def test_403_on_form4_returns_none_without_fetching_the_rest(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         def get(url: str, **_: object) -> Mock:
             if "company_tickers.json" in url:
@@ -822,7 +825,7 @@ class TestSecFairAccess:
         return sum("company_tickers.json" in c.args[0] for c in mock_get.call_args_list)
 
     def test_ticker_map_is_downloaded_once_per_cycle(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch("requests.Session.get", side_effect=self._no_form4_get)
 
@@ -832,7 +835,7 @@ class TestSecFairAccess:
         assert self._ticker_downloads(mock_get) == 1
 
     def test_parallel_symbols_share_one_ticker_download(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         import threading
         import time as real_time
@@ -858,7 +861,7 @@ class TestSecFairAccess:
         assert self._ticker_downloads(mock_get) == 1
 
     def test_requests_stay_under_the_sec_rate_limit(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         clock = {"now": 0.0}
 
@@ -885,7 +888,7 @@ class TestSecFairAccess:
 
 
 class TestNullInsiderFlowAdapter:
-    def test_returns_none_without_io(self, mocker) -> None:
+    def test_returns_none_without_io(self, mocker: Any) -> None:
         mock_get = mocker.patch("requests.Session.get")
         null = NullInsiderFlowAdapter()
 
@@ -973,7 +976,7 @@ class TestPortErrorTaxonomy:
         return exc_info[0]
 
     def test_ticker_map_network_error_is_logged_as_provider_unavailable(
-        self, adapter: EdgarInsiderAdapter, mocker, caplog
+        self, adapter: EdgarInsiderAdapter, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         from src.application.errors import ProviderUnavailable
 
@@ -983,7 +986,7 @@ class TestPortErrorTaxonomy:
         assert issubclass(self._logged_error_class(caplog), ProviderUnavailable)
 
     def test_submissions_garbage_is_logged_as_malformed_payload(
-        self, adapter: EdgarInsiderAdapter, mocker, caplog
+        self, adapter: EdgarInsiderAdapter, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         from src.application.errors import MalformedPayload
 
@@ -997,7 +1000,7 @@ class TestPortErrorTaxonomy:
         assert issubclass(self._logged_error_class(caplog), MalformedPayload)
 
     def test_form4_server_error_is_logged_as_provider_unavailable(
-        self, adapter: EdgarInsiderAdapter, mocker, caplog
+        self, adapter: EdgarInsiderAdapter, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         from src.application.errors import ProviderUnavailable
 
@@ -1037,7 +1040,7 @@ class TestCorporateEvents:
         return payload
 
     def test_extracts_8k_items_from_submissions_fixture(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -1058,7 +1061,7 @@ class TestCorporateEvents:
         )
 
     def test_events_reuse_the_submissions_of_the_insider_flow(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         get = mocker.patch(
             "requests.Session.get",
@@ -1076,13 +1079,13 @@ class TestCorporateEvents:
         assert snapshot is not None and len(snapshot.events) == 2
         assert get.call_count == requests_for_flow
 
-    def test_unknown_ticker_has_no_events(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+    def test_unknown_ticker_has_no_events(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         mocker.patch("requests.Session.get", side_effect=[_ok_json(_company_tickers())])
 
         assert adapter.get_corporate_events("ZZZZ") is None
 
     def test_submissions_without_items_column_keep_the_events(
-        self, adapter: EdgarInsiderAdapter, mocker
+        self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
         payload = _submissions(
             forms=["8-K"],
@@ -1100,7 +1103,7 @@ class TestCorporateEvents:
         assert snapshot is not None
         assert [event.items for event in snapshot.events] == [()]
 
-    def test_failed_submissions_give_none(self, adapter: EdgarInsiderAdapter, mocker) -> None:
+    def test_failed_submissions_give_none(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=[_ok_json(_company_tickers()), _error_response(503)],

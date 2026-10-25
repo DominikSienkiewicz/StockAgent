@@ -3047,7 +3047,9 @@ class TestResolvedForEvalRecipeColumn:
     """WIA-20: kolumna `recipe_version` (migracja 030) trafia do selecta TYLKO na
     żądanie — przed migracją select po niej to 400 i pusta ewaluacja."""
 
-    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+    def _select_columns(
+        self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs: Any
+    ) -> str:
         chain = mock_client.table.return_value
         order_builder = (
             chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
@@ -3071,7 +3073,9 @@ class TestResolvedForEvalUniverse:
     """WIA-48: wersja uniwersum siedzi w kwicie v2 (JSONB z migracji 020), więc
     odczyt idzie ścieżką JSON — bez nowej kolumny i bez nowej migracji."""
 
-    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+    def _select_columns(
+        self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs: Any
+    ) -> str:
         chain = mock_client.table.return_value
         order_builder = (
             chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
@@ -3271,7 +3275,9 @@ class TestResolvedForEvalExtraFields:
     022, edge 025) trafiają do selecta TYLKO na żądanie `--by` — domyślny
     przebieg ewaluacji ma działać na każdej bazie."""
 
-    def _select_columns(self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs) -> str:
+    def _select_columns(
+        self, repo: SupabaseRepository, mock_client: MagicMock, **kwargs: Any
+    ) -> str:
         chain = mock_client.table.return_value
         order_builder = (
             chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value

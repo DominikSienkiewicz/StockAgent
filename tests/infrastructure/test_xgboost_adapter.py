@@ -70,23 +70,23 @@ def trained_adapter(adapter: XGBoostAdapter) -> XGBoostAdapter:
 
 
 class TestTrain:
-    def test_returns_success_status(self, adapter: XGBoostAdapter):
+    def test_returns_success_status(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset()
         result = adapter.train(features, target)
         assert result["status"] == "trained_successfully"
 
-    def test_includes_sample_count_in_status(self, adapter: XGBoostAdapter):
+    def test_includes_sample_count_in_status(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=50)
         result = adapter.train(features, target)
         assert result["n_samples"] == 50
 
-    def test_saves_model_to_disk(self, adapter: XGBoostAdapter, model_path: str):
+    def test_saves_model_to_disk(self, adapter: XGBoostAdapter, model_path: str) -> None:
         features, target = _synthetic_dataset()
         adapter.train(features, target)
         assert Path(model_path).exists()
         assert Path(model_path).stat().st_size > 0
 
-    def test_returns_validation_metrics(self, adapter: XGBoostAdapter):
+    def test_returns_validation_metrics(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset()
         result = adapter.train(features, target)
 
@@ -94,7 +94,7 @@ class TestTrain:
 
     def test_metric_keys_are_candidate_scoped_and_self_describing(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Finding #22: shipowany model jest refitowany na WSZYSTKICH danych i nie
         # jest re-walidowany, więc raportowane RMSE/hit-rate dotyczą KANDYDATA na
         # holdoucie — nazwy kluczy muszą to mówić wprost, plus `metric_note`.
@@ -113,7 +113,7 @@ class TestTrain:
 
     def test_skips_save_when_model_does_not_beat_baseline(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         # Zwrot zawsze dokładnie 0 (cena się nie rusza) → baseline persystencji
         # (predykcja: zwrot=0) jest bezbłędny, żaden model go nie pobije.
         features, _ = _synthetic_dataset(n=80)
@@ -127,7 +127,7 @@ class TestTrain:
 
     def test_baseline_rmse_is_zero_return_persistence(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Baseline = "predykcja zwrotu = 0" (persystencja: cena bez zmian).
         # baseline_rmse musi być RMSE zwrotów względem 0 (a NIE rozrzutem
         # pojedynczego skalara z train — stary, błędny baseline). Przy małej
@@ -146,7 +146,7 @@ class TestTrain:
 
     def test_reports_candidate_holdout_directional_hit_rate(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset()
         result = adapter.train(features, target)
 
@@ -161,7 +161,7 @@ class TestWalkForwardValidation:
     hałaśliwego splitu 20%. Decyzja o shipowaniu zależy od ŚREDNIEJ z foldów +
     raport niesie per-feature drift stats i `n_folds`."""
 
-    def test_strong_signal_ships_across_folds(self, adapter: XGBoostAdapter):
+    def test_strong_signal_ships_across_folds(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
         result = adapter.train(features, target)
 
@@ -171,7 +171,7 @@ class TestWalkForwardValidation:
         # Bramka oparta na ŚREDNIEJ z foldów: kandydat bije baseline średnio.
         assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
 
-    def test_no_signal_dataset_is_skipped(self, adapter: XGBoostAdapter):
+    def test_no_signal_dataset_is_skipped(self, adapter: XGBoostAdapter) -> None:
         # Czysty szum bez sygnału — model nie pobije baseline persystencji
         # średnio po foldach → skip, model nie ląduje na dysku.
         rng = np.random.default_rng(7)
@@ -186,7 +186,7 @@ class TestWalkForwardValidation:
         assert result["status"] == "skipped_validation_failed"
         assert adapter.is_trained is False
 
-    def test_zero_return_dataset_is_skipped(self, adapter: XGBoostAdapter):
+    def test_zero_return_dataset_is_skipped(self, adapter: XGBoostAdapter) -> None:
         # Zwrot zawsze 0 → baseline persystencji bezbłędny, nic go nie pobije.
         features, _ = _synthetic_dataset(n=200)
         target = pd.Series([0.0] * 200)
@@ -198,14 +198,14 @@ class TestWalkForwardValidation:
 
     def test_result_reports_n_folds_above_one_for_large_sample(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
         result = adapter.train(features, target)
         assert result["n_folds"] > 1
 
     def test_small_sample_falls_back_to_single_split(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Poniżej progu na walk-forward → pojedynczy split (zachowanie sane).
         features, target = _synthetic_dataset(n=15)
         result = adapter.train(features, target)
@@ -213,7 +213,7 @@ class TestWalkForwardValidation:
 
     def test_result_includes_per_feature_distribution_stats(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Drift-detection: per-feature mean/std w wyniku, żeby porównać z
         # poprzednim runem i wykryć dryf rozkładu cech wejściowych.
         features, target = _synthetic_dataset(n=120)
@@ -229,7 +229,7 @@ class TestWalkForwardValidation:
 
     def test_feature_stats_present_even_when_skipped(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Dryf cech jest obserwowalny niezależnie od werdyktu bramki.
         features, _ = _synthetic_dataset(n=200)
         target = pd.Series([0.0] * 200)
@@ -240,7 +240,7 @@ class TestWalkForwardValidation:
 
 
 class TestPredict:
-    def test_returns_money_instance(self, trained_adapter: XGBoostAdapter):
+    def test_returns_money_instance(self, trained_adapter: XGBoostAdapter) -> None:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
         features.update({
             "price_delta": 0.02,
@@ -256,7 +256,7 @@ class TestPredict:
 
     def test_prediction_is_finite_positive_for_typical_input(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
         features.update({
             "av_relevance_avg": 0.5,
@@ -269,7 +269,7 @@ class TestPredict:
 
     def test_reconstructs_absolute_price_multiplicatively_from_return(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Model zwraca ZWROT; predict rekonstruuje cenę = current_price*(1+zwrot).
         # Ten sam zwrot na innym poziomie ceny → ta sama RELATYWNA zmiana.
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
@@ -288,7 +288,7 @@ class TestPredict:
         # Sygnał byczy → niezerowy dodatni zwrot (cena ≠ current_price).
         assert p100.amount != Decimal("100")
 
-    def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
+    def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter) -> None:
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
         current_price = Decimal("100")
         with pytest.raises(RuntimeError, match="not trained"):
@@ -307,7 +307,7 @@ class TestSigmaTarget:
         )
         return XGBoostAdapter(model_path=model_path)
 
-    def test_predict_rescales_return_by_sigma(self, model_path: str):
+    def test_predict_rescales_return_by_sigma(self, model_path: str) -> None:
         adapter = self._sigma_adapter(model_path)
         features, _ = _synthetic_dataset(n=1)
         row = features.iloc[0].to_dict()
@@ -319,7 +319,7 @@ class TestSigmaTarget:
         assert low != 0
         assert float(high) == pytest.approx(3 * float(low), rel=1e-6)
 
-    def test_sigma_model_without_sigma_refuses_to_predict(self, model_path: str):
+    def test_sigma_model_without_sigma_refuses_to_predict(self, model_path: str) -> None:
         # Z-score podany jako zwrot byłby cichą pomyłką skali — serving wraca wtedy
         # do baseline'u, zamiast serwować liczbę w złych jednostkach.
         adapter = self._sigma_adapter(model_path)
@@ -330,7 +330,7 @@ class TestSigmaTarget:
         with pytest.raises(ReturnScaleUnavailableError):
             adapter.explain(features.iloc[0].to_dict())
 
-    def test_explain_is_rescaled_with_the_prediction(self, model_path: str):
+    def test_explain_is_rescaled_with_the_prediction(self, model_path: str) -> None:
         adapter = self._sigma_adapter(model_path)
         features, _ = _synthetic_dataset(n=1)
         row = features.iloc[0].to_dict()
@@ -341,7 +341,7 @@ class TestSigmaTarget:
         assert high["price_delta"] == pytest.approx(2 * low["price_delta"])
         assert high["_bias"] == pytest.approx(2 * low["_bias"])
 
-    def test_return_model_ignores_the_sigma(self, trained_adapter: XGBoostAdapter):
+    def test_return_model_ignores_the_sigma(self, trained_adapter: XGBoostAdapter) -> None:
         features, _ = _synthetic_dataset(n=1)
         row = features.iloc[0].to_dict()
         price = Decimal("100")
@@ -350,7 +350,9 @@ class TestSigmaTarget:
             trained_adapter.predict(row, current_price=price)
         )
 
-    def test_report_names_the_sigma_unit_only_for_sigma_targets(self, adapter: XGBoostAdapter):
+    def test_report_names_the_sigma_unit_only_for_sigma_targets(
+        self, adapter: XGBoostAdapter
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         sigma = adapter.train(features, target / 0.02, target_unit=TargetUnit.SIGMA)
@@ -368,7 +370,7 @@ class TestPredictFeatureAlignment:
 
     def test_ignores_unknown_extra_features_and_scrambled_order(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Model zna 7 cech. Wejście dorzuca nieznaną cechę + miesza kolejność.
         features: dict[str, float] = {"holding_hours": 24.0}
         for name in reversed(FEATURE_NAMES):
@@ -378,7 +380,7 @@ class TestPredictFeatureAlignment:
 
     def test_raises_keyerror_when_required_feature_missing(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Brak wymaganej cechy → jawny błąd, nie ciche NaN wpychane do modelu.
         features = dict.fromkeys(FEATURE_NAMES[:-1], 0.5)
         current_price = Decimal("100")
@@ -406,14 +408,14 @@ class TestExplain:
 
     def test_returns_contribution_per_known_feature(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         contribs = trained_adapter.explain(self._typical_features())
         # Klucz per cecha, na której model był trenowany (bias pod osobnym kluczem).
         assert set(FEATURE_NAMES).issubset(set(contribs.keys()))
 
     def test_contributions_are_finite_floats(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         contribs = trained_adapter.explain(self._typical_features())
         for value in contribs.values():
             assert isinstance(value, float)
@@ -421,7 +423,7 @@ class TestExplain:
 
     def test_sum_of_contributions_plus_bias_approximates_raw_prediction(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Niezmiennik addytywności SHAP: suma wkładów + bias ≈ surowy zwrot modelu.
         features = self._typical_features()
         contribs = trained_adapter.explain(features)
@@ -435,20 +437,20 @@ class TestExplain:
 
     def test_exposes_bias_under_dedicated_key(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Bias/base value jest osobno (nie jako cecha) — czytelny dla raportu.
         contribs = trained_adapter.explain(self._typical_features())
         assert "_bias" in contribs
         assert "_bias" not in FEATURE_NAMES
 
-    def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter):
+    def test_raises_when_model_not_trained(self, adapter: XGBoostAdapter) -> None:
         features = self._typical_features()
         with pytest.raises(RuntimeError, match="not trained"):
             adapter.explain(features)
 
     def test_ignores_unknown_extra_features(
         self, trained_adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # Tak jak predict(): nieznana cecha jest ignorowana (wyrównanie do modelu).
         features = self._typical_features()
         features["holding_hours"] = 24.0
@@ -459,7 +461,7 @@ class TestExplain:
 class TestModelPersistence:
     def test_loads_existing_model_from_disk_on_init(
         self, trained_adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         # Pierwszy adapter trenuje i zapisuje. Drugi czyta z dysku.
         reloaded = XGBoostAdapter(model_path=model_path)
         features = dict.fromkeys(FEATURE_NAMES, 0.0)
@@ -478,7 +480,7 @@ class TestModelPersistence:
 
         assert original.amount == from_disk.amount
 
-    def test_cold_start_does_not_raise(self, tmp_path: Path):
+    def test_cold_start_does_not_raise(self, tmp_path: Path) -> None:
         # Brak pliku — konstruktor musi przeżyć (czekamy na pierwszy trening).
         adapter = XGBoostAdapter(model_path=str(tmp_path / "missing.ubj"))
         # Cold start: model nie jest jeszcze wczytany, adapter to wie.
@@ -486,24 +488,24 @@ class TestModelPersistence:
 
 
 class TestIsTrained:
-    def test_false_on_cold_start(self, adapter: XGBoostAdapter):
+    def test_false_on_cold_start(self, adapter: XGBoostAdapter) -> None:
         # Brak pliku modelu → is_trained False (Fast Loop użyje baseline)
         assert adapter.is_trained is False
 
-    def test_true_after_training(self, adapter: XGBoostAdapter):
+    def test_true_after_training(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset()
         adapter.train(features, target)
         assert adapter.is_trained is True
 
     def test_true_when_model_loaded_from_disk(
         self, trained_adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         reloaded = XGBoostAdapter(model_path=model_path)
         assert reloaded.is_trained is True
 
 
 class TestAdapterImplementsPort:
-    def test_is_ml_prediction_port(self):
+    def test_is_ml_prediction_port(self) -> None:
         assert issubclass(XGBoostAdapter, MLPredictionPort)
 
 
@@ -513,7 +515,7 @@ class TestDomainGate:
 
     def test_noise_level_improvement_is_not_shipped(
         self, adapter: XGBoostAdapter, model_path: str, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         # 0.0200 vs 0.0201 = 0.5% poprawy. Stara reguła (próg 1e-9) shipowała szum.
         folds = [
             {"candidate_rmse": 0.0200, "baseline_rmse": 0.0201, "hit_rate": 0.5,
@@ -530,7 +532,7 @@ class TestDomainGate:
 
     def test_too_few_oos_points_are_not_shipped(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         # n=60 → 4 foldy po 12 punktów = 48 < MIN_OOS_POINTS mimo silnego sygnału.
         features, target = _synthetic_dataset(n=60)
 
@@ -551,7 +553,7 @@ class TestTypedTrainingReport:
 
     def test_shipped_model_is_an_accepted_report_with_fold_metrics(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         report = adapter.train(features, target)
@@ -564,7 +566,7 @@ class TestTypedTrainingReport:
         assert report.rmse < report.baseline_rmse
         assert report.model_path == model_path
 
-    def test_evaluation_reports_carry_evaluation_outcomes(self, adapter: XGBoostAdapter):
+    def test_evaluation_reports_carry_evaluation_outcomes(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         passed = adapter.train(features, target, persist=False)
@@ -579,7 +581,9 @@ class TestFeatureRowsWithGaps:
     """ML-52: wiersze modelu cech darmowych mają braki (None) — także całe kolumny,
     np. cechy makro przy wyłączonym FRED. Brak ma być brakiem XGBoost, nie błędem."""
 
-    def test_rows_with_missing_values_train_as_xgboost_missing(self, adapter: XGBoostAdapter):
+    def test_rows_with_missing_values_train_as_xgboost_missing(
+        self, adapter: XGBoostAdapter
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
         rows = [
             {**row, "macro_off": None, "sometimes": None if i % 2 else float(i)}
@@ -599,7 +603,7 @@ class TestPooledTrainingSupport:
 
     def test_evaluation_mode_never_writes_weights(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         result = adapter.train(features, target, persist=False)
@@ -611,7 +615,7 @@ class TestPooledTrainingSupport:
 
     def test_evaluation_mode_reports_a_failed_gate_without_rejecting_a_model(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, _ = _synthetic_dataset(n=200)
 
         result = adapter.train(features, pd.Series([0.0] * 200), persist=False)
@@ -622,7 +626,7 @@ class TestPooledTrainingSupport:
 
     def test_purged_folds_drop_training_rows_inside_the_label_horizon(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter._walk_forward_folds_detail(
@@ -633,7 +637,7 @@ class TestPooledTrainingSupport:
         # ma etykietę po jej starcie i wypada z treningu foldu.
         assert [f["n_train"] for f in folds] == [f["train_end"] - 11 for f in folds]
 
-    def test_timestamps_must_follow_global_time_order(self, adapter: XGBoostAdapter):
+    def test_timestamps_must_follow_global_time_order(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
         stamps = _hourly_stamps(200).iloc[::-1].reset_index(drop=True)
 
@@ -642,7 +646,7 @@ class TestPooledTrainingSupport:
 
     def test_pooled_training_with_timestamps_ships_once(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         result = adapter.train(features, target, timestamps=_hourly_stamps(200))
@@ -655,7 +659,7 @@ class TestSignalSkillMetrics:
     """ML-20: obok RMSE fold niesie IC (korelacja rang Spearmana prognozy z
     realizacją), zwrot strategii znakowej i turnover."""
 
-    def test_fold_detail_contains_ic(self, adapter: XGBoostAdapter):
+    def test_fold_detail_contains_ic(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter.walk_forward_report(features, target)
@@ -668,7 +672,7 @@ class TestSignalSkillMetrics:
         assert all(fold["ic"] > 0.3 for fold in folds)
         assert all(fold["sign_strategy_return"] > 0 for fold in folds)
 
-    def test_constant_target_has_zero_ic_instead_of_nan(self, adapter: XGBoostAdapter):
+    def test_constant_target_has_zero_ic_instead_of_nan(self, adapter: XGBoostAdapter) -> None:
         # Stała seria nie ma porządku — korelacja rang jest niezdefiniowana (NaN),
         # a NaN zatrułby średnią IC w podsumowaniu.
         features, _ = _synthetic_dataset(n=200)
@@ -684,21 +688,21 @@ class TestWalkForwardReportPurge:
 
     def test_report_with_timestamps_drops_rows_inside_the_label_horizon(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter.walk_forward_report(features, target, timestamps=_hourly_stamps(200))
 
         assert [f["n_train"] for f in folds] == [f["train_end"] - 11 for f in folds]
 
-    def test_report_without_timestamps_stays_unpurged(self, adapter: XGBoostAdapter):
+    def test_report_without_timestamps_stays_unpurged(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter.walk_forward_report(features, target)
 
         assert [f["n_train"] for f in folds] == [f["train_end"] for f in folds]
 
-    def test_report_rejects_timestamps_out_of_time_order(self, adapter: XGBoostAdapter):
+    def test_report_rejects_timestamps_out_of_time_order(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
         stamps = _hourly_stamps(200).iloc[::-1].reset_index(drop=True)
 
@@ -721,7 +725,7 @@ class TestStrongerBaselines:
 
     def test_candidate_rejected_when_llm_only_baseline_is_better(
         self, adapter: XGBoostAdapter, model_path: str
-    ):
+    ) -> None:
         # Dziś kandydat bije zero o ~45% i zostaje wdrożony, choć przeskalowany sam
         # sygnał LLM ma niższe RMSE — „hybryda" nic by nie dodała.
         features, target = self._llm_driven_dataset()
@@ -734,7 +738,7 @@ class TestStrongerBaselines:
         assert "sam LLM" in result["reason"]
         assert not Path(model_path).exists()
 
-    def test_result_reports_all_three_baselines(self, adapter: XGBoostAdapter):
+    def test_result_reports_all_three_baselines(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
         result = adapter.train(features, target)
@@ -745,7 +749,7 @@ class TestStrongerBaselines:
 
     def test_fold_baselines_come_from_the_training_part_only(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         # n=15 → jeden split: 5 wierszy treningu (target 0.01), 10 walidacji (0.05).
         # Z podglądem walidacji oba baseline'y miałyby RMSE 0; z samego treningu
         # przewidują 0.01, więc RMSE = 0.04.
@@ -760,7 +764,7 @@ class TestStrongerBaselines:
 
     def test_llm_baseline_is_omitted_without_the_llm_feature(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
 
         folds = adapter.walk_forward_report(
@@ -775,7 +779,7 @@ class TestFeatureStatsBins:
     """ML-21: `feature_stats` niesie biny kwantylowe rozkładu treningu i PSI
     ostatnich 30 dni próbki względem jej starszej części (mean/std zostają)."""
 
-    def test_stats_carry_quantile_bins_summing_to_one(self, adapter: XGBoostAdapter):
+    def test_stats_carry_quantile_bins_summing_to_one(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=120)
 
         stats = adapter.train(features, target)["feature_stats"]
@@ -789,7 +793,7 @@ class TestFeatureStatsBins:
 
     def test_psi_flags_a_feature_shifted_in_the_last_30_days(
         self, adapter: XGBoostAdapter
-    ):
+    ) -> None:
         features, target = _synthetic_dataset(n=200)
         stamps = pd.Series(pd.date_range("2026-05-01", periods=200, freq="D", tz="UTC"))
         # Ostatnie 30 dni: rozkład price_delta przesunięty o +0.2 (dryf).
@@ -800,7 +804,7 @@ class TestFeatureStatsBins:
         assert stats["price_delta"]["psi_recent_30d"] > 0.25
         assert stats["av_relevance_avg"]["psi_recent_30d"] < 0.25
 
-    def test_psi_is_none_without_timestamps(self, adapter: XGBoostAdapter):
+    def test_psi_is_none_without_timestamps(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=120)
 
         stats = adapter.train(features, target)["feature_stats"]

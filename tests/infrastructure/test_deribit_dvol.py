@@ -6,6 +6,7 @@ opcji niesie ją jako ułamek (0.55). Mockujemy `requests.Session.get`."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -41,7 +42,9 @@ def test_is_an_options_flow_port(adapter: DeribitDvolAdapter) -> None:
     assert isinstance(adapter, OptionsFlowPort)
 
 
-def test_maps_latest_dvol_to_annualized_implied_vol(adapter: DeribitDvolAdapter, mocker) -> None:
+def test_maps_latest_dvol_to_annualized_implied_vol(
+    adapter: DeribitDvolAdapter, mocker: Any
+) -> None:
     mocker.patch("requests.Session.get", return_value=_ok(_dvol(52.0, 55.0)))
 
     snapshot = adapter.get_options_flow("BTC")
@@ -53,7 +56,7 @@ def test_maps_latest_dvol_to_annualized_implied_vol(adapter: DeribitDvolAdapter,
 
 
 def test_asks_for_the_currency_index_over_the_last_hours(
-    adapter: DeribitDvolAdapter, mocker
+    adapter: DeribitDvolAdapter, mocker: Any
 ) -> None:
     get = mocker.patch("requests.Session.get", return_value=_ok(_dvol(60.0)))
 
@@ -70,7 +73,7 @@ def test_asks_for_the_currency_index_over_the_last_hours(
 
 
 def test_symbol_without_a_dvol_index_makes_no_request(
-    adapter: DeribitDvolAdapter, mocker
+    adapter: DeribitDvolAdapter, mocker: Any
 ) -> None:
     get = mocker.patch("requests.Session.get")
 
@@ -92,19 +95,19 @@ def test_symbol_without_a_dvol_index_makes_no_request(
     ],
     ids=["empty", "no-data", "rpc-error", "not-object", "short-row", "zero", "text"],
 )
-def test_unusable_answer_is_none(adapter: DeribitDvolAdapter, mocker, payload: object) -> None:
+def test_unusable_answer_is_none(adapter: DeribitDvolAdapter, mocker: Any, payload: object) -> None:
     mocker.patch("requests.Session.get", return_value=_ok(payload))
 
     assert adapter.get_options_flow("BTC") is None
 
 
-def test_provider_failure_is_none(adapter: DeribitDvolAdapter, mocker) -> None:
+def test_provider_failure_is_none(adapter: DeribitDvolAdapter, mocker: Any) -> None:
     mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("down"))
 
     assert adapter.get_options_flow("BTC") is None
 
 
-def test_programming_error_is_not_swallowed(adapter: DeribitDvolAdapter, mocker) -> None:
+def test_programming_error_is_not_swallowed(adapter: DeribitDvolAdapter, mocker: Any) -> None:
     mocker.patch("requests.Session.get", side_effect=TypeError("bug"))
 
     with pytest.raises(TypeError):

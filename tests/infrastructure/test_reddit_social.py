@@ -8,6 +8,7 @@ opcjonalne źródło alpha, nigdy nie może rzucić."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -51,7 +52,7 @@ def adapter() -> RedditSocialAdapter:
 
 class TestGetSocialVelocity:
     def test_returns_snapshot_with_velocity(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # 30 postów dziś, 70 w tygodniu → baseline = 70/7 = 10, ratio = 3.0.
         mocker.patch(
@@ -69,7 +70,7 @@ class TestGetSocialVelocity:
         assert snap.trend() is SocialTrend.SURGING
 
     def test_avg_sentiment_is_none(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # Search nie daje sentymentu — pole musi być None.
         mocker.patch(
@@ -83,7 +84,7 @@ class TestGetSocialVelocity:
         assert snap.avg_sentiment is None
 
     def test_makes_two_gets_day_and_week(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -107,7 +108,7 @@ class TestGetSocialVelocity:
         assert all(q == "GME" for q in queries)
 
     def test_sets_custom_user_agent_header(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # Reddit blokuje domyślne UA — własny nagłówek jest obowiązkowy.
         mock_get = mocker.patch(
@@ -122,7 +123,7 @@ class TestGetSocialVelocity:
             assert headers.get("User-Agent")
 
     def test_sets_timeout_on_every_call(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -136,7 +137,7 @@ class TestGetSocialVelocity:
             assert call.kwargs["timeout"] > 0
 
     def test_uses_dist_when_present(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # dist powinno odpowiadać liczbie children — sprawdzamy spójność liczenia.
         mocker.patch(
@@ -150,7 +151,7 @@ class TestGetSocialVelocity:
         assert snap.mentions_24h == 42
 
     def test_returns_none_on_http_error(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get", return_value=_error_response(503)
@@ -159,7 +160,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("GME") is None
 
     def test_returns_none_on_week_error(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # Pierwszy GET ok, drugi pada — brak baseline'u → None.
         mocker.patch(
@@ -170,7 +171,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("GME") is None
 
     def test_returns_none_on_missing_fields(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -180,7 +181,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("GME") is None
 
     def test_returns_none_on_request_exception(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -190,7 +191,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("GME") is None
 
     def test_returns_none_on_parse_error(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         bad = Mock(spec=requests.Response)
         bad.status_code = 200
@@ -201,7 +202,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("GME") is None
 
     def test_saturated_week_returns_none(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         # Tydzień ucięty na `limit` (100) to nie liczba postów, tylko sufit —
         # baseline 100/7 ≈ 14 przy 60 dziś dawałby fałszywe SURGING.
@@ -213,7 +214,7 @@ class TestGetSocialVelocity:
         assert adapter.get_social_velocity("NVDA") is None
 
     def test_week_just_below_limit_is_counted(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -233,7 +234,7 @@ class TestBlockedByReddit:
     (adapter żyje jeden cykl) zamiast 2 żądań i 2 tracebacków na symbol."""
 
     def test_403_stops_requests_for_later_symbols(
-        self, adapter: RedditSocialAdapter, mocker
+        self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_error_response(403)
@@ -246,7 +247,7 @@ class TestBlockedByReddit:
 
 
 class TestNullAdapter:
-    def test_returns_none_without_io(self, mocker) -> None:
+    def test_returns_none_without_io(self, mocker: Any) -> None:
         # Null nie robi żadnego I/O — patch jako strażnik: nie może być wołany.
         mock_get = mocker.patch("requests.Session.get")
         null = NullSocialVelocityAdapter()
@@ -263,7 +264,7 @@ class TestPortErrorTaxonomy:
     """ARCH-33: awaria Reddita jest logowana jako klasa taksonomii portów."""
 
     def test_server_error_is_logged_as_provider_unavailable(
-        self, adapter: RedditSocialAdapter, mocker, caplog
+        self, adapter: RedditSocialAdapter, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         from src.application.errors import ProviderUnavailable
 

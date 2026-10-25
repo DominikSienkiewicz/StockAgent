@@ -5,6 +5,7 @@ limiter Finnhub i odpowiedź trzymana na czas życia adaptera (jeden cykl)."""
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -51,7 +52,7 @@ def test_is_an_earnings_calendar_port() -> None:
     assert isinstance(_adapter("AAPL"), EarningsCalendarPort)
 
 
-def test_single_request_covers_all_symbols(mocker) -> None:
+def test_single_request_covers_all_symbols(mocker: Any) -> None:
     get = mocker.patch(
         "requests.Session.get",
         return_value=_response(
@@ -78,7 +79,7 @@ def test_single_request_covers_all_symbols(mocker) -> None:
     assert "symbol" not in params
 
 
-def test_maps_calendar_rows_to_events_for_watchlist_only(mocker) -> None:
+def test_maps_calendar_rows_to_events_for_watchlist_only(mocker: Any) -> None:
     mocker.patch(
         "requests.Session.get",
         return_value=_response(
@@ -108,7 +109,7 @@ def test_maps_calendar_rows_to_events_for_watchlist_only(mocker) -> None:
     ],
     ids=["premium-403", "null-calendar", "not-object"],
 )
-def test_unusable_answer_gives_no_event_and_no_retry(mocker, response: Mock) -> None:
+def test_unusable_answer_gives_no_event_and_no_retry(mocker: Any, response: Mock) -> None:
     get = mocker.patch("requests.Session.get", return_value=response)
     adapter = _adapter("AAPL", "MSFT")
 
@@ -117,7 +118,9 @@ def test_unusable_answer_gives_no_event_and_no_retry(mocker, response: Mock) -> 
     assert get.call_count == 1
 
 
-def test_provider_failure_is_logged_without_the_token(mocker, caplog) -> None:
+def test_provider_failure_is_logged_without_the_token(
+    mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     import logging
 
     mocker.patch(
@@ -134,7 +137,7 @@ def test_provider_failure_is_logged_without_the_token(mocker, caplog) -> None:
     assert "fh-secret-token-1" not in caplog.text
 
 
-def test_rate_limit_is_a_quota_alert_and_uses_the_shared_limiter(mocker) -> None:
+def test_rate_limit_is_a_quota_alert_and_uses_the_shared_limiter(mocker: Any) -> None:
     mocker.patch("requests.Session.get", return_value=_response({}, status=429))
     limiter = Mock()
     monitor = QuotaMonitor()

@@ -143,7 +143,7 @@ def test_null_adapter_returns_none() -> None:
     assert adapter.get_next_earnings("AAPL") is None
 
 
-def test_network_error_log_omits_apikey(caplog) -> None:
+def test_network_error_log_omits_apikey(caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: `logger.exception` drukuje traceback z URL-em zawierającym `&apikey=`.
     import logging
 
@@ -161,7 +161,7 @@ def test_network_error_log_omits_apikey(caplog) -> None:
     assert "earnings-secret-key" not in caplog.text
 
 
-def test_http_error_log_omits_apikey(caplog) -> None:
+def test_http_error_log_omits_apikey(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     import requests

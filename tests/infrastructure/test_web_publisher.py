@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,7 +50,7 @@ class TestFileWebPublisher:
         assert target.read_text(encoding="utf-8") == "NEW"
 
     def test_write_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker: Any
     ) -> None:
         target = tmp_path / "digest.html"
         publisher = FileWebPublisher(output_path=str(target))
@@ -66,7 +67,7 @@ class TestFileWebPublisher:
         assert "publish" in caplog.text.lower() or "disk full" in caplog.text
 
     def test_mkdir_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, mocker
+        self, tmp_path: Path, mocker: Any
     ) -> None:
         target = tmp_path / "x" / "digest.html"
         publisher = FileWebPublisher(output_path=str(target))
@@ -79,7 +80,7 @@ class TestFileWebPublisher:
 
 class TestNullWebPublisher:
     def test_publish_returns_empty_without_writing(
-        self, tmp_path: Path, mocker
+        self, tmp_path: Path, mocker: Any
     ) -> None:
         # Gdyby Null próbował cokolwiek zapisać, ten patch by to wychwycił.
         write = mocker.patch.object(Path, "write_text")

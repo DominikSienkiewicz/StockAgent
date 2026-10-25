@@ -1,5 +1,6 @@
 import json
 import time
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ def _message_response(text: str | None) -> MagicMock:
 
 
 @pytest.fixture
-def mock_anthropic_class(mocker):
+def mock_anthropic_class(mocker: Any):
     return mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
 
 
@@ -38,7 +39,9 @@ def adapter_with_client(mock_anthropic_class) -> tuple[AnthropicAdapter, MagicMo
 
 
 class TestAnalyze:
-    def test_returns_parsed_json_dict(self, adapter_with_client):
+    def test_returns_parsed_json_dict(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response(
             json.dumps({
@@ -54,7 +57,9 @@ class TestAnalyze:
         assert result["trend_direction"] == "BULLISH"
         assert result["confidence_score"] == pytest.approx(0.85)
 
-    def test_passes_model_and_prompt(self, adapter_with_client):
+    def test_passes_model_and_prompt(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("{}")
 
@@ -65,7 +70,7 @@ class TestAnalyze:
         messages = call.kwargs["messages"]
         assert messages[-1] == {"role": "user", "content": "Custom prompt"}
 
-    def test_sets_max_tokens(self, adapter_with_client):
+    def test_sets_max_tokens(self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("{}")
 
@@ -73,21 +78,27 @@ class TestAnalyze:
 
         assert client.messages.create.call_args.kwargs["max_tokens"] > 0
 
-    def test_raises_value_error_on_invalid_json(self, adapter_with_client):
+    def test_raises_value_error_on_invalid_json(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("not json")
 
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze("Predict.")
 
-    def test_raises_value_error_when_content_empty(self, adapter_with_client):
+    def test_raises_value_error_when_content_empty(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response(None)
 
         with pytest.raises(ValueError, match="empty"):
             adapter.analyze("Predict.")
 
-    def test_extracts_text_from_markdown_code_block(self, adapter_with_client):
+    def test_extracts_text_from_markdown_code_block(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # Claude czasem owija JSON w ```json ... ``` — adapter musi sobie poradzić
         adapter, client = adapter_with_client
         wrapped = '```json\n{"trend_direction": "BEARISH"}\n```'
@@ -97,7 +108,9 @@ class TestAnalyze:
 
         assert result["trend_direction"] == "BEARISH"
 
-    def test_extracts_json_from_prose_wrapped_response(self, adapter_with_client):
+    def test_extracts_json_from_prose_wrapped_response(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # Claude nie ma natywnego JSON Mode — czasem owija JSON w prozę.
         # Adapter musi wyłuskać pierwszy zbalansowany obiekt {...}.
         adapter, client = adapter_with_client
@@ -115,7 +128,9 @@ class TestAnalyze:
             "confidence_score": 0.8,
         }
 
-    def test_ignores_trailing_commentary_after_object(self, adapter_with_client):
+    def test_ignores_trailing_commentary_after_object(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # Tekst po zamykającym nawiasie nie może wywalić parsowania.
         adapter, client = adapter_with_client
         text = '{"trend_direction": "NEUTRAL"}\n\nLet me know if you need more.'
@@ -126,8 +141,8 @@ class TestAnalyze:
         assert result["trend_direction"] == "NEUTRAL"
 
     def test_brace_inside_string_does_not_break_extraction(
-        self, adapter_with_client
-    ):
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # Nawias klamrowy w stringu nie może mylić skanera balansu.
         adapter, client = adapter_with_client
         text = (
@@ -142,8 +157,8 @@ class TestAnalyze:
         assert result["reasoning"] == "earnings up }{ noise"
 
     def test_raises_value_error_when_no_json_object_present(
-        self, adapter_with_client
-    ):
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # Genuinie nie-JSON (brak zbalansowanego obiektu) nadal musi failować.
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response(
@@ -153,7 +168,9 @@ class TestAnalyze:
         with pytest.raises(ValueError, match="JSON"):
             adapter.analyze("Predict.")
 
-    def test_analyze_rejects_top_level_json_array(self, adapter_with_client):
+    def test_analyze_rejects_top_level_json_array(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         # ARCH-01: lista to poprawny JSON, ale nie obiekt — dawniej wracała jako
         # „dict” i padała dopiero na `.get` w grafie.
         adapter, client = adapter_with_client
@@ -164,7 +181,9 @@ class TestAnalyze:
 
 
 class TestAnalyzeMistake:
-    def test_returns_plain_text_content(self, adapter_with_client):
+    def test_returns_plain_text_content(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("ignored macro context")
 
@@ -172,7 +191,9 @@ class TestAnalyzeMistake:
 
         assert result == "ignored macro context"
 
-    def test_strips_whitespace(self, adapter_with_client):
+    def test_strips_whitespace(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("  insight  \n")
 
@@ -180,7 +201,9 @@ class TestAnalyzeMistake:
 
         assert result == "insight"
 
-    def test_returns_empty_string_when_no_content(self, adapter_with_client):
+    def test_returns_empty_string_when_no_content(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response(None)
 
@@ -190,7 +213,7 @@ class TestAnalyzeMistake:
 
 
 class TestConfiguration:
-    def test_custom_model_passed_to_api(self, mock_anthropic_class):
+    def test_custom_model_passed_to_api(self, mock_anthropic_class) -> None:
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
         mock_client.messages.create.return_value = _message_response("{}")
@@ -200,7 +223,7 @@ class TestConfiguration:
 
         assert mock_client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
 
-    def test_initializes_client_with_api_key(self, mock_anthropic_class):
+    def test_initializes_client_with_api_key(self, mock_anthropic_class) -> None:
         AnthropicAdapter(api_key="sk-ant-secret")
         call = mock_anthropic_class.call_args
         assert call.kwargs["api_key"] == "sk-ant-secret"
@@ -230,8 +253,8 @@ class TestRetryAndQuota:
     retry na 429/5xx z backoffem + sygnalizacja do QuotaMonitor."""
 
     def test_retries_on_rate_limit_then_succeeds(
-        self, mock_anthropic_class, mocker
-    ):
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -246,7 +269,7 @@ class TestRetryAndQuota:
         assert result == {}
         assert client.messages.create.call_count == 2
 
-    def test_retries_on_server_error_5xx(self, mock_anthropic_class, mocker):
+    def test_retries_on_server_error_5xx(self, mock_anthropic_class, mocker: Any) -> None:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -261,7 +284,7 @@ class TestRetryAndQuota:
         assert result["trend_direction"] == "BULLISH"
         assert client.messages.create.call_count == 2
 
-    def test_does_not_retry_on_client_4xx(self, mock_anthropic_class, mocker):
+    def test_does_not_retry_on_client_4xx(self, mock_anthropic_class, mocker: Any) -> None:
         from anthropic import APIStatusError
 
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
@@ -276,8 +299,8 @@ class TestRetryAndQuota:
         assert client.messages.create.call_count == 1
 
     def test_warning_alert_emitted_after_successful_retry(
-        self, mock_anthropic_class, mocker
-    ):
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
 
@@ -301,8 +324,8 @@ class TestRetryAndQuota:
         assert "Anthropic" in alert.source
 
     def test_critical_alert_and_raise_when_retries_exhausted(
-        self, mock_anthropic_class, mocker
-    ):
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         from anthropic import APIStatusError
 
         from src.application.quota_monitor import QuotaMonitor
@@ -326,7 +349,7 @@ class TestRetryAndQuota:
         assert client.messages.create.call_count == 3  # 1 + 2 retries
         assert monitor.max_severity() is QuotaSeverity.CRITICAL
 
-    def test_honors_retry_after_header(self, mock_anthropic_class, mocker):
+    def test_honors_retry_after_header(self, mock_anthropic_class, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -346,25 +369,25 @@ class TestModelIdValidation:
     config failuje dopiero przy 1. callu, per symbol, co cykl). Walidacja w
     __init__ łapie oczywiście-zły id natychmiast, z czytelnym komunikatem."""
 
-    def test_empty_model_id_raises_at_construction(self, mock_anthropic_class):
+    def test_empty_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
         with pytest.raises(ValueError, match="model"):
             AnthropicAdapter(api_key="sk-ant-test", model="")
 
-    def test_whitespace_model_id_raises_at_construction(self, mock_anthropic_class):
+    def test_whitespace_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
         with pytest.raises(ValueError, match="model"):
             AnthropicAdapter(api_key="sk-ant-test", model="   ")
 
-    def test_wrong_prefix_model_id_raises_at_construction(self, mock_anthropic_class):
+    def test_wrong_prefix_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
         # id bez prefiksu "claude-" jest oczywiście błędny dla Anthropic.
         with pytest.raises(ValueError, match="claude-"):
             AnthropicAdapter(api_key="sk-ant-test", model="gpt-4o")
 
-    def test_valid_model_id_constructs_fine(self, mock_anthropic_class):
+    def test_valid_model_id_constructs_fine(self, mock_anthropic_class) -> None:
         adapter = AnthropicAdapter(api_key="sk-ant-test", model="claude-opus-4-7")
         # Poprawny model id jest przyjęty i zapamiętany.
         assert adapter._model == "claude-opus-4-7"
 
-    def test_default_model_id_constructs_fine(self, mock_anthropic_class):
+    def test_default_model_id_constructs_fine(self, mock_anthropic_class) -> None:
         # Domyślny model id musi przejść własną walidację.
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         assert adapter._model == DEFAULT_MODEL
@@ -375,7 +398,9 @@ class TestMaxTokensCap:
     per-investor council calls) to przeszacowanie. Domyślny cap ~768 tnie koszt
     wyjścia, pozostaje nadpisywalny przez konstruktor."""
 
-    def test_default_max_tokens_is_tight(self, adapter_with_client):
+    def test_default_max_tokens_is_tight(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("{}")
 
@@ -384,7 +409,7 @@ class TestMaxTokensCap:
         # Cap dopasowany do schematu JSON (kilkaset tokenów), nie 4096.
         assert client.messages.create.call_args.kwargs["max_tokens"] <= 1024
 
-    def test_max_tokens_overridable_via_constructor(self, mock_anthropic_class):
+    def test_max_tokens_overridable_via_constructor(self, mock_anthropic_class) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         client.messages.create.return_value = _message_response("{}")
@@ -394,7 +419,9 @@ class TestMaxTokensCap:
 
         assert client.messages.create.call_args.kwargs["max_tokens"] == 2048
 
-    def test_analyze_mistake_also_has_bounded_cap(self, adapter_with_client):
+    def test_analyze_mistake_also_has_bounded_cap(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("insight")
 
@@ -405,13 +432,13 @@ class TestMaxTokensCap:
 
 
 class TestAdapterImplementsPort:
-    def test_is_llm_port(self):
+    def test_is_llm_port(self) -> None:
         assert issubclass(AnthropicAdapter, LLMPort)
 
 
 @pytest.mark.integration
 class TestAnthropicLive:
-    def test_real_api_returns_json(self):
+    def test_real_api_returns_json(self) -> None:
         import os
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -453,11 +480,11 @@ class TestSingleRetryLayer:
     """NIEZ-07: retry żyje w jednym miejscu — w pętli adaptera. Piętrowe retry SDK
     mnożyło płatne próby, a nieograniczony retry-after blokował job."""
 
-    def test_sdk_level_retries_disabled(self, mock_anthropic_class):
+    def test_sdk_level_retries_disabled(self, mock_anthropic_class) -> None:
         AnthropicAdapter(api_key="sk-ant-test")
         assert mock_anthropic_class.call_args.kwargs["max_retries"] == 0
 
-    def test_retry_after_is_capped(self, mock_anthropic_class, mocker):
+    def test_retry_after_is_capped(self, mock_anthropic_class, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -471,7 +498,9 @@ class TestSingleRetryLayer:
         assert sleep.call_args.args[0] <= 20
 
 
-def test_critical_alert_is_polish_and_logged_in_english(mock_anthropic_class, mocker, caplog):
+def test_critical_alert_is_polish_and_logged_in_english(
+    mock_anthropic_class, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
 
@@ -522,7 +551,7 @@ class TestUsageReporting:
         )
         return adapter, client, sink
 
-    def test_usage_is_reported_to_sink(self, mock_anthropic_class):
+    def test_usage_is_reported_to_sink(self, mock_anthropic_class) -> None:
         from src.domain.finops import LLMUsage
 
         adapter, client, sink = self._adapter(mock_anthropic_class)
@@ -547,7 +576,9 @@ class TestUsageReporting:
             )
         )
 
-    def test_usage_without_cache_fields_counts_zero_cache_tokens(self, mock_anthropic_class):
+    def test_usage_without_cache_fields_counts_zero_cache_tokens(
+        self, mock_anthropic_class
+    ) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         client.messages.create.return_value = self._response_with_usage(
             "lekcja", input_tokens=50, output_tokens=7
@@ -562,7 +593,7 @@ class TestUsageReporting:
             0,
         )
 
-    def test_missing_usage_records_nothing(self, mock_anthropic_class):
+    def test_missing_usage_records_nothing(self, mock_anthropic_class) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         response = _message_response("{}")
         response.usage = None
@@ -571,7 +602,7 @@ class TestUsageReporting:
         assert adapter.analyze("Predict.") == {}
         sink.record.assert_not_called()
 
-    def test_usage_of_a_billed_empty_answer_is_still_reported(self, mock_anthropic_class):
+    def test_usage_of_a_billed_empty_answer_is_still_reported(self, mock_anthropic_class) -> None:
         # Request poszedł i kosztował — pusta treść nie kasuje rachunku.
         adapter, client, sink = self._adapter(mock_anthropic_class)
         response = self._response_with_usage("", input_tokens=900, output_tokens=0)
@@ -583,7 +614,7 @@ class TestUsageReporting:
 
         sink.record.assert_called_once()
 
-    def test_failing_sink_does_not_fail_the_paid_call(self, mock_anthropic_class):
+    def test_failing_sink_does_not_fail_the_paid_call(self, mock_anthropic_class) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         sink.record.side_effect = RuntimeError("ledger down")
         client.messages.create.return_value = self._response_with_usage(
@@ -592,7 +623,9 @@ class TestUsageReporting:
 
         assert adapter.analyze("Predict.") == {"ok": True}
 
-    def test_without_a_sink_usage_is_not_read(self, adapter_with_client):
+    def test_without_a_sink_usage_is_not_read(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("{}")
 
@@ -605,7 +638,9 @@ class TestNoPromptCaching:
     ceny wejścia), którego żaden kolejny prompt nie czytał. Prompt idzie jako zwykły
     string — ten sam tekst, bez bloku `cache_control`."""
 
-    def test_long_prompt_is_sent_without_cache_control(self, adapter_with_client):
+    def test_long_prompt_is_sent_without_cache_control(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("{}")
         prompt = "Predict AAPL. " + "x" * 5000
@@ -616,7 +651,9 @@ class TestNoPromptCaching:
         assert message == {"role": "user", "content": prompt}
         assert "system" not in client.messages.create.call_args.kwargs
 
-    def test_diagnosis_prompt_is_sent_verbatim_too(self, adapter_with_client):
+    def test_diagnosis_prompt_is_sent_verbatim_too(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         adapter, client = adapter_with_client
         client.messages.create.return_value = _message_response("lekcja")
         prompt = "Why wrong? " + "y" * 6000
@@ -625,7 +662,7 @@ class TestNoPromptCaching:
 
         assert client.messages.create.call_args.kwargs["messages"][0]["content"] == prompt
 
-    def test_transport_change_leaves_the_prompt_fingerprint_alone(self):
+    def test_transport_change_leaves_the_prompt_fingerprint_alone(self) -> None:
         # `prompt_sha256` przepisu liczy się z modułów szablonów promptów; adapter
         # transportu do nich nie należy, więc FIN-10 nie tnie track recordu.
         from src.infrastructure.llm import anthropic_client
@@ -639,14 +676,16 @@ class TestPortErrorTaxonomy:
     portów i nadal jako typy SDK (failover czyta `status_code`, testy łapią SDK)."""
 
     @staticmethod
-    def _adapter(mock_anthropic_class, mocker, side_effect) -> AnthropicAdapter:
+    def _adapter(mock_anthropic_class, mocker: Any, side_effect) -> AnthropicAdapter:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
         client.messages.create.side_effect = side_effect
         return AnthropicAdapter(api_key="sk-ant-test", backoff_base=0.01, max_retries=1)
 
-    def test_overloaded_after_retries_is_provider_unavailable(self, mock_anthropic_class, mocker):
+    def test_overloaded_after_retries_is_provider_unavailable(
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         from anthropic import InternalServerError
 
         from src.application.errors import ProviderUnavailable
@@ -659,7 +698,9 @@ class TestPortErrorTaxonomy:
         assert isinstance(excinfo.value, InternalServerError)
         assert excinfo.value.status_code == 529
 
-    def test_rate_limit_after_retries_is_quota_exhausted(self, mock_anthropic_class, mocker):
+    def test_rate_limit_after_retries_is_quota_exhausted(
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         from src.application.errors import QuotaExhausted
 
         adapter = self._adapter(mock_anthropic_class, mocker, _status_error(429))
@@ -668,8 +709,8 @@ class TestPortErrorTaxonomy:
             adapter.analyze_mistake("Diagnose.")
 
     def test_connection_error_after_retries_is_provider_unavailable(
-        self, mock_anthropic_class, mocker
-    ):
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         import httpx
         from anthropic import APIConnectionError
 
@@ -685,7 +726,9 @@ class TestPortErrorTaxonomy:
 
         assert isinstance(excinfo.value, APIConnectionError)
 
-    def test_client_error_is_a_port_error_without_retry(self, mock_anthropic_class, mocker):
+    def test_client_error_is_a_port_error_without_retry(
+        self, mock_anthropic_class, mocker: Any
+    ) -> None:
         from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
 
         adapter = self._adapter(mock_anthropic_class, mocker, _status_error(400))
@@ -697,8 +740,8 @@ class TestPortErrorTaxonomy:
 
     @pytest.mark.parametrize("text", [None, "no json here"], ids=["empty", "invalid-json"])
     def test_unparseable_answer_is_malformed_payload(
-        self, adapter_with_client, text: str | None
-    ):
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock], text: str | None
+    ) -> None:
         from src.application.errors import MalformedPayload
 
         adapter, client = adapter_with_client
@@ -719,7 +762,9 @@ class TestStopReason:
         response.usage.output_tokens = output_tokens
         return response
 
-    def test_max_tokens_stop_reason_raises_truncated(self, adapter_with_client):
+    def test_max_tokens_stop_reason_raises_truncated(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         from src.application.errors import LLMTruncatedError
 
         adapter, client = adapter_with_client
@@ -733,7 +778,9 @@ class TestStopReason:
         assert excinfo.value.output_tokens == 768
         assert "768" in str(excinfo.value)
 
-    def test_refusal_stop_reason_raises_refusal(self, adapter_with_client):
+    def test_refusal_stop_reason_raises_refusal(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
         from src.application.errors import LLMRefusalError
 
         adapter, client = adapter_with_client
@@ -742,7 +789,11 @@ class TestStopReason:
         with pytest.raises(LLMRefusalError):
             adapter.analyze("Predict.")
 
-    def test_parseable_answer_cut_after_the_object_is_kept(self, adapter_with_client, caplog):
+    def test_parseable_answer_cut_after_the_object_is_kept(
+        self,
+        adapter_with_client: tuple[AnthropicAdapter, MagicMock],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         # Ucięty komentarz PO kompletnym obiekcie nie psuje analizy — odpowiedź,
         # którą parser przyjmował, zostaje przyjęta (bez zmiany przepisu predykcji).
         import logging
@@ -758,7 +809,11 @@ class TestStopReason:
         assert result == {"trend_direction": "BULLISH"}
         assert "max_tokens" in caplog.text
 
-    def test_truncated_diagnosis_text_is_still_returned(self, adapter_with_client, caplog):
+    def test_truncated_diagnosis_text_is_still_returned(
+        self,
+        adapter_with_client: tuple[AnthropicAdapter, MagicMock],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         # Diagnoza to wolny tekst bez guardu w reflect_node — ucięcie loguje WARNING,
         # ale lekcja wraca jak dotąd.
         import logging

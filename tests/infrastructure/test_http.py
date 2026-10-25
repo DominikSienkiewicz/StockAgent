@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import requests
@@ -18,18 +19,18 @@ from src.infrastructure.adapters._http import (
 
 
 class TestBuildSession:
-    def test_returns_requests_session(self):
+    def test_returns_requests_session(self) -> None:
         session = build_session()
         assert isinstance(session, requests.Session)
 
-    def test_mounts_retry_adapter_on_https(self):
+    def test_mounts_retry_adapter_on_https(self) -> None:
         session = build_session()
         adapter = session.get_adapter("https://example.com")
         retry = adapter.max_retries
         assert isinstance(retry, Retry)
         assert retry.total == RETRY_TOTAL
 
-    def test_http_scheme_not_mounted_with_custom_retry(self):
+    def test_http_scheme_not_mounted_with_custom_retry(self) -> None:
         # https-only: nie montujemy już retry-adaptera na http://. Schemat http
         # spada na domyślny adapter requests (bez naszego retry total=3) — cała
         # komunikacja agenta idzie po https.
@@ -37,7 +38,7 @@ class TestBuildSession:
         adapter = session.get_adapter("http://example.com")
         assert adapter.max_retries.total != RETRY_TOTAL
 
-    def test_retries_transient_status_codes(self):
+    def test_retries_transient_status_codes(self) -> None:
         session = build_session()
         retry = session.get_adapter("https://x.com").max_retries
         # 429 + 5xx powinny być na liście do retry
@@ -45,13 +46,13 @@ class TestBuildSession:
             assert status in RETRY_STATUS_FORCELIST
             assert status in retry.status_forcelist
 
-    def test_does_not_raise_on_status(self):
+    def test_does_not_raise_on_status(self) -> None:
         # raise_on_status=False — status sprawdzamy sami przez raise_for_status()
         session = build_session()
         retry = session.get_adapter("https://x.com").max_retries
         assert retry.raise_on_status is False
 
-    def test_retries_get_and_post(self):
+    def test_retries_get_and_post(self) -> None:
         session = build_session()
         retry = session.get_adapter("https://x.com").max_retries
         assert "GET" in retry.allowed_methods
@@ -59,13 +60,13 @@ class TestBuildSession:
 
 
 class TestRetryLimits:
-    def test_retry_post_false_does_not_retry_post(self):
+    def test_retry_post_false_does_not_retry_post(self) -> None:
         # MAIL-03: POST bez klucza idempotencji powtórzony po 5xx dubluje wiadomość.
         retry = build_session(retry_post=False).get_adapter("https://x.com").max_retries
         assert "GET" in retry.allowed_methods
         assert "POST" not in retry.allowed_methods
 
-    def test_retry_after_sleep_is_capped(self, mocker):
+    def test_retry_after_sleep_is_capped(self, mocker: Any) -> None:
         # NIEZ-06: Retry-After potrafi żądać godzin, a job ma 15 minut limitu.
         from urllib3.response import HTTPResponse
 
@@ -94,7 +95,7 @@ class TestRateLimiter:
         limiter = RateLimiter(rate_per_minute, clock=lambda: clock[0], sleep=sleep)
         return limiter, clock, sleeps
 
-    def test_burst_up_to_the_rate_does_not_wait(self):
+    def test_burst_up_to_the_rate_does_not_wait(self) -> None:
         limiter, _, sleeps = self._limiter(55)
 
         for _ in range(55):
@@ -102,7 +103,7 @@ class TestRateLimiter:
 
         assert sleeps == []
 
-    def test_request_over_the_budget_waits_for_one_token(self):
+    def test_request_over_the_budget_waits_for_one_token(self) -> None:
         limiter, _, sleeps = self._limiter(60)
 
         for _ in range(61):
@@ -111,7 +112,7 @@ class TestRateLimiter:
         # 60/min = 1 token na sekundę: 61. request czeka pełną sekundę.
         assert sleeps == [1.0]
 
-    def test_tokens_refill_with_time(self):
+    def test_tokens_refill_with_time(self) -> None:
         limiter, clock, sleeps = self._limiter(60)
         for _ in range(60):
             limiter.acquire()
@@ -122,7 +123,7 @@ class TestRateLimiter:
 
         assert sleeps == []
 
-    def test_rate_must_be_positive(self):
+    def test_rate_must_be_positive(self) -> None:
         import pytest
 
         from src.infrastructure.adapters._http import RateLimiter
@@ -138,7 +139,7 @@ class _ScriptedAdapter(HTTPAdapter):
         self._statuses = list(statuses)
         self._retries = retries
 
-    def send(self, request, **kwargs):  # type: ignore[no-untyped-def]
+    def send(self, request, **kwargs: Any):  # type: ignore[no-untyped-def]
         response = requests.Response()
         response.status_code = self._statuses.pop(0)
         response.url = request.url
@@ -157,7 +158,7 @@ class TestHttpCallMeter:
     # NIEZ-24: licznik żądań per host przez hook sesji — limity dostawców
     # (Finnhub 60/min, AV 25/dobę/klucz) bez pomiaru były pilnowane po omacku.
 
-    def test_response_hook_counts_requests_per_host_and_status(self):
+    def test_response_hook_counts_requests_per_host_and_status(self) -> None:
         meter = HttpCallMeter()
         session = build_session(meter=meter)
         session.mount("https://", _ScriptedAdapter([200, 429]))
@@ -167,7 +168,7 @@ class TestHttpCallMeter:
 
         assert meter.snapshot()["finnhub.io"] == {"requests": 2, "2xx": 1, "429": 1}
 
-    def test_meter_keys_by_host_only_never_by_url_or_query(self):
+    def test_meter_keys_by_host_only_never_by_url_or_query(self) -> None:
         meter = HttpCallMeter()
         session = build_session(meter=meter)
         session.mount("https://", _ScriptedAdapter([200, 503]))
@@ -180,7 +181,7 @@ class TestHttpCallMeter:
         assert snapshot["api.coingecko.com"] == {"requests": 1, "5xx": 1}
         assert "SECRET123" not in repr(snapshot)
 
-    def test_urllib3_retries_are_counted(self):
+    def test_urllib3_retries_are_counted(self) -> None:
         meter = HttpCallMeter()
         session = build_session(meter=meter)
         session.mount("https://", _ScriptedAdapter([200], retries=2))
@@ -189,7 +190,7 @@ class TestHttpCallMeter:
 
         assert meter.snapshot()["finnhub.io"] == {"requests": 1, "2xx": 1, "retries": 2}
 
-    def test_elapsed_time_is_summed_per_host(self):
+    def test_elapsed_time_is_summed_per_host(self) -> None:
         meter = HttpCallMeter()
         session = build_session(meter=meter)
         session.mount("https://", _ScriptedAdapter([200, 200]))
@@ -199,7 +200,7 @@ class TestHttpCallMeter:
 
         assert meter.elapsed_seconds()["finnhub.io"] >= 0.0
 
-    def test_installed_meter_counts_sessions_built_without_one(self):
+    def test_installed_meter_counts_sessions_built_without_one(self) -> None:
         # Hook obejmuje adaptery bez zmian w ich kodzie: sesja zbudowana gołym
         # `build_session()` liczy się do miernika zainstalowanego na przebieg.
         meter = HttpCallMeter()
@@ -212,7 +213,7 @@ class TestHttpCallMeter:
 
         assert meter.snapshot() == {"api.telegram.org": {"requests": 1, "2xx": 1}}
 
-    def test_session_without_any_meter_still_works(self):
+    def test_session_without_any_meter_still_works(self) -> None:
         session = build_session()
         session.mount("https://", _ScriptedAdapter([200]))
 
@@ -233,7 +234,7 @@ class TestCircuitBreaker:
         response.url = TestCircuitBreaker.URL
         return response
 
-    def test_breaker_opens_after_consecutive_failures(self, mocker):
+    def test_breaker_opens_after_consecutive_failures(self, mocker: Any) -> None:
         from src.application.errors import ProviderUnavailable
 
         transport = mocker.patch.object(
@@ -249,7 +250,7 @@ class TestCircuitBreaker:
 
         assert transport.call_count == 5
 
-    def test_server_errors_and_timeouts_count_as_failures(self, mocker):
+    def test_server_errors_and_timeouts_count_as_failures(self, mocker: Any) -> None:
         from src.application.errors import ProviderUnavailable
 
         failures = [self._response(503)] * 3 + [requests.ReadTimeout("slow")] * 2
@@ -263,7 +264,7 @@ class TestCircuitBreaker:
             session.get(self.URL)
         assert transport.call_count == 5
 
-    def test_client_errors_do_not_open_the_circuit(self, mocker):
+    def test_client_errors_do_not_open_the_circuit(self, mocker: Any) -> None:
         transport = mocker.patch.object(HTTPAdapter, "send", return_value=self._response(404))
         session = build_session()
 
@@ -272,7 +273,7 @@ class TestCircuitBreaker:
 
         assert transport.call_count == 8
 
-    def test_success_resets_the_consecutive_count(self, mocker):
+    def test_success_resets_the_consecutive_count(self, mocker: Any) -> None:
         failures = [requests.ConnectionError("down")] * 4
         outcomes = [*failures, self._response(200), *failures, self._response(200)]
         mocker.patch.object(HTTPAdapter, "send", side_effect=outcomes)
@@ -287,7 +288,7 @@ class TestCircuitBreaker:
 
         assert statuses[-1] == 200
 
-    def test_circuit_is_per_host(self, mocker):
+    def test_circuit_is_per_host(self, mocker: Any) -> None:
         mocker.patch.object(
             HTTPAdapter,
             "send",
@@ -300,7 +301,7 @@ class TestCircuitBreaker:
 
         assert session.get("https://api.coingecko.com/api/v3/ping").status_code == 200
 
-    def test_open_circuit_error_follows_existing_degradation_paths(self, mocker):
+    def test_open_circuit_error_follows_existing_degradation_paths(self, mocker: Any) -> None:
         # Adaptery łapią dziś `requests.RequestException` (EDGAR, Reddit, NBP, AV) —
         # błąd otwartego obwodu musi trafić na te same ścieżki degradacji.
         mocker.patch.object(HTTPAdapter, "send", side_effect=requests.ConnectionError("down"))
@@ -314,7 +315,7 @@ class TestCircuitBreaker:
 
         assert "finnhub.io" in str(excinfo.value)
 
-    def test_circuit_states_report_skipped_symbols(self, mocker):
+    def test_circuit_states_report_skipped_symbols(self, mocker: Any) -> None:
         # MAIL-21 i banner kwot czytają stan obwodów przez `CircuitStatePort`.
         from src.application.ports import CircuitState, CircuitStatePort
         from src.infrastructure.adapters._http import process_circuits
@@ -381,7 +382,7 @@ class TestTranslatedHelpers:
         response._content = body
         return response
 
-    def test_transport_error_is_provider_unavailable_without_secret(self, mocker):
+    def test_transport_error_is_provider_unavailable_without_secret(self, mocker: Any) -> None:
         from src.application.errors import ProviderUnavailable
         from src.infrastructure.adapters._http import translated_get
 
@@ -400,7 +401,7 @@ class TestTranslatedHelpers:
         ("status", "kind_name"),
         [(429, "QuotaExhausted"), (503, "ProviderUnavailable"), (404, "PortError")],
     )
-    def test_error_status_maps_to_its_kind(self, status: int, kind_name: str):
+    def test_error_status_maps_to_its_kind(self, status: int, kind_name: str) -> None:
         from src.application import errors
         from src.infrastructure.adapters._http import raise_for_status_translated
 
@@ -410,12 +411,12 @@ class TestTranslatedHelpers:
         assert isinstance(excinfo.value, requests.HTTPError)
         assert "secret-value-123" not in str(excinfo.value)
 
-    def test_success_status_does_not_raise(self):
+    def test_success_status_does_not_raise(self) -> None:
         from src.infrastructure.adapters._http import raise_for_status_translated
 
         raise_for_status_translated(self._response(200))
 
-    def test_unparseable_body_is_malformed_payload(self):
+    def test_unparseable_body_is_malformed_payload(self) -> None:
         from src.application.errors import MalformedPayload
         from src.infrastructure.adapters._http import json_payload
 
@@ -424,7 +425,7 @@ class TestTranslatedHelpers:
 
         assert isinstance(excinfo.value, requests.JSONDecodeError)
 
-    def test_parsed_body_is_returned(self):
+    def test_parsed_body_is_returned(self) -> None:
         from src.infrastructure.adapters._http import json_payload
 
         assert json_payload(self._response(200, b'{"a": 1}')) == {"a": 1}

@@ -1,6 +1,7 @@
 """Testy `AlphaVantageClient` — wspólny klient dla News i Sentiment adapterów."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -91,7 +92,7 @@ class TestPerTickerFetch:
     """Domyślnie batch_size=1 — AV `tickers` to AND filter, heterogeniczna lista
     zwraca pusty feed. Robimy osobny request per symbol."""
 
-    def test_makes_one_request_per_symbol(self, client, mocker):
+    def test_makes_one_request_per_symbol(self, client: AlphaVantageClient, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -111,7 +112,7 @@ class TestPerTickerFetch:
         ]
         assert tickers_sent == ["AAPL", "AMD", "NVDA"]
 
-    def test_caches_after_first_full_fetch(self, client, mocker):
+    def test_caches_after_first_full_fetch(self, client: AlphaVantageClient, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -126,7 +127,7 @@ class TestPerTickerFetch:
 
         assert mock_get.call_count == 3   # raz na symbol, nie 4
 
-    def test_passes_apikey_in_params(self, client, mocker):
+    def test_passes_apikey_in_params(self, client: AlphaVantageClient, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -139,7 +140,7 @@ class TestPerTickerFetch:
 
 
 class TestBatching:
-    def test_splits_large_symbol_lists_into_batches(self, mocker):
+    def test_splits_large_symbol_lists_into_batches(self, mocker: Any) -> None:
         # 22 symbole, batch_size=10 → 3 batche (10+10+2)
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -161,7 +162,7 @@ class TestBatching:
         assert len(batches[1]) == 10
         assert len(batches[2]) == 2
 
-    def test_sleeps_between_batches(self, mocker):
+    def test_sleeps_between_batches(self, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
@@ -178,7 +179,7 @@ class TestBatching:
         assert sleep_mock.call_count == 1
         assert sleep_mock.call_args.args[0] >= 1.0
 
-    def test_deduplicates_articles_by_url_across_batches(self, mocker):
+    def test_deduplicates_articles_by_url_across_batches(self, mocker: Any) -> None:
         # Jeden artykuł pojawia się w dwóch batchach (np. wzmianka o AAPL i MSFT)
         duplicated_article = _SAMPLE_PAYLOAD["feed"][0]
         mocker.patch(
@@ -193,7 +194,9 @@ class TestBatching:
 
         assert len(client._cached_feed or []) == 1
 
-    def test_handles_rate_limit_info_response_gracefully(self, mocker, caplog):
+    def test_handles_rate_limit_info_response_gracefully(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         import logging
         caplog.set_level(logging.WARNING)
         # AV przy rate-limit zwraca 200 + Information, bez feed
@@ -223,7 +226,7 @@ class TestApiKeyRotation:
     def _rate_limit_response(self):
         return _ok_response({"Information": "rate limit reached for key X"})
 
-    def test_rotates_to_next_key_when_first_is_rate_limited(self, mocker):
+    def test_rotates_to_next_key_when_first_is_rate_limited(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get"
@@ -251,7 +254,7 @@ class TestApiKeyRotation:
         assert keys_used == ["key1", "key2", "key2", "key2"]
         assert client._active_key_idx == 1
 
-    def test_keeps_active_key_across_subsequent_batches(self, mocker):
+    def test_keeps_active_key_across_subsequent_batches(self, mocker: Any) -> None:
         # Gdy key#1 zadziała w pierwszym batchu, nie wracamy do key#0
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
@@ -273,7 +276,9 @@ class TestApiKeyRotation:
         ]
         assert keys_used == ["key1", "key2", "key2"]
 
-    def test_returns_partial_feed_when_all_keys_exhausted(self, mocker, caplog):
+    def test_returns_partial_feed_when_all_keys_exhausted(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         import logging
         caplog.set_level(logging.ERROR)
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -292,7 +297,7 @@ class TestApiKeyRotation:
         assert mock_get.call_count == 3
         assert "exhausted" in caplog.text.lower()
 
-    def test_exposes_degraded_reason_when_all_keys_exhausted(self, mocker):
+    def test_exposes_degraded_reason_when_all_keys_exhausted(self, mocker: Any) -> None:
         # Sygnał dla warstwy aplikacji: bieżący cykl działał na (potencjalnie)
         # niekompletnym feedzie. Bez tego sygnału newsy=[] dla wszystkich
         # symboli wyglądają identycznie jak "spokojny dzień, brak newsów".
@@ -305,7 +310,7 @@ class TestApiKeyRotation:
 
         assert client.degraded_reason == "av_keys_exhausted"
 
-    def test_degraded_reason_is_none_when_first_call_succeeds(self, mocker):
+    def test_degraded_reason_is_none_when_first_call_succeeds(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch(
             "requests.Session.get",
@@ -316,7 +321,7 @@ class TestApiKeyRotation:
 
         assert client.degraded_reason is None
 
-    def test_partial_feed_when_keys_exhaust_mid_fetch(self, mocker):
+    def test_partial_feed_when_keys_exhaust_mid_fetch(self, mocker: Any) -> None:
         # 2 batche, 2 klucze. Batch 1 z key1 → OK. Batch 2: key1 rate-limit,
         # key2 też rate-limit → klucze wyczerpane, ale batch 1 ma już dane.
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -346,7 +351,7 @@ class TestApiKeyRotation:
             "frequency is 5 calls per minute."
         })
 
-    def test_rotates_when_soft_limit_uses_note_field(self, mocker):
+    def test_rotates_when_soft_limit_uses_note_field(self, mocker: Any) -> None:
         # DAT-06: `Note` to też soft-limit. Bez wspólnego klasyfikatora klient brał
         # go za pusty feed — bez rotacji i bez `degraded_reason`.
         sleep_mock = mocker.patch(
@@ -370,7 +375,7 @@ class TestApiKeyRotation:
         assert len(articles) == 1
         assert client.degraded_reason is None
 
-    def test_note_cleared_by_backoff_keeps_the_same_key(self, mocker):
+    def test_note_cleared_by_backoff_keeps_the_same_key(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [self._note_response(), _ok_response(_SAMPLE_PAYLOAD)]
@@ -383,7 +388,7 @@ class TestApiKeyRotation:
         assert client._active_key_idx == 0
         assert len(articles) == 1
 
-    def test_note_on_every_key_alerts_about_the_frequency_limit(self, mocker):
+    def test_note_on_every_key_alerts_about_the_frequency_limit(self, mocker: Any) -> None:
         # Alert „dzienny limit 25 zapytań” myliłby, gdy klucze odbił limit minutowy.
         from src.application.quota_monitor import QuotaMonitor
 
@@ -408,7 +413,9 @@ class TestApiKeyRotation:
 
 
 class TestArticlesFor:
-    def test_filters_by_symbol_via_ticker_sentiment(self, client, mocker):
+    def test_filters_by_symbol_via_ticker_sentiment(
+        self, client: AlphaVantageClient, mocker: Any
+    ) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
@@ -419,7 +426,7 @@ class TestArticlesFor:
         assert len(amd_articles) == 1
         assert amd_articles[0]["title"] == "AMD surges on AI chip demand"
 
-    def test_filters_by_relevance_threshold(self, client, mocker):
+    def test_filters_by_relevance_threshold(self, client: AlphaVantageClient, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
@@ -432,7 +439,7 @@ class TestArticlesFor:
         assert len(aapl_articles) == 1
         assert aapl_articles[0]["title"] == "Apple Q2 beats expectations"
 
-    def test_custom_relevance_threshold(self, mocker):
+    def test_custom_relevance_threshold(self, mocker: Any) -> None:
         client = AlphaVantageClient(
             api_keys=["av-test"],
             symbols=["AAPL"],
@@ -446,7 +453,9 @@ class TestArticlesFor:
         articles = client.articles_for("AAPL")
         assert len(articles) == 2  # oba przechodzą
 
-    def test_articles_include_normalized_fields(self, client, mocker):
+    def test_articles_include_normalized_fields(
+        self, client: AlphaVantageClient, mocker: Any
+    ) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
@@ -465,7 +474,9 @@ class TestArticlesFor:
 
 
 class TestSentimentFor:
-    def test_computes_relevance_weighted_average(self, client, mocker):
+    def test_computes_relevance_weighted_average(
+        self, client: AlphaVantageClient, mocker: Any
+    ) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
@@ -480,7 +491,9 @@ class TestSentimentFor:
         assert result["high_relevance_count"] == 1   # > 0.8 (jeden z relevance 0.92)
         assert result["av_sentiment_label"] in {"Bullish", "Somewhat-Bullish", "Neutral"}
 
-    def test_returns_neutral_defaults_when_no_articles(self, client, mocker):
+    def test_returns_neutral_defaults_when_no_articles(
+        self, client: AlphaVantageClient, mocker: Any
+    ) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"feed": []}),
@@ -492,7 +505,7 @@ class TestSentimentFor:
         assert result["news_volume_24h"] == 0
         assert result["av_sentiment_label"] == "Neutral"
 
-    def test_handles_missing_feed_field(self, client, mocker):
+    def test_handles_missing_feed_field(self, client: AlphaVantageClient, mocker: Any) -> None:
         # AV przy nadmiernym rate-limit czasem zwraca {"Information": "..."}
         mocker.patch(
             "requests.Session.get",
@@ -504,7 +517,9 @@ class TestSentimentFor:
 
 
 class TestSymbolFiltering:
-    def test_filters_out_tickers_with_dot_notation(self, caplog, mocker):
+    def test_filters_out_tickers_with_dot_notation(
+        self, caplog: pytest.LogCaptureFixture, mocker: Any
+    ) -> None:
         # CSPX.L (LSE) zawiera kropkę — AV odrzuciłby cały batch.
         import logging
         caplog.set_level(logging.WARNING)
@@ -512,13 +527,13 @@ class TestSymbolFiltering:
         assert client._symbols == ["AAPL", "AMD"]
         assert "CSPX.L" in caplog.text
 
-    def test_keeps_dash_underscore_colon(self):
+    def test_keeps_dash_underscore_colon(self) -> None:
         client = AlphaVantageClient(api_keys=["k"], symbols=["BRK-A", "RDS_A", "FOO:BAR"])
         assert client._symbols == ["BRK-A", "RDS_A", "FOO:BAR"]
 
 
 class TestErrorHandling:
-    def test_raises_on_http_error(self, client, mocker):
+    def test_raises_on_http_error(self, client: AlphaVantageClient, mocker: Any) -> None:
         response = MagicMock(spec=requests.Response)
         response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
         mocker.patch(
@@ -530,8 +545,8 @@ class TestErrorHandling:
             client.articles_for("AAPL")
 
     def test_mid_fetch_failure_caches_partial_feed_and_is_not_refetched(
-        self, mocker, caplog
-    ):
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # DAT-08: jeden padnięty batch nie może wymuszać pełnego ponownego
         # pobrania przy każdym kolejnym symbolu — częściowy feed zostaje w cache.
         import logging
@@ -596,7 +611,7 @@ class TestCryptoPrefix:
         }
         return response
 
-    def test_request_sends_crypto_prefix(self, mocker):
+    def test_request_sends_crypto_prefix(self, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(),
@@ -611,7 +626,7 @@ class TestCryptoPrefix:
         call_params = mock_get.call_args.kwargs["params"]
         assert call_params["tickers"] == "CRYPTO:BTC"
 
-    def test_articles_for_plain_ticker_returns_crypto_articles(self, mocker):
+    def test_articles_for_plain_ticker_returns_crypto_articles(self, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(),
@@ -625,7 +640,7 @@ class TestCryptoPrefix:
         assert len(articles) == 1
         assert articles[0]["title"] == "BTC headline"
 
-    def test_sentiment_for_plain_crypto_ticker(self, mocker):
+    def test_sentiment_for_plain_crypto_ticker(self, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(
@@ -641,7 +656,7 @@ class TestCryptoPrefix:
         assert sentiment["news_volume_24h"] == 1
         assert sentiment["av_sentiment_score"] == pytest.approx(0.4)
 
-    def test_equity_tickers_unaffected_by_crypto_set(self, mocker):
+    def test_equity_tickers_unaffected_by_crypto_set(self, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(),
@@ -673,7 +688,7 @@ class TestQuotaAlertEmit:
         }
         return response
 
-    def test_emits_critical_alert_when_all_keys_exhausted(self, mocker):
+    def test_emits_critical_alert_when_all_keys_exhausted(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
 
@@ -697,7 +712,7 @@ class TestQuotaAlertEmit:
         assert "2" in alert.message  # liczba kluczy
         assert "ALPHA_VANTAGE_API_KEYS" in alert.action
 
-    def test_no_alert_when_keys_have_budget(self, mocker):
+    def test_no_alert_when_keys_have_budget(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()
@@ -715,7 +730,7 @@ class TestQuotaAlertEmit:
 
         assert monitor.alerts == []
 
-    def test_no_monitor_means_no_emit_no_crash(self, mocker):
+    def test_no_monitor_means_no_emit_no_crash(self, mocker: Any) -> None:
         # Bez monitora: rate-limit dalej działa, tylko brak emitu.
         client = AlphaVantageClient(api_keys=["k"], symbols=["AAPL"])
         mocker.patch(
@@ -734,7 +749,7 @@ class TestRateLimitRotationDoesNotSleep:
     def _rate_limit_response(self):
         return _ok_response({"Information": "rate limit reached"})
 
-    def test_no_sleep_between_dead_keys_on_rotation(self, mocker):
+    def test_no_sleep_between_dead_keys_on_rotation(self, mocker: Any) -> None:
         sleep_mock = mocker.patch(
             "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
         )
@@ -751,7 +766,7 @@ class TestRateLimitRotationDoesNotSleep:
         # naprawdę → brak sleepów pacingowych.
         assert sleep_mock.call_count == 0
 
-    def test_short_circuits_when_all_keys_exhausted_across_batches(self, mocker):
+    def test_short_circuits_when_all_keys_exhausted_across_batches(self, mocker: Any) -> None:
         # Po wyczerpaniu wszystkich kluczy w batchu 1 NIE re-chodzimy po nich
         # w batchu 2 — short-circuit, zero dodatkowych requestów i sleepów.
         sleep_mock = mocker.patch(
@@ -772,7 +787,7 @@ class TestRateLimitRotationDoesNotSleep:
         # I żadnego sleepu (rotacja po dead-keyach + brak batcha 2).
         assert sleep_mock.call_count == 0
 
-    def test_happy_path_pacing_preserved(self, mocker):
+    def test_happy_path_pacing_preserved(self, mocker: Any) -> None:
         # Realne requesty dalej rozstawione 1 req/sec: 2 batche → 1 sleep.
         sleep_mock = mocker.patch(
             "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
@@ -825,7 +840,7 @@ class TestNewsWindow:
             clock=lambda: self._NOW,
         )
 
-    def test_fetch_sends_time_from_param(self, mocker):
+    def test_fetch_sends_time_from_param(self, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"feed": []}),
@@ -839,7 +854,7 @@ class TestNewsWindow:
         assert params["sort"] == "LATEST"
         assert mock_get.call_count == 1
 
-    def test_articles_older_than_window_are_dropped_from_volume(self, mocker):
+    def test_articles_older_than_window_are_dropped_from_volume(self, mocker: Any) -> None:
         payload = {
             "feed": [
                 self._article("https://example.com/fresh", "20261018T090000"),
@@ -856,7 +871,7 @@ class TestNewsWindow:
         assert sentiment["news_volume_24h"] == 2
         assert urls == ["https://example.com/fresh", "https://example.com/edge"]
 
-    def test_article_without_parsable_timestamp_is_dropped(self, mocker):
+    def test_article_without_parsable_timestamp_is_dropped(self, mocker: Any) -> None:
         payload = {
             "feed": [
                 self._article("https://example.com/fresh", "20261018T090000"),
@@ -871,7 +886,9 @@ class TestNewsWindow:
         assert sentiment["news_volume_24h"] == 1
 
 
-def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
+def test_exhausted_keys_alert_is_polish_and_logged_in_english(
+    mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
 
@@ -902,7 +919,9 @@ def test_exhausted_keys_alert_is_polish_and_logged_in_english(mocker, caplog):
     [{"Error Message": "Invalid API call. Please retry or visit the documentation."}, {}],
     ids=["error_message", "empty"],
 )
-def test_error_message_payload_sets_degraded_reason(mocker, caplog, payload) -> None:
+def test_error_message_payload_sets_degraded_reason(
+    mocker: Any, caplog: pytest.LogCaptureFixture, payload
+) -> None:
     # DAT-07: payload bez `feed` i bez markera limitu to nie „spokojny dzień” —
     # sentyment niesie `degraded_reason`, ale TYLKO symbol z tym payloadem.
     import logging
@@ -926,7 +945,7 @@ def test_error_message_payload_sets_degraded_reason(mocker, caplog, payload) -> 
     assert f"keys: {sorted(payload)}" in caplog.text
 
 
-def test_unexpected_payload_reaches_the_sentiment_adapter_for_its_symbol_only(mocker) -> None:
+def test_unexpected_payload_reaches_the_sentiment_adapter_for_its_symbol_only(mocker: Any) -> None:
     from src.infrastructure.adapters.alpha_vantage_adapters import (
         AlphaVantageSentimentAdapter,
     )
@@ -947,7 +966,9 @@ def test_unexpected_payload_reaches_the_sentiment_adapter_for_its_symbol_only(mo
     assert "degraded_reason" not in adapter.get_social_score("AMD")
 
 
-def test_soft_limit_log_carries_the_marker_without_the_key(mocker, caplog) -> None:
+def test_soft_limit_log_carries_the_marker_without_the_key(
+    mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # DAT-06: diagnoza wymaga treści markera, a AV potrafi wkleić do niej klucz.
     import logging
 
@@ -967,7 +988,7 @@ def test_soft_limit_log_carries_the_marker_without_the_key(mocker, caplog) -> No
     assert "news-secret-key" not in caplog.text
 
 
-def test_http_error_message_omits_apikey(mocker) -> None:
+def test_http_error_message_omits_apikey(mocker: Any) -> None:
     # BEZ-07: wyjątek wypływa do grafu i dalej do maila / logów — bez `&apikey=`.
     import traceback
 
@@ -985,7 +1006,7 @@ def test_http_error_message_omits_apikey(mocker) -> None:
     assert "news-secret-key" not in "".join(traceback.format_exception(excinfo.value))
 
 
-def test_network_error_message_omits_apikey(mocker) -> None:
+def test_network_error_message_omits_apikey(mocker: Any) -> None:
     mocker.patch(
         "requests.Session.get",
         side_effect=requests.ConnectionError(
@@ -1031,11 +1052,11 @@ class TestLazyPerSymbol:
 
     _SYMBOLS = ["AAPL", "AMD", "NVDA"]
 
-    def _client(self, **kwargs) -> AlphaVantageClient:
+    def _client(self, **kwargs: Any) -> AlphaVantageClient:
         options = {"api_keys": ["k1", "k2"], "symbols": self._SYMBOLS, **kwargs}
         return AlphaVantageClient(lazy_per_symbol=True, **options)
 
-    def test_only_requested_symbol_is_fetched(self, mocker):
+    def test_only_requested_symbol_is_fetched(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_ok_response(_SAMPLE_PAYLOAD)
@@ -1050,7 +1071,7 @@ class TestLazyPerSymbol:
         assert [a["title"] for a in articles] == ["AMD surges on AI chip demand"]
         assert sentiment["news_volume_24h"] == 1
 
-    def test_feed_is_cached_per_symbol(self, mocker):
+    def test_feed_is_cached_per_symbol(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_ok_response({"feed": []})
@@ -1065,7 +1086,7 @@ class TestLazyPerSymbol:
         tickers_sent = [c.kwargs["params"]["tickers"] for c in mock_get.call_args_list]
         assert tickers_sent == ["AAPL", "AMD"]
 
-    def test_volume_counts_only_the_symbols_own_feed(self, mocker):
+    def test_volume_counts_only_the_symbols_own_feed(self, mocker: Any) -> None:
         # Rozkład `news_volume_24h` się zmienia (FEATURE_SET_VERSION): artykuł
         # o AAPL z feedu AMD nie dolicza się już do AAPL.
         feeds = {
@@ -1085,7 +1106,7 @@ class TestLazyPerSymbol:
 
         assert client.sentiment_for("AAPL")["news_volume_24h"] == 1
 
-    def test_unconfigured_or_rejected_ticker_makes_no_request(self, mocker):
+    def test_unconfigured_or_rejected_ticker_makes_no_request(self, mocker: Any) -> None:
         mock_get = mocker.patch("requests.Session.get")
         client = self._client(symbols=["AAPL", "CSPX.L"])
 
@@ -1093,7 +1114,7 @@ class TestLazyPerSymbol:
         assert client.sentiment_for("TSLA")["news_volume_24h"] == 0
         assert mock_get.call_count == 0
 
-    def test_requests_are_paced_one_per_interval(self, mocker):
+    def test_requests_are_paced_one_per_interval(self, mocker: Any) -> None:
         from src.infrastructure.adapters.alpha_vantage_client import (
             INTER_REQUEST_DELAY_SECONDS,
         )
@@ -1111,7 +1132,7 @@ class TestLazyPerSymbol:
         waits = [c.args[0] for c in sleep_mock.call_args_list]
         assert waits == [pytest.approx(INTER_REQUEST_DELAY_SECONDS, abs=0.05)] * 2
 
-    def test_parallel_symbols_share_one_pacer(self, mocker):
+    def test_parallel_symbols_share_one_pacer(self, mocker: Any) -> None:
         import threading
 
         sleep_mock = mocker.patch(
@@ -1136,11 +1157,11 @@ class TestLazyPerSymbol:
         assert mock_get.call_count == 3
         assert sleep_mock.call_count == 2
 
-    def test_concurrent_callers_of_one_symbol_fetch_it_once(self, mocker):
+    def test_concurrent_callers_of_one_symbol_fetch_it_once(self, mocker: Any) -> None:
         import threading
         import time as real_time
 
-        def slow_get(*_args, **_kwargs):
+        def slow_get(*_args: Any, **_kwargs: Any):
             real_time.sleep(0.02)  # poszerza okno race'a
             return _ok_response({"feed": []})
 
@@ -1160,7 +1181,7 @@ class TestLazyPerSymbol:
 
         assert mock_get.call_count == 1
 
-    def test_concurrent_rate_limits_rotate_the_key_once(self, mocker):
+    def test_concurrent_rate_limits_rotate_the_key_once(self, mocker: Any) -> None:
         # Dwa symbole równolegle dostają limit na key1. Bez locka rotacji oba
         # przesuwają indeks i przeskakują żywy key2 — cykl kończy się „exhausted”.
         import threading
@@ -1168,7 +1189,7 @@ class TestLazyPerSymbol:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         both_in_flight = threading.Barrier(2, timeout=5)
 
-        def get(*_args, **kwargs):
+        def get(*_args: Any, **kwargs: Any):
             if kwargs["params"]["apikey"] == "k1":
                 both_in_flight.wait()
                 return _ok_response({"Information": "rate limit reached"})
@@ -1192,7 +1213,7 @@ class TestLazyPerSymbol:
         assert client._active_key_idx == 1
         assert all("degraded_reason" not in r for r in results.values())
 
-    def test_exhausted_keys_return_empty_without_http(self, mocker):
+    def test_exhausted_keys_return_empty_without_http(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -1210,7 +1231,7 @@ class TestLazyPerSymbol:
         assert aapl["degraded_reason"] == amd["degraded_reason"] == "av_keys_exhausted"
         assert len(monitor.alerts) == 1
 
-    def test_symbol_fetched_before_exhaustion_keeps_clean_data(self, mocker):
+    def test_symbol_fetched_before_exhaustion_keeps_clean_data(self, mocker: Any) -> None:
         # Flaga cykliczna oflagowałaby też AAPL, który ma pełny feed.
         from src.infrastructure.adapters.alpha_vantage_adapters import (
             AlphaVantageSentimentAdapter,
@@ -1236,7 +1257,7 @@ class TestLazyPerSymbol:
         assert amd["degraded_reason"] == "av_keys_exhausted"
         assert client.degraded_reason is None
 
-    def test_fetch_error_flags_its_symbol_and_is_not_refetched(self, mocker):
+    def test_fetch_error_flags_its_symbol_and_is_not_refetched(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -1253,7 +1274,7 @@ class TestLazyPerSymbol:
         assert aapl["degraded_reason"] == "av_fetch_error"
         assert "degraded_reason" not in amd
 
-    def test_fetch_error_does_not_mute_a_later_exhausted_keys_alert(self, mocker):
+    def test_fetch_error_does_not_mute_a_later_exhausted_keys_alert(self, mocker: Any) -> None:
         # DAT-08: wcześniejszy `av_fetch_error` nie może wyciszyć CRITICAL o kluczach.
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
@@ -1276,7 +1297,7 @@ class TestLazyPerSymbol:
 
         assert [a.severity for a in monitor.alerts] == [QuotaSeverity.CRITICAL]
 
-    def test_unexpected_payload_flags_its_symbol(self, mocker):
+    def test_unexpected_payload_flags_its_symbol(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch(
             "requests.Session.get",
@@ -1288,7 +1309,7 @@ class TestLazyPerSymbol:
         assert client.sentiment_for("AAPL")["degraded_reason"] == "av_unexpected_payload"
         assert "degraded_reason" not in client.sentiment_for("AMD")
 
-    def test_all_symbols_of_a_cycle_share_one_news_window(self, mocker):
+    def test_all_symbols_of_a_cycle_share_one_news_window(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_ok_response({"feed": []})
@@ -1305,7 +1326,7 @@ class TestLazyPerSymbol:
         windows = {c.kwargs["params"]["time_from"] for c in mock_get.call_args_list}
         assert windows == {"20261017T1200"}
 
-    def test_crypto_symbol_is_fetched_with_its_prefix(self, mocker):
+    def test_crypto_symbol_is_fetched_with_its_prefix(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch(
             "requests.Session.get", return_value=_ok_response({"feed": []})
@@ -1350,7 +1371,7 @@ class TestPortErrorTaxonomy:
     """ARCH-33: błąd NEWS_SENTIMENT wychodzi z klienta jako taksonomia portów
     i nadal jako typ `requests` (DAT-08 i dotychczasowi wywołujący bez zmian)."""
 
-    def test_network_error_is_provider_unavailable(self, mocker) -> None:
+    def test_network_error_is_provider_unavailable(self, mocker: Any) -> None:
         from src.application.errors import ProviderUnavailable
 
         mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("reset"))
@@ -1361,7 +1382,7 @@ class TestPortErrorTaxonomy:
 
         assert isinstance(excinfo.value, requests.ConnectionError)
 
-    def test_server_error_is_provider_unavailable(self, mocker) -> None:
+    def test_server_error_is_provider_unavailable(self, mocker: Any) -> None:
         from src.application.errors import ProviderUnavailable
 
         response = _ok_response({})
@@ -1373,7 +1394,7 @@ class TestPortErrorTaxonomy:
         with pytest.raises(ProviderUnavailable):
             client.articles_for("AAPL")
 
-    def test_unparseable_body_is_malformed_payload(self, mocker) -> None:
+    def test_unparseable_body_is_malformed_payload(self, mocker: Any) -> None:
         from src.application.errors import MalformedPayload
 
         response = _ok_response({})
