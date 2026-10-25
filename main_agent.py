@@ -182,6 +182,7 @@ from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.digest_policy import DigestForm, DigestPolicy, should_send
 from src.domain.earnings import EarningsEvent, earnings_due_within, earnings_this_week
 from src.domain.equity_curve import EquityCurve
+from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
 from src.domain.finops import BudgetBreach, BudgetWindow, CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
@@ -3636,13 +3637,13 @@ def _run_fast_loop(
     if public_status_enabled(settings):
         status_page_use_case(settings, repository, clock).run()
 
-    # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
+    # NIEZ-38: exit 1 tylko gdy wszystkie symbole padły (catastrophic failure).
     # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)
     # są raportowane w mailu i nie powinny psuć całego cyklu w GHA.
     total = len(eligible)
-    if total > 0 and failures == total:
-        return 1
-    return 0
+    if is_partial_failure(failures, total):
+        logger.warning(PARTIAL_FAILURE_LOG, "Fast Loop", failures, total)
+    return run_exit_code(failures, total)
 
 
 if __name__ == "__main__":

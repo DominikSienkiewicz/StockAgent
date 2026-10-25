@@ -1,6 +1,7 @@
 """Smoke testy entry pointu Slow Loop (`main_trainer`) — DI wiring oraz top-level main()
 z mockami sieci."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -568,13 +569,25 @@ class TestPooledTrainingLoop:
 
         assert fake_uc.run_pooled.call_args.kwargs == {"record_scorecard": False}
 
-    def test_pooled_training_failure_fails_the_run(
-        self, settings: Settings, mock_external_clients: None, mocker: Any
+    def test_pooled_training_failure_alone_is_a_partial_failure(
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
+        # NIEZ-38 (decyzja 2026-10-23): exit 1 tylko, gdy padły wszystkie symbole;
+        # sam model wspólny to częściowa porażka — WARNING, wagi z poprzedniego tygodnia.
         fake_uc = self._trainer(settings, mocker)
         fake_uc.run_pooled.side_effect = RuntimeError("XGBoost boom")
 
-        assert main_trainer.main(settings) == 1
+        with caplog.at_level(logging.WARNING, logger="main_trainer"):
+            assert main_trainer.main(settings) == 0
+
+        assert any(
+            record.levelno == logging.WARNING and "model wspólny padł" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestSnapshotModelsLoop:

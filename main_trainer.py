@@ -77,6 +77,7 @@ from src.application.use_cases.weekly_recap import (
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings, load_evaluation_protocol
 from src.domain.direction_variant import DirectionReport
+from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
 from src.domain.promotion import ChallengerVerdict
@@ -921,8 +922,8 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
-    failures += _train_pooled_model(settings, use_case, trainable, tally)
+    symbol_failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
+    failures = symbol_failures + _train_pooled_model(settings, use_case, trainable, tally)
     _evaluate_snapshot_models(settings, use_case, trainable, tally)
     _evaluate_direction_variant(settings, use_case, trainable, tally)
     _review_challengers(settings, repository, tally)
@@ -962,7 +963,23 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable) + 1)
-    return 1 if failures else 0
+    return _slow_loop_exit_code(symbol_failures, failures - symbol_failures, len(trainable))
+
+
+def _slow_loop_exit_code(symbol_failures: int, pooled_failures: int, symbols: int) -> int:
+    """NIEZ-38: exit 1 tylko, gdy padły wszystkie symbole (jak Fast Loop). Część
+    symboli albo sam model wspólny to częściowa porażka: WARNING i liczby w step
+    summary, exit 0 — przy padniętym modelu wspólnym wagi zostają z poprzedniego
+    tygodnia."""
+    exit_code = run_exit_code(symbol_failures, symbols)
+    if is_partial_failure(symbol_failures, symbols):
+        logger.warning(PARTIAL_FAILURE_LOG, "Slow Loop", symbol_failures, symbols)
+    if pooled_failures and exit_code == 0:
+        logger.warning(
+            "Slow Loop: model wspólny padł — wagi zostają z poprzedniego przebiegu, exit 0 "
+            "(NIEZ-38)"
+        )
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -83,6 +83,12 @@ from src.application.report_formatting import format_local
 from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
 from src.domain.asset import Asset, PriceDelta
+from src.domain.exit_policy import (
+    ALL_FAILED_EXIT_CODE,
+    PARTIAL_FAILURE_LOG,
+    is_partial_failure,
+    run_exit_code,
+)
 from src.domain.invalidation import is_thesis_invalidated
 from src.domain.number_format import format_money_pl, format_number_pl, format_pct_pl
 from src.domain.polish_labels import trend_forecast_label
@@ -348,7 +354,7 @@ class WatchOutcome:
 
     @property
     def all_failed(self) -> bool:
-        return self.total > 0 and self.failures == self.total
+        return run_exit_code(self.failures, self.total) == ALL_FAILED_EXIT_CODE
 
 
 def _silent_delivery(settings: Settings, moment: datetime) -> bool:
@@ -912,8 +918,9 @@ def _run_watch(settings: Settings) -> int:
     # nie odpowiada) już nie — jak w Fast Loopie, exit 1 (NIEZ-05).
     if outcome.all_failed:
         logger.error("Shock watch: wszystkie %d symbole padły", outcome.total)
-        return 1
-    return 0
+    elif is_partial_failure(outcome.failures, outcome.total):
+        logger.warning(PARTIAL_FAILURE_LOG, "Shock watch", outcome.failures, outcome.total)
+    return run_exit_code(outcome.failures, outcome.total)
 
 
 if __name__ == "__main__":
