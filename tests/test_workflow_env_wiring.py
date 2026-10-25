@@ -600,6 +600,69 @@ def test_publication_guard_accepts_the_scorecard_and_the_ledger(
     assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) == []
 
 
+# WIA-73: Rekor podpisuje root cyklu tokenem OIDC joba agenta. Bez `id-token: write`
+# runner nie wystawia tokenu, więc włączona flaga dawałaby co cykl WARNING zamiast wpisu —
+# twierdzenie bez pokrycia, jak publiczny artefakt bez kroku publikacji.
+REKOR_FLAG = "attestation_rekor_enabled"
+
+
+def _rekor_oidc_violations(
+    config: Mapping[str, Any], specs: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """Joby z `main_agent.py` bez `id-token: write`, gdy flaga Rekora jest włączona.
+
+    Własny blok `permissions:` joba zastępuje uprawnienia workflowu w całości."""
+    if config.get(REKOR_FLAG) is not True:
+        return []
+    violations: list[str] = []
+    for workflow, spec in specs.items():
+        for name, job in (spec.get("jobs") or {}).items():
+            runs_agent = any(
+                "main_agent.py" in str(step.get("run", "")) for step in job.get("steps", [])
+            )
+            permissions = job.get("permissions", spec.get("permissions")) or {}
+            if runs_agent and permissions.get("id-token") != "write":
+                violations.append(f"{workflow}: {name}")
+    return violations
+
+
+def test_rekor_flag_needs_oidc_on_every_agent_job() -> None:
+    assert _rekor_oidc_violations(_repo_config(), _all_workflow_specs()) == []
+
+
+def _oidc_job(permissions: Mapping[str, str] | None) -> dict[str, Any]:
+    job = _agent_job()
+    if permissions is not None:
+        job["permissions"] = dict(permissions)
+    return job
+
+
+def test_rekor_guard_catches_an_agent_job_without_oidc() -> None:
+    specs = {"loop.yml": {"permissions": {"contents": "read"}, "jobs": {"agent": _oidc_job(None)}}}
+
+    assert _rekor_oidc_violations({REKOR_FLAG: True}, specs) == ["loop.yml: agent"]
+
+
+def test_rekor_guard_reads_the_job_permissions_over_the_workflow_ones() -> None:
+    granted = {"contents": "read", "id-token": "write"}
+    specs: dict[str, dict[str, Any]] = {
+        "job.yml": {"jobs": {"agent": _oidc_job(granted)}},
+        "workflow.yml": {"permissions": granted, "jobs": {"agent": _oidc_job(None)}},
+        "narrowed.yml": {
+            "permissions": granted,
+            "jobs": {"agent": _oidc_job({"contents": "read"})},
+        },
+    }
+
+    assert _rekor_oidc_violations({REKOR_FLAG: True}, specs) == ["narrowed.yml: agent"]
+
+
+def test_rekor_guard_is_silent_while_the_flag_is_off() -> None:
+    specs = {"loop.yml": {"jobs": {"agent": _oidc_job(None)}}}
+
+    assert _rekor_oidc_violations({REKOR_FLAG: False}, specs) == []
+
+
 # WIA-16/WIA-52: deploy publicznego scorecardu na Pages. Artefakt to sam katalog
 # scorecardu, wysyłany tylko gdy plik powstał (`hashFiles`), a deploy idzie
 # w osobnym jobie z environment `github-pages` — wyłącznie ten job dostaje
