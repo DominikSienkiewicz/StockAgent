@@ -14,6 +14,7 @@ from src.domain.corporate_actions import SplitSuspicion
 from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.direction_variant import DirectionReport
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
@@ -757,6 +758,12 @@ class RepositoryPort(ABC):
         migracja 071). None = baza nie umie tego powiedzieć (rejestru migracji nie ma
         albo jest pusty); wołający traktuje to jak „nie wiem”, nigdy jak 0.
         Brak funkcji (071 niezaaplikowana) albo baza nie odpowiada leci `PortError`."""
+
+    @abstractmethod
+    def get_db_size_report(self) -> list[RelationSize]:
+        """NIEZ-37 — rozmiar każdej relacji schematu `public` z indeksami i TOAST
+        (RPC `db_size_report`, migracja 077), od największej. Brak funkcji przed
+        migracją wychodzi jako `NotFound`."""
 
     @abstractmethod
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:

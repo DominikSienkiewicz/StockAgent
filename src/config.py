@@ -251,14 +251,16 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "max_paid_llm_calls_per_cycle",
     # WIA-11: budżet tygodniowy to sama kontrola startu (WARNING i banner); prognoza ta sama.
     "fast_loop_weekly_budget_usd",
-    # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
+    # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, diagnozy) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
     # FIN-25: limit USD doby i miesiąca z ledgera decyduje, CZY cykl płaci, nie jak —
     # przeanalizowany symbol dostaje tę samą prognozę z limitem i bez.
     "daily_llm_budget_usd",
     "monthly_llm_budget_usd",
+    # NIEZ-37: próg ostrzeżenia o rozmiarze bazy — operacje, nie prognoza.
+    "db_size_budget_mb",
     # WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — przepisuje
-    # dane (wnioski w lessons i RAG), nie przepis predykcji, jak sędzia kalibracji.
+    # dane (wnioski w lessons i RAG), nie przepis predykcji.
     "diagnosis_backfill_enabled",
     "diagnosis_backfill_max_calls",
     # FIN-34: dzień zamknięcia NYSE decyduje, CZY akcje idą do grafu, nie jak.
@@ -649,7 +651,7 @@ class Settings(BaseSettings):
     # WIA-53: job Slow Loopa diagnozuje błędne predykcje, którym bramka volatility
     # pominęła płatną diagnozę (placeholder w `correction_insights`), najwyżej
     # `diagnosis_backfill_max_calls` na przebieg — w tygodniowym budżecie FIN-30,
-    # po recapie i sędzi. Bez migracji (kolumny 001/009, kwit 020 opcjonalnie).
+    # po recapie i diagnozie zbiorczej. Bez migracji (kolumny 001/009, kwit 020 opcjonalnie).
     diagnosis_backfill_enabled: bool = False
     diagnosis_backfill_max_calls: int = Field(default=5, ge=0)
     # EXP-17: reflect nie płaci za diagnozę błędu; Slow Loop diagnozuje pudła tygodnia
@@ -989,7 +991,7 @@ class Settings(BaseSettings):
     # None = bez kontroli.
     fast_loop_weekly_budget_usd: float | None = None
     # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (= przebieg cronu
-    # niedzielnego): recap, sędzia kalibracji i przyszłe joby diagnoz. Przydział
+    # niedzielnego): recap i joby diagnoz (WIA-53, EXP-17, EXP-10). Przydział
     # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
     # limitu, 0 = tydzień bez LLM (deterministyczne fallbacki). config.toml: 15.
     slow_loop_max_paid_llm_calls_per_week: int | None = None
@@ -1001,6 +1003,11 @@ class Settings(BaseSettings):
     # i WARNING (fail-open, decyzja 2026-10-24). None = bez limitu, 0 = bez płatnych.
     daily_llm_budget_usd: float | None = None
     monthly_llm_budget_usd: float | None = None
+
+    # NIEZ-37: budżet rozmiaru bazy w MB (darmowy plan Supabase: 500). Slow Loop raportuje
+    # rozmiar relacji `public` (RPC z migracji 077) i ostrzega od 70% budżetu; bez
+    # retencji. None = sam raport bez progu. config.toml: 500.
+    db_size_budget_mb: int | None = Field(default=None, gt=0)
     # FIN-34: w dzień zamknięcia NYSE (święto, weekend; `market_calendar`) Fast Loop
     # pomija akcje, krypto idzie normalnie; bez krypto przebieg kończy się bez maila.
     # Off w kodzie, żeby testy entry pointów nie zależały od daty; config.toml: true.

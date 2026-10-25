@@ -611,3 +611,21 @@ class TestDiagnosisJudgementColumns:
         assert str(saved) in sample
         assert row == (1, "Rynek był zmienny.", "Diagnoza odrzucona przez sędziego jakości.")
         assert str(saved) not in [r.prediction.id for r in repository.get_diagnoses_to_judge(7)]
+
+
+class TestDbSizeReportRpc:
+    """NIEZ-37: raport rozmiaru bazy przez prawdziwy PostgREST (migracja 077)."""
+
+    def test_service_role_reads_the_size_of_known_tables(
+        self, repository: SupabaseRepository
+    ) -> None:
+        sizes = {size.name: size.total_bytes for size in repository.get_db_size_report()}
+
+        assert {"prediction_logs", "price_snapshots"} <= set(sizes)
+        assert sizes["prediction_logs"] > 0
+
+    def test_anon_key_cannot_read_the_report(self, postgrest_stack: PostgrestStack) -> None:
+        anon = make_repository(postgrest_stack, role="anon")
+
+        with pytest.raises(PortError):
+            anon.get_db_size_report()

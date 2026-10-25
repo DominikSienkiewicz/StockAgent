@@ -39,6 +39,7 @@ from src.domain.council import (
     parse_recommendation,
 )
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
@@ -2042,6 +2043,19 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         if isinstance(data, bool) or not isinstance(data, int):
             raise MalformedPayload(f"schema_version zwróciło {type(data).__name__}, nie liczbę")
         return data
+
+    def get_db_size_report(self) -> list[RelationSize]:
+        # NIEZ-37: RPC z migracji 077; PGRST202 przed migracją tłumaczy klasa (NotFound).
+        data = self._client.rpc("db_size_report").execute().data
+        if not isinstance(data, list):
+            raise MalformedPayload(f"db_size_report zwróciło {type(data).__name__}, nie listę")
+        sizes: list[RelationSize] = []
+        for row in data:
+            name = row.get("relation_name") if isinstance(row, dict) else None
+            total = row.get("total_bytes") if isinstance(row, dict) else None
+            if isinstance(name, str) and isinstance(total, int) and not isinstance(total, bool):
+                sizes.append(RelationSize(name, total))
+        return sizes
 
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05: select `limit 0` po `columns`. PostgREST zgłasza jedną brakującą

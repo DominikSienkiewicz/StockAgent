@@ -47,6 +47,7 @@ from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
@@ -149,6 +150,7 @@ class ReadOnlyRepository(RepositoryPort):
         "probe_database",
         "missing_prediction_columns",
         "schema_version",
+        "get_db_size_report",
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
@@ -345,6 +347,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def schema_version(self) -> int | None:
         return self._delegate.schema_version()
+
+    def get_db_size_report(self) -> list[RelationSize]:
+        return self._delegate.get_db_size_report()
 
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         return self._delegate.get_last_price_snapshot(symbol)

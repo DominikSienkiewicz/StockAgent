@@ -46,6 +46,7 @@ from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import InvestorOpinion, parse_recommendation
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
@@ -978,6 +979,10 @@ class InMemoryRepository(RepositoryPort):
 
     def schema_version(self) -> int | None:
         return None
+
+    def get_db_size_report(self) -> list[RelationSize]:
+        # Tryb offline nie ma bazy, więc nie ma czego mierzyć (NIEZ-37).
+        return []
 
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         return frozenset()

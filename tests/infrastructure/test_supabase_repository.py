@@ -1077,6 +1077,54 @@ class TestSaveCalibrationScores:
             repo.save_calibration_scores({"p1": 0.5}, score_version=1)
 
 
+class TestDbSizeReport:
+    """NIEZ-37: RPC `db_size_report` (migracja 077) — relacja i bajty, brak funkcji
+    przed migracją jako `NotFound`."""
+
+    @staticmethod
+    def _execute(client: MagicMock) -> MagicMock:
+        return cast(MagicMock, client.rpc.return_value.execute)
+
+    def test_maps_rows_and_drops_malformed_ones(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.db_size import RelationSize
+
+        self._execute(mock_client).return_value = MagicMock(
+            data=[
+                {"relation_name": "prediction_logs", "total_bytes": 4096},
+                {"relation_name": "flag", "total_bytes": True},
+                {"relation_name": None, "total_bytes": 1},
+                "not a row",
+            ]
+        )
+
+        assert repo.get_db_size_report() == [RelationSize("prediction_logs", 4096)]
+        mock_client.rpc.assert_called_once_with("db_size_report")
+
+    def test_a_payload_that_is_not_a_list_is_malformed(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        self._execute(mock_client).return_value = MagicMock(data={"size": 1})
+
+        with pytest.raises(MalformedPayload):
+            repo.get_db_size_report()
+
+    def test_missing_function_leaves_as_not_found(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._execute(mock_client).side_effect = APIError(
+            {"code": "PGRST202", "message": "no function"}
+        )
+
+        with pytest.raises(NotFound):
+            repo.get_db_size_report()
+
+
 class TestDiagnosisJudgement:
     """EXP-10 — próbka diagnoz bez oceny i zapis oceny (odrzucenie podmienia tylko
     przeczytaną diagnozę)."""

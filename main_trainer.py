@@ -37,7 +37,7 @@ from main_agent import (
     write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.errors import PortError
+from src.application.errors import NotFound, PortError
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
@@ -82,6 +82,7 @@ from src.application.use_cases.weekly_recap import (
 )
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings, load_evaluation_protocol
+from src.domain.db_size import BYTES_PER_MB, assess_db_size
 from src.domain.direction_variant import DirectionReport
 from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.domain.finops import slow_loop_paid_budget
@@ -780,6 +781,42 @@ def _run_model_probe(
     _push_critical_alerts(settings, alerts)
 
 
+def _report_db_size(settings: Settings, repository: RepositoryPort) -> None:
+    """NIEZ-37: rozmiar relacji `public` (RPC z migracji 077) i WARNING od 70%
+    `db_size_budget_mb` — darmowy plan po limicie przechodzi w read-only. Sam odczyt,
+    zero płatnych wywołań, bez retencji. Brak funkcji przed DB Migrate tylko loguje."""
+    try:
+        sizes = repository.get_db_size_report()
+    except NotFound:
+        logger.warning("DB size report unavailable — apply migration 077 (DB Migrate)")
+        return
+    except PortError:
+        logger.warning("DB size report failed — pomijam", exc_info=True)
+        return
+    assessment = assess_db_size(sizes, settings.db_size_budget_mb)
+    largest = ", ".join(
+        f"{size.name}={size.total_bytes / BYTES_PER_MB:.1f} MB" for size in assessment.largest
+    )
+    total_mb = assessment.total_bytes / BYTES_PER_MB
+    fraction = assessment.budget_fraction
+    if assessment.needs_warning and fraction is not None:
+        logger.warning(
+            "DB size %.1f MB = %.0f%% of db_size_budget_mb=%s (NIEZ-37, retencja to "
+            "osobna decyzja) — largest: %s",
+            total_mb,
+            fraction * 100,
+            settings.db_size_budget_mb,
+            largest,
+        )
+        return
+    logger.info(
+        "DB size %.1f MB (budget %s MB) — largest: %s",
+        total_mb,
+        settings.db_size_budget_mb,
+        largest,
+    )
+
+
 def _run_evidence_export(
     settings: Settings, now: datetime | None = None, out_dir: Path = EVIDENCE_BACKUP_DIR
 ) -> None:
@@ -975,6 +1012,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)
     _run_model_probe(settings, quota_monitor)
+    _report_db_size(settings, repository)
     _run_evidence_export(settings)
 
     if settings.calibration_judge_enabled:

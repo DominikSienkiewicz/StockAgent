@@ -816,6 +816,24 @@ class TestDiagnosisJudgeFlag:
         assert "diagnosis_judge_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestDbSizeBudget:
+    """NIEZ-37: budżet rozmiaru bazy — operacje (poza przepisem), dodatni albo brak."""
+
+    def test_defaults_to_no_budget_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
+
+        assert settings.db_size_budget_mb is None
+        assert "db_size_budget_mb" in NON_RECIPE_SETTINGS_FIELDS
+
+    def test_rejects_a_budget_that_is_not_positive(self, env: pytest.MonkeyPatch) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            make_settings(**REQUIRED_ENV_KWARGS, db_size_budget_mb=0)
+
+
 class TestCorporateEventsFlag:
     """DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech — zmiana przepisu,
     więc domyślnie off i w przepisie (decyzja 2026-10-25)."""

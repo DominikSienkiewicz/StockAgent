@@ -77,7 +77,8 @@ model_probe_enabled = true
 
 # WIA-53: spłata długu diagnoz — Slow Loop diagnozuje błędne predykcje, którym bramka
 # volatility pominęła płatną diagnozę, najwyżej `diagnosis_backfill_max_calls` LLM na
-# przebieg, w budżecie `slow_loop_max_paid_llm_calls_per_week` (po recapie i sędzi).
+# przebieg, w budżecie `slow_loop_max_paid_llm_calls_per_week` (po recapie i diagnozie
+# zbiorczej).
 # Przepisany wniosek trafia do lessons i analogów RAG. Off.
 diagnosis_backfill_enabled = false
 diagnosis_backfill_max_calls = 5
@@ -390,10 +391,14 @@ fast_loop_weekly_budget_usd = 7.0
 # pętlę dispatchy. Limit jest tak dokładny jak cennik `llm_pricing`.
 daily_llm_budget_usd = 2.0
 monthly_llm_budget_usd = 30.0
-# FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (recap, sędzia kalibracji,
-# przyszłe joby diagnoz). Wywołanie ponad budżet jest odrzucane przed dostawcą i job
-# idzie deterministycznym fallbackiem; recap ma pierwszeństwo.
+# FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (recap, joby diagnoz).
+# Wywołanie ponad budżet jest odrzucane przed dostawcą i job idzie deterministycznym
+# fallbackiem; recap ma pierwszeństwo.
 slow_loop_max_paid_llm_calls_per_week = 15
+# NIEZ-37: budżet rozmiaru bazy w MB — darmowy plan Supabase: 500. Slow Loop raportuje
+# rozmiar relacji `public` i loguje WARNING od 70% budżetu; bez retencji i kasowania.
+# Przed migracją 077 (RPC `db_size_report`) krok tylko loguje, że funkcji nie ma.
+db_size_budget_mb = 500
 # FIN-34: w dzień zamknięcia NYSE (święto z `market_calendar`, weekend) Fast Loop nie
 # analizuje akcji — ceny stoją, a przebieg, snapshoty i mail byłyby zbędne. Krypto idzie
 # normalnie; bez krypto przebieg kończy się od razu, bez maila.

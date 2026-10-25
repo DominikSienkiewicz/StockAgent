@@ -4866,9 +4866,11 @@ class TestMigration064ScorecardProvenance:
 @pytest.mark.containers
 class TestMigration077SlowLoopRpcs:
     """WIA-65: `save_calibration_scores` — arytmetyczne oceny kalibracji jednym
-    wywołaniem zamiast UPDATE wiersz po wierszu; tylko service_role je wykonuje."""
+    wywołaniem zamiast UPDATE wiersz po wierszu; NIEZ-37: `db_size_report` — rozmiar
+    relacji `public`. Obie wykonuje tylko service_role."""
 
     SAVE_SCORES = "save_calibration_scores(jsonb,smallint)"
+    DB_SIZE = "db_size_report()"
 
     def test_save_calibration_scores_updates_every_listed_row_in_one_call(
         self, migrated_pg_conn: psycopg2.extensions.connection
@@ -4923,13 +4925,51 @@ class TestMigration077SlowLoopRpcs:
         assert "search_path=\"\"" in (config or [])
         assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
 
+    def test_db_size_report_returns_known_tables(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        # NIEZ-37: rozmiar relacji `public` (tabela + indeksy + TOAST) do budżetu bazy.
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM pg_proc WHERE proname = 'db_size_report'")
+            assert cur.fetchone() == (1,)
+            cur.execute("SELECT relation_name, total_bytes FROM db_size_report()")
+            sizes = dict(cur.fetchall())
+
+        assert {"prediction_logs", "price_snapshots"} <= set(sizes)
+        assert all(isinstance(size, int) and size >= 0 for size in sizes.values())
+        assert sizes["prediction_logs"] > 0
+
+    def test_db_size_report_is_a_definer_with_a_pinned_path_for_the_service_role_only(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure",
+                (self.DB_SIZE,),
+            )
+            definer, config = cur.fetchone()
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, self.DB_SIZE),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert definer is True
+        assert "search_path=\"\"" in (config or [])
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
     def test_077_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
         migration = (MIGRATIONS_DIR / "077_slow_loop_rpcs.sql").read_text()
         with migrated_pg_conn.cursor() as cur:
             cur.execute(migration)
             cur.execute(migration)
-            cur.execute("SELECT count(*) FROM pg_proc WHERE proname = 'save_calibration_scores'")
-            assert cur.fetchone() == (1,)
+            cur.execute(
+                "SELECT count(*) FROM pg_proc "
+                "WHERE proname IN ('save_calibration_scores', 'db_size_report')"
+            )
+            assert cur.fetchone() == (2,)
 
 
 @pytest.mark.containers
