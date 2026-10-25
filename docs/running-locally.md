@@ -137,7 +137,7 @@ DIGEST_TO_EMAIL=you@example.com
 
 Everything else — `symbols`, `symbols_etf`, `volatility_threshold`, `crypto_symbols`, `council_llm_provider/model`, `risk_symbols`, `nbp_enabled`, `symbol_throttle_seconds`, `notifications_enabled`, `digest_from_email`, … — is edited in [`config.toml`](../config.toml). Any value can still be overridden by an environment variable (precedence: **env → `.env` → `config.toml` → code defaults**), e.g. `SYMBOL_THROTTLE_SECONDS=0` for a quick local run. `.env` is read from the repository root, like `config.toml`, whatever the working directory a job starts in (ARCH-23).
 
-The secrets feed **GitHub Actions Secrets** — local and CI hit the **same Supabase database**, guaranteeing "works on my machine == works in prod" parity. `config.toml` is committed, so CI gets the same config without any repo variables.
+The secrets feed **GitHub Actions Secrets**, and a local run uses the **same Supabase project** as CI and production. That is a choice with a cost, not a parity guarantee: a local run reads production with the production secret key, so the only thing between it and the track record is the write guard described next (DX-09). `config.toml` is committed, so CI gets the same config without any repo variables.
 
 ### Local runs are read-only by default
 
@@ -159,6 +159,8 @@ DB_WRITES_ENABLED=true uv run python main_tools.py import-positions --csv positi
 ```
 
 The switch is read from the environment or `.env` only. It is deliberately not in `config.toml`: that file is shared by local runs and GitHub Actions, so turning writes on there would turn them on for every local run (a test keeps it out). The workflows that write — Fast Loop, Slow Loop and Shock Watch — set `DB_WRITES_ENABLED: "true"` in the step that runs the entry point; the read-only deadman does not. `tests/test_db_writes_wiring.py` checks both, and fails when a new `main_*.py` is not classified as writing or read-only.
+
+**Why the guard and not a separate database (DX-09).** Full isolation would be a second Supabase project for development or a local `supabase start`. Neither is used; the decision is the write guard alone: `DB_WRITES_ENABLED=false` by default and the `ReadOnlyRepository` wrapper in `write_guard.py`. The reason is the machine. A local Supabase stack runs several containers next to the Docker containers of the container tests on a computer that is already short of memory, and a second cloud project would need its own migrations, keys and seed data kept in step with production. The price of the choice is what the guard cannot remove: a local `.env` holds the production secret key, so a write method that escaped the classification would reach production, which is why `write_guard.py` classifies every abstract method of the port and a test fails when a new one is not classified. Reads stay production-like (the email, the Track Record and the RAG analogues look as they do in production), which is the part of the shared database that is worth keeping.
 
 ### Local runs make no paid calls by default
 
