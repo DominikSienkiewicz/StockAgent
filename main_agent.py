@@ -103,6 +103,7 @@ from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_regime import RegimeBanner
+from src.application.report_skipped import is_budget_cut
 from src.application.report_symbol_record import SymbolTrackRecordView
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
@@ -172,6 +173,7 @@ from src.domain.calibration_curve import (
 from src.domain.conformal import CalibrationPoint
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
+from src.domain.digest_policy import DigestForm, DigestPolicy, should_send
 from src.domain.earnings import EarningsEvent, earnings_due_within, earnings_this_week
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
@@ -2654,6 +2656,9 @@ def deliver_report(
         # raportu nie ma (report_sent False), a alerty i tak zapisuje `finally`.
         report = assemble()
         context = report.context
+        # MAIL-35: postać maila z polityki cichego dnia — liczona raz, nad pełnymi
+        # wynikami (jak temat); archiwum i tak dostaje pełny mail poniżej.
+        compact = _digest_form(settings, results, context) is DigestForm.COMPACT
         html, text = _render_report(context, results, started_at, duration)
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
@@ -2692,6 +2697,9 @@ def deliver_report(
             if archive_url is not None:
                 context = dataclasses.replace(context, archive_url=archive_url)
                 html, text = _render_report(context, results, started_at, duration)
+        if compact:
+            logger.info("Quiet day — compact digest (digest_quiet_policy=compact_when_quiet)")
+            html, text = _render_report(context, results, started_at, duration, compact=True)
 
         # U2: jeśli są subskrybenci, każdy dostaje raport TNIĘTY do swojej
         # watchlisty (analiza poszła RAZ nad unią — to tylko re-slicing). Bez
@@ -2715,6 +2723,7 @@ def deliver_report(
                     duration,
                     symbols_filter=symbols_for(sub, all_syms),
                     include_portfolio=owner,
+                    compact=compact,
                 )
                 channels.append(
                     _send_subscriber_digest(
@@ -2734,7 +2743,12 @@ def deliver_report(
                         legacy_push_notifier,
                         subject,
                         _render_report(
-                            context, results, started_at, duration, user_portfolio_in_text=False
+                            context,
+                            results,
+                            started_at,
+                            duration,
+                            user_portfolio_in_text=False,
+                            compact=compact,
                         ),
                     )
                 )
@@ -2792,10 +2806,12 @@ def _render_report(
     symbols_filter: frozenset[str] | None = None,
     user_portfolio_in_text: bool = True,
     include_portfolio: bool = True,
+    compact: bool = False,
 ) -> tuple[str, str]:
     """HTML i tekst raportu dla jednego odbiorcy. Raport subskrybenta różni się
     filtrem symboli (i bez portfela, gdy to nie właściciel — BEZ-01); stary
-    push — brakiem sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów)."""
+    push — brakiem sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów).
+    `compact` (MAIL-35) — zwarty mail cichego dnia."""
     recipient_context = dataclasses.replace(
         context,
         symbols_filter=symbols_filter,
@@ -2809,6 +2825,26 @@ def _render_report(
         recipient_context
         if include_portfolio
         else _without_owner_portfolio(recipient_context),
+        compact=compact,
+    )
+
+
+def _digest_form(
+    settings: Settings, results: list[SymbolResult], context: ReportContext
+) -> DigestForm:
+    """MAIL-35: pełny czy zwarty mail — reguła w domenie (`should_send`), tu liczby
+    cyklu: lead (jak temat), rozliczenia (None = odczyt padł), szoki z watcha,
+    symbole za bramką (zapisane i odcięte budżetem), błędy i pierwszy cykl."""
+    return should_send(
+        build_cycle_lead(results, context),
+        resolved=(
+            None if context.resolved_unavailable else len(context.resolved_predictions or [])
+        ),
+        shocks=len(context.shock_alerts or []),
+        policy=DigestPolicy(settings.digest_quiet_policy),
+        gated=sum(1 for r in results if r.status == "saved" or is_budget_cut(r)),
+        errors=sum(1 for r in results if r.status == "error"),
+        onboarding=context.cycle_maturity is CycleMaturity.FIRST_RUN,
     )
 
 
