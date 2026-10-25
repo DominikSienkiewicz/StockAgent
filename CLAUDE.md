@@ -129,6 +129,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - Nowa kolumna, RPC albo metoda `SupabaseRepository` = test kontraktowy w
   `tests/infrastructure/test_supabase_repo_postgrest.py` (marker `containers`, prawdziwy
   PostgREST z JWT, jeden zestaw kontenerów na moduł, TEST-17).
+- `InMemoryRepository` (`src/infrastructure/adapters/in_memory_repo.py`) to fake `RepositoryPort`
+  dla trybu offline (`main_tools.py offline`, DX-04). Nowa metoda abstrakcyjna `RepositoryPort`
+  = implementacja także tam, inaczej padnie `tests/test_main_offline.py`.
 
 ## Reguły domenowe / FinOps
 
