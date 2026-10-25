@@ -31,6 +31,13 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: 🛡️ Harden runner (egress audit)
+        # BEZ-20: pierwszy krok joba z kluczami API. Wyłącznie `audit`: zbiera inwentarz hostów,
+        # niczego nie blokuje. Oczekiwane hosty do porównania z wynikiem: docs/running-locally.md.
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
       - name: 📥 Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

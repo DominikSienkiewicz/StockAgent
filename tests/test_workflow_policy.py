@@ -459,3 +459,68 @@ def test_docs_name_the_pinned_uv_version() -> None:
         assert f"`{version}`" in RUNNING_LOCALLY.read_text(encoding="utf-8"), (
             f"docs/running-locally.md nie podaje przypiętej wersji uv {version}"
         )
+
+
+# BEZ-20: job z kluczami płatnych API wykonuje kod z uv.lock, więc jego pierwszy krok to
+# harden-runner w trybie `audit` (inwentarz hostów, bez blokowania). Przejście na `block`
+# jest osobną decyzją właściciela, po zebraniu inwentarza (docs/running-locally.md). Przypięcie
+# po SHA z komentarzem wersji pilnuje już test_every_action_is_pinned_by_sha (CI-08).
+HARDEN_RUNNER = "step-security/harden-runner"
+HARDENED_LOOP_WORKFLOWS = frozenset(
+    {"fast_loop_12h.yml", "slow_loop_weekly.yml", "shock_watch_hourly.yml"}
+)
+EXPECTED_HARDENED_JOBS = frozenset(
+    {
+        ("fast_loop_12h.yml", "run-market-agent"),
+        ("slow_loop_weekly.yml", "retrain-predictive-model"),
+        ("shock_watch_hourly.yml", "watch-market-shock"),
+    }
+)
+
+
+def _runs_project_code_with_secrets(job: dict[str, Any]) -> bool:
+    """Krok `uv run` z sekretem w env — kod z lockfile'a widzi klucze."""
+    return any(
+        "uv run" in str(step.get("run", ""))
+        and any("secrets." in str(value) for value in dict(step.get("env") or {}).values())
+        for step in job.get("steps", [])
+    )
+
+
+def _secret_bearing_loop_jobs() -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, name in _job_ids()
+        if workflow in HARDENED_LOOP_WORKFLOWS
+        and _runs_project_code_with_secrets(_jobs(_workflow_specs()[workflow])[name])
+    ]
+
+
+def test_secret_bearing_job_detection_finds_the_three_loop_jobs() -> None:
+    assert set(_secret_bearing_loop_jobs()) == EXPECTED_HARDENED_JOBS
+
+
+@pytest.mark.parametrize(("workflow", "name"), sorted(EXPECTED_HARDENED_JOBS))
+def test_secret_bearing_jobs_start_with_harden_runner(workflow: str, name: str) -> None:
+    steps = _jobs(_workflow_specs()[workflow])[name].get("steps", [])
+    first = steps[0] if steps else {}
+
+    assert str(first.get("uses", "")).startswith(f"{HARDEN_RUNNER}@"), (
+        f"{workflow}:{name} nie zaczyna się od {HARDEN_RUNNER} — hosty, do których "
+        "wychodzi job z kluczami, nie trafiają do inwentarza"
+    )
+    assert dict(first.get("with") or {}).get("egress-policy") == "audit"
+
+
+def test_harden_runner_never_blocks_traffic() -> None:
+    audited = [
+        dict(step.get("with") or {})
+        for workflow, name in _job_ids()
+        for step in _jobs(_workflow_specs()[workflow])[name].get("steps", [])
+        if str(step.get("uses", "")).startswith(f"{HARDEN_RUNNER}@")
+    ]
+
+    assert len(audited) >= len(EXPECTED_HARDENED_JOBS), "żaden harden-runner — nic do pilnowania"
+    for inputs in audited:
+        assert inputs.get("egress-policy") == "audit", inputs
+        assert "allowed-endpoints" not in inputs, "allowlista należy do trybu block"
