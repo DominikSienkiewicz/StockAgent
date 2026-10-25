@@ -46,7 +46,7 @@ def build_open_entry_curve(
     """Krzywe od otwarcia i od ceny predykcji z tych samych rozliczeń (te same reguły
     portfela co Track Record: jeden punkt na cykl, równa waga, koszt od obrotu).
     None, gdy żadne rozliczenie nie ma ceny wykonalnej."""
-    priced = [p for p in resolved if p.actual_change_pct is not None]
+    priced = [p for p in resolved if p.actual_change_ratio is not None]
     executable = [p for p in priced if executable_change(p) is not None]
     if not executable:
         return None

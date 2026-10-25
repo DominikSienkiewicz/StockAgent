@@ -45,7 +45,7 @@ def test_resolved_prediction_executable_change_excludes_opening_gap() -> None:
     # a wykonalnie — od otwarcia — tylko ~+0,95%.
     prediction = _resolved("NVDA", "BULLISH", entry="105")
 
-    assert prediction.actual_change_pct == pytest.approx(Decimal("0.06"))
+    assert prediction.actual_change_ratio == pytest.approx(Decimal("0.06"))
     assert prediction.executable_change == pytest.approx(Decimal("1") / Decimal("105"))
 
 

@@ -189,7 +189,7 @@ def paper_cycles(
     wymaga kolejności czasu także wewnątrz cyklu. Bez `costs` koszt jest 0.
     Z `benchmark_history` i `settle_after` (WIA-21) każdy trade niesie zmianę
     benchmarku w swoim oknie. `change_of` (WIA-54) — zmiana trade'u; domyślnie od
-    ceny z chwili predykcji (`actual_change_pct`).
+    ceny z chwili predykcji (`actual_change_ratio`).
     """
     costs = costs or PaperCosts()
     keyed = [
