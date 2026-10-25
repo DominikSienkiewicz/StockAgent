@@ -141,7 +141,7 @@ def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
         return ""
     rows = "".join(
         "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
-        "background: #fef3c7; border-radius: 3px; font-size: 12px;'>"
+        "background: #fefce8; border-radius: 3px; font-size: 12px;'>"
         f"<strong>{_html(r.symbol)}</strong> "
         f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
         for r in cut

@@ -350,3 +350,22 @@ def test_no_text_color_literal_in_a_report_module_is_below_aa_on_white(
     # Siatka na sekcje, których nie ma w żadnym scenariuszu golden (kolory dobierane
     # z danych też przechodzą przez te literały): biel to najmniej wymagające tło.
     assert contrast_ratio(color, "#ffffff") >= _AA, f"{module}: color {color}"
+
+
+def test_budget_cut_chips_meet_aa() -> None:
+    # FIN-12/FIN-25: chip symbolu odciętego budżetem niesie czerwony albo zielony
+    # ruch — na bursztynowym tle #fef3c7 czerwień miała 4,34:1.
+    from src.domain.cycle_maturity import SkipReason
+
+    cut = [
+        SymbolResult(
+            symbol=symbol, status="ignored", delta=Decimal(delta),
+            skip_reason=SkipReason.BUDGET_EXHAUSTED,
+        )
+        for symbol, delta in (("NVDA", "-0.035"), ("AMD", "0.031"))
+    ]
+
+    fragment = report_skipped._render_budget_exhausted_html(cut)
+
+    assert fragment
+    assert _contrast_violations(fragment) == []
