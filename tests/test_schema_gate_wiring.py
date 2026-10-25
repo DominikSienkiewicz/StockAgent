@@ -17,6 +17,7 @@ import pytest
 
 import main_agent
 import main_trainer
+import main_watch
 from src.application.errors import NotFound
 from src.application.ports import RepositoryPort
 from src.application.schema_gate import SCHEMA_ALERT_SOURCE
@@ -239,3 +240,46 @@ class TestSlowLoopSchemaGate:
 
         assert self.build_use_case.call_args.args[0].receipts_enabled is True
         assert "left on" in caplog.text
+
+
+class TestWatchSchemaGate:
+    """W5 (fala 3): godzinny watch też zapisuje do bazy (`shock_alerts`, migracja 021),
+    więc pyta o schemat zaraz po `build_repository`, jak Slow Loop."""
+
+    @pytest.fixture
+    def watch(self, mocker):
+        self.repository = MagicMock(spec=RepositoryPort)
+        self.build_repository = mocker.patch(
+            "main_agent.build_repository", return_value=self.repository
+        )
+        mocker.patch("main_agent.build_market_port")
+        mocker.patch("main_agent.build_push_notifier")
+        mocker.patch("main_agent.build_push_channels", return_value=[MagicMock()])
+        self.scan_watch = mocker.patch(
+            "main_watch.scan_watch",
+            return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1),
+        )
+        self.scan_levels = mocker.patch("main_watch.scan_price_levels")
+        mocker.patch("main_watch.scan_invalidations")
+        return self
+
+    def test_flags_ahead_of_the_schema_are_off_for_the_watch(self, settings, watch) -> None:
+        self.repository.schema_version.return_value = SCHEMA_BEHIND_RECEIPTS
+
+        assert main_watch.main(settings) == 0
+
+        used: Settings = self.scan_watch.call_args.args[0]
+        assert used.shock_alerts_enabled is False
+        assert self.scan_levels.call_args.args[0].shock_alerts_enabled is False
+        assert self.build_repository.call_count == 2
+        assert self.build_repository.call_args.args[0].shock_alerts_enabled is False
+
+    def test_a_migrated_database_leaves_the_watch_settings_alone(
+        self, settings, watch
+    ) -> None:
+        self.repository.schema_version.return_value = SCHEMA_AHEAD_OF_EVERYTHING
+
+        main_watch.main(settings)
+
+        assert self.scan_watch.call_args.args[0] is settings
+        assert self.build_repository.call_count == 1

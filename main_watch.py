@@ -78,6 +78,7 @@ from src.application.ports import (
     ReportNotifierPort,
     RepositoryPort,
 )
+from src.application.quota_monitor import QuotaMonitor
 from src.application.report_formatting import format_local
 from src.application.report_ops import render_watch_summary_markdown
 from src.config import Settings
@@ -860,9 +861,16 @@ def _run_watch(settings: Settings) -> int:
         build_push_channels,
         build_push_notifier,
         build_repository,
+        gate_flags_by_schema,
         write_step_summary,
     )
 
+    repository = build_repository(settings)
+    # NIEZ-30 (W5): watch zapisuje szoki (`shock_alerts`, migracja 021) — flaga
+    # włączona przed migracją wyłącza się na ten przebieg, jak w Fast i Slow Loopie.
+    settings, repository = gate_flags_by_schema(
+        settings, repository, QuotaMonitor(), now=datetime.now(UTC), rebuild=build_repository
+    )
     push_notifier = build_push_notifier(settings) if build_push_channels(settings) else None
     if settings.shock_alerts_enabled and push_notifier is None:
         logger.error(
@@ -870,7 +878,6 @@ def _run_watch(settings: Settings) -> int:
             "SLACK_WEBHOOK_URL) — wykryte szoki nie zostaną wysłane ani zapisane."
         )
     market = build_market_port(settings)
-    repository = build_repository(settings)
     scan = partial(
         scan_watch,
         settings,
