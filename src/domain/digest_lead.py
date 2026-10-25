@@ -11,16 +11,20 @@ Kolejność priorytetów (malejąco) jest wiążąca i zamrożona testami:
     3. sygnał przeciw Twojej pozycji — rada SPRZEDAJ na pozycji ≥ 10% portfela
     4. ruch Twojej pozycji          — pozycja ≥ 10% portfela ponad bramką volatility
                                       albo jej szok z watcha od ostatniego maila (ALR-06)
-    5. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
-    6. znaczący zakup insidera      — kod P officera ponad próg z kapitalizacji (DAT-21)
-    7. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
-    8. największy |Δ| z silnym konsensusem
-    9. werdykt zamkniętej predykcji
-   10. rewizja konsensusu analityków m/m (DAT-13) — sygnał kontekstowy, okresy
+    5. wyniki Twojej spółki         — pozycja ≥ 10% portfela raportuje dziś albo jutro
+                                      (DAT-20, kalendarz Finnhub)
+    6. rada PODZIELONA + duże |Δ|  — fundamentalny brak zgody co do kierunku
+    7. znaczący zakup insidera      — kod P officera ponad próg z kapitalizacji (DAT-21)
+    8. rada się ODWRÓCIŁA (FLIP)   — KUP↔SPRZEDAJ względem poprzedniego cyklu
+    9. największy |Δ| z silnym konsensusem
+   10. werdykt zamkniętej predykcji
+   11. rewizja konsensusu analityków m/m (DAT-13) — sygnał kontekstowy, okresy
        miesięczne, więc najniższy tier
 
-PORT-10 (decyzja 2026-10-19): tiery 3–4 istnieją tylko, gdy wołający poda wagę
+PORT-10 (decyzja 2026-10-19): tiery 3–5 istnieją tylko, gdy wołający poda wagę
 pozycji (`LeadSignal.position_weight`). Bez portfela lead działa jak wcześniej.
+DAT-20: tier 5 wymaga też `LeadSignal.earnings_event` — wołający podaje go tylko
+z flagą kalendarza wyników (`finnhub_earnings_calendar_enabled`).
 ALR-05: tier 2 istnieje tylko, gdy wołający poda zmianę reżimu — DI liczy ją
 wyłącznie z histerezy (`regime_history`), bez niej reżim migałby codziennie.
 MAIL-19: tier 7 wymaga `LeadSignal.consensus_shift` rodzaju FLIP; porównanie
@@ -46,7 +50,12 @@ from decimal import Decimal
 
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
 from src.domain.council import CouncilVerdict
-from src.domain.number_format import format_pct_pl
+from src.domain.earnings import (
+    HELD_EARNINGS_LEAD_MAX_DAYS,
+    EarningsEvent,
+    earnings_timing_label,
+)
+from src.domain.number_format import format_number_pl, format_pct_pl
 from src.domain.polish_labels import council_recommendation_label
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.regime import RegimeChange
@@ -57,10 +66,11 @@ from src.domain.value_objects import Percent
 # `council_verdict` bywa None, a mnożenie wyzerowałoby symbole bez rady.
 # Odstępy między bazami (1000) są większe niż `_MAGNITUDE_CAP`, więc priorytet
 # ZAWSZE bije magnitudę — to gwarancja invariantu anti-sensacja.
-_CRITICAL_QUOTA_SCORE = 9000.0
-_REGIME_CHANGE_SCORE = 8000.0
-_AGAINST_POSITION_SCORE = 7000.0
-_POSITION_MOVE_SCORE = 6000.0
+_CRITICAL_QUOTA_SCORE = 10000.0
+_REGIME_CHANGE_SCORE = 9000.0
+_AGAINST_POSITION_SCORE = 8000.0
+_POSITION_MOVE_SCORE = 7000.0
+_HELD_EARNINGS_SCORE = 6000.0
 _SPLIT_SCORE = 5000.0
 _INSIDER_BUY_SCORE = 4000.0
 _FLIP_SCORE = 3000.0
@@ -118,6 +128,8 @@ class LeadSignal:
       („CEO kupił akcje za 1,2 mln USD”) albo None, gdy zakupu ponad próg nie było.
     - `analyst_revision_label` (DAT-13) — gotowy tekst rewizji konsensusu m/m
       („analitycy podnieśli rekomendacje m/m (+3 Strong Buy)”) albo None (STABLE).
+    - `earnings_event` (DAT-20) — najbliższy raport wyników symbolu z kalendarza;
+      None = brak raportu w oknie albo flaga kalendarza off.
     """
 
     symbol: str
@@ -131,6 +143,7 @@ class LeadSignal:
     # ALR-06: największy szok z watcha od ostatniego maila (PROCENT); None = brak.
     shock_pct: Percent | None = None
     analyst_revision_label: str | None = None
+    earnings_event: EarningsEvent | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +257,38 @@ def _position_candidate(signal: LeadSignal) -> _Candidate | None:
     return None
 
 
+_EARNINGS_DAY_PL = {0: "dziś", 1: "jutro"}
+# Dziś przed jutrem w obrębie tieru, potem większa pozycja (waga × 100 ≤ 100).
+_EARNINGS_TODAY_BONUS = 100.0
+
+
+def _held_earnings_candidate(signal: LeadSignal) -> _Candidate | None:
+    """DAT-20: raport wyników pozycji ≥ `POSITION_LEAD_MIN_WEIGHT` dziś albo jutro.
+
+    Mail idzie przed otwarciem NYSE, więc „dziś” to jeszcze przyszłość. Pora względem
+    sesji i szacunek EPS są opcjonalne — nieznane po prostu nie wchodzą do tekstu."""
+    weight = signal.position_weight
+    event = signal.earnings_event
+    if weight is None or weight < POSITION_LEAD_MIN_WEIGHT or event is None:
+        return None
+    if event.days_until is None or not 0 <= event.days_until <= HELD_EARNINGS_LEAD_MAX_DAYS:
+        return None
+    when = _EARNINGS_DAY_PL[event.days_until]
+    timing = f" {earnings_timing_label(event.timing)}" if event.timing is not None else ""
+    detail = "Raport kwartalny spółki z Twojego portfela (kalendarz Finnhub)"
+    if event.eps_estimate is not None:
+        eps = format_number_pl(Decimal(str(event.eps_estimate)), signed=False, decimals=2)
+        detail += f", szac. EPS {eps}"
+    item = LeadItem(
+        icon="📅",
+        headline=f"{signal.symbol} ({_format_weight(weight)} portfela): wyniki {when}{timing}",
+        detail=f"{detail}.",
+        symbol=signal.symbol,
+    )
+    bonus = _EARNINGS_TODAY_BONUS if event.days_until == 0 else 0.0
+    return _Candidate(score=_HELD_EARNINGS_SCORE + bonus + float(weight) * 100, item=item)
+
+
 def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
     """Zamienia sygnał symbolu na kandydata najwyższego pasującego priorytetu.
 
@@ -255,6 +300,10 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
     position = _position_candidate(signal)
     if position is not None:
         return position
+    # DAT-20: wyniki Twojej spółki dziś albo jutro — pod ruchem pozycji.
+    earnings = _held_earnings_candidate(signal)
+    if earnings is not None:
+        return earnings
 
     delta_label = _format_delta(signal.price_delta_pct)
     magnitude = _magnitude(signal.price_delta_pct)

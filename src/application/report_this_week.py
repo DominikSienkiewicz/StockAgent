@@ -15,13 +15,7 @@ from datetime import date
 from src.application.report_formatting import company_label, number, weekday_day_label
 from src.application.report_formatting import section_h2 as _section_h2
 from src.application.reporting.section import ReportSection, SectionInput
-from src.domain.earnings import EarningsEvent, EarningsTiming
-
-_TIMING_PL = {
-    EarningsTiming.BEFORE_OPEN: "przed sesją",
-    EarningsTiming.AFTER_CLOSE: "po sesji",
-    EarningsTiming.DURING_MARKET: "w trakcie sesji",
-}
+from src.domain.earnings import EarningsEvent, earnings_timing_label
 
 
 def _event_line(event: EarningsEvent) -> str | None:
@@ -32,7 +26,7 @@ def _event_line(event: EarningsEvent) -> str | None:
     parts = [f"{weekday_day_label(date.fromisoformat(event.report_date))} — "
              f"{company_label(event.symbol)}"]
     if event.timing is not None:
-        parts.append(_TIMING_PL[event.timing])
+        parts.append(earnings_timing_label(event.timing))
     if event.eps_estimate is not None:
         parts.append(f"szac. EPS {number(event.eps_estimate, decimals=2)}")
     return " · ".join(parts)

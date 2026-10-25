@@ -7299,6 +7299,91 @@ class TestEarningsThisWeek:
         assert "finnhub_earnings_calendar_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestEarningsSoon:
+    """DAT-20 (decyzja 2026-10-25): lead „wyniki spółki, którą masz” potrzebuje raportów
+    dziś i jutro w KAŻDY dzień — za tą samą flagą co sekcja tygodnia i tylko z portfelem.
+    W poniedziałek obie części raportu biorą jedną odpowiedź kalendarza."""
+
+    TUESDAY_MORNING = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+    MONDAY_MORNING = datetime(2026, 10, 26, 6, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _portfolio():
+        from src.domain.portfolio import Portfolio, Position
+
+        return Portfolio(
+            positions=(
+                Position(
+                    symbol="MSFT",
+                    quantity=Decimal("10"),
+                    purchase_price=Decimal("400"),
+                    purchase_date=date(2026, 1, 5),
+                ),
+            ),
+            as_of=datetime(2026, 10, 26, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _calendar(*rows: tuple[str, str]) -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "earningsCalendar": [{"symbol": s, "date": d, "hour": "amc"} for s, d in rows]
+        }
+        return response
+
+    def test_flag_off_asks_nothing(self, settings, mocker) -> None:
+        get = mocker.patch("requests.Session.get")
+
+        soon = main_agent._earnings_soon(settings, self.TUESDAY_MORNING, self._portfolio())
+
+        assert soon is None
+        get.assert_not_called()
+
+    def test_without_a_portfolio_asks_nothing(self, settings, mocker) -> None:
+        settings.finnhub_earnings_calendar_enabled = True
+        get = mocker.patch("requests.Session.get")
+
+        assert main_agent._earnings_soon(settings, self.TUESDAY_MORNING, None) is None
+        get.assert_not_called()
+
+    def test_any_weekday_lists_the_reports_of_today_and_tomorrow(
+        self, settings, mocker
+    ) -> None:
+        settings.finnhub_earnings_calendar_enabled = True
+        settings.symbols = ["AAPL", "MSFT", "AMD"]
+        get = mocker.patch(
+            "requests.Session.get",
+            return_value=self._calendar(
+                ("MSFT", "2026-10-28"), ("AAPL", "2026-10-27"), ("AMD", "2026-10-29")
+            ),
+        )
+
+        soon = main_agent._earnings_soon(settings, self.TUESDAY_MORNING, self._portfolio())
+
+        assert soon is not None and [event.symbol for event in soon] == ["AAPL", "MSFT"]
+        assert get.call_count == 1
+
+    def test_monday_shares_one_calendar_request_with_the_week_section(
+        self, settings, mocker
+    ) -> None:
+        settings.finnhub_earnings_calendar_enabled = True
+        settings.symbols = ["MSFT"]
+        get = mocker.patch(
+            "requests.Session.get", return_value=self._calendar(("MSFT", "2026-10-27"))
+        )
+
+        calendar = main_agent._earnings_calendar(settings, self.MONDAY_MORNING)
+        week = main_agent._earnings_this_week(settings, self.MONDAY_MORNING, calendar)
+        soon = main_agent._earnings_soon(
+            settings, self.MONDAY_MORNING, self._portfolio(), calendar
+        )
+
+        assert week is not None and soon is not None
+        assert [event.symbol for event in soon] == ["MSFT"]
+        assert get.call_count == 1
+
+
 class TestDeribitOptionsPort:
     """DAT-18: z `deribit_dvol_enabled` port opcji grafu kieruje krypto do Deribit
     DVOL (implied edge BTC/ETH); bez flagi DI jak dotąd."""

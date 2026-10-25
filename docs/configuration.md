@@ -144,7 +144,7 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `insider_flow_enabled` | `false` | `false` | — | `EDGAR_USER_AGENT` | 0 (SEC EDGAR, free) | built, not deployed |
 | `earnings_calendar_enabled` | `false` | `false` | — | `ALPHA_VANTAGE_API_KEYS` | +1 Alpha Vantage request per cycle before the gate (one calendar for the whole watchlist); 0 with `earnings_cache_enabled` | built, not deployed |
 | `earnings_cache_enabled` | `false` | `false` | `053` | `ALPHA_VANTAGE_API_KEYS` | 0 in the Fast Loop; 1 Alpha Vantage request per stock a week in the Slow Loop | built, not deployed |
-| `finnhub_earnings_calendar_enabled` | `false` | `false` | — | `FINNHUB_API_KEY` | 0 (Finnhub free tier; 1 request per Monday report) | built, not deployed |
+| `finnhub_earnings_calendar_enabled` | `false` | `false` | — | `FINNHUB_API_KEY` | 0 (Finnhub free tier; 1 request per Monday report, 1 per report on other days with a portfolio for the lead) | built, not deployed |
 | `options_flow_enabled` | `false` | `false` | — | `FINNHUB_API_KEY` | 0 (Finnhub free tier, behind the gate) | built, not deployed |
 | `deribit_dvol_enabled` | `false` | `false` | `025` | — | 0 (Deribit public API, free; 1 request per crypto symbol past the gate) | built, not deployed |
 | `social_velocity_enabled` | `false` | `false` | — | — | 0 | built, not deployed |

@@ -166,6 +166,7 @@ def to_lead_signals(
     alpha_signals: Mapping[str, AlphaSignals] | None = None,
     insider_lead_window: InsiderLeadWindow | None = None,
     shock_alerts: Sequence[StoredShockAlert] | None = None,
+    earnings_soon: Sequence[EarningsEvent] | None = None,
 ) -> list[LeadSignal]:
     """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
 
@@ -184,6 +185,8 @@ def to_lead_signals(
     wpuszcza do leadu tylko filing z ostatnich N dni; None = bez okna.
     ALR-06: `shock_alerts` (szoki z watcha od ostatniego maila) dają sygnałowi
     największy szok symbolu — na pozycji z portfela to kandydat leadu.
+    DAT-20: `earnings_soon` (raporty dziś i jutro z kalendarza wyników) dają sygnałowi
+    zdarzenie wyników — na pozycji z portfela to kandydat leadu. None = bez kalendarza.
     """
     # MAIL-15: etykieta trafia do leadu i tematu maila — po polsku, ze wspólnego
     # słownika domeny („trafiona prognoza wzrostu”), nie „predykcja BULLISH”.
@@ -196,6 +199,7 @@ def to_lead_signals(
     }
     shifts = dict(consensus_shifts or ())
     shocks = _largest_shocks(shock_alerts or ())
+    earnings = {event.symbol: event for event in earnings_soon or ()}
     signals: list[LeadSignal] = []
     for r in results:
         if r.delta is None:
@@ -217,6 +221,7 @@ def to_lead_signals(
                 ),
                 shock_pct=shocks.get(r.symbol),
                 analyst_revision_label=_analyst_revision_label(alpha_signals, r.symbol),
+                earnings_event=earnings.get(r.symbol),
             )
         )
     return signals
@@ -299,6 +304,7 @@ def build_cycle_lead(
         context.alpha_signals,
         context.insider_lead_window,
         context.shock_alerts,
+        context.earnings_soon,
     )
     # ALR-05: zmiana reżimu (tylko z histerezy) tuż pod CRITICAL quota.
     regime_change = context.regime.change if context.regime is not None else None
@@ -528,6 +534,10 @@ class ReportContext:
     # DAT-20: raporty wyników watchlisty do niedzieli — tylko w poniedziałek, z flagą
     # `finnhub_earnings_calendar_enabled`. None = sekcji „📅 Ten tydzień” nie ma.
     earnings_this_week: tuple[EarningsEvent, ...] | None = None
+    # DAT-20: wyniki spółek z watchlisty dziś i jutro (ten sam kalendarz Finnhub, ta
+    # sama flaga) — kandydat leadu na pozycji z portfela. None = flaga off albo brak
+    # portfela.
+    earnings_soon: tuple[EarningsEvent, ...] | None = None
 
 
 def _section_input(

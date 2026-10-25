@@ -36,6 +36,19 @@ class EarningsTiming(Enum):
     DURING_MARKET = "dmh"
 
 
+# DAT-20: pora publikacji po polsku — sekcja „📅 Ten tydzień” i lead maila.
+_TIMING_PL: dict[EarningsTiming, str] = {
+    EarningsTiming.BEFORE_OPEN: "przed sesją",
+    EarningsTiming.AFTER_CLOSE: "po sesji",
+    EarningsTiming.DURING_MARKET: "w trakcie sesji",
+}
+
+
+def earnings_timing_label(timing: EarningsTiming) -> str:
+    """„przed sesją” / „po sesji” / „w trakcie sesji”."""
+    return _TIMING_PL[timing]
+
+
 @dataclass(frozen=True)
 class EarningsEvent:
     """Najbliższe znane zdarzenie wyników dla symbolu.
@@ -121,3 +134,23 @@ def earnings_this_week(
         and 0 <= event.days_until <= days_left
     ]
     return tuple(sorted(week, key=lambda event: (event.days_until or 0, event.symbol)))
+
+
+# DAT-20 (decyzja 2026-10-25): lead „wyniki spółki, którą masz” obejmuje raporty
+# dziś (mail idzie przed otwarciem NYSE) i jutro.
+HELD_EARNINGS_LEAD_MAX_DAYS = 1
+
+
+def earnings_due_within(
+    events: Iterable[EarningsEvent | None], max_days_until: int = HELD_EARNINGS_LEAD_MAX_DAYS
+) -> tuple[EarningsEvent, ...]:
+    """DAT-20: raporty od dziś do `max_days_until` dni naprzód, wg dnia i symbolu.
+    Zdarzenie bez daty, raport miniony i brak zdarzenia (None) odpadają."""
+    due = [
+        event
+        for event in events
+        if event is not None
+        and event.days_until is not None
+        and 0 <= event.days_until <= max_days_until
+    ]
+    return tuple(sorted(due, key=lambda event: (event.days_until or 0, event.symbol)))

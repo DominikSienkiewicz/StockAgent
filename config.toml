@@ -319,7 +319,9 @@ earnings_calendar_enabled = false
 earnings_cache_enabled = false
 # DAT-20: poniedziałkowa sekcja „📅 Ten tydzień” — wyniki spółek z watchlisty do
 # niedzieli z Finnhub /calendar/earnings (jedno darmowe zapytanie na watchlistę, wspólny
-# limiter Finnhub). Sam mail, bramka earnings bez zmian. UWAGA: włącz DOPIERO po
+# limiter Finnhub). Z portfelem ta sama flaga daje tier leadu „wyniki spółki, którą masz”
+# (pozycja ≥ 10%, raport dziś albo jutro) — wtedy zapytanie codziennie. Sam mail, bramka
+# earnings bez zmian. UWAGA: włącz DOPIERO po
 # przeglądzie ToS Finnhub (BEZ-28) i sondzie darmowego planu (docs/configuration.md).
 finnhub_earnings_calendar_enabled = false
 # FIN-32: najgorszy przypadek doby AV (cała watchlista za bramką, +1 na cykl przy

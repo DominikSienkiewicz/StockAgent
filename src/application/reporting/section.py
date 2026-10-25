@@ -52,6 +52,8 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "alpha_signals",
         "insider_lead_window",
         "regime",
+        # DAT-20: wyniki spółek z portfela dziś i jutro.
+        "earnings_soon",
         # Ranking sygnałów (MAIL-20) i sizing (Q7, PORT-04/08, #9).
         "accuracy_stats",
         "signal_calibration_buckets",

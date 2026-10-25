@@ -35,6 +35,7 @@ from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.asset import Asset
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.cycle_maturity import SkipReason
+from src.domain.earnings import EarningsEvent, EarningsTiming
 from src.domain.equity_curve import EquityCurve, EquityPoint
 from src.domain.model_scorecard import summarize_evaluations, summarize_run
 from src.domain.persona_track_record import PersonaTrackRecord
@@ -4332,3 +4333,64 @@ def test_predictions_table_has_at_most_five_columns() -> None:
 
     table = html.split("🔮 Wygenerowane predykcje")[1].split("</table>")[0]
     assert len(re.findall(r"<th\b", table)) <= 5
+
+
+class TestHeldEarningsLead:
+    """DAT-20: lead „wyniki spółki, którą masz” bierze wagi z portfela właściciela
+    i zdarzenia z `ReportContext.earnings_soon` (flaga kalendarza wyników). Bez
+    kontekstu wyników albo bez portfela lead jest jak wcześniej."""
+
+    _STARTED = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _portfolio() -> Portfolio:
+        return Portfolio(
+            positions=(
+                Position(
+                    symbol="MSFT",
+                    quantity=Decimal("10"),
+                    purchase_price=Decimal("400"),
+                    purchase_date=date(2026, 1, 5),
+                ),
+            ),
+            as_of=datetime(2026, 10, 26, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _quiet_msft() -> SymbolResult:
+        return SymbolResult(
+            symbol="MSFT",
+            status="ignored",
+            delta=Decimal("0.004"),
+            current_price=Decimal("410.00"),
+        )
+
+    @staticmethod
+    def _soon() -> tuple[EarningsEvent, ...]:
+        return (
+            EarningsEvent(
+                "MSFT", 1, "2026-10-28", timing=EarningsTiming.AFTER_CLOSE, eps_estimate=3.1
+            ),
+        )
+
+    def test_earnings_of_a_held_company_lead_the_mail(self) -> None:
+        context = ReportContext(user_portfolio=self._portfolio(), earnings_soon=self._soon())
+
+        html, text = build_html_report([self._quiet_msft()], self._STARTED, 1.0, context)
+
+        assert "MSFT (100% portfela): wyniki jutro po sesji" in html
+        assert "MSFT (100% portfela): wyniki jutro po sesji" in text
+
+    def test_without_the_calendar_context_the_lead_is_unchanged(self) -> None:
+        context = ReportContext(user_portfolio=self._portfolio())
+
+        html, _ = build_html_report([self._quiet_msft()], self._STARTED, 1.0, context)
+
+        assert "wyniki jutro" not in html
+
+    def test_without_a_portfolio_earnings_do_not_lead(self) -> None:
+        context = ReportContext(earnings_soon=self._soon())
+
+        html, _ = build_html_report([self._quiet_msft()], self._STARTED, 1.0, context)
+
+        assert "wyniki jutro" not in html

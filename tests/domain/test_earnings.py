@@ -179,3 +179,26 @@ class TestEarningsThisWeek:
         events = [EarningsEvent("FRI", days_until=1), EarningsEvent("MON", days_until=4)]
 
         assert [e.symbol for e in earnings_this_week(events, thursday)] == ["FRI"]
+
+
+class TestEarningsDueWithin:
+    """DAT-20: kandydaci leadu „wyniki Twojej spółki” — raporty dziś i jutro."""
+
+    def test_keeps_today_and_tomorrow_sorted_by_day_then_symbol(self) -> None:
+        from src.domain.earnings import earnings_due_within
+
+        events = [
+            EarningsEvent("MSFT", days_until=1),
+            EarningsEvent("AAPL", days_until=2),
+            EarningsEvent("AMD", days_until=1),
+            EarningsEvent("NVDA", days_until=0),
+            EarningsEvent("PAST", days_until=-1),
+            EarningsEvent("NONE", days_until=None),
+            None,
+        ]
+
+        assert [event.symbol for event in earnings_due_within(events)] == [
+            "NVDA",
+            "AMD",
+            "MSFT",
+        ]

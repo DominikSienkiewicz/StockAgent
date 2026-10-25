@@ -171,7 +171,7 @@ from src.domain.calibration_curve import (
 from src.domain.conformal import CalibrationPoint
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
-from src.domain.earnings import EarningsEvent, earnings_this_week
+from src.domain.earnings import EarningsEvent, earnings_due_within, earnings_this_week
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
 from src.domain.finops import CycleCost, estimate_cycle_cost
@@ -2382,31 +2382,70 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
 _MONDAY = 0
 
 
-def _earnings_this_week(
-    settings: Settings, started_at: datetime
-) -> tuple[EarningsEvent, ...] | None:
-    """DAT-20: w poniedziałek (strefa wyświetlania) wyniki spółek z watchlisty do
-    niedzieli z kalendarza Finnhub — jedno zapytanie na watchlistę, darmowe, przez
-    wspólny limiter. Bez flagi albo w inny dzień None (sekcji nie ma, zero ruchu)."""
-    if not settings.finnhub_earnings_calendar_enabled:
-        return None
-    today = started_at.astimezone(ZoneInfo(settings.display_timezone)).date()
-    if today.weekday() != _MONDAY:
-        return None
-    from src.infrastructure.adapters.finnhub_earnings import FinnhubEarningsCalendarAdapter
+def _report_day(settings: Settings, started_at: datetime) -> date:
+    """Dzień raportu w strefie wyświetlania — od niego liczą się dni do wyników."""
+    return started_at.astimezone(ZoneInfo(settings.display_timezone)).date()
 
-    stocks = [
+
+def _watchlist_stocks(settings: Settings) -> list[str]:
+    """Spółki z watchlisty — ETF-y i krypto nie publikują wyników kwartalnych."""
+    return [
         symbol
         for symbol in settings.symbols
         if symbol not in settings.symbols_etf and symbol not in settings.crypto_symbols
     ]
-    calendar = FinnhubEarningsCalendarAdapter(
+
+
+def _earnings_calendar(settings: Settings, started_at: datetime) -> EarningsCalendarPort | None:
+    """DAT-20: kalendarz wyników Finnhub dla watchlisty — jedno zapytanie na instancję
+    (odpowiedź trzymana na czas cyklu), darmowe, przez wspólny limiter. Bez flagi None."""
+    if not settings.finnhub_earnings_calendar_enabled:
+        return None
+    from src.infrastructure.adapters.finnhub_earnings import FinnhubEarningsCalendarAdapter
+
+    today = _report_day(settings, started_at)
+    return FinnhubEarningsCalendarAdapter(
         settings.require_finnhub_api_key(),
-        stocks,
+        _watchlist_stocks(settings),
         rate_limiter=FINNHUB_RATE_LIMITER,
         today=lambda: today,
     )
-    return earnings_this_week((calendar.get_next_earnings(s) for s in stocks), today)
+
+
+def _earnings_this_week(
+    settings: Settings, started_at: datetime, calendar: EarningsCalendarPort | None = None
+) -> tuple[EarningsEvent, ...] | None:
+    """DAT-20: w poniedziałek (strefa wyświetlania) wyniki spółek z watchlisty do
+    niedzieli z kalendarza Finnhub — jedno zapytanie na watchlistę, darmowe, przez
+    wspólny limiter. Bez flagi albo w inny dzień None (sekcji nie ma, zero ruchu).
+    `calendar` pozwala dzielić jedną odpowiedź z leadem (`_earnings_soon`)."""
+    if not settings.finnhub_earnings_calendar_enabled:
+        return None
+    today = _report_day(settings, started_at)
+    if today.weekday() != _MONDAY:
+        return None
+    source = calendar or _earnings_calendar(settings, started_at)
+    if source is None:
+        return None
+    stocks = _watchlist_stocks(settings)
+    return earnings_this_week((source.get_next_earnings(s) for s in stocks), today)
+
+
+def _earnings_soon(
+    settings: Settings,
+    started_at: datetime,
+    user_portfolio: Portfolio | None,
+    calendar: EarningsCalendarPort | None = None,
+) -> tuple[EarningsEvent, ...] | None:
+    """DAT-20 (decyzja 2026-10-25): raporty spółek z watchlisty dziś i jutro do leadu
+    „wyniki spółki, którą masz” — w każdy dzień, za flagą sekcji tygodnia. Bez flagi
+    albo bez portfela None i zero ruchu (lead bez wag pozycji i tak by ich nie użył)."""
+    if not settings.finnhub_earnings_calendar_enabled or user_portfolio is None:
+        return None
+    source = calendar or _earnings_calendar(settings, started_at)
+    if source is None:
+        return None
+    return earnings_due_within(source.get_next_earnings(s) for s in _watchlist_stocks(settings))
 
 
 def _report_inputs(
@@ -2431,6 +2470,8 @@ def _report_inputs(
     # PORT-04: ryzyko realnego portfela do sizingu (flaga + pozycje), wagi
     # w złotych tymi samymi kursami co raport.
     macro = context.macro_risk_report
+    # DAT-20: jedna odpowiedź kalendarza wyników na sekcję tygodnia i lead.
+    calendar = _earnings_calendar(settings, started_at)
     return dataclasses.replace(
         context,
         user_portfolio=user_portfolio,
@@ -2448,7 +2489,8 @@ def _report_inputs(
         sector_map=_sector_map(settings),
         sector_peers=settings.sector_peers,
         display_timezone=settings.display_timezone,
-        earnings_this_week=_earnings_this_week(settings, started_at),
+        earnings_this_week=_earnings_this_week(settings, started_at, calendar),
+        earnings_soon=_earnings_soon(settings, started_at, user_portfolio, calendar),
     )
 
 

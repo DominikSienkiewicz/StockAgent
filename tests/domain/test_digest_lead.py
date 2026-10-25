@@ -28,6 +28,7 @@ from src.domain.digest_lead import (
     lead_headline,
     lead_preview,
 )
+from src.domain.earnings import EarningsEvent, EarningsTiming
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Percent
 
@@ -681,3 +682,97 @@ class TestAnalystRevisionTier:
         (item,) = build_lead([signal])
 
         assert "CEO kupił" in item.headline
+
+
+class TestHeldEarningsTier:
+    """DAT-20 (decyzja 2026-10-25): wyniki spółki z portfela (≥ 10%) dziś albo jutro
+    to kandydat leadu — tuż pod ruchem pozycji, nad radą podzieloną. Prezentacja,
+    nie przepis: sygnał niesie zdarzenie z kalendarza tylko za flagą sekcji
+    „📅 Ten tydzień”."""
+
+    @staticmethod
+    def _held(
+        symbol: str = "MSFT",
+        days_until: int = 1,
+        weight: str | None = "0.24",
+        timing: EarningsTiming | None = EarningsTiming.AFTER_CLOSE,
+        eps: float | None = None,
+    ) -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol,
+            price_delta_pct=Percent(Decimal("0.4")),
+            position_weight=Decimal(weight) if weight is not None else None,
+            earnings_event=EarningsEvent(
+                symbol, days_until, "2026-10-28", timing=timing, eps_estimate=eps
+            ),
+        )
+
+    def test_earnings_tomorrow_on_a_large_position_leads(self) -> None:
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
+
+        items = build_lead([consensus, self._held()])
+
+        assert items[0].icon == "📅"
+        assert items[0].headline == "MSFT (24% portfela): wyniki jutro po sesji"
+        assert items[0].symbol == "MSFT"
+        assert "AAA" in items[1].headline
+
+    def test_earnings_today_before_the_open(self) -> None:
+        (item,) = build_lead(
+            [self._held(days_until=0, timing=EarningsTiming.BEFORE_OPEN)]
+        )
+
+        assert item.headline == "MSFT (24% portfela): wyniki dziś przed sesją"
+
+    def test_unknown_timing_is_left_out_and_the_eps_estimate_goes_to_the_detail(
+        self,
+    ) -> None:
+        (item,) = build_lead([self._held(timing=None, eps=3.1)])
+
+        assert item.headline == "MSFT (24% portfela): wyniki jutro"
+        assert item.detail == (
+            "Raport kwartalny spółki z Twojego portfela (kalendarz Finnhub), szac. EPS 3,10."
+        )
+
+    def test_sits_between_a_position_move_and_a_split_council(self) -> None:
+        move = LeadSignal(
+            "NVDA",
+            Percent(Decimal("-4.2")),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+        )
+        split = LeadSignal("AAA", Percent(Decimal("9.0")), _split_verdict())
+
+        items = build_lead([split, self._held(), move])
+
+        assert [item.icon for item in items] == ["💼", "📅", "⚖️"]
+
+    def test_today_ranks_above_tomorrow_and_then_the_larger_position(self) -> None:
+        tomorrow_large = self._held(symbol="AAPL", weight="0.40")
+        tomorrow_small = self._held(symbol="AMD", weight="0.12")
+        today_small = self._held(symbol="MSFT", days_until=0, weight="0.10")
+
+        items = build_lead([tomorrow_small, tomorrow_large, today_small])
+
+        assert [item.symbol for item in items] == ["MSFT", "AAPL", "AMD"]
+
+    def test_a_move_of_the_same_position_wins(self) -> None:
+        signal = LeadSignal(
+            "MSFT",
+            Percent(Decimal("-4.2")),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+            earnings_event=EarningsEvent("MSFT", 1, "2026-10-28"),
+        )
+
+        (item,) = build_lead([signal])
+
+        assert item.icon == "💼"
+
+    @pytest.mark.parametrize(
+        ("weight", "days_until"),
+        [("0.05", 1), (None, 1), ("0.24", 2), ("0.24", -1)],
+        ids=["small-position", "not-held", "after-tomorrow", "past"],
+    )
+    def test_other_earnings_are_not_a_lead(self, weight: str | None, days_until: int) -> None:
+        assert build_lead([self._held(weight=weight, days_until=days_until)]) == []
