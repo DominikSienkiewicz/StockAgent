@@ -31,6 +31,7 @@ from src.application.ports import (
     BotStatePort,
     CycleRun,
     DeferredDiagnosis,
+    JudgeableDiagnosis,
     LatestPrediction,
     OpenInvalidation,
     OpenReferenceCall,
@@ -136,6 +137,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_council_vote_samples",
         "count_expired_unverified",
         "get_deferred_diagnoses",
+        "get_diagnoses_to_judge",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
         "get_unrevealed_commitments",
@@ -176,6 +178,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_calibration",
         "save_calibration_scores",
         "save_backfilled_diagnosis",
+        "save_diagnosis_judgement",
         "mark_commitment_revealed",
         "save_shock_alert",
         "add_price_levels",
@@ -302,6 +305,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)
+
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        return self._delegate.get_diagnoses_to_judge(days)
 
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
@@ -456,6 +462,11 @@ class ReadOnlyRepository(RepositoryPort):
         correction_category: MistakeCategory | None = None,
     ) -> None:
         self._skipped.skip("save_backfilled_diagnosis")
+
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        self._skipped.skip("save_diagnosis_judgement")
 
     def save_fundamentals(self, symbol: str, fundamentals: Fundamentals) -> None:
         self._skipped.skip("save_fundamentals")

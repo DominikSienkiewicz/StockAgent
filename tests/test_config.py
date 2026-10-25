@@ -803,6 +803,19 @@ class TestBatchDiagnosisFlag:
         assert "batch_diagnosis_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestDiagnosisJudgeFlag:
+    """EXP-10: odrzucone diagnozy wypadają z analogów RAG w prompcie — domyślnie off
+    i w przepisie."""
+
+    def test_defaults_off_and_in_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
+
+        assert settings.diagnosis_judge_enabled is False
+        assert "diagnosis_judge_enabled" in RECIPE_SETTINGS_FIELDS
+
+
 class TestCorporateEventsFlag:
     """DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech — zmiana przepisu,
     więc domyślnie off i w przepisie (decyzja 2026-10-25)."""

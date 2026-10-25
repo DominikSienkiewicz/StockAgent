@@ -1077,6 +1077,68 @@ class TestSaveCalibrationScores:
             repo.save_calibration_scores({"p1": 0.5}, score_version=1)
 
 
+class TestDiagnosisJudgement:
+    """EXP-10 — próbka diagnoz bez oceny i zapis oceny (odrzucenie podmienia tylko
+    przeczytaną diagnozę)."""
+
+    @staticmethod
+    def _query(client: MagicMock) -> MagicMock:
+        select = client.table.return_value.select.return_value
+        return cast(
+            MagicMock,
+            select.eq.return_value.is_.return_value.not_.is_.return_value.gte.return_value
+            .order.return_value.order.return_value,
+        )
+
+    def test_reads_unjudged_wrong_predictions_of_the_window(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        rows = [
+            _deferred_row(id="fallback", data_quality_flags=["llm_analysis_failed"]),
+            _deferred_row(correction_insights="Zignorowałem Fed."),
+        ]
+        self._query(mock_client).range.return_value.execute.return_value = MagicMock(data=rows)
+
+        (row,) = repo.get_diagnoses_to_judge(7)
+
+        select = mock_client.table.return_value.select.return_value
+        select.eq.assert_called_once_with("is_trend_correct", False)
+        select.eq.return_value.is_.assert_called_once_with("diagnosis_judge_score", "null")
+        assert row.prediction.id == "p-1"
+        assert row.insight == "Zignorowałem Fed."
+        assert row.actual_price == Decimal("97.0000")
+
+    def test_a_pass_writes_only_the_score(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "update", "eq"], [])
+
+        repo.save_diagnosis_judgement("p-1", score=3)
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {"diagnosis_judge_score": 3}
+        update.return_value.eq.assert_called_once_with("id", "p-1")
+
+    def test_a_rejection_moves_the_text_it_read(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.prediction import DIAGNOSIS_REJECTED_INSIGHT
+
+        _set_chain_response(mock_client, ["table", "update", "eq", "eq"], [])
+
+        repo.save_diagnosis_judgement("p-1", score=1, rejected_insight="Rynek był zmienny.")
+
+        update = mock_client.table.return_value.update
+        assert update.call_args.args[0] == {
+            "diagnosis_judge_score": 1,
+            "correction_insights": DIAGNOSIS_REJECTED_INSIGHT,
+            "rejected_diagnosis": "Rynek był zmienny.",
+        }
+        update.return_value.eq.return_value.eq.assert_called_once_with(
+            "correction_insights", "Rynek był zmienny."
+        )
+
+
 class TestGetPersonaAccuracy:
     def test_maps_rpc_rows_to_weights(
         self, repo: SupabaseRepository, mock_client: MagicMock

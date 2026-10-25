@@ -579,3 +579,35 @@ class TestCalibrationScoresRpc:
             anon.save_calibration_scores(
                 {"00000000-0000-0000-0000-000000000077": 0.5}, score_version=1
             )
+
+
+class TestDiagnosisJudgementColumns:
+    """EXP-10: kolumny oceny diagnozy (migracja 078) przez prawdziwy PostgREST."""
+
+    def test_rejection_round_trips_and_leaves_the_sample(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        saved = repository.save_prediction(prediction_record("T17JD"))
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE prediction_logs SET is_trend_correct = false, "
+                "actual_price_after_12h = 180, correction_insights = 'Rynek był zmienny.' "
+                "WHERE id = %s",
+                (str(saved),),
+            )
+
+        sample = [row.prediction.id for row in repository.get_diagnoses_to_judge(7)]
+        repository.save_diagnosis_judgement(
+            str(saved), score=1, rejected_insight="Rynek był zmienny."
+        )
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT diagnosis_judge_score, rejected_diagnosis, correction_insights "
+                "FROM prediction_logs WHERE id = %s",
+                (str(saved),),
+            )
+            row = cur.fetchone()
+        assert str(saved) in sample
+        assert row == (1, "Rynek był zmienny.", "Diagnoza odrzucona przez sędziego jakości.")
+        assert str(saved) not in [r.prediction.id for r in repository.get_diagnoses_to_judge(7)]

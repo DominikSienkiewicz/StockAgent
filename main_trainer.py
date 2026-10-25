@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
 import uuid
 from collections import Counter
@@ -59,6 +60,10 @@ from src.application.use_cases.batch_diagnosis import (
 )
 from src.application.use_cases.batch_diagnosis import BatchDiagnosisUseCase
 from src.application.use_cases.export_evidence import ExportEvidenceUseCase
+from src.application.use_cases.judge_diagnoses import (
+    MAX_JUDGED_PER_RUN,
+    JudgeDiagnosesUseCase,
+)
 from src.application.use_cases.monitor_output_drift import (
     MonitorOutputDriftUseCase,
     RowsReader,
@@ -117,8 +122,11 @@ RECAP_JOB = "recap"
 # EXP-17: tygodniowa diagnoza zbiorcza — przed spłatą diagnoz (jedno wywołanie nad
 # wszystkimi pudłami tygodnia jest tańsze niż wywołanie per pudło).
 BATCH_DIAGNOSIS_JOB = "batch_diagnosis"
-# WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
+# WIA-53: spłata długu diagnoz — po diagnozach, które płacą za nowe lekcje.
 DIAGNOSIS_JOB = "diagnosis"
+# EXP-10: sędzia diagnoz z rubryką — audyt jakości, ostatni w kolejce, więc
+# przycinany pierwszy.
+DIAGNOSIS_JUDGE_JOB = "diagnosis_judge"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
 FALLBACK_LLM_CALLS_PER_JOB = 1
 # NIEZ-32: katalog zaszyfrowanej kopii; workflow uploaduje z niego wyłącznie *.age.
@@ -531,9 +539,9 @@ def _build_llm_or_unavailable(
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
     """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie pierwszy:
     to on trafia do użytkownika. Diagnoza zbiorcza (EXP-17) idzie przed spłatą diagnoz
-    (WIA-53), która jest ostatnia — przycięcie bierze ją pierwszą. Kalibracja pewności
-    nie woła LLM (WIA-65), więc nie prosi o przydział. `extra_per_job` (NIEZ-44) —
-    rezerwa na request do zapasowego dostawcy."""
+    (WIA-53), a sędzia diagnoz (EXP-10) jest ostatni — przycięcie bierze go pierwszego.
+    Kalibracja pewności nie woła LLM (WIA-65), więc nie prosi o przydział.
+    `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
@@ -541,6 +549,8 @@ def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str
         requested[BATCH_DIAGNOSIS_JOB] = BATCH_DIAGNOSIS_LLM_CALLS + extra_per_job
     if settings.diagnosis_backfill_enabled:
         requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
+    if settings.diagnosis_judge_enabled:
+        requested[DIAGNOSIS_JUDGE_JOB] = MAX_JUDGED_PER_RUN + extra_per_job
     return requested
 
 
@@ -849,6 +859,26 @@ def _run_diagnosis_backfill(
     logger.info("Diagnosis backfill — %s", result)
 
 
+def _run_diagnosis_judge(
+    repository: RepositoryPort, llm_port: LLMPort, max_samples: int
+) -> None:
+    """EXP-10: losowa próbka najwyżej `max_samples` diagnoz tygodnia oceniona rubryką;
+    diagnoza poniżej progu wypada z lessons i RAG. Po diagnozach przebiegu, w
+    tygodniowym budżecie Slow Loopa. Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = JudgeDiagnosesUseCase(
+            repository_port=repository,
+            llm_port=llm_port,
+            clock=lambda: datetime.now(UTC),
+            rng=random.Random(),
+            max_samples=max_samples,
+        ).run()
+    except PortError:
+        logger.warning("Diagnosis judge failed — pomijam", exc_info=True)
+        return
+    logger.info("Diagnosis judge — %s", result)
+
+
 def _send_weekly_recap(
     settings: Settings,
     repository: RepositoryPort,
@@ -965,6 +995,13 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
             repository,
             paid_llm.port_for(DIAGNOSIS_JOB),
             min(settings.diagnosis_backfill_max_calls, paid_llm.allowed(DIAGNOSIS_JOB)),
+        )
+    if settings.diagnosis_judge_enabled:
+        # Rezerwa NIEZ-44 jak wyżej — próbka nie większa niż cap.
+        _run_diagnosis_judge(
+            repository,
+            paid_llm.port_for(DIAGNOSIS_JUDGE_JOB),
+            min(MAX_JUDGED_PER_RUN, paid_llm.allowed(DIAGNOSIS_JUDGE_JOB)),
         )
     paid_llm.log_spend()
     persist_llm_calls(

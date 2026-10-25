@@ -73,6 +73,8 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "rag_point_in_time_enabled": 76,
         # WIA-65: zbiorczy zapis ocen kalibracji (RPC `save_calibration_scores`).
         "calibration_judge_enabled": 77,
+        # EXP-10: ocena i odrzucone diagnozy w `prediction_logs`.
+        "diagnosis_judge_enabled": 78,
         "telegram_bot_enabled": 79,
         "symbol_mutes_enabled": 80,
         "shadow_prompt_variant_enabled": 83,

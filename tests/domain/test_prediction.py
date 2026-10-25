@@ -300,6 +300,17 @@ class TestSubstantiveInsight:
         assert not is_substantive_insight(DIAGNOSIS_BATCH_PENDING_INSIGHT)
         assert DIAGNOSIS_BATCH_PENDING_INSIGHT in UNDIAGNOSED_MISTAKE_PLACEHOLDERS
 
+    def test_rejected_diagnosis_is_neither_a_lesson_nor_owed_a_diagnosis(self) -> None:
+        # EXP-10: odrzucona przez sędziego nie wraca do lessons i RAG ani do spłaty.
+        from src.domain.prediction import (
+            DIAGNOSIS_REJECTED_INSIGHT,
+            UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+            is_substantive_insight,
+        )
+
+        assert not is_substantive_insight(DIAGNOSIS_REJECTED_INSIGHT)
+        assert DIAGNOSIS_REJECTED_INSIGHT not in UNDIAGNOSED_MISTAKE_PLACEHOLDERS
+
     def test_historical_placeholder_texts_are_recognised(self) -> None:
         # Wiersze sprzed WIA-10 niosą dokładnie te literały — zostają w bazie.
         from src.domain.prediction import is_substantive_insight

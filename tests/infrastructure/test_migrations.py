@@ -111,6 +111,7 @@ MIGRATION_FILES = [
     "075_shadow_predictions.sql",
     "076_rag_point_in_time.sql",
     "077_slow_loop_rpcs.sql",
+    "078_diagnosis_judge.sql",
     "079_bot_state.sql",
     "080_symbol_mutes.sql",
     "083_shadow_prediction_trend.sql",
@@ -4928,4 +4929,51 @@ class TestMigration077SlowLoopRpcs:
             cur.execute(migration)
             cur.execute(migration)
             cur.execute("SELECT count(*) FROM pg_proc WHERE proname = 'save_calibration_scores'")
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration078DiagnosisJudge:
+    """EXP-10: ocena diagnozy (0–3) i tekst diagnozy odrzuconej obok predykcji."""
+
+    def test_judgement_columns_round_trip(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"diagnosis_judge_score", "rejected_diagnosis"} <= _columns(
+            migrated_pg_conn, "prediction_logs"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, diagnosis_judge_score, "
+                "rejected_diagnosis) VALUES ('JD078', '2026-10-19T05:30:00+00:00', 1, "
+                "'Rynek był zmienny.') RETURNING diagnosis_judge_score, rejected_diagnosis"
+            )
+            row = cur.fetchone()
+
+        assert row == (1, "Rynek był zmienny.")
+
+    @pytest.mark.parametrize("score", [-1, 4])
+    def test_score_outside_the_rubric_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection, score: int
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, diagnosis_judge_score) "
+                "VALUES ('JD078_BAD', '2026-10-19T05:30:00+00:00', %s)",
+                (score,),
+            )
+
+    def test_078_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "078_diagnosis_judge.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%diagnosis_judge_score%'"
+            )
             assert cur.fetchone() == (1,)

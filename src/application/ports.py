@@ -197,6 +197,21 @@ class DeferredDiagnosis:
 
 
 @dataclass(frozen=True)
+class JudgeableDiagnosis:
+    """EXP-10 — błędna predykcja z diagnozą do oceny sędziego z rubryką.
+
+    `prediction` niesie nagłówki, uzasadnienie i ceny wejścia i celu (dowody, na
+    których diagnoza ma się opierać); `actual_price` — cenę rozliczenia; `insight` —
+    tekst, który dziś stoi w `correction_insights` (zapis odrzucenia podmienia go tylko,
+    gdy wciąż tam jest)."""
+
+    prediction: Prediction
+    actual_price: Decimal
+    insight: str
+    predicted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class OpenReferenceCall:
     """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
     `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
@@ -625,6 +640,22 @@ class RepositoryPort(ABC):
         """WIA-53 — podmienia `correction_insights` na diagnozę, ale tylko gdy
         kolumna wciąż niesie `replaces` (inaczej nic nie zapisuje). Kategoria
         (WIA-57, migracja 046) jak w `update_prediction_accuracy`."""
+
+    @abstractmethod
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        """EXP-10 — błędne predykcje (`is_trend_correct` = false) z ostatnich `days`
+        dni z diagnozą bez oceny sędziego (`diagnosis_judge_score` NULL, migracja
+        078), od najświeższej. Placeholdery bez diagnozy odsiewa wołający
+        (`is_substantive_insight`); atrapy po awarii LLM odpadają."""
+
+    @abstractmethod
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        """EXP-10 — zapisuje wynik rubryki (0–3) w `diagnosis_judge_score` (078).
+        `rejected_insight` (diagnoza poniżej progu) przenosi ten tekst do
+        `rejected_diagnosis` i wstawia w `correction_insights` placeholder
+        `DIAGNOSIS_REJECTED_INSIGHT` — tylko gdy kolumna wciąż niesie ten tekst."""
 
     @abstractmethod
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:

@@ -86,6 +86,12 @@ diagnosis_backfill_max_calls = 5
 # diagnoz, w budżecie `slow_loop_max_paid_llm_calls_per_week`). Lekcje w prompcie
 # przychodzą z tygodniowym opóźnieniem → nowy przepis; włącz po EXP-02/03 (po 2027-01-29).
 batch_diagnosis_enabled = false
+# EXP-10: sędzia diagnoz z rubryką (czynnik w dowodach, falsyfikowalność, konkret) —
+# co tydzień losowo ≤ 10 diagnoz, 1 LLM na diagnozę w budżecie Slow Loopa (ostatni
+# w kolejce). Diagnoza poniżej 2/3 wypada z lessons i RAG → nowy przepis; włącz po
+# EXP-02/03 (po 2027-01-29) i po kalibracji sędziego na 20 ocenach właściciela.
+# UWAGA: włącz DOPIERO po migracji 078.
+diagnosis_judge_enabled = false
 # Tool-use research agent (R-24): na największych ruchach model dociąga read-only
 # toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
 tool_use_enabled = false

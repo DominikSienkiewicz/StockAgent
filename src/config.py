@@ -361,6 +361,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # EXP-17: reflect bez diagnozy per błąd — lekcja w prompcie dopiero po tygodniowej
     # diagnozie zbiorczej Slow Loopa.
     "batch_diagnosis_enabled",
+    # EXP-10: odrzucone diagnozy wypadają z analogów RAG w prompcie predykcji.
+    "diagnosis_judge_enabled",
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
@@ -654,6 +656,10 @@ class Settings(BaseSettings):
     # JEDNYM wywołaniem LLM w tygodniowym budżecie FIN-30. Zmienia lekcje w prompcie
     # (przepis); włączenie po EXP-02/03 (po 2027-01-29). Bez migracji. Off.
     batch_diagnosis_enabled: bool = False
+    # EXP-10: sędzia diagnoz z rubryką — co tydzień ≤ 10 diagnoz (Slow Loop, budżet FIN-30);
+    # diagnoza poniżej progu wypada z lessons i RAG (przepis). Wymaga migracji 078.
+    # Włączenie po EXP-02/03 (po 2027-01-29) i po kalibracji na ocenach właściciela. Off.
+    diagnosis_judge_enabled: bool = False
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),

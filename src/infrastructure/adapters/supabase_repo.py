@@ -19,6 +19,7 @@ from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
     EvidenceSourcePort,
+    JudgeableDiagnosis,
     LatestPrediction,
     OpenInvalidation,
     OpenReferenceCall,
@@ -61,6 +62,7 @@ from src.domain.persona_track_record import (
     persona_hit_stats,
 )
 from src.domain.prediction import (
+    DIAGNOSIS_REJECTED_INSIGHT,
     SAME_SYMBOL_ANALOG_EXCLUSION_HOURS,
     UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
     Prediction,
@@ -619,6 +621,19 @@ def _deferred_diagnosis(row: Mapping[str, Any]) -> DeferredDiagnosis | None:
         placeholder=str(row.get("correction_insights") or ""),
         predicted_at=_optional_timestamp(row.get("timestamp")),
         receipt=receipt if isinstance(receipt, Mapping) else None,
+    )
+
+
+def _judgeable_diagnosis(row: Mapping[str, Any]) -> JudgeableDiagnosis | None:
+    """EXP-10: wiersz `prediction_logs` → diagnoza do oceny (te same kolumny co WIA-53)."""
+    deferred = _deferred_diagnosis(row)
+    if deferred is None:
+        return None
+    return JudgeableDiagnosis(
+        prediction=deferred.prediction,
+        actual_price=deferred.actual_price,
+        insight=deferred.placeholder,
+        predicted_at=deferred.predicted_at,
     )
 
 
@@ -1805,6 +1820,51 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             .update(payload)
             .eq("id", prediction_id)
             .eq("correction_insights", replaces)
+            .execute()
+        )
+
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        # EXP-10: kolumna oceny z migracji 078; flaga sędziego czeka na nią (schema gate).
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(self._table)
+            .select(_DEFERRED_COLUMNS)
+            .eq("is_trend_correct", False)
+            .is_("diagnosis_judge_score", "null")
+            .not_.is_("correction_insights", "null")
+            .gte("timestamp", cutoff.isoformat())
+            .order("timestamp", desc=True)
+            .order("id", desc=True)
+        )
+        return [
+            item
+            for row in _without_llm_fallback(_paginate(query))
+            if (item := _judgeable_diagnosis(row))
+        ]
+
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        # EXP-10: odrzucenie przenosi tekst do `rejected_diagnosis` tylko, gdy diagnoza
+        # wciąż stoi w `correction_insights` (spłata diagnoz mogła ją w międzyczasie zmienić).
+        if rejected_insight is None:
+            (
+                self._client.table(self._table)
+                .update({"diagnosis_judge_score": score})
+                .eq("id", prediction_id)
+                .execute()
+            )
+            return
+        payload: dict[str, Any] = {
+            "diagnosis_judge_score": score,
+            "correction_insights": DIAGNOSIS_REJECTED_INSIGHT,
+            "rejected_diagnosis": rejected_insight,
+        }
+        (
+            self._client.table(self._table)
+            .update(payload)
+            .eq("id", prediction_id)
+            .eq("correction_insights", rejected_insight)
             .execute()
         )
 

@@ -292,3 +292,30 @@ def test_variant_trend_row_stays_out_of_the_ml_leg_read() -> None:
     settled = repo.get_settled_shadow_predictions(START - timedelta(hours=1))
 
     assert [row.forecast.model_name for row in settled] == ["champion"]
+
+
+def test_judged_diagnoses_leave_the_sample_and_a_rejection_hides_the_lesson() -> None:
+    # EXP-10: ocena wypisuje diagnozę z próbki, odrzucenie zostawia tekst w
+    # `rejected_diagnosis`, a w `correction_insights` placeholder poza lessons i RAG.
+    from src.domain.prediction import DIAGNOSIS_REJECTED_INSIGHT
+
+    clock = _Clock()
+    repo = _repo(clock)
+    kept = repo.save_prediction(_record("NVDA"))
+    rejected = repo.save_prediction(_record("AMD"))
+    clock.advance(12)
+    repo.update_prediction_accuracy(kept, Decimal("90"), 0.1, False, "Zignorowałem Fed.")
+    repo.update_prediction_accuracy(rejected, Decimal("90"), 0.1, False, "Rynek był zmienny.")
+
+    sample = repo.get_diagnoses_to_judge(7)
+    repo.save_diagnosis_judgement(kept, score=3)
+    repo.save_diagnosis_judgement(rejected, score=1, rejected_insight="Inny tekst.")
+    repo.save_diagnosis_judgement(rejected, score=1, rejected_insight="Rynek był zmienny.")
+    repo.save_diagnosis_judgement("missing", score=0)
+
+    assert sorted(row.insight for row in sample) == ["Rynek był zmienny.", "Zignorowałem Fed."]
+    assert repo.get_diagnoses_to_judge(7) == []
+    rows = {row["symbol"]: row for row in repo.get_recently_resolved_predictions(24)}
+    assert rows["AMD"]["correction_insights"] == DIAGNOSIS_REJECTED_INSIGHT
+    assert rows["AMD"]["rejected_diagnosis"] == "Rynek był zmienny."
+    assert rows["NVDA"]["correction_insights"] == "Zignorowałem Fed."

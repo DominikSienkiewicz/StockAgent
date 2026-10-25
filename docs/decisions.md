@@ -538,6 +538,12 @@ Rows written by the LLM fallback (`data_quality_flags` contains `llm_analysis_fa
 
 `reflect` pays for a mistake diagnosis on every wrong prediction past the volatility gate, and the diagnosis backfill (WIA-53) pays once more for each miss the gate skipped. EXP-17 is the cheapest form of self-correction: `reflect` leaves a placeholder and the Slow Loop diagnoses the whole week in one call, under the weekly ceiling `slow_loop_max_paid_llm_calls_per_week` (FIN-30), so the cost no longer grows with the number of misses. The price is latency: a lesson reaches the prediction prompt up to a week later, which changes what the prompt sees, so the flag is part of the recipe (`config_hash`) and waits until EXP-02/03 end (after 2027-01-29). The batch prompt lives in its own module, not in `prompts.py`, so building it did not change `prompt_sha256` of the running recipe.
 
+<a id="flag-diagnosis-judge"></a>
+
+### `diagnosis_judge_enabled`: a rubric judge for the lessons
+
+The diagnoses of wrong predictions come back into later prompts as lessons (reflection and the RAG analogues), so a fluent but empty diagnosis would poison them without anyone noticing. EXP-10 grades a random weekly sample of at most 10 with three yes/no criteria — a factor present in the saved news or prices, a falsifiable claim, not a platitude — and keeps a diagnosis below 2 of 3 out of the lessons and the RAG analogues, while its text stays in `rejected_diagnosis` (migration `078`), so a rejection can be undone. It runs in the Slow Loop's weekly LLM ceiling (FIN-30), last in the order. An LLM judging an LLM shares its bias, so the score means something only after the owner has compared it with 20 of their own grades; until then, and until EXP-02/03 end, the flag stays off.
+
 <a id="flag-weekly-recap"></a>
 
 ### `weekly_recap_enabled`: the Sunday recap

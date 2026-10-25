@@ -206,6 +206,25 @@ def test_new_skipped_placeholder_is_not_a_lesson() -> None:
     assert report.total_mistakes == 1
 
 
+def test_rejected_and_batch_pending_diagnoses_are_not_lessons() -> None:
+    # EXP-10 / EXP-17: diagnoza odrzucona przez sędziego i pudło czekające na
+    # tygodniową diagnozę zbiorczą nie są lekcjami.
+    from src.domain.prediction import (
+        DIAGNOSIS_BATCH_PENDING_INSIGHT,
+        DIAGNOSIS_REJECTED_INSIGHT,
+    )
+
+    resolved = [
+        _resolved("AAA", is_correct=False, insight=DIAGNOSIS_REJECTED_INSIGHT),
+        _resolved("BBB", is_correct=False, insight=DIAGNOSIS_BATCH_PENDING_INSIGHT),
+        _resolved("CCC", is_correct=False, insight="rynek zignorował dane"),
+    ]
+
+    report = build_lessons(resolved)
+
+    assert [item.symbol for item in report.items] == ["CCC"]
+
+
 def test_lessons_count_categories() -> None:
     """WIA-57: histogram kategorii błędów zamiast samego „najczęstszego słowa” —
     `recurring_theme` zostaje dla zgodności."""

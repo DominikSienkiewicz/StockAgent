@@ -108,6 +108,7 @@ MIGRATION_PROBES="017 column prediction_logs regime
 075 table shadow_predictions -
 076 function match_news_embeddings_pit -
 077 function save_calibration_scores -
+078 column prediction_logs diagnosis_judge_score
 079 table bot_state -
 080 table symbol_mutes -
 083 column shadow_predictions predicted_trend"

@@ -710,6 +710,12 @@ def test_real_config_toml_ships_the_batch_diagnosis_off() -> None:
     assert data["batch_diagnosis_enabled"] is False
 
 
+def test_real_config_toml_ships_the_diagnosis_judge_off_until_migration() -> None:
+    """EXP-10: kolumny oceny powstają w migracji 078, a odsiew lekcji zmienia prompt."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["diagnosis_judge_enabled"] is False
+
+
 def test_real_config_toml_ships_the_corporate_events_off() -> None:
     """DAT-17: 8-K w prompcie to zmiana przepisu, a EDGAR odpowiada 403 — off."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

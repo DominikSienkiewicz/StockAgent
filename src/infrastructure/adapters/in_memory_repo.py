@@ -32,6 +32,7 @@ from typing import Any
 from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
+    JudgeableDiagnosis,
     LatestPrediction,
     OpenInvalidation,
     OpenReferenceCall,
@@ -60,7 +61,12 @@ from src.domain.paper_ledger import (
     utc_timestamp,
 )
 from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
-from src.domain.prediction import UNDIAGNOSED_MISTAKE_PLACEHOLDERS, Prediction, normalize_trend
+from src.domain.prediction import (
+    DIAGNOSIS_REJECTED_INSIGHT,
+    UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+    Prediction,
+    normalize_trend,
+)
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
@@ -529,6 +535,44 @@ class InMemoryRepository(RepositoryPort):
             row["correction_insights"] = insight
             if correction_category is not None:
                 row["correction_category"] = correction_category.value
+
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        rows = _newest_first(
+            r
+            for r in _since(self._rows(), "timestamp", self._now() - timedelta(days=days))
+            if r.get("is_trend_correct") is False
+            and r.get("diagnosis_judge_score") is None
+            and r.get("correction_insights") is not None
+        )
+        judgeable: list[JudgeableDiagnosis] = []
+        for row in _without_llm_fallback(rows):
+            deferred = _deferred_diagnosis(row)
+            if deferred is not None:
+                judgeable.append(
+                    JudgeableDiagnosis(
+                        prediction=deferred.prediction,
+                        actual_price=deferred.actual_price,
+                        insight=deferred.placeholder,
+                        predicted_at=deferred.predicted_at,
+                    )
+                )
+        return judgeable
+
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        with self._lock:
+            row = self._predictions.get(prediction_id)
+            if row is None:
+                return
+            if rejected_insight is None:
+                row["diagnosis_judge_score"] = score
+                return
+            if row.get("correction_insights") != rejected_insight:
+                return
+            row["diagnosis_judge_score"] = score
+            row["rejected_diagnosis"] = rejected_insight
+            row["correction_insights"] = DIAGNOSIS_REJECTED_INSIGHT
 
     # ------------------------------------------------------------------
     # Atestacja (#16, WIA-01) — kolumny w wierszu predykcji
