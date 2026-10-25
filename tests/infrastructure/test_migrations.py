@@ -4653,6 +4653,7 @@ class TestMigration080SymbolMutes:
         assert "muted_until" in _columns(migrated_pg_conn, "symbol_mutes")
 
 
+@pytest.mark.containers
 class TestMigration081ShockAlertLevels:
     """ALR-16: drabina eskalacji — jeden wiersz `shock_alerts` na szczebel symbolu
     dziennie (`UNIQUE(symbol, alert_date, level)`), najwyżej dwa szczeble; zapis bez

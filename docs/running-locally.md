@@ -8,7 +8,7 @@ The fastest look at the email skips the loop: `uv run python main_tools.py rende
 
 | Account | What it is for | With the committed `config.toml` |
 |---|---|---|
-| Supabase (free plan) | The database every entry point reads and writes. The [Supabase CLI](https://supabase.com/docs/guides/cli) applies the 60+ migrations in `supabase/migrations/` (step 3 below) | required |
+| Supabase (free plan) | The database every entry point reads and writes. The [Supabase CLI](https://supabase.com/docs/guides/cli) applies the 70+ migrations in `supabase/migrations/` (step 3 below) | required |
 | Finnhub (free) | The quote behind every cycle | required |
 | Alpha Vantage (free, ideally two or more keys) | News and sentiment for each symbol past the volatility gate | required with `PAID_CALLS_ENABLED=true` |
 | OpenAI | The advisory council and the news embeddings | required with `PAID_CALLS_ENABLED=true` |
