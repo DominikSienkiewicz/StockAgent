@@ -48,6 +48,7 @@ from src.infrastructure.adapters.edgar_insider import TICKERS_URL, EdgarInsiderA
 from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
 from src.infrastructure.adapters.fred_client import FredClient
 from src.infrastructure.adapters.nbp_client import NbpClient, NbpFxRateClient
+from src.infrastructure.adapters.rekor_publisher import RekorClient, SigstoreKeylessSigner
 from tests.infrastructure.provider_fixtures import (
     PROVIDERS_DIR,
     JsonValue,
@@ -56,6 +57,7 @@ from tests.infrastructure.provider_fixtures import (
     shape_drift,
     xml_element_paths,
 )
+from tests.sigstore_support import identity_token
 
 # Każdy plik katalogu ma tu swoje miejsce: albo kształt sprawdza cotygodniowy test na
 # żywym API, albo jest powód, dla którego się nie da. Nowy plik bez wpisu czerwieni
@@ -74,6 +76,12 @@ LIVE_CHECKED_FIXTURES = frozenset(
 )
 NOT_LIVE_CHECKABLE_FIXTURES = {
     "av_note_limit.json": "limitu częstotliwości nie da się wywołać na żądanie",
+    # WIA-73: kształt z API Fulcio v2 i Rekora v1, wartości syntetyczne, ale spójne
+    # kryptograficznie (tests/sigstore_support.py): podpis rootu, inclusion proof ciała.
+    "fulcio_signing_cert.json": "certyfikat wydaje tylko POST z tokenem OIDC joba GitHub Actions",
+    "rekor_log_entry.json": (
+        "odpowiedź POST-a, który tworzy publiczny na zawsze wpis — test niczego nie loguje"
+    ),
 }
 
 # Elementy Form 4, które czyta `EdgarInsiderAdapter` (transakcje, cena, rola, plan
@@ -381,6 +389,31 @@ class TestNbpTableFixture:
         latest, baseline = Decimal(str(rates[-1]["mid"])), Decimal(str(rates[0]["mid"]))
         assert snapshot.usd_pln == latest
         assert snapshot.usd_pln_30d_change_ratio == (latest - baseline) / baseline
+
+
+
+class TestSigstoreFixtures:
+    """WIA-73: odpowiedzi Fulcio i Rekora przez publiczne API adaptera Rekora."""
+
+    def test_signing_cert_fixture_gives_the_leaf_of_its_chain(self, mocker: Any) -> None:
+        payload = _object("fulcio_signing_cert.json")
+        chain = payload["signedCertificateEmbeddedSct"]["chain"]["certificates"]
+        mocker.patch("requests.Session.post", return_value=_json_response(payload))
+        signer = SigstoreKeylessSigner(build_session(), identity_token)
+
+        signed = signer.sign(b"\x00" * 32)
+
+        assert signed.certificate_pem == chain[0]
+
+    def test_log_entry_fixture_parses_to_the_ledger_field(self, mocker: Any) -> None:
+        payload = _object("rekor_log_entry.json")
+        ((uuid, entry),) = payload.items()
+        mocker.patch("requests.Session.post", return_value=_json_response(payload))
+
+        logged = RekorClient(build_session()).log({"kind": "hashedrekord"})
+
+        assert logged == {"uuid": uuid, **entry}
+        assert isinstance(logged["integratedTime"], int)
 
 
 # ---------------------------------------------------------------------------
