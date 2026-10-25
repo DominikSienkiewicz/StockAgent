@@ -23,6 +23,7 @@ from src.domain.corporate_events import CorporateEvent, CorporateEventSnapshot
 from src.domain.experiment import Experiment
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
+from tests.application.conftest import GraphPorts, make_deps
 
 
 @pytest.fixture
@@ -60,23 +61,8 @@ def llm_port() -> Mock:
 
 
 @pytest.fixture
-def use_case(
-    market_port: Mock,
-    sentiment_port: Mock,
-    news_port: Mock,
-    repository_port: Mock,
-    ml_port: Mock,
-    llm_port: Mock,
-) -> AnalyzeMarketUseCase:
-    return AnalyzeMarketUseCase(AgentGraphDeps(
-        market_port=market_port,
-        sentiment_port=sentiment_port,
-        news_port=news_port,
-        repository_port=repository_port,
-        ml_port=ml_port,
-        llm_port=llm_port,
-        threshold=Threshold(Decimal("0.02")),
-    ))
+def use_case(graph_ports: GraphPorts) -> AnalyzeMarketUseCase:
+    return AnalyzeMarketUseCase(make_deps(**graph_ports))
 
 
 class TestRun:
@@ -173,7 +159,7 @@ def test_analyze_market_passes_council_port_to_graph() -> None:
     )
     from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
     from src.domain.council import CouncilVerdict, InvestorOpinion
-    from src.domain.value_objects import Money, Threshold
+    from src.domain.value_objects import Money
 
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("180.00"))
@@ -214,14 +200,13 @@ def test_analyze_market_passes_council_port_to_graph() -> None:
     )
     council_port.analyze.return_value = verdict
 
-    use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+    use_case = AnalyzeMarketUseCase(make_deps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
         repository_port=repo,
         ml_port=ml,
         llm_port=llm,
-        threshold=Threshold(Decimal("0.02")),
         council_port=council_port,
     ))
     # previous_price much lower to trigger volatility gate
@@ -244,7 +229,7 @@ class TestGraphCompiledOnce:
         from unittest.mock import Mock
 
         from src.application.use_cases import analyze_market as module
-        from src.domain.value_objects import Money, Threshold
+        from src.domain.value_objects import Money
 
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("100.0"))
@@ -257,14 +242,13 @@ class TestGraphCompiledOnce:
             module, "create_agent_graph", lambda _deps: fake_workflow
         )
 
-        use_case = module.AnalyzeMarketUseCase(AgentGraphDeps(
+        use_case = module.AnalyzeMarketUseCase(make_deps(
             market_port=market_port,
             sentiment_port=Mock(),
             news_port=Mock(),
             repository_port=repository_port,
             ml_port=Mock(),
             llm_port=Mock(),
-            threshold=Threshold(Decimal("0.02")),
         ))
         use_case.run("AAPL")
         use_case.run("MSFT")
@@ -335,16 +319,11 @@ class TestPaidCallMeter:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
+        graph_ports: GraphPorts,
     ) -> None:
         meter: Counter[str] = Counter()
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
+        use_case = AnalyzeMarketUseCase(make_deps(
+            **graph_ports,
             paid_call_meter=meter,
         ))
         self._arrange_paid_cycle(
@@ -384,22 +363,11 @@ class TestAttestationPublisher:
 
     def test_exposes_the_publisher_the_graph_got(
         self,
-        market_port: Mock,
-        sentiment_port: Mock,
-        news_port: Mock,
-        repository_port: Mock,
-        ml_port: Mock,
-        llm_port: Mock,
+        graph_ports: GraphPorts,
     ) -> None:
         publisher = Mock(spec=AttestationPublisherPort)
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
+        use_case = AnalyzeMarketUseCase(make_deps(
+            **graph_ports,
             attestation_publisher=publisher,
         ))
 
@@ -426,18 +394,11 @@ class TestThresholdInjection:
         self,
         market_port: Mock,
         sentiment_port: Mock,
-        news_port: Mock,
         repository_port: Mock,
-        ml_port: Mock,
-        llm_port: Mock,
+        graph_ports: GraphPorts,
     ) -> None:
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
+        use_case = AnalyzeMarketUseCase(make_deps(
+            **graph_ports,
             threshold=Threshold(Decimal("0.20")),  # 20% próg
         ))
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
@@ -467,14 +428,13 @@ class TestStaleReferenceRebaseline:
         llm_port: Mock,
         embedding_port: Mock | None,
     ) -> AnalyzeMarketUseCase:
-        return AnalyzeMarketUseCase(AgentGraphDeps(
+        return AnalyzeMarketUseCase(make_deps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
             repository_port=repository_port,
             ml_port=ml_port,
             llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
             embedding_port=embedding_port,
         ))
 
@@ -660,14 +620,13 @@ class TestExperimentArms:
         *,
         enabled: bool,
     ) -> dict[str, Any]:
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
+        use_case = AnalyzeMarketUseCase(make_deps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
             repository_port=repository_port,
             ml_port=ml_port,
             llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
             experiments=(self._experiment(enabled=enabled),),
         ))
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
@@ -719,23 +678,14 @@ class TestCycleTelemetry:
     def test_exposes_the_graph_telemetry_and_its_live_counter(
         self,
         market_port: Mock,
-        sentiment_port: Mock,
-        news_port: Mock,
         repository_port: Mock,
-        ml_port: Mock,
-        llm_port: Mock,
+        graph_ports: GraphPorts,
     ) -> None:
         from src.application.cycle_telemetry import CycleTelemetry
 
         telemetry = CycleTelemetry()
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
+        use_case = AnalyzeMarketUseCase(make_deps(
+            **graph_ports,
             telemetry=telemetry,
         ))
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
@@ -864,14 +814,13 @@ class TestMarketFeaturesPhase:
         *,
         enabled: bool,
     ) -> AnalyzeMarketUseCase:
-        return AnalyzeMarketUseCase(AgentGraphDeps(
+        return AnalyzeMarketUseCase(make_deps(
             market_port=market_port,
             sentiment_port=sentiment_port,
             news_port=news_port,
             repository_port=repository_port,
             ml_port=ml_port,
             llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
             feature_snapshots_enabled=True,
             market_features_enabled=enabled,
         ))
@@ -927,11 +876,8 @@ class TestMarketFeaturesPhase:
     def test_breadth_uses_the_base_gate_threshold_of_each_asset_class(
         self,
         market_port: Mock,
-        sentiment_port: Mock,
-        news_port: Mock,
         repository_port: Mock,
-        ml_port: Mock,
-        llm_port: Mock,
+        graph_ports: GraphPorts,
     ) -> None:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
@@ -945,14 +891,8 @@ class TestMarketFeaturesPhase:
         market_port.get_current_price.side_effect = lambda symbol: Money(
             Decimal("103") if symbol == "AAPL" else Decimal("104")
         )
-        use_case = AnalyzeMarketUseCase(AgentGraphDeps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            threshold=Threshold(Decimal("0.02")),
+        use_case = AnalyzeMarketUseCase(make_deps(
+            **graph_ports,
             crypto_threshold=Threshold(Decimal("0.05")),
             feature_snapshots_enabled=True,
             market_features_enabled=True,

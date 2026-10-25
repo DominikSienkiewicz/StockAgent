@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 from langgraph.graph import StateGraph
 
-from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
+from src.application.agent_graph import AgentState, create_agent_graph
 from src.application.ports import (
     AdvisoryCouncilPort,
     LLMPort,
@@ -20,6 +20,7 @@ from src.application.ports import (
 from src.domain.asset import Asset
 from src.domain.council import CouncilUnavailableError, CouncilVerdict, InvestorOpinion
 from src.domain.value_objects import AssetType, Money, Threshold
+from tests.application.conftest import make_deps
 
 
 def _make_verdict() -> CouncilVerdict:
@@ -76,14 +77,13 @@ def _make_graph_with_repo(
     }
     if main_llm_fails:
         llm.analyze.side_effect = RuntimeError("Anthropic 529 Overloaded")
-    graph = create_agent_graph(AgentGraphDeps(
+    graph = create_agent_graph(make_deps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
         repository_port=repo,
         ml_port=ml,
         llm_port=llm,
-        threshold=Threshold(Decimal("0.02")),
         council_port=council_port,
         council_threshold=council_threshold,
     ))
@@ -134,7 +134,7 @@ def _make_crypto_graph(
         "target_price_12h": 185.0,
         "reasoning": "Strong momentum.",
     }
-    graph = create_agent_graph(AgentGraphDeps(
+    graph = create_agent_graph(make_deps(
         market_port=market,
         sentiment_port=sentiment,
         news_port=news,
