@@ -15,6 +15,8 @@ Użycie:
         [--experiment ID] [--discrimination]
     uv run python main_tools.py cost-envelope
     uv run python main_tools.py render-sample-report [--out-dir build/sample-report]
+    uv run python main_tools.py offline [--out-dir build/offline] [--scenario PATH]
+        [--llm-script PATH] [--ml-model PATH]
     uv run python main_tools.py render-graph-diagram [--out-dir docs]
     uv run python main_tools.py repo-stats [--out docs/repo-stats.json]
     uv run python main_tools.py explain <prediction_id> | --symbol X --date RRRR-MM-DD
@@ -27,9 +29,11 @@ Użycie:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
@@ -59,6 +63,12 @@ from src.tools.import_positions import (
     parse_positions_csv,
     plan_import,
 )
+from src.tools.offline_scenario import (
+    OfflineCycleSummary,
+    OfflineScenario,
+    format_offline_summary,
+    parse_offline_scenario,
+)
 from src.tools.persona_ablation import format_ablation, replay_persona_weighting
 from src.tools.render_graph_diagram import graph_diagrams
 from src.tools.render_sample_report import (
@@ -84,7 +94,18 @@ from src.tools.verify_attestation import (
 )
 
 if TYPE_CHECKING:
-    from src.application.ports import PositionsImportPort
+    from decimal import Decimal
+
+    from src.application.ports import (
+        AdvisoryCouncilPort,
+        LLMPort,
+        MLPredictionPort,
+        PositionsImportPort,
+        RepositoryPort,
+    )
+    from src.application.report_evidence import PaperCosts
+    from src.application.use_cases.assemble_report import ReportFlags
+    from src.application.use_cases.run_cycle import CycleOutcome
     from src.config import Settings
     from src.domain.experiment import Experiment
     from src.domain.persona_track_record import PersonaVoteOutcome
@@ -93,6 +114,8 @@ if TYPE_CHECKING:
 Handler = Callable[[argparse.Namespace], int]
 
 _REPO_ROOT = Path(__file__).resolve().parent
+_OFFLINE_DIR = _REPO_ROOT / "data" / "offline"
+_PERSONAS_DIR = _REPO_ROOT / "data" / "council_personas"
 
 
 def _now() -> datetime:
@@ -122,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_import_positions(subcommands)
     _add_cost_envelope(subcommands)
     _add_render_sample_report(subcommands)
+    _add_offline(subcommands)
     _add_render_graph_diagram(subcommands)
     _add_repo_stats(subcommands)
     _add_explain(subcommands)
@@ -432,6 +456,323 @@ def _run_render_sample_report(args: argparse.Namespace) -> int:
     text_path.write_text(report.text, encoding="utf-8")
     print(f"✅ przykładowy raport: {html_path} i {text_path}")
     return 0
+
+
+# --- DX-04: tryb offline całego cyklu ------------------------------------------
+
+
+@dataclass(frozen=True)
+class OfflineRun:
+    """Przebieg offline: repozytorium po ostatnim cyklu i podsumowanie każdego cyklu."""
+
+    repository: RepositoryPort
+    cycles: tuple[OfflineCycleSummary, ...]
+
+
+class _ScenarioClock:
+    """Zegar scenariusza: stoi w chwili startu cyklu, przestawia go `run_offline`.
+    Ten sam egzemplarz dostają graf (`AgentGraphDeps.clock`) i repozytorium."""
+
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def _no_secrets(text: str) -> str:
+    """Tryb offline nie zna żadnego sekretu — komunikat błędu symbolu bez zmian."""
+    return text
+
+
+def _no_throttle(_seconds: float) -> None:
+    """Fake'i nie mają limitu TPM — throttle między symbolami nic nie robi."""
+
+
+def _add_offline(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "offline",
+        help="Run whole Fast Loop cycles on fakes (no keys, no database, no network).",
+        description=(
+            "DX-04: the cycles of data/offline/scenario.json through the real graph "
+            "(gate, reflect, council, save), RunFastLoopCycle and ReportAssembler, on an "
+            "in-memory repository, fixture prices and a scripted LLM. Each cycle's email "
+            "goes to <out-dir>/cycle-N/report-email.html and .txt. Zero paid calls."
+        ),
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("build/offline"),
+        help="Directory for the cycle-N email files (default: build/offline).",
+    )
+    parser.add_argument(
+        "--scenario",
+        type=Path,
+        default=_OFFLINE_DIR / "scenario.json",
+        help="Cycles, symbols, thresholds and prices (default: data/offline/scenario.json).",
+    )
+    parser.add_argument(
+        "--llm-script",
+        type=Path,
+        default=_OFFLINE_DIR / "llm_script.json",
+        help="Scripted LLM replies (default: data/offline/llm_script.json).",
+    )
+    parser.add_argument(
+        "--ml-model",
+        type=Path,
+        default=_OFFLINE_DIR / "model.ubj",
+        help=(
+            "XGBoost weights for the ML leg; the default file does not exist, so the "
+            "model runs cold-start (target = current price)."
+        ),
+    )
+    parser.set_defaults(handler=_run_offline)
+
+
+def _run_offline(args: argparse.Namespace) -> int:
+    """DX-04: cykle scenariusza na fake'ach — bez `Settings`, kluczy i sieci.
+    Exit 1, gdy w którymś cyklu padły wszystkie symbole (jak `main_agent`);
+    2, gdy scenariusza albo skryptu LLM nie da się wczytać.
+
+    Bez `configure_logging`: tryb nie zna żadnego sekretu do redakcji (BEZ-02),
+    więc WARNING-i grafu idą na stderr domyślnym handlerem `logging`."""
+    from src.infrastructure.llm.scripted_llm import ScriptedLLM
+
+    try:
+        scenario = parse_offline_scenario(json.loads(args.scenario.read_text(encoding="utf-8")))
+        llm = ScriptedLLM.from_mapping(json.loads(args.llm_script.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as exc:
+        print(f"❌ tryb offline: {exc}", file=sys.stderr)
+        return 2
+    run = run_offline(
+        scenario,
+        llm=llm,
+        out_dir=args.out_dir,
+        ml_model_path=args.ml_model,
+        personas_dir=_PERSONAS_DIR,
+    )
+    print(format_offline_summary(run.cycles))
+    all_failed = any(
+        cycle.statuses and all(status == "error" for status in cycle.statuses.values())
+        for cycle in run.cycles
+    )
+    return 1 if all_failed else 0
+
+
+def run_offline(
+    scenario: OfflineScenario,
+    *,
+    llm: LLMPort,
+    out_dir: Path,
+    ml_model_path: Path,
+    personas_dir: Path,
+) -> OfflineRun:
+    """DX-04: kolejne cykle scenariusza na jednym repozytorium w pamięci.
+
+    Przed pierwszym cyklem zapisuje snapshot `seed_prices` (o jeden odstęp
+    wcześniej), więc pierwszy cykl ma referencję delty. Zegar scenariusza stoi
+    w chwili startu cyklu — czas trwania w mailu to 0 s, a wynik jest ten sam
+    co do bajtu przy każdym uruchomieniu."""
+    from src.application.report_evidence import PaperCosts
+    from src.application.use_cases.assemble_report import ReportFlags
+    from src.domain.value_objects import Money
+    from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+    from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
+    from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
+    from src.infrastructure.persona_loader import load_council_personas
+
+    clock = _ScenarioClock(scenario.seeded_at)
+    repository = InMemoryRepository(clock=clock)
+    for symbol, price in scenario.seed_prices.items():
+        repository.save_price_snapshot(symbol, Money(price))
+    council = LLMAdvisoryCouncil(llm_port=llm, personas=load_council_personas(personas_dir))
+    ml_port = XGBoostAdapter(model_path=str(ml_model_path))
+    # Sekcje maila z odczytów repozytorium, które produkcja ma włączone (config.toml).
+    flags = ReportFlags(
+        track_record_days=scenario.track_record_days,
+        reflection_min_age_hours=scenario.reflection_min_age_hours,
+        symbols=scenario.symbols,
+        crypto_symbols=scenario.crypto_symbols,
+        equity_curve_enabled=True,
+        lessons_enabled=True,
+        calibration_curve_enabled=True,
+        cycle_diff_enabled=True,
+    )
+    costs = PaperCosts(
+        cost_bps=scenario.paper_cost_bps,
+        crypto_cost_bps=scenario.crypto_paper_cost_bps,
+        crypto_symbols=frozenset(scenario.crypto_symbols),
+    )
+    cycles: list[OfflineCycleSummary] = []
+    for index, prices in enumerate(scenario.cycles):
+        clock.now = scenario.cycle_at(index)
+        outcome, ml_loaded = _offline_cycle(
+            scenario,
+            prices,
+            repository=repository,
+            llm=llm,
+            council=council,
+            ml_port=ml_port,
+            clock=clock,
+        )
+        cycles.append(
+            _offline_report(
+                scenario,
+                outcome,
+                index=index + 1,
+                started_at=clock.now,
+                repository=repository,
+                flags=flags,
+                costs=costs,
+                ml_loaded=ml_loaded,
+                out_dir=out_dir / f"cycle-{index + 1}",
+            )
+        )
+    return OfflineRun(repository=repository, cycles=tuple(cycles))
+
+
+def _offline_cycle(
+    scenario: OfflineScenario,
+    prices: Mapping[str, Decimal],
+    *,
+    repository: RepositoryPort,
+    llm: LLMPort,
+    council: AdvisoryCouncilPort,
+    ml_port: MLPredictionPort,
+    clock: _ScenarioClock,
+) -> tuple[CycleOutcome, bool]:
+    """Przebieg symboli jednego cyklu przez prawdziwy graf i `RunFastLoopCycle`.
+    Sentyment i newsy idą przez atrapy FIN-35 (feed AV oznaczony jako niedostępny),
+    fundamenty z cache repozytorium, alfa przez Null-adaptery — jak przy flagach off."""
+    from src.application.agent_graph import AgentGraphDeps
+    from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+    from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
+    from src.application.use_cases.run_cycle import CycleOptions, RunFastLoopCycle
+    from src.domain.value_objects import Threshold
+    from src.infrastructure.adapters.alpha_vantage_earnings import NullEarningsCalendarAdapter
+    from src.infrastructure.adapters.cached_fundamentals import (
+        CachedFundamentalsAdapter,
+        NullFundamentalsAdapter,
+    )
+    from src.infrastructure.adapters.edgar_insider import NullInsiderFlowAdapter
+    from src.infrastructure.adapters.finnhub_analyst import NullAnalystConsensusAdapter
+    from src.infrastructure.adapters.finnhub_options import NullOptionsFlowAdapter
+    from src.infrastructure.adapters.fixture_market_data import FixtureMarketData
+    from src.infrastructure.adapters.local_stubs import (
+        LocalStubNewsAdapter,
+        LocalStubSentimentAdapter,
+    )
+    from src.infrastructure.adapters.reddit_social import NullSocialVelocityAdapter
+    from src.infrastructure.logging_setup import symbol_context
+
+    crypto_threshold = (
+        Threshold(scenario.crypto_volatility_threshold) if scenario.crypto_symbols else None
+    )
+    deps = AgentGraphDeps(
+        market_port=FixtureMarketData(prices),
+        sentiment_port=LocalStubSentimentAdapter(),
+        news_port=LocalStubNewsAdapter(),
+        repository_port=repository,
+        ml_port=ml_port,
+        llm_port=llm,
+        threshold=Threshold(scenario.volatility_threshold),
+        council_port=council,
+        council_threshold=(
+            None
+            if scenario.council_volatility_threshold is None
+            else Threshold(scenario.council_volatility_threshold)
+        ),
+        fundamentals_port=CachedFundamentalsAdapter(
+            repo=repository, delegate=NullFundamentalsAdapter()
+        ),
+        crypto_threshold=crypto_threshold,
+        crypto_council_threshold=crypto_threshold,
+        reflection_min_age_hours=scenario.reflection_min_age_hours,
+        clock=clock,
+    )
+    use_case = AnalyzeMarketUseCase(deps)
+    alpha = AlphaEnrichmentUseCase(
+        insider_port=NullInsiderFlowAdapter(),
+        earnings_port=NullEarningsCalendarAdapter(),
+        options_port=NullOptionsFlowAdapter(),
+        social_port=NullSocialVelocityAdapter(),
+        analyst_port=NullAnalystConsensusAdapter(),
+    )
+    cycle = RunFastLoopCycle(
+        use_case=use_case,
+        alpha_use_case=alpha,
+        options=CycleOptions(
+            cycle_at=clock.now,
+            crypto_symbols=frozenset(scenario.crypto_symbols),
+            etf_symbols=frozenset(scenario.etf_symbols),
+        ),
+        sleep=_no_throttle,
+        redact=_no_secrets,
+        symbol_scope=symbol_context,
+    )
+    return cycle.run(scenario.all_symbols), use_case.ml_model_loaded
+
+
+def _offline_report(
+    scenario: OfflineScenario,
+    outcome: CycleOutcome,
+    *,
+    index: int,
+    started_at: datetime,
+    repository: RepositoryPort,
+    flags: ReportFlags,
+    costs: PaperCosts,
+    ml_loaded: bool,
+    out_dir: Path,
+) -> OfflineCycleSummary:
+    """Mail cyklu: `ReportAssembler` → `build_html_report` → plik. Temat liczy ten sam
+    `_build_subject` co Fast Loop; koszt cyklu jest ukryty jak przy atrapach FIN-35."""
+    from main_agent import _build_subject
+    from src.application.quota_monitor import QuotaMonitor
+    from src.application.report_builder import ReportContext, build_cycle_lead, build_html_report
+    from src.application.run_context import RunContext
+    from src.application.use_cases.assemble_report import ReportAssembler
+    from src.domain.cycle_maturity import CycleMaturity
+    from src.infrastructure.adapters.file_notifier import FileReportNotifier
+
+    results = outcome.results
+    report = ReportAssembler(repository, flags, costs).assemble(
+        results=results,
+        started_at=started_at,
+        quota_monitor=QuotaMonitor(),
+        all_symbols=scenario.all_symbols,
+        context=ReportContext(
+            alpha_signals=outcome.alpha_signals,
+            alpha_prices=outcome.alpha_prices,
+            ml_model_loaded=ml_loaded,
+            run_context=RunContext(),
+            display_timezone=scenario.display_timezone,
+        ),
+    )
+    context = report.context
+    html, text = build_html_report(results, started_at, 0.0, context)
+    subject = _build_subject(
+        lead_items=build_cycle_lead(results, context),
+        analyzed=sum(1 for result in results if result.status == "saved"),
+        failures=outcome.failures,
+        started_at=started_at,
+        prefix="",
+        maturity=context.cycle_maturity or CycleMaturity.STEADY_STATE,
+        analyzed_total=len(results),
+        display_timezone=scenario.display_timezone,
+    )
+    notifier = FileReportNotifier(out_dir)
+    notifier.send_report(subject=subject, html_body=html, plain_text=text)
+    return OfflineCycleSummary(
+        index=index,
+        started_at=started_at,
+        subject=subject,
+        statuses={result.symbol: result.status for result in results},
+        resolved=tuple(context.resolved_predictions or ()),
+        html_path=notifier.html_path,
+        text_path=notifier.text_path,
+    )
 
 
 def _add_render_graph_diagram(

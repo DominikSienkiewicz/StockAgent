@@ -158,7 +158,11 @@ section it is described in [the report email](docs/report-email.md).
 The same sample as HTML is [docs/img/report-email.html](docs/img/report-email.html) (GitHub
 shows its source; open it locally in a browser). Render it yourself without any key, database
 or network: `uv run python main_tools.py render-sample-report` writes the HTML and the
-plain-text version to `build/sample-report/`. The screenshot is not regenerated
+plain-text version to `build/sample-report/`. To see the loop itself work (the volatility
+gate, self-reflection settling the previous prediction, the council and the save), `uv run
+python main_tools.py offline` runs two cycles of a fixed scenario on in-memory fakes, equally
+without keys, database or network, and writes one email per cycle to `build/offline/` (see
+[Offline cycle](docs/running-locally.md#offline-cycle-dx-04)). The screenshot is not regenerated
 automatically, so it can lag behind the email after a report change. The repository's social
 preview, [docs/img/social-preview.png](docs/img/social-preview.png), is the top of the same
 sample at 1280 × 640.
