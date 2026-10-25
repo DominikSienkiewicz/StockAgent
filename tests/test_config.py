@@ -2049,6 +2049,19 @@ class TestIsotonicCalibrationFlag:
         assert "isotonic_calibration_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestIsotonicClassCalibrationFlag:
+    """ML-54: osobne mapy per klasa aktywa — domyślnie off i poza przepisem, jak
+    mapa globalna (ranking liczy się po predykcji)."""
+
+    def test_defaults_off(self, env: pytest.MonkeyPatch) -> None:
+        assert make_settings(**REQUIRED_ENV_KWARGS).isotonic_class_calibration_enabled is False
+
+    def test_is_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "isotonic_class_calibration_enabled" in NON_RECIPE_SETTINGS_FIELDS
+
+
 def test_env_file_is_anchored_at_the_repo_root() -> None:
     """ARCH-23: `.env` jak `config.toml` leży względem roota repo, nie CWD — job
     odpalony z innego katalogu nie traci po cichu kluczy i sekretów."""

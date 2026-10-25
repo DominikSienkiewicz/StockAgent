@@ -103,6 +103,10 @@ calibrated_confidence_enabled = true
 # pewnością i kubełkami. Działa tylko z calibrated_confidence_enabled; jeden darmowy
 # odczyt 60 dni rozliczeń, bez migracji. Zmienia ranking w mailu — włącz świadomie.
 isotonic_calibration_enabled = false
+# ML-54: osobna mapa izotoniczna dla krypto i dla reszty, gdy klasa ma ≥ 30 próbek
+# w każdym oknie i własną ocenę poza próbą; mniejsza klasa zostaje przy mapie globalnej.
+# Działa tylko z isotonic_calibration_enabled; ten sam odczyt, bez migracji. Off.
+isotonic_class_calibration_enabled = false
 # R-5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego raportu —
 # pełny plain-text przekracza limit 4096 znaków Telegrama (400, cichy zgon). Włączone.
 messenger_digest_enabled = true

@@ -272,3 +272,19 @@ class TestIsotonicCalibrationFlag:
         settings = settings.model_copy(update={"isotonic_calibration_enabled": enabled})
 
         assert main_agent._report_flags(settings).isotonic_calibration_enabled is enabled
+
+
+class TestIsotonicClassCalibrationFlag:
+    """ML-54: flaga `isotonic_class_calibration_enabled` dociera do flag raportu
+    razem z listą krypto, z której assembler wyznacza klasę aktywa."""
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_report_flags(self, settings: Settings, enabled: bool) -> None:
+        settings = settings.model_copy(
+            update={"isotonic_class_calibration_enabled": enabled, "crypto_symbols": ["BTC"]}
+        )
+
+        flags = main_agent._report_flags(settings)
+
+        assert flags.isotonic_class_calibration_enabled is enabled
+        assert list(flags.crypto_symbols) == ["BTC"]

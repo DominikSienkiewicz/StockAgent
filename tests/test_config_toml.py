@@ -513,6 +513,12 @@ def test_real_config_toml_ships_the_isotonic_calibration_off() -> None:
     assert data["isotonic_calibration_enabled"] is False
 
 
+def test_real_config_toml_ships_the_class_isotonic_calibration_off() -> None:
+    """ML-54: mapy per klasa aktywa — świadome włączenie właściciela po mapie globalnej."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["isotonic_class_calibration_enabled"] is False
+
+
 def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
     """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

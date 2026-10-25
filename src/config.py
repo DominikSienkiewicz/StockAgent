@@ -128,6 +128,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibrated_confidence_enabled",
     # ML-28: kalibrator rankingu (mapa izotoniczna zamiast kubełków) — render-only.
     "isotonic_calibration_enabled",
+    # ML-54: ta sama mapa osobno dla krypto i dla reszty — wciąż tylko ranking.
+    "isotonic_class_calibration_enabled",
     # PORT-05: peerzy sekcji 💡 Warte uwagi — sugestie liczone po predykcji.
     "sector_peers",
     "model_scorecard_enabled",
@@ -637,6 +639,11 @@ class Settings(BaseSettings):
     # z `calibrated_confidence_enabled`; jeden darmowy odczyt 60 dni rozliczeń.
     # Render-only, bez migracji. Off.
     isotonic_calibration_enabled: bool = False
+    # ML-54: osobna mapa izotoniczna dla krypto (`crypto_symbols`) i dla reszty, gdy
+    # klasa ma co najmniej MIN_CLASS_ISOTONIC_SAMPLES próbek w każdym oknie i własną
+    # ocenę poza próbą; mniejsza klasa zostaje przy mapie globalnej. Działa tylko
+    # z `isotonic_calibration_enabled`; ten sam odczyt 60 dni. Render-only. Off.
+    isotonic_class_calibration_enabled: bool = False
     # R-12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.
