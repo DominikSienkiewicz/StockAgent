@@ -21,7 +21,7 @@ from src.domain.value_objects import Money
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 
 
-def _ok_response(payload: dict) -> Mock:
+def _ok_response(payload: dict[str, Any]) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload

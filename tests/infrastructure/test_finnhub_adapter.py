@@ -14,7 +14,7 @@ def adapter() -> FinnhubAdapter:
     return FinnhubAdapter(api_key="test-token-123")
 
 
-def _ok_response(payload: dict, status_code: int = 200) -> Mock:
+def _ok_response(payload: dict[str, Any], status_code: int = 200) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
     response.json.return_value = payload
@@ -355,7 +355,7 @@ class TestGetQuote:
 
     @pytest.mark.parametrize("payload", [{"c": 182.5, "t": 0}, {"c": 0, "t": 1760630400}])
     def test_raises_value_error_without_price_or_time(
-        self, adapter: FinnhubAdapter, mocker: Any, payload
+        self, adapter: FinnhubAdapter, mocker: Any, payload: dict[str, Any]
     ) -> None:
         mocker.patch("requests.Session.get", return_value=_ok_response(payload))
 
@@ -434,7 +434,7 @@ class TestPortErrorTaxonomy:
         ids=["free-tier-403", "zero-price"],
     )
     def test_unknown_ticker_maps_to_not_found(
-        self, adapter: FinnhubAdapter, mocker: Any, response
+        self, adapter: FinnhubAdapter, mocker: Any, response: Mock
     ) -> None:
         from src.application.errors import NotFound
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
 
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
@@ -14,7 +15,7 @@ from src.domain.quota import QuotaSeverity
 from src.infrastructure.adapters.telegram_notifier import TelegramNotifier
 
 
-def _resp(status_code: int, body: dict | None = None) -> MagicMock:
+def _resp(status_code: int, body: dict[str, Any] | None = None) -> MagicMock:
     response = MagicMock(spec=requests.Response)
     response.status_code = status_code
     response.json.return_value = body or {"ok": True}
@@ -120,7 +121,9 @@ class TestTelegramNotifier:
 
 def test_session_does_not_retry_post_on_5xx(notifier: TelegramNotifier) -> None:
     # MAIL-03: Telegram nie ma klucza idempotencji — powtórzony POST to dwa pushe.
-    retry = notifier._session.get_adapter("https://api.telegram.org").max_retries
+    adapter = cast(HTTPAdapter, notifier._session.get_adapter("https://api.telegram.org"))
+    retry = adapter.max_retries
+    assert retry.allowed_methods is not None
     assert "POST" not in retry.allowed_methods
 
 

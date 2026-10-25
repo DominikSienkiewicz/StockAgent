@@ -22,13 +22,13 @@ from src.infrastructure.adapters.reddit_social import (
 )
 
 
-def _listing(num_children: int) -> dict:
+def _listing(num_children: int) -> dict[str, Any]:
     """Format Reddit search.json: {"data": {"children": [...], "dist": N}}."""
     children = [{"data": {"id": str(i)}} for i in range(num_children)]
     return {"data": {"children": children, "dist": num_children}}
 
 
-def _ok_response(payload: dict) -> Mock:
+def _ok_response(payload: dict[str, Any]) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload

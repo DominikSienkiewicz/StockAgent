@@ -396,7 +396,9 @@ class TestMigrations:
             # współdzielony przez moduł — czyścimy głosy innych testów.
             cur.execute("DELETE FROM council_votes")
 
-            def add_vote(symbol, price_before, price_after, recommendation) -> None:
+            def add_vote(
+                symbol: str, price_before: float, price_after: float, recommendation: str
+            ) -> None:
                 cur.execute(
                     "INSERT INTO prediction_logs "
                     "(symbol, price_at_prediction, actual_price_after_12h) "
@@ -1507,7 +1509,7 @@ class TestMigrations:
         ],
     )
     def test_reference_predictions_reject_inconsistent_rows(
-        self, pg_conn: psycopg2.extensions.connection, values
+        self, pg_conn: psycopg2.extensions.connection, values: str
     ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
@@ -1646,7 +1648,7 @@ class TestMigrations:
 
     @pytest.mark.parametrize("trend", ["UP", " bullish ", "Bearish"])
     def test_predicted_trend_check_rejects_unknown_value(
-        self, pg_conn: psycopg2.extensions.connection, trend
+        self, pg_conn: psycopg2.extensions.connection, trend: str
     ) -> None:
         """Schemat sam blokuje kolejne zatrucia: tylko kanoniczne wartości."""
         with _rolled_back(pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):

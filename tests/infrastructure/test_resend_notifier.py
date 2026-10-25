@@ -18,7 +18,7 @@ def notifier() -> ResendNotifier:
     )
 
 
-def _ok_response(payload: dict | None = None) -> MagicMock:
+def _ok_response(payload: dict[str, Any] | None = None) -> MagicMock:
     response = MagicMock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload or {"id": "msg-uuid-123"}
@@ -182,7 +182,7 @@ class TestResendLive:
 
 
 class TestQuotaAlertEmit:
-    def _resp(self, status_code: int, body: dict | None = None) -> Mock:
+    def _resp(self, status_code: int, body: dict[str, Any] | None = None) -> Mock:
         import requests
 
         r = Mock(spec=requests.Response)

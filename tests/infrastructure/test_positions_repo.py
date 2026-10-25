@@ -397,8 +397,13 @@ class TestReplacePositions:
         self._existing_ids(mock_client, [7, 9])
         table = mock_client.table.return_value
         calls: list[str] = []
-        table.insert.side_effect = lambda *_: calls.append("insert") or MagicMock()
-        table.delete.side_effect = lambda *_: calls.append("delete") or MagicMock()
+
+        def record(call: str) -> MagicMock:
+            calls.append(call)
+            return MagicMock()
+
+        table.insert.side_effect = lambda *_: record("insert")
+        table.delete.side_effect = lambda *_: record("delete")
 
         currency_repo.replace_positions([_lot("AAPL")], as_of=_IMPORTED_AT)
 

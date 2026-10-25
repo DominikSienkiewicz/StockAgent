@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
 
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
@@ -110,7 +111,9 @@ class TestSlackNotifier:
 
 def test_session_does_not_retry_post_on_5xx(notifier: SlackNotifier) -> None:
     # MAIL-03: webhook Slacka nie jest idempotentny — powtórzony POST to dwa posty.
-    retry = notifier._session.get_adapter("https://hooks.slack.com").max_retries
+    adapter = cast(HTTPAdapter, notifier._session.get_adapter("https://hooks.slack.com"))
+    retry = adapter.max_retries
+    assert retry.allowed_methods is not None
     assert "POST" not in retry.allowed_methods
 
 

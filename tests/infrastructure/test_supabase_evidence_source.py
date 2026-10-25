@@ -7,7 +7,7 @@ a reszta kopii powstaje.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,7 +37,7 @@ def _response(rows: list[dict[str, Any]]) -> MagicMock:
 
 
 def _order(mock_client: MagicMock) -> MagicMock:
-    return mock_client.table.return_value.select.return_value.order.return_value
+    return cast(MagicMock, mock_client.table.return_value.select.return_value.order.return_value)
 
 
 def test_repository_is_an_evidence_source(repo: SupabaseRepository) -> None:

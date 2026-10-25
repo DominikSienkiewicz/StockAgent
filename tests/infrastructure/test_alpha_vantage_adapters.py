@@ -83,7 +83,7 @@ class TestPhaseTwoOnlyFeed:
         assert isinstance(feed, NewsPort)
 
     @pytest.mark.parametrize("method", ["get_social_score", "get_news_context"])
-    def test_refuses_to_serve_a_feed(self, method) -> None:
+    def test_refuses_to_serve_a_feed(self, method: str) -> None:
         from src.infrastructure.adapters.alpha_vantage_adapters import PhaseTwoOnlyFeed
 
         with pytest.raises(RuntimeError, match="EXP-27"):

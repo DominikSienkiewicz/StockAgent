@@ -13,6 +13,7 @@ jakości `llm_failover` i faktyczny przepis predykcji.
 from __future__ import annotations
 
 import logging
+from types import ModuleType
 from unittest.mock import Mock
 
 import anthropic
@@ -38,10 +39,11 @@ class _StatusError(Exception):
         self.status_code = status_code
 
 
-def _sdk_status_error(sdk, status: int) -> Exception:
-    return sdk.InternalServerError(
+def _sdk_status_error(sdk: ModuleType, status: int) -> Exception:
+    error: Exception = sdk.InternalServerError(
         f"HTTP {status}", response=httpx.Response(status, request=_REQUEST), body=None
     )
+    return error
 
 
 @pytest.fixture
@@ -104,7 +106,7 @@ def test_rate_limit_and_server_errors_fail_over(
 
 @pytest.mark.parametrize("sdk", [anthropic, openai], ids=["anthropic", "openai"])
 def test_sdk_503_fails_over(
-    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, sdk
+    adapter: FailoverLLMAdapter, primary: Mock, secondary: Mock, sdk: ModuleType
 ) -> None:
     primary.analyze.side_effect = _sdk_status_error(sdk, 503)
 

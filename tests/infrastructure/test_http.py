@@ -2,7 +2,7 @@
 
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import requests
@@ -13,6 +13,7 @@ from src.application.http_metering import HttpCallMeter
 from src.infrastructure.adapters._http import (
     RETRY_STATUS_FORCELIST,
     RETRY_TOTAL,
+    RateLimiter,
     build_session,
     metered_http,
 )
@@ -25,7 +26,7 @@ class TestBuildSession:
 
     def test_mounts_retry_adapter_on_https(self) -> None:
         session = build_session()
-        adapter = session.get_adapter("https://example.com")
+        adapter = cast(HTTPAdapter, session.get_adapter("https://example.com"))
         retry = adapter.max_retries
         assert isinstance(retry, Retry)
         assert retry.total == RETRY_TOTAL
@@ -35,12 +36,12 @@ class TestBuildSession:
         # spada na domyślny adapter requests (bez naszego retry total=3) — cała
         # komunikacja agenta idzie po https.
         session = build_session()
-        adapter = session.get_adapter("http://example.com")
+        adapter = cast(HTTPAdapter, session.get_adapter("http://example.com"))
         assert adapter.max_retries.total != RETRY_TOTAL
 
     def test_retries_transient_status_codes(self) -> None:
         session = build_session()
-        retry = session.get_adapter("https://x.com").max_retries
+        retry = cast(HTTPAdapter, session.get_adapter("https://x.com")).max_retries
         # 429 + 5xx powinny być na liście do retry
         for status in (429, 500, 502, 503, 504):
             assert status in RETRY_STATUS_FORCELIST
@@ -49,12 +50,13 @@ class TestBuildSession:
     def test_does_not_raise_on_status(self) -> None:
         # raise_on_status=False — status sprawdzamy sami przez raise_for_status()
         session = build_session()
-        retry = session.get_adapter("https://x.com").max_retries
+        retry = cast(HTTPAdapter, session.get_adapter("https://x.com")).max_retries
         assert retry.raise_on_status is False
 
     def test_retries_get_and_post(self) -> None:
         session = build_session()
-        retry = session.get_adapter("https://x.com").max_retries
+        retry = cast(HTTPAdapter, session.get_adapter("https://x.com")).max_retries
+        assert retry.allowed_methods is not None
         assert "GET" in retry.allowed_methods
         assert "POST" in retry.allowed_methods
 
@@ -62,7 +64,9 @@ class TestBuildSession:
 class TestRetryLimits:
     def test_retry_post_false_does_not_retry_post(self) -> None:
         # MAIL-03: POST bez klucza idempotencji powtórzony po 5xx dubluje wiadomość.
-        retry = build_session(retry_post=False).get_adapter("https://x.com").max_retries
+        session = build_session(retry_post=False)
+        retry = cast(HTTPAdapter, session.get_adapter("https://x.com")).max_retries
+        assert retry.allowed_methods is not None
         assert "GET" in retry.allowed_methods
         assert "POST" not in retry.allowed_methods
 
@@ -70,7 +74,7 @@ class TestRetryLimits:
         # NIEZ-06: Retry-After potrafi żądać godzin, a job ma 15 minut limitu.
         from urllib3.response import HTTPResponse
 
-        retry = build_session().get_adapter("https://x.com").max_retries
+        retry = cast(HTTPAdapter, build_session().get_adapter("https://x.com")).max_retries
         sleep = mocker.patch("urllib3.util.retry.time.sleep")
 
         retry.sleep(HTTPResponse(status=429, headers={"Retry-After": "3600"}))
@@ -82,7 +86,7 @@ class TestRateLimiter:
     """DAT-12: token bucket współdzielony przez adaptery jednego API w procesie."""
 
     @staticmethod
-    def _limiter(rate_per_minute: int):
+    def _limiter(rate_per_minute: int) -> tuple[RateLimiter, list[float], list[float]]:
         from src.infrastructure.adapters._http import RateLimiter
 
         clock = [0.0]
@@ -139,9 +143,12 @@ class _ScriptedAdapter(HTTPAdapter):
         self._statuses = list(statuses)
         self._retries = retries
 
-    def send(self, request, **kwargs: Any):  # type: ignore[no-untyped-def]
+    def send(
+        self, request: requests.PreparedRequest, *args: Any, **kwargs: Any
+    ) -> requests.Response:
         response = requests.Response()
         response.status_code = self._statuses.pop(0)
+        assert request.url is not None
         response.url = request.url
         response.request = request
         response._content = b"{}"
@@ -279,7 +286,7 @@ class TestCircuitBreaker:
         mocker.patch.object(HTTPAdapter, "send", side_effect=outcomes)
         session = build_session()
 
-        statuses = []
+        statuses: list[int | None] = []
         for _ in outcomes:
             try:
                 statuses.append(session.get(self.URL).status_code)

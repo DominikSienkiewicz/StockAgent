@@ -32,7 +32,7 @@ def _response(payload: object, status_code: int = 200) -> Mock:
     return response
 
 
-def _chain(calls: list[dict], puts: list[dict]) -> dict:
+def _chain(calls: list[dict[str, Any]], puts: list[dict[str, Any]]) -> dict[str, Any]:
     """Buduje payload option-chain Finnhuba z jednym wygaśnięciem."""
     return {"data": [{"options": {"CALL": calls, "PUT": puts}}]}
 

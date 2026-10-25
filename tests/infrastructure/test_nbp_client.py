@@ -24,7 +24,7 @@ from src.infrastructure.adapters.nbp_client import (
 )
 
 
-def _ok_response(payload: dict) -> Mock:
+def _ok_response(payload: object) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload
@@ -41,7 +41,7 @@ def _error_response(status_code: int) -> Mock:
     return response
 
 
-def _nbp_rates_payload(currency: str, mids: list[float]) -> dict:
+def _nbp_rates_payload(currency: str, mids: list[float]) -> dict[str, Any]:
     """Format zgodny z api.nbp.pl/exchangerates/rates/A/{curr}/last/N/."""
     return {
         "table": "A",
@@ -165,7 +165,7 @@ class TestFetchPolishMacro:
 # --- PORT-11: kurs z dnia (FxRatePort) ----------------------------------------
 
 
-def _day_payload(code: str, effective: str, mid: float) -> dict:
+def _day_payload(code: str, effective: str, mid: float) -> dict[str, Any]:
     """Format api.nbp.pl/api/exchangerates/rates/a/{code}/{date}/."""
     return {
         "table": "A",
@@ -252,7 +252,7 @@ class TestFxRateForDay:
             {"rates": [{"effectiveDate": "2025-03-03", "mid": 0}]},
         ],
     )
-    def test_malformed_payload_is_none(self, mocker: Any, payload: dict) -> None:
+    def test_malformed_payload_is_none(self, mocker: Any, payload: dict[str, Any]) -> None:
         mocker.patch("requests.Session.get", return_value=_ok_response(payload))
 
         assert NbpFxRateClient().get_rate("USD", date(2025, 3, 3)) is None

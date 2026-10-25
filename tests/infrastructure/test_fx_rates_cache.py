@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -27,7 +27,7 @@ FRIDAY_RATE = FxRate(
 @pytest.fixture
 def client(mocker: Any) -> MagicMock:
     create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
-    return create.return_value
+    return cast(MagicMock, create.return_value)
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def _cache(source: Mock) -> SupabaseCachedFxRates:
 def _cached_rows(client: MagicMock, rows: list[dict[str, Any]]) -> MagicMock:
     query = client.table.return_value.select.return_value.eq.return_value.eq.return_value
     query.limit.return_value.execute.return_value.data = rows
-    return query
+    return cast(MagicMock, query)
 
 
 def test_hit_returns_the_cached_rate_without_asking_the_source(
