@@ -40,7 +40,6 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "interval_coverage_enabled": 32,
         "regime_hysteresis_enabled": 33,
         "gate_delta_enabled": 34,
-        "positions_currency_enabled": 35,
         "fx_rates_cache_enabled": 36,
         "experiment_arms_enabled": 37,
         "cost_ledger_enabled": 40,
@@ -59,6 +58,16 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "fundamentals_market_cap_enabled": 56,
         "price_level_alerts_enabled": 57,
         "session_close_settlement_enabled": 59,
+        "deribit_dvol_enabled": 25,
+        "public_status_page_enabled": 41,
+        "ml_settled_purge_enabled": 50,
+        "model_scorecard_weights_sha256_enabled": 60,
+        "digest_archive_enabled": 61,
+        "split_detection_enabled": 62,
+        "rag_exact_search_enabled": 63,
+        "model_scorecard_provenance_enabled": 64,
+        "persona_brier_ranking_enabled": 65,
+        "shadow_predictions_enabled": 75,
     }
 )
 

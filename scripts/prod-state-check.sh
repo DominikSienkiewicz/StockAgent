@@ -99,7 +99,10 @@ MIGRATION_PROBES="017 column prediction_logs regime
 062 table corporate_actions -
 063 function match_news_embeddings_exact -
 064 column model_scorecards dataset_sha256
-065 function persona_scoring_stats -"
+065 function persona_scoring_stats -
+070 opaque match_news_embeddings rls
+071 function schema_version -
+075 table shadow_predictions -"
 
 # Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.
 PROBE_RANGE="$(awk 'NR == 1 {first = $1} {last = $1} END {print first "–" last}' <<<"$MIGRATION_PROBES")"

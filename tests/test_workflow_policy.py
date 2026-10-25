@@ -371,6 +371,8 @@ EXPECTED_PAID_JOBS = frozenset(
         ("fast_loop_12h.yml", "run-market-agent"),
         ("slow_loop_weekly.yml", "retrain-predictive-model"),
         ("integration_smoke.yml", "live-api-smoke"),
+        # TEST-16: cotygodniowy test kształtu czyta Alpha Vantage kluczem SMOKE_*.
+        ("integration_smoke.yml", "provider-shapes"),
     }
 )
 

@@ -86,7 +86,7 @@ def test_probed_object_is_defined_by_its_migration(
             rf"AS {column}\b", flat, re.I
         ), f"{number}: kolumna {column} nie jest dodawana"
     elif kind == "function":
-        assert re.search(rf"CREATE (OR REPLACE )?FUNCTION {name}\b", flat, re.I), (
+        assert re.search(rf"CREATE (OR REPLACE )?FUNCTION (public\.)?{name}\b", flat, re.I), (
             f"{number}: funkcja {name} nie powstaje w tej migracji"
         )
     else:
