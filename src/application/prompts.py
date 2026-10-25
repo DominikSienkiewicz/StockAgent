@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -9,6 +10,11 @@ from src.application.decision_receipt import (
     DecisionReceipt,
     effective_threshold_pct,
     similarity_label,
+)
+from src.domain.corporate_events import (
+    FRESH_EVENT_MAX_AGE_DAYS,
+    ITEM_LABELS_PL,
+    CorporateEvent,
 )
 
 # BEZ-06: analog to kilka nagłówków z wynikiem i wnioskiem, więc dostaje własny
@@ -62,6 +68,30 @@ def format_prompt_delta(delta_percent: Decimal, *, rounded: bool) -> str:
     return str(delta_percent)
 
 
+# DAT-17: kod itemu 8-K przychodzi z SEC; do promptu trafia tylko w formacie „N.NN”.
+_ITEM_CODE = re.compile(r"\d{1,2}\.\d{2}")
+
+
+def _event_item_labels(event: CorporateEvent) -> str:
+    """Polskie etykiety itemów; nieznany item jako „item N.NN”, kod w innym formacie
+    odpada (to dane stron trzecich), a sam załącznik (9.01) to „same załączniki”."""
+    labels = [
+        ITEM_LABELS_PL.get(code) or f"item {code}"
+        for code in event.material_items()
+        if code in ITEM_LABELS_PL or _ITEM_CODE.fullmatch(code)
+    ]
+    return ", ".join(labels) if labels else "same załączniki"
+
+
+def format_corporate_events(events: Sequence[CorporateEvent]) -> str:
+    """DAT-17: świeże raporty 8-K symbolu do bloku `<corporate_events>` — jedna linia na
+    raport („26.10 8-K: wyniki finansowe”). Brak raportów → "" (bloku nie ma)."""
+    return "\n".join(
+        f"  - {event.filed_on:%d.%m} {event.form}: {_event_item_labels(event)}"
+        for event in events
+    )
+
+
 def get_prediction_prompt(
     symbol: str,
     current_data: dict[str, Any],
@@ -75,6 +105,7 @@ def get_prediction_prompt(
     include_probabilities: bool = False,
     fence_lessons: bool = False,
     include_invalidation: bool = False,
+    corporate_events_context: str = "",
 ) -> str:
     """Główny system prompt dla LLM-a w węźle predict.
 
@@ -101,6 +132,10 @@ def get_prediction_prompt(
     `fence_lessons=True` (BEZ-14, flaga `prompt_taint_fence_enabled`) ogradza
     `reflection_context` fence'em DATA-ONLY — lekcję pisze nasz LLM z danych stron
     trzecich, więc może nieść przechowany prompt-injection. False = bez zmian.
+
+    `corporate_events_context` (DAT-17, flaga `corporate_events_enabled`) to linie
+    `format_corporate_events` ze świeżymi raportami 8-K; "" = prompt bajt w bajt jak
+    przed DAT-17.
     """
     similar_block = (
         f"""
@@ -157,6 +192,16 @@ Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
         if alpha_fusion_context
         else ""
     )
+    # DAT-17: świeży raport bieżący SEC 8-K — duży ruch bez newsów AV często ma w nim
+    # przyczynę (wyniki, zmiana w zarządzie, istotna umowa).
+    events_block = (
+        f"\n<corporate_events>\nŚwieże raporty bieżące SEC 8-K (złożone w ostatnich "
+        f"{FRESH_EVENT_MAX_AGE_DAYS} dniach):\n{corporate_events_context}\n"
+        f"Ruch ceny może wynikać z tych zdarzeń, nawet gdy newsy o nich milczą.\n"
+        f"</corporate_events>\n"
+        if corporate_events_context
+        else ""
+    )
     # Nagłówki newsów to dane nieufne (Alpha Vantage) — ogradzamy je fence'em
     # DATA-ONLY, żeby spreparowany nagłówek nie przejął output_schema.
     # ML-09: lista `news_titles` ma pierwszeństwo — fence przycina KAŻDY element
@@ -201,7 +246,7 @@ Opierasz się wyłącznie na twardych danych i mechanizmach rynkowych.
 </role>
 
 {reflection_block}
-{regime_block}{peer_block}{alpha_block}
+{regime_block}{peer_block}{alpha_block}{events_block}
 {similar_block}
 <current_market_data>
 Cena aktualna: {current_data.get("price")}
