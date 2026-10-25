@@ -1,11 +1,13 @@
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from langgraph.graph import StateGraph
 
-from src.application.agent_graph import AgentGraphDeps
+from src.application.agent_graph import AgentGraphDeps, AgentState, create_gate_graph
 from src.application.ports import (
     AttestationPublisherPort,
     EmbeddingPort,
@@ -18,6 +20,7 @@ from src.application.ports import (
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.domain.corporate_events import CorporateEvent, CorporateEventSnapshot
+from src.domain.experiment import Experiment
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
 
@@ -58,7 +61,12 @@ def llm_port() -> Mock:
 
 @pytest.fixture
 def use_case(
-    market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+    market_port: Mock,
+    sentiment_port: Mock,
+    news_port: Mock,
+    repository_port: Mock,
+    ml_port: Mock,
+    llm_port: Mock,
 ) -> AnalyzeMarketUseCase:
     return AnalyzeMarketUseCase(AgentGraphDeps(
         market_port=market_port,
@@ -73,8 +81,8 @@ def use_case(
 
 class TestRun:
     def test_fetches_previous_price_from_repository(
-        self, use_case, market_port, repository_port
-    ):
+        self, use_case: AnalyzeMarketUseCase, market_port: Mock, repository_port: Mock
+    ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
 
@@ -83,8 +91,12 @@ class TestRun:
         repository_port.get_last_price.assert_called_once_with("AAPL")
 
     def test_skips_analysis_on_cold_start_no_previous_price(
-        self, use_case, market_port, repository_port, sentiment_port
-    ):
+        self,
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        repository_port: Mock,
+        sentiment_port: Mock,
+    ) -> None:
         # Brak historii — repo zwraca None
         repository_port.get_last_price.return_value = None
         market_port.get_current_price.return_value = Money(Decimal("100.0"))
@@ -97,14 +109,14 @@ class TestRun:
 
     def test_runs_full_graph_when_volatility_above_threshold(
         self,
-        use_case,
-        market_port,
-        sentiment_port,
-        news_port,
-        repository_port,
-        ml_port,
-        llm_port,
-    ):
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
         repository_port.get_unverified_prediction.return_value = None
@@ -128,8 +140,13 @@ class TestRun:
         news_port.get_news_context.assert_called_once_with("AAPL")
 
     def test_ignores_minor_change_below_threshold(
-        self, use_case, market_port, repository_port, sentiment_port, ml_port
-    ):
+        self,
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        repository_port: Mock,
+        sentiment_port: Mock,
+        ml_port: Mock,
+    ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
 
@@ -140,7 +157,7 @@ class TestRun:
         ml_port.predict.assert_not_called()
 
 
-def test_analyze_market_passes_council_port_to_graph():
+def test_analyze_market_passes_council_port_to_graph() -> None:
     """AnalyzeMarketUseCase forwards council_port — council_node gets invoked."""
     from decimal import Decimal
     from unittest.mock import Mock
@@ -184,16 +201,16 @@ def test_analyze_market_passes_council_port_to_graph():
         final_recommendation="BUY",
         consensus_strength=0.7,
         summary="Rada kupuje.",
-        dissenting_views=[],
-        investor_opinions=[
+        dissenting_views=(),
+        investor_opinions=(
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
                 confidence=0.9,
                 reasoning="moat",
-                key_factors=["moat"],
-            )
-        ],
+                key_factors=("moat",),
+            ),
+        ),
     )
     council_port.analyze.return_value = verdict
 
@@ -222,8 +239,8 @@ class TestGraphCompiledOnce:
     """
 
     def test_compile_called_once_across_multiple_runs(
-        self, monkeypatch, repository_port, market_port
-    ):
+        self, monkeypatch: pytest.MonkeyPatch, repository_port: Mock, market_port: Mock
+    ) -> None:
         from unittest.mock import Mock
 
         from src.application.use_cases import analyze_market as module
@@ -269,7 +286,13 @@ class TestPaidCallMeter:
     """
 
     def _arrange_paid_cycle(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
     ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
@@ -286,14 +309,14 @@ class TestPaidCallMeter:
 
     def test_counts_paid_calls_when_caller_supplied_no_meter(
         self,
-        use_case,
-        market_port,
-        sentiment_port,
-        news_port,
-        repository_port,
-        ml_port,
-        llm_port,
-    ):
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         self._arrange_paid_cycle(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
@@ -306,13 +329,13 @@ class TestPaidCallMeter:
 
     def test_counts_into_the_meter_the_caller_supplied(
         self,
-        market_port,
-        sentiment_port,
-        news_port,
-        repository_port,
-        ml_port,
-        llm_port,
-    ):
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         meter: Counter[str] = Counter()
         use_case = AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
@@ -339,11 +362,19 @@ class TestMlModelLoaded:
     """MAIL-01 (G03): raport pyta use case, czy XGBoost ma wagi — inaczej karta
     kondycji twierdziłaby, że jedziemy na sprawdzonym modelu, którego nie ma."""
 
-    def test_reports_cold_start_when_model_untrained(self, use_case, ml_port):
+    def test_reports_cold_start_when_model_untrained(
+        self,
+        use_case: AnalyzeMarketUseCase,
+        ml_port: Mock,
+    ) -> None:
         ml_port.is_trained = False
         assert use_case.ml_model_loaded is False
 
-    def test_reports_loaded_model_when_trained(self, use_case, ml_port):
+    def test_reports_loaded_model_when_trained(
+        self,
+        use_case: AnalyzeMarketUseCase,
+        ml_port: Mock,
+    ) -> None:
         ml_port.is_trained = True
         assert use_case.ml_model_loaded is True
 
@@ -352,8 +383,14 @@ class TestAttestationPublisher:
     """WIA-60: DI domyka cykl atestacji publisherem, który dostał graf."""
 
     def test_exposes_the_publisher_the_graph_got(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         publisher = Mock(spec=AttestationPublisherPort)
         use_case = AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
@@ -368,14 +405,14 @@ class TestAttestationPublisher:
 
         assert use_case.attestation_publisher is publisher
 
-    def test_none_without_attestation(self, use_case):
+    def test_none_without_attestation(self, use_case: AnalyzeMarketUseCase) -> None:
         assert use_case.attestation_publisher is None
 
 
 class TestRequiredPredictionColumns:
     """FIN-05: use case podaje DI listę kolumn zapisu liczoną z tych samych deps."""
 
-    def test_matches_the_graph_rule_for_its_deps(self, use_case) -> None:
+    def test_matches_the_graph_rule_for_its_deps(self, use_case: AnalyzeMarketUseCase) -> None:
         from src.application.agent_graph import required_prediction_columns
 
         assert use_case.required_prediction_columns() == required_prediction_columns(
@@ -387,13 +424,13 @@ class TestRequiredPredictionColumns:
 class TestThresholdInjection:
     def test_respects_custom_threshold(
         self,
-        market_port,
-        sentiment_port,
-        news_port,
-        repository_port,
-        ml_port,
-        llm_port,
-    ):
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         use_case = AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=sentiment_port,
@@ -421,8 +458,14 @@ class TestStaleReferenceRebaseline:
     _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
 
     def _use_case(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-        embedding_port,
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        embedding_port: Mock | None,
     ) -> AnalyzeMarketUseCase:
         return AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
@@ -435,7 +478,13 @@ class TestStaleReferenceRebaseline:
             embedding_port=embedding_port,
         ))
 
-    def _arrange_big_move(self, market_port, repository_port, *, reference_age: timedelta) -> None:
+    def _arrange_big_move(
+        self,
+        market_port: Mock,
+        repository_port: Mock,
+        *,
+        reference_age: timedelta,
+    ) -> None:
         reference = Money(Decimal("100.0"))
         repository_port.get_last_price.return_value = reference
         repository_port.get_last_price_snapshot.return_value = (
@@ -444,8 +493,14 @@ class TestStaleReferenceRebaseline:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10% ≥ próg
 
     def test_month_old_reference_saves_snapshot_without_paid_calls(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         embedding_port = Mock(spec=EmbeddingPort)
         use_case = self._use_case(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -472,8 +527,14 @@ class TestStaleReferenceRebaseline:
         )
 
     def test_month_old_reference_skips_paid_diagnosis_but_still_scores_prior(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         # Błędna wcześniejsza predykcja + ruch ≥ progu od stęchłej referencji:
         # tania ocena leci, płatna diagnoza LLM — nie (ta sama bramka).
         repository_port.get_unverified_prediction.return_value = Prediction(
@@ -495,8 +556,14 @@ class TestStaleReferenceRebaseline:
         repository_port.update_prediction_accuracy.assert_called_once()
 
     def test_reference_from_previous_cycle_still_opens_the_gate(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         sentiment_port.get_social_score.return_value = {"galaxy_score": 85}
         news_port.get_news_context.return_value = [{"title": "Reuters story"}]
         llm_port.analyze.return_value = {
@@ -520,8 +587,8 @@ class TestStaleReferenceRebaseline:
         sentiment_port.get_social_score.assert_called_once_with("AAPL")
 
     def test_cold_start_reads_no_reference_age(
-        self, use_case, market_port, repository_port
-    ):
+        self, use_case: AnalyzeMarketUseCase, market_port: Mock, repository_port: Mock
+    ) -> None:
         # Cold-start bez zmian: brak ceny → brak referencji → brak odczytu wieku.
         repository_port.get_last_price.return_value = None
         market_port.get_current_price.return_value = Money(Decimal("100.0"))
@@ -534,8 +601,14 @@ class TestStaleReferenceRebaseline:
         repository_port.get_last_price_snapshot.assert_not_called()
 
     def test_unreadable_reference_age_keeps_the_gate_as_before(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         # Odczyt wieku jest best-effort: błąd Supabase nie wywala symbolu,
         # a bramka działa jak przed FIN-14 (sam próg volatility).
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
@@ -561,10 +634,10 @@ class TestExperimentArms:
     _NOW = datetime(2026, 11, 2, 21, 30, tzinfo=UTC)
 
     @staticmethod
-    def _experiment(*, enabled: bool):
+    def _experiment(*, enabled: bool) -> Experiment:
         from datetime import date
 
-        from src.domain.experiment import ARM_NO_MEMORY, Experiment, ExperimentMetric
+        from src.domain.experiment import ARM_NO_MEMORY, ExperimentMetric
 
         return Experiment(
             id="EXP-03",
@@ -577,9 +650,16 @@ class TestExperimentArms:
         )
 
     def _result(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-        *, enabled: bool,
-    ) -> dict:
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        *,
+        enabled: bool,
+    ) -> dict[str, Any]:
         use_case = AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
             sentiment_port=sentiment_port,
@@ -595,8 +675,14 @@ class TestExperimentArms:
         return use_case.run("AAPL", now=self._NOW)
 
     def test_active_experiment_puts_the_assigned_arm_into_the_state(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         from datetime import date
 
         from src.domain.experiment import assign_arm
@@ -610,8 +696,14 @@ class TestExperimentArms:
         assert result["experiment_arms"] == {"EXP-03": expected}
 
     def test_inactive_experiment_leaves_the_state_untouched(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         result = self._result(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=False,
@@ -625,8 +717,14 @@ class TestCycleTelemetry:
     a `paid_calls` zostaje żywym Counterem z tego obiektu."""
 
     def test_exposes_the_graph_telemetry_and_its_live_counter(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         from src.application.cycle_telemetry import CycleTelemetry
 
         telemetry = CycleTelemetry()
@@ -655,7 +753,13 @@ class TestTwoPhaseCycle:
     (`paid_phase`) na porty feedu podane dopiero po fazie 1 — DI buduje je
     z klientem AV tylko dla symboli za bramką."""
 
-    def _big_move(self, market_port, repository_port, llm_port, ml_port) -> None:
+    def _big_move(
+        self,
+        market_port: Mock,
+        repository_port: Mock,
+        llm_port: Mock,
+        ml_port: Mock,
+    ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         repository_port.get_last_price_snapshot.return_value = None
         market_port.get_current_price.return_value = Money(Decimal("95.0"))  # -5%
@@ -669,8 +773,12 @@ class TestTwoPhaseCycle:
         repository_port.save_prediction.return_value = "uuid-2p"
 
     def test_flat_symbol_ends_in_the_gate_phase(
-        self, use_case, market_port, repository_port, sentiment_port
-    ):
+        self,
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        repository_port: Mock,
+        sentiment_port: Mock,
+    ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         repository_port.get_last_price_snapshot.return_value = None
         market_port.get_current_price.return_value = Money(Decimal("100.5"))
@@ -682,9 +790,15 @@ class TestTwoPhaseCycle:
         sentiment_port.get_social_score.assert_not_called()
 
     def test_paid_phase_uses_the_feeds_bound_after_the_gate(
-        self, use_case, market_port, repository_port, sentiment_port, news_port,
-        llm_port, ml_port,
-    ):
+        self,
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        repository_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        llm_port: Mock,
+        ml_port: Mock,
+    ) -> None:
         self._big_move(market_port, repository_port, llm_port, ml_port)
         phase_two_sentiment = Mock(spec=SentimentPort)
         phase_two_sentiment.get_social_score.return_value = {"av_sentiment_score": 0.1}
@@ -708,17 +822,21 @@ class TestTwoPhaseCycle:
         assert use_case.paid_calls["llm"] == 1
 
     def test_gate_phase_compiles_once_for_the_whole_cycle(
-        self, use_case, market_port, repository_port, monkeypatch
-    ):
+        self,
+        use_case: AnalyzeMarketUseCase,
+        market_port: Mock,
+        repository_port: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from src.application.use_cases import analyze_market as module
 
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         repository_port.get_last_price_snapshot.return_value = None
         market_port.get_current_price.return_value = Money(Decimal("100.0"))
-        compiled = []
-        real_factory = module.create_gate_graph
+        compiled: list[AgentGraphDeps] = []
+        real_factory = create_gate_graph
 
-        def counting_factory(deps):
+        def counting_factory(deps: AgentGraphDeps) -> StateGraph[AgentState]:
             compiled.append(deps)
             return real_factory(deps)
 
@@ -736,8 +854,15 @@ class TestMarketFeaturesPhase:
     przybywa. Bez flagi faza nic nie czyta."""
 
     def _use_case(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-        *, enabled: bool,
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        *,
+        enabled: bool,
     ) -> AnalyzeMarketUseCase:
         return AnalyzeMarketUseCase(AgentGraphDeps(
             market_port=market_port,
@@ -752,8 +877,14 @@ class TestMarketFeaturesPhase:
         ))
 
     def test_cycle_quote_is_fetched_once_and_features_reach_the_snapshot(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         now = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         repository_port.get_price_history.return_value = [
@@ -775,8 +906,14 @@ class TestMarketFeaturesPhase:
         assert features["price"] == pytest.approx(99.5)
 
     def test_flag_off_phase_reads_nothing(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         use_case = self._use_case(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=False,
@@ -788,8 +925,14 @@ class TestMarketFeaturesPhase:
         repository_port.get_price_history.assert_not_called()
 
     def test_breadth_uses_the_base_gate_threshold_of_each_asset_class(
-        self, market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
 
@@ -834,7 +977,7 @@ class TestCorporateEventsState:
     _NOW = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
 
     def test_only_fresh_filings_enter_the_state(
-        self, use_case, market_port, repository_port
+        self, use_case: AnalyzeMarketUseCase, market_port: Mock, repository_port: Mock
     ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("100.5"))
@@ -850,7 +993,7 @@ class TestCorporateEventsState:
         assert result["fresh_corporate_events"] == (fresh,)
 
     def test_without_a_snapshot_the_state_has_no_key(
-        self, use_case, market_port, repository_port
+        self, use_case: AnalyzeMarketUseCase, market_port: Mock, repository_port: Mock
     ) -> None:
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("100.5"))
