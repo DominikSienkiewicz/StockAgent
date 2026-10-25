@@ -310,7 +310,7 @@ def _section_html(data: SectionInput) -> str:
         data.saved,
         data.full_detail,
         sector_map=data.sector_map,
-        forecast_horizon=forecast_horizon_label(data.started_at),
+        forecast_horizon=forecast_horizon_label(data.started_at, data.context.display_timezone),
         symbol_chips=data.symbol_chips,
         one_voice=_council_is_one_voice(data),
     )
@@ -318,7 +318,10 @@ def _section_html(data: SectionInput) -> str:
 
 def _section_text(data: SectionInput) -> list[str]:
     return _render_saved_section_text(
-        data.saved, data.sector_map, forecast_horizon_label(data.started_at), data.symbol_chips
+        data.saved,
+        data.sector_map,
+        forecast_horizon_label(data.started_at, data.context.display_timezone),
+        data.symbol_chips,
     )
 
 

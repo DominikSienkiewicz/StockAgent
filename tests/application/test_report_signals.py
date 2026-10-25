@@ -560,3 +560,28 @@ class TestForecastHorizonLabel:
         label = forecast_horizon_label(datetime(2026, 10, 17, 10, 30, tzinfo=UTC))
 
         assert label == "najbliższe zamknięcie NYSE: pon 19.10 16:00 ET"
+
+    def test_display_timezone_adds_the_local_close_hour(self) -> None:
+        # Decyzja 2026-10-25: godzina w strefie odbiorcy tym samym helperem co MAIL-29.
+        label = forecast_horizon_label(
+            datetime(2026, 10, 15, 10, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == "najbliższe zamknięcie NYSE: czw 15.10 16:00 ET (22:00 czasu PL)"
+
+    def test_local_close_hour_follows_the_dst_gap(self) -> None:
+        # 26–30.10: Europa już na CET, USA jeszcze na EDT — zamknięcie o 21:00 PL.
+        label = forecast_horizon_label(
+            datetime(2026, 10, 27, 5, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == "najbliższe zamknięcie NYSE: wt 27.10 16:00 ET (21:00 czasu PL)"
+
+    def test_local_hour_follows_the_early_close_note(self) -> None:
+        label = forecast_horizon_label(
+            datetime(2026, 11, 26, 10, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == (
+            "najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja) (19:00 czasu PL)"
+        )

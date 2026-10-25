@@ -419,15 +419,21 @@ def _next_open_detail(nyc: datetime, display_timezone: str | None, *, after_sess
     return f"Najbliższe otwarcie: {_format_et(opening)}{local_note}"
 
 
-def forecast_horizon_label(now_utc: datetime) -> str:
+def forecast_horizon_label(now_utc: datetime, display_timezone: str | None = None) -> str:
     """Najbliższe zamknięcie sesji NYSE po starcie cyklu (ALR-15), np.
     „najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja)”.
 
     Następny cykl rozlicza prognozę bieżącą ceną, więc przy dziennej kadencji przed
-    otwarciem prognoza obejmuje właśnie tę sesję; święta i weekendy są pominięte."""
+    otwarciem prognoza obejmuje właśnie tę sesję; święta i weekendy są pominięte.
+
+    Z `display_timezone` godzina zamknięcia dostaje dopisek w strefie odbiorcy tym samym
+    helperem co `market_status` (MAIL-29), np. „16:00 ET (22:00 czasu PL)”; `None`
+    zostawia same godziny ET. Dopisek idzie na koniec, za notką o skróconej sesji, więc
+    etykieta bez strefy jest prefiksem etykiety ze strefą."""
     session = upcoming_session(now_utc)
     suffix = " (skrócona sesja)" if session.is_early_close else ""
-    return f"najbliższe zamknięcie NYSE: {_format_et(session.closes_at)}{suffix}"
+    local_note = _local_time_note(session.closes_at, display_timezone)
+    return f"najbliższe zamknięcie NYSE: {_format_et(session.closes_at)}{suffix}{local_note}"
 
 
 def _early_close_note(session: TradingSession) -> str | None:
