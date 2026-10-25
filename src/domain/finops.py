@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from types import MappingProxyType
 
 # FinOps — czysty model kosztu jednego cyklu agenta. "Agent, który raportuje
@@ -523,6 +524,33 @@ def budget_exceeded(spent_usd: float, cap_usd: float | None) -> bool:
     if spent_usd < 0:
         raise ValueError(f"spent_usd must be non-negative (got {spent_usd})")
     return cap_usd is not None and spent_usd >= cap_usd
+
+
+class BudgetWindow(StrEnum):
+    """FIN-25: okno limitu USD — doba albo miesiąc kalendarzowy UTC."""
+
+    DAY = "day"
+    MONTH = "month"
+
+
+@dataclass(frozen=True)
+class BudgetBreach:
+    """FIN-25: wyczerpany limit okna — ile wydano z ledgera i jaki był limit."""
+
+    window: BudgetWindow
+    spent_usd: float
+    cap_usd: float
+
+
+def budget_window_start(window: BudgetWindow, now: datetime) -> datetime:
+    """Początek okna w UTC: północ doby albo pierwszy dzień miesiąca.
+
+    UTC, bo w nim liczy się `llm_calls.created_at` i reset dostawców — strefa maila
+    przesuwałaby granicę doby o godzinę-dwie zależnie od czasu letniego."""
+    if now.tzinfo is None:
+        raise ValueError("budget window needs a timezone-aware clock")
+    day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return day if window is BudgetWindow.DAY else day.replace(day=1)
 
 
 def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:

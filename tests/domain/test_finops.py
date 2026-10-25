@@ -661,3 +661,26 @@ def test_budget_exceeded_rejects_negative_spend() -> None:
 
     with pytest.raises(ValueError, match="spent_usd"):
         budget_exceeded(-0.01, 5.0)
+
+
+def test_budget_windows_start_at_utc_midnight_of_the_day_and_month() -> None:
+    """Okna limitu liczą się w UTC (jak reset AV i `created_at` ledgera), nie
+    w strefie maila: 00:30 w Warszawie 1 listopada to jeszcze 31 października UTC."""
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from src.domain.finops import BudgetWindow, budget_window_start
+
+    warsaw = timezone(timedelta(hours=1))
+    now = datetime(2026, 11, 1, 0, 30, tzinfo=warsaw)
+
+    assert budget_window_start(BudgetWindow.DAY, now) == datetime(2026, 10, 31, tzinfo=UTC)
+    assert budget_window_start(BudgetWindow.MONTH, now) == datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def test_budget_window_rejects_a_naive_clock() -> None:
+    from datetime import datetime
+
+    from src.domain.finops import BudgetWindow, budget_window_start
+
+    with pytest.raises(ValueError, match="timezone"):
+        budget_window_start(BudgetWindow.DAY, datetime(2026, 10, 25, 12, 0))
