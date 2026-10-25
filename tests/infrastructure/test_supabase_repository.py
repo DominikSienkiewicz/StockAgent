@@ -4170,6 +4170,17 @@ class TestResolvedForCalibrationTrendAndCycle:
         assert "predicted_trend" in selected
         assert "timestamp" in selected
 
+    def test_select_carries_symbol_for_the_asset_class(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ML-54: klasa aktywa (krypto vs reszta) wynika z symbolu — kolumna od 001.
+        builder = _fluent_query(mock_client, [[]])
+
+        repo.get_resolved_for_calibration(30)
+
+        selected = [column.strip() for column in builder.select.call_args.args[0].split(",")]
+        assert "symbol" in selected
+
 class TestGetFundamentalsFetchedAt:
     """DAT-19: wiek wpisów cache (bez filtra TTL) — podstawa rotacji refreshu."""
 

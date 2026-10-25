@@ -1596,13 +1596,14 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # granica strony musi być deterministyczna (bez gubienia/dublowania wierszy).
         # WIA-39/WIA-38: trend oddziela SIDEWAYS od kalibracji kierunkowej, a
         # `timestamp` daje cykle pod n_eff i bootstrap (obie kolumny od 001).
+        # ML-54: `symbol` (od 001) wyznacza klasę aktywa mapy kalibracji.
         cutoff = datetime.now(UTC) - timedelta(days=days)
         query = (
             self._client.table(self._table)
             .select(
                 self._countable_columns(
-                    "id, confidence_score, is_trend_correct, predicted_trend, timestamp, "
-                    "reasoning_text, data_quality_flags"
+                    "id, symbol, confidence_score, is_trend_correct, predicted_trend, "
+                    "timestamp, reasoning_text, data_quality_flags"
                 )
             )
             .gte("timestamp", cutoff.isoformat())
