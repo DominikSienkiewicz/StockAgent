@@ -29,14 +29,15 @@ from src.domain.macro_risk import (
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
+from src.domain.value_objects import Ratio
 
 # Domknięcie tabeli HTML — powtarzane w trzech podsekcjach Risk Watch.
 _TABLE_CLOSE = "</tbody></table>"
 
 # Progi drawdownu spójne z use case'em — render tylko prezentuje wynik
 # domeny, ale poziom alertu liczy tą samą skalą (ELEVATED -10%, CRITICAL -20%).
-_DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
-_DRAWDOWN_CRITICAL_PCT = Decimal("0.20")
+_DRAWDOWN_ELEVATED_THRESHOLD = Ratio(Decimal("0.10"))
+_DRAWDOWN_CRITICAL_THRESHOLD = Ratio(Decimal("0.20"))
 
 _ALERT_LABEL = {
     MacroAlertLevel.NORMAL: "NORMAL",
@@ -78,8 +79,8 @@ def _format_pct(value: Decimal) -> str:
 
 def _drawdown_alert(dd: DrawdownSignal) -> MacroAlertLevel:
     return dd.evaluate_drawdown(
-        elevated_pct=_DRAWDOWN_ELEVATED_PCT,
-        critical_pct=_DRAWDOWN_CRITICAL_PCT,
+        elevated_threshold=_DRAWDOWN_ELEVATED_THRESHOLD,
+        critical_threshold=_DRAWDOWN_CRITICAL_THRESHOLD,
     )
 
 
