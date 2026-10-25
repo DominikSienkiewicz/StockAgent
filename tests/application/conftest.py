@@ -79,3 +79,13 @@ def make_deps(**overrides: Any) -> AgentGraphDeps:
     fields.update(overrides)
     return AgentGraphDeps(**fields)
 
+
+def as_mock(port: object) -> Mock:
+    """Zawęża port z `AgentGraphDeps` do atrapy, którą test sam tam wstawił.
+
+    Pola `AgentGraphDeps` mają typ portu (`QuotePort | None`, `MarketDataPort`), więc
+    `deps.quote_port.get_quote.return_value` nie przechodzi pod mypy; asercja `isinstance`
+    sprawdza to, co dotąd tylko zakładaliśmy.
+    """
+    assert isinstance(port, Mock)
+    return port

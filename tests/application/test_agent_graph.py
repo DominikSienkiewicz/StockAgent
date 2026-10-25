@@ -1,13 +1,20 @@
 import logging
+from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
 from langgraph.graph import StateGraph
 from pytest_mock import MockerFixture
 
-from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
+from src.application.agent_graph import (
+    AgentGraphDeps,
+    AgentState,
+    ShadowSetup,
+    create_agent_graph,
+)
 from src.application.ports import (
     EmbeddingPort,
     LLMPort,
@@ -19,11 +26,18 @@ from src.application.ports import (
     Tool,
     ToolUseLLMPort,
 )
+from src.application.usage_ledger import UsageLedger
+from src.domain.asset import Asset
+from src.domain.attestation import StoredCommitment
+from src.domain.conformal import CalibrationPoint, MoveInterval
 from src.domain.corporate_events import CorporateEvent
+from src.domain.finops import LLMUsage
+from src.domain.implied_edge import ImpliedEdge
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.recipe import PredictionRecipe
-from src.domain.value_objects import Money, Threshold
-from tests.application.conftest import GraphPorts, make_deps
+from src.domain.session_close import SessionClose
+from src.domain.value_objects import AssetType, Money, Quote, Ratio, Threshold
+from tests.application.conftest import GraphPorts, as_mock, make_deps
 
 EXPECTED_ML_FEATURES = [
     "price_delta",
@@ -76,7 +90,7 @@ def llm_port() -> Mock:
 
 
 @pytest.fixture
-def workflow(graph_ports: GraphPorts):
+def workflow(graph_ports: GraphPorts) -> StateGraph[AgentState]:
     return create_agent_graph(make_deps(**graph_ports))
 
 
@@ -104,6 +118,12 @@ def _initial_state(previous_price: str) -> AgentState:
         "symbol": "AAPL",
         "previous_price": Decimal(previous_price),
     }
+
+
+def _record_then[T](ledger: UsageLedger, usage: LLMUsage, result: T) -> T:
+    """Zapisuje zużycie w księdze i oddaje wynik atrapy portu."""
+    ledger.record(usage)
+    return result
 
 
 def _setup_full_analysis_mocks(
@@ -384,7 +404,7 @@ def test_node_outputs_use_only_declared_state_keys(
         has_prior_prediction=True,
     )
     ml_port.explain.return_value = {}
-    state = {**_initial_state("100.0"), "asset": Asset("AAPL", AssetType.STOCK)}
+    state: AgentState = {**_initial_state("100.0"), "asset": Asset("AAPL", AssetType.STOCK)}
     app = graph.compile()
 
     market_port.get_current_price.return_value = Money(Decimal("90.0"))
@@ -596,7 +616,7 @@ class TestReflectMistakeCategory:
         ml_port: Mock,
         llm_port: Mock,
         workflow: StateGraph[AgentState],
-    ) -> dict:
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1146,7 +1166,7 @@ class TestPredictNodeLlmGuard:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        error,
+        error: str,
     ) -> None:
         # NIEZ-26: ucięta albo odrzucona odpowiedź ma własną flagę jakości — odróżnialna
         # od awarii dostawcy. `llm_analysis_failed` zostaje: to dalej atrapa SIDEWAYS 50%,
@@ -1330,8 +1350,8 @@ class TestTrendDirectionValidation:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        analysis: dict,
-    ) -> tuple[dict, dict]:
+        analysis: dict[str, Any],
+    ) -> tuple[Any, dict[str, Any]]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -1739,8 +1759,11 @@ class TestCumulativeDriftGate:
     samymi mnożnikami co ruch cyklu. Bez referencji bramka jest jak przed ALR-10."""
 
     @staticmethod
-    def _drifting_state(reference: str, **extra: object) -> dict:
-        return {**_initial_state("100.0"), "drift_reference": Decimal(reference), **extra}
+    def _drifting_state(reference: str, **extra: Any) -> AgentState:
+        return cast(
+            AgentState,
+            {**_initial_state("100.0"), "drift_reference": Decimal(reference), **extra},
+        )
 
     def test_cumulative_drift_since_last_prediction_opens_gate(
         self,
@@ -2352,7 +2375,7 @@ class TestRagPrecedentReceipts:
     def _make_workflow(
         self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
         repository_port: Mock, ml_port: Mock, llm_port: Mock, embedding_port: Mock,
-    ):
+    ) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
@@ -2556,7 +2579,7 @@ class TestProvenanceSignals:
     @pytest.mark.parametrize("reason", ["av_unexpected_payload", "av_fetch_error"])
     def test_av_degradation_reaches_the_saved_quality_flags(
         self,
-        reason,
+        reason: str,
         workflow: StateGraph[AgentState],
         market_port: Mock,
         sentiment_port: Mock,
@@ -2784,8 +2807,8 @@ class TestToolUseResearchAgent:
         llm_port: Mock,
         tool_use_port: Mock,
         *,
-        crypto_tool_use_threshold,
-    ):
+        crypto_tool_use_threshold: Threshold | None,
+    ) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
@@ -2797,7 +2820,7 @@ class TestToolUseResearchAgent:
             crypto_tool_use_threshold=crypto_tool_use_threshold,
         ))
 
-    def _crypto_state(self) -> dict:
+    def _crypto_state(self) -> AgentState:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
 
@@ -2926,7 +2949,7 @@ def test_deps_reject_partial_tool_use_config(
     repository_port: Mock,
     ml_port: Mock,
     llm_port: Mock,
-    tool_use_options,
+    tool_use_options: dict[str, Any],
 ) -> None:
     # ARCH-18: port tool-use bez narzędzi albo bez progu cicho spadał do zwykłego
     # `llm_port.analyze` — pętla, za którą ktoś płaci i którą włączył, nigdy nie ruszała.
@@ -2949,7 +2972,7 @@ def test_deps_accept_complete_or_absent_tool_use_config(
     ml_port: Mock,
     llm_port: Mock,
 ) -> None:
-    base = dict(
+    base: dict[str, Any] = dict(
         market_port=market_port, sentiment_port=sentiment_port,
         news_port=news_port, repository_port=repository_port,
         ml_port=ml_port, llm_port=llm_port, threshold=Threshold(Decimal("0.02")),
@@ -2974,14 +2997,20 @@ def test_deps_accept_complete_or_absent_tool_use_config(
 
 
 class TestVectorMemory:
-    def _make(self, ports: dict, *, enabled: bool, embedding_port: Mock):
+    def _make(
+        self,
+        ports: GraphPorts,
+        *,
+        enabled: bool,
+        embedding_port: Mock,
+    ) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             **ports,
             embedding_port=embedding_port,
             vector_memory_enabled=enabled,
         ))
 
-    def _state(self) -> dict:
+    def _state(self) -> AgentState:
         return {
             "symbol": "AAPL",
             "previous_price": Decimal("100.0"),
@@ -3050,17 +3079,17 @@ class TestEarningsThresholdGate:
     z mnożnikiem reżimu. Oba są >= 1.0, więc bramka może się tylko zacieśnić."""
 
     @staticmethod
-    def _state(**overrides: object) -> dict[str, object]:
-        state: dict[str, object] = {"asset": None}
+    def _state(**overrides: Any) -> AgentState:
+        state: dict[str, Any] = {"asset": None}
         state.update(overrides)
-        return state
+        return cast(AgentState, state)
 
     def test_earnings_multiplier_tightens_threshold(self) -> None:
         from src.application.agent_graph import _pick_threshold
 
         base = Threshold(Decimal("0.02"))
         chosen = _pick_threshold(
-            self._state(earnings_multiplier=1.5), base, None  # type: ignore[arg-type]
+            self._state(earnings_multiplier=1.5), base, None
         )
 
         assert chosen.value == Decimal("0.03")
@@ -3071,7 +3100,7 @@ class TestEarningsThresholdGate:
 
         base = Threshold(Decimal("0.02"))
         chosen = _pick_threshold(
-            self._state(earnings_multiplier=1.5, regime_multiplier=2.0),  # type: ignore[arg-type]
+            self._state(earnings_multiplier=1.5, regime_multiplier=2.0),
             base,
             None,
         )
@@ -3082,7 +3111,7 @@ class TestEarningsThresholdGate:
         from src.application.agent_graph import _pick_threshold
 
         base = Threshold(Decimal("0.02"))
-        chosen = _pick_threshold(self._state(), base, None)  # type: ignore[arg-type]
+        chosen = _pick_threshold(self._state(), base, None)
 
         assert chosen.value == Decimal("0.02")
 
@@ -3093,7 +3122,7 @@ class TestEarningsThresholdGate:
 
         base = Threshold(Decimal("0.02"))
         chosen = _pick_threshold(
-            self._state(earnings_multiplier=0.5), base, None  # type: ignore[arg-type]
+            self._state(earnings_multiplier=0.5), base, None
         )
 
         assert chosen.value >= Decimal("0.02")
@@ -3109,12 +3138,12 @@ class TestDecisionReceipts:
 
     def _make(
         self,
-        ports: dict,
+        ports: GraphPorts,
         *,
         enabled: bool,
         recipe: PredictionRecipe | None = None,
         recipe_version_enabled: bool = False,
-    ):
+    ) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             **ports,
             receipts_enabled=enabled,
@@ -3122,8 +3151,9 @@ class TestDecisionReceipts:
             recipe_version_enabled=recipe_version_enabled,
         ))
 
-    def _record(self, repository_port: Mock) -> dict:
-        return repository_port.save_prediction.call_args.args[0]
+    def _record(self, repository_port: Mock) -> dict[str, Any]:
+        record: dict[str, Any] = repository_port.save_prediction.call_args.args[0]
+        return record
 
     def _invoke_full_analysis(
         self,
@@ -3133,8 +3163,8 @@ class TestDecisionReceipts:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        **make_kwargs,
-    ) -> dict:
+        **make_kwargs: Any,
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -3272,7 +3302,7 @@ class TestRecipeVersionColumn:
         *,
         recipe: PredictionRecipe | None,
         enabled: bool,
-    ) -> dict:
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -3284,7 +3314,8 @@ class TestRecipeVersionColumn:
             recipe=recipe,
             recipe_version_enabled=enabled,
         )).compile().invoke(_initial_state("100.0"))
-        return repository_port.save_prediction.call_args.args[0]
+        record: dict[str, Any] = repository_port.save_prediction.call_args.args[0]
+        return record
 
     def test_flag_off_omits_the_column_even_with_a_recipe(
         self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
@@ -3359,7 +3390,7 @@ class TestImpliedEdge:
         )
         return port
 
-    def _make(self, ports: dict, options_port: Mock):
+    def _make(self, ports: GraphPorts, options_port: Mock | None) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             **ports,
             options_port=options_port,
@@ -3432,7 +3463,12 @@ class TestImpliedEdge:
     _BEFORE_THANKSGIVING = datetime(2026, 11, 25, 5, 30, tzinfo=UTC)
 
     def _edge_sigma_at(
-        self, ports: dict, clock: datetime, *, calendar: bool, state: dict | None = None
+        self,
+        ports: GraphPorts,
+        clock: datetime,
+        *,
+        calendar: bool,
+        state: AgentState | None = None,
     ) -> float:
         ports["market_port"].get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
@@ -3455,8 +3491,8 @@ class TestImpliedEdge:
     def test_calendar_horizon_spans_the_weekend_and_the_holiday(
         self,
         graph_ports: GraphPorts,
-        clock,
-        hours,
+        clock: datetime,
+        hours: float,
     ) -> None:
         # WIA-28: z flagą horyzont edge to godziny do następnego dnia handlowego NYSE.
         from src.domain.implied_edge import implied_move_12h, model_move_from_prices
@@ -3489,7 +3525,7 @@ class TestImpliedEdge:
         from src.domain.implied_edge import implied_move_12h, model_move_from_prices
         from src.domain.value_objects import AssetType
 
-        state = {
+        state: AgentState = {
             **_initial_state("100.0"),
             "asset": Asset(symbol="AAPL", asset_type=AssetType.CRYPTO),
         }
@@ -3571,13 +3607,13 @@ class TestAlphaFusionInGraph:
     """#14 — score fuzji sygnałów alfa dociera do promptu LLM i do rekordu.
     Bez niego 5 pobieranych źródeł alfa było render-only."""
 
-    def _make(self, ports: dict):
+    def _make(self, ports: GraphPorts) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(**ports))
 
-    def _state(self, score: float | None) -> dict:
+    def _state(self, score: float | None) -> AgentState:
         from src.domain.alpha_fusion import AlphaFusionScore
 
-        state: dict = {"symbol": "AAPL", "previous_price": Decimal("100.0")}
+        state: AgentState = {"symbol": "AAPL", "previous_price": Decimal("100.0")}
         if score is not None:
             state["alpha_fusion"] = AlphaFusionScore(
                 score=score,
@@ -3664,7 +3700,7 @@ class TestAttestationCommitment:
         pub.publish_commitment.return_value = "public/attestation/commitments.jsonl"
         return pub
 
-    def _run(self, ports, publisher: Mock):
+    def _run(self, ports: GraphPorts, publisher: Mock | None) -> dict[str, Any]:
         return create_agent_graph(make_deps(
             **ports,
             attestation_publisher=publisher,
@@ -4002,10 +4038,12 @@ class TestAttestationCommitment:
         )
         publisher = self._publisher()
         saved_before_publish: list[bool] = []
-        publisher.publish_commitment.side_effect = lambda _record: (
+
+        def publish(_record: object) -> str:
             saved_before_publish.append(repository_port.save_prediction.called)
-            or "public/attestation/commitments.jsonl"
-        )
+            return "public/attestation/commitments.jsonl"
+
+        publisher.publish_commitment.side_effect = publish
 
         self._run(graph_ports, publisher)
 
@@ -4086,16 +4124,16 @@ class TestAttestationCommitment:
         repository_port.get_current_hour_commitment_salt.assert_not_called()
 
     @staticmethod
-    def _stored(payload: str, salt: str):
+    def _stored(payload: str, salt: str) -> StoredCommitment:
         """Commitment, który leży już w wierszu (symbol, bieżąca godzina UTC)."""
         import hashlib
-
-        from src.domain.attestation import StoredCommitment
 
         digest = hashlib.sha256((payload + salt).encode("utf-8")).hexdigest()
         return StoredCommitment(commitment=digest, salt=salt, payload=payload)
 
-    def _with_stored_commitment(self, repository_port: Mock, stored) -> None:
+    def _with_stored_commitment(
+        self, repository_port: Mock, stored: StoredCommitment
+    ) -> None:
         repository_port.get_current_hour_commitment_salt.return_value = stored.salt
         repository_port.get_current_hour_commitment.return_value = stored
 
@@ -4361,10 +4399,8 @@ class TestPaidCallMeter:
         ml_port: Mock,
         llm_port: Mock,
         embedding_port: Mock,
-        state=None,
-    ):
-        from collections import Counter
-
+        state: AgentState | None = None,
+    ) -> Counter[str]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -4560,12 +4596,13 @@ class TestFeatureSetVersionStamp:
     """DAT-09 — wersja zestawu cech na predykcji (migracja 027). Off = klucza nie
     ma w rekordzie, bo przed migracją nowy klucz kładzie zapis całej predykcji."""
 
-    def _record(self, ports: dict, repository_port: Mock, *, enabled: bool) -> dict:
+    def _record(self, ports: GraphPorts, repository_port: Mock, *, enabled: bool) -> dict[str, Any]:
         create_agent_graph(make_deps(
             **ports,
             feature_set_version_enabled=enabled,
         )).compile().invoke(_initial_state("100.0"))
-        return repository_port.save_prediction.call_args.args[0]
+        record: dict[str, Any] = repository_port.save_prediction.call_args.args[0]
+        return record
 
     @pytest.fixture
     def ports(
@@ -4576,25 +4613,27 @@ class TestFeatureSetVersionStamp:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-    ) -> dict:
+    ) -> GraphPorts:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
         )
-        return dict(
+        return GraphPorts(
             market_port=market_port, sentiment_port=sentiment_port,
             news_port=news_port, repository_port=repository_port,
             ml_port=ml_port, llm_port=llm_port,
         )
 
-    def test_flag_off_omits_the_column_entirely(self, ports, repository_port: Mock) -> None:
+    def test_flag_off_omits_the_column_entirely(
+        self, ports: GraphPorts, repository_port: Mock
+    ) -> None:
         record = self._record(ports, repository_port, enabled=False)
 
         assert "feature_set_version" not in record
 
     def test_flag_on_stamps_the_current_feature_set_version(
         self,
-        ports,
+        ports: GraphPorts,
         repository_port: Mock,
     ) -> None:
         from src.application.ml_features import FEATURE_SET_VERSION
@@ -4625,7 +4664,7 @@ class TestFeatureSnapshots:
         llm_port: Mock,
         *,
         enabled: bool,
-        **extra,
+        **extra: Any,
     ) -> AgentGraphDeps:
         return make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
@@ -4653,7 +4692,7 @@ class TestFeatureSnapshots:
             enabled=True, embedding_port=embedding_port, tool_use_port=tool_use_port,
             research_tools=[_TOOL_STUB], tool_use_threshold=Threshold(Decimal("0.05")),
         )
-        state = {
+        state: AgentState = {
             **_initial_state("100.0"),
             "regime_context": "risk off",
             "regime_multiplier": 1.5,
@@ -4687,6 +4726,7 @@ class TestFeatureSnapshots:
         news_port.get_news_context.assert_not_called()
         embedding_port.embed.assert_not_called()
         ml_port.predict.assert_not_called()
+        assert deps.paid_call_meter is not None
         assert sum(deps.paid_call_meter.values()) == 0
 
     def test_rebaseline_cycle_writes_the_price_but_no_feature_vector(
@@ -4696,7 +4736,7 @@ class TestFeatureSnapshots:
         # FIN-14 + decyzja 2026-10-19: po pauzie `snapshot_delta` to ruch z wielu
         # dni, nie obserwacja cyklu — wektor ML-14 nie powstaje, cena tak.
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
-        state = {**_initial_state("100.0"), "stale_reference": True}
+        state: AgentState = {**_initial_state("100.0"), "stale_reference": True}
 
         final = create_agent_graph(self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -4714,7 +4754,7 @@ class TestFeatureSnapshots:
         repository_port: Mock, ml_port: Mock, llm_port: Mock,
     ) -> None:
         market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0,5%
-        state = {**_initial_state("100.0"), "stale_reference": False}
+        state: AgentState = {**_initial_state("100.0"), "stale_reference": False}
 
         final = create_agent_graph(self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -4839,9 +4879,7 @@ class TestMoveInterval:
     (migracja 032) idzie tylko za flagą — przed migracją dałby PGRST204."""
 
     @staticmethod
-    def _window(n: int = 30):
-        from src.domain.conformal import CalibrationPoint
-
+    def _window(n: int = 30) -> tuple[CalibrationPoint, ...]:
         return tuple(
             CalibrationPoint(predicted_return=0.0, realized_return=0.004 * (i % 11 - 5))
             for i in range(n)
@@ -4858,8 +4896,8 @@ class TestMoveInterval:
         *,
         price: str = "90.0",
         trained: bool = True,
-        **extra,
-    ) -> dict:
+        **extra: Any,
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal(price))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -5017,7 +5055,7 @@ class TestMoveInterval:
 class TestRegimeTagging:
     def _run(
         self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
-        repository_port: Mock, ml_port: Mock, llm_port: Mock, **deps_overrides,
+        repository_port: Mock, ml_port: Mock, llm_port: Mock, **deps_overrides: Any,
     ) -> None:
         embedding_port = Mock(spec=EmbeddingPort)
         embedding_port.embed.return_value = [0.1] * 8
@@ -5103,7 +5141,7 @@ class TestGateDeltaColumn:
         enabled: bool,
         previous_price: str = "100.0",
         threshold: str = "0.02",
-    ) -> dict:
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -5115,7 +5153,8 @@ class TestGateDeltaColumn:
             threshold=Threshold(Decimal(threshold)),
             gate_delta_enabled=enabled,
         )).compile().invoke(_initial_state(previous_price))
-        return repository_port.save_prediction.call_args.args[0]
+        record: dict[str, Any] = repository_port.save_prediction.call_args.args[0]
+        return record
 
     def test_flag_off_omits_the_column(
         self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
@@ -5174,7 +5213,7 @@ class TestExperimentArmsRecord:
         arms: dict[str, str] | None,
         column: bool,
         receipts: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -5190,7 +5229,8 @@ class TestExperimentArmsRecord:
             recipe=_recipe(),
             experiment_arms_enabled=column,
         )).compile().invoke(state)
-        return repository_port.save_prediction.call_args.args[0]
+        record: dict[str, Any] = repository_port.save_prediction.call_args.args[0]
+        return record
 
     def test_receipt_v2_carries_the_arms(
         self,
@@ -5322,7 +5362,7 @@ class TestBlindCouncilArm:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        arms,
+        arms: dict[str, str] | None,
     ) -> None:
         council_port, _ = self._run(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -5348,6 +5388,7 @@ class TestBlindCouncilArm:
                 market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
                 arms=arms,
             )
+            assert deps.paid_call_meter is not None
             meters.append(dict(deps.paid_call_meter))
 
         assert meters[0] == meters[1]
@@ -5447,7 +5488,7 @@ class TestNoMemoryArm:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        arms,
+        arms: dict[str, str] | None,
     ) -> None:
         embedding_port, _ = self._run(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -5477,6 +5518,7 @@ class TestNoMemoryArm:
                 market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
                 arms=arms,
             )
+            assert deps.paid_call_meter is not None
             meters.append(dict(deps.paid_call_meter))
             embeds.append(embedding_port.embed.call_count)
 
@@ -5497,7 +5539,7 @@ class TestCycleTelemetryWiring:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        **extra,
+        **extra: Any,
     ) -> AgentGraphDeps:
         return make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
@@ -5690,7 +5732,7 @@ class TestPaidCallBudget:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        **extra,
+        **extra: Any,
     ) -> AgentGraphDeps:
         from src.application.cycle_telemetry import CycleTelemetry
         from src.application.ports import AdvisoryCouncilPort
@@ -5698,7 +5740,7 @@ class TestPaidCallBudget:
         telemetry = CycleTelemetry()
         council_port = Mock(spec=AdvisoryCouncilPort)
 
-        def council_requests(symbol, data):
+        def council_requests(symbol: str, data: object) -> None:
             # Jak `MeteredLLMPort`: każda persona i chairman to osobny request.
             for _ in range(self._COUNCIL_REQUESTS):
                 telemetry.record_paid_call("council_llm")
@@ -5714,7 +5756,7 @@ class TestPaidCallBudget:
             **extra,
         )
 
-    def _run_cycle(self, deps: AgentGraphDeps, symbols: list[str]) -> list[dict]:
+    def _run_cycle(self, deps: AgentGraphDeps, symbols: list[str]) -> list[dict[str, Any]]:
         app = create_agent_graph(deps).compile()
         return [
             app.invoke({"symbol": symbol, "previous_price": Decimal("100.0")})
@@ -5900,10 +5942,10 @@ class TestUsageAttribution:
             has_prior_prediction=True,
         )
         analysis = llm_port.analyze.return_value
-        llm_port.analyze.side_effect = lambda _prompt: ledger.record(usage) or analysis
-        llm_port.analyze_mistake.side_effect = lambda _prompt: ledger.record(usage) or "lekcja"
+        llm_port.analyze.side_effect = lambda _prompt: _record_then(ledger, usage, analysis)
+        llm_port.analyze_mistake.side_effect = lambda _prompt: _record_then(ledger, usage, "lekcja")
         embedding_port = Mock(spec=EmbeddingPort)
-        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or [0.1] * 4
+        embedding_port.embed.side_effect = lambda _text: _record_then(ledger, usage, [0.1] * 4)
         repository_port.find_similar_predictions.return_value = []
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.side_effect = lambda _symbol, _data: ledger.record(usage)
@@ -5944,7 +5986,7 @@ class TestUsageAttribution:
         embedding_port = Mock(spec=EmbeddingPort)
         # RAG nie dał wektora (pusty) → zapis embeduje jeszcze raz.
         vectors = iter([[], [0.2] * 4])
-        embedding_port.embed.side_effect = lambda _text: ledger.record(usage) or next(vectors)
+        embedding_port.embed.side_effect = lambda _text: _record_then(ledger, usage, next(vectors))
         deps = make_deps(
             **graph_ports,
             embedding_port=embedding_port,
@@ -5971,7 +6013,7 @@ class TestTwoPhaseGraphs:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        **extra,
+        **extra: Any,
     ) -> AgentGraphDeps:
         return make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
@@ -6063,7 +6105,7 @@ class TestTwoPhaseGraphs:
         from src.domain.asset import Asset
 
         # DI klasyfikuje aktywo przed grafem — węzeł fundamentów go wymaga.
-        state = {**_initial_state("100.0"), "asset": Asset(symbol="AAPL")}
+        state: AgentState = {**_initial_state("100.0"), "asset": Asset(symbol="AAPL")}
         final = create_gate_graph(deps).compile().invoke(state)
 
         fundamentals_port.get_fundamentals.assert_called_once_with("AAPL")
@@ -6089,7 +6131,9 @@ class TestTwoPhaseGraphs:
         deps = self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
         )
-        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+        gate_state = cast(
+            AgentState, create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+        )
 
         final = create_paid_graph(deps).compile().invoke(gate_state)
 
@@ -6123,7 +6167,9 @@ class TestTwoPhaseGraphs:
             paid_call_cap=1,
         )
         deps.telemetry.record_paid_call("llm")
-        gate_state = create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+        gate_state = cast(
+            AgentState, create_gate_graph(deps).compile().invoke(_initial_state("100.0"))
+        )
 
         final = create_paid_graph(deps).compile().invoke(gate_state)
 
@@ -6161,14 +6207,14 @@ class TestRequiredPredictionColumns:
     })
 
     @staticmethod
-    def _state() -> dict:
+    def _state() -> AgentState:
         from types import SimpleNamespace
 
         return {
             "symbol": "AAPL",
             "previous_price": Decimal("100"),
             "current_price": Decimal("106"),
-            "delta": Decimal("0.06"),
+            "delta": Ratio(Decimal("0.06")),
             "llm_analysis": {
                 "trend_direction": "BULLISH",
                 "confidence_score": 0.8,
@@ -6178,8 +6224,8 @@ class TestRequiredPredictionColumns:
             "sentiment": {"av_sentiment_score": 0.3, "news_volume_24h": 4},
             "news": [{"title": "Reuters: Apple beats", "source": "Reuters"}],
             "ml_target_price": Decimal("108"),
-            "implied_edge": SimpleNamespace(edge_sigma=1.4),
-            "move_interval": SimpleNamespace(low=-0.01, high=0.03),
+            "implied_edge": cast(ImpliedEdge, SimpleNamespace(edge_sigma=1.4)),
+            "move_interval": cast(MoveInterval, SimpleNamespace(low=-0.01, high=0.03)),
             "experiment_arms": {"blind_council": "control"},
             "news_embedding": [0.1, 0.2],
             "regime_context": "NEUTRAL",
@@ -6234,7 +6280,10 @@ class TestRequiredPredictionColumns:
 
         deps, repo = self._deps(all_flags=False)
         # Edge powstaje wyłącznie z portem opcji (`_resolve_implied_edge`).
-        state = {key: value for key, value in self._state().items() if key != "implied_edge"}
+        state = cast(
+            AgentState,
+            {key: value for key, value in self._state().items() if key != "implied_edge"},
+        )
 
         _save_node(deps, state)
 
@@ -6254,7 +6303,10 @@ class TestRequiredPredictionColumns:
         deps = dataclasses.replace(
             deps, quote_port=Mock(spec=QuotePort), stale_quote_enabled=True
         )
-        state = {key: value for key, value in self._state().items() if key != "implied_edge"}
+        state = cast(
+            AgentState,
+            {key: value for key, value in self._state().items() if key != "implied_edge"},
+        )
 
         _save_node(deps, {**state, "stale_quote": True})
 
@@ -6286,7 +6338,7 @@ class TestTrendProbabilities:
         *,
         enabled: bool,
         probabilities: object = None,
-    ) -> tuple[dict, str]:
+    ) -> tuple[dict[str, Any], str]:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -6377,7 +6429,7 @@ class TestMarketFeatureSnapshot:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-        **flags,
+        **flags: Any,
     ) -> AgentGraphDeps:
         return make_deps(
             market_port=market_port, sentiment_port=sentiment_port,
@@ -6403,7 +6455,7 @@ class TestMarketFeatureSnapshot:
         )
 
         market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
-        state = {
+        state: AgentState = {
             **_initial_state("100.0"),
             "market_features": {"ret_1": -0.01, "ret_1_over_vol_20": -0.8, "ret_20": None},
         }
@@ -6459,7 +6511,7 @@ class TestMarketFeatureSnapshot:
         from src.application.ml_features import FEATURE_SET_VERSION, FREE_SNAPSHOT_FEATURES
 
         market_port.get_current_price.return_value = Money(Decimal("99.0"))
-        state = {**_initial_state("100.0"), "market_features": {"ret_1": -0.01}}
+        state: AgentState = {**_initial_state("100.0"), "market_features": {"ret_1": -0.01}}
 
         create_agent_graph(self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -6479,7 +6531,7 @@ class TestStaleQuote:
     _FRIDAY_CLOSE = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
 
     @staticmethod
-    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides: Any) -> AgentGraphDeps:
         from src.application.ports import QuotePort
 
         fields = {
@@ -6497,15 +6549,11 @@ class TestStaleQuote:
         return make_deps(**fields)
 
     @staticmethod
-    def _quote(price: str, quoted_at: datetime):
-        from src.domain.value_objects import Quote
-
+    def _quote(price: str, quoted_at: datetime) -> Quote:
         return Quote(price=Money(Decimal(price)), quoted_at=quoted_at)
 
     @staticmethod
-    def _asset(asset_type):
-        from src.domain.asset import Asset
-
+    def _asset(asset_type: AssetType) -> Asset:
         return Asset(symbol="AAPL", asset_type=asset_type)
 
     def test_stock_price_comes_from_the_quote_with_its_time(
@@ -6515,8 +6563,8 @@ class TestStaleQuote:
         from src.domain.value_objects import AssetType
 
         deps = self._deps(repository_port, llm_port)
-        deps.quote_port.get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
-        state = {**_initial_state("100"), "asset": self._asset(AssetType.STOCK)}
+        as_mock(deps.quote_port).get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
+        state: AgentState = {**_initial_state("100"), "asset": self._asset(AssetType.STOCK)}
 
         update = _check_price_node(deps, state)
 
@@ -6524,7 +6572,7 @@ class TestStaleQuote:
         assert update["quoted_at"] == self._FRIDAY_CLOSE
         # Piątkowe zamknięcie w poniedziałek przed otwarciem to najświeższa cena.
         assert update["stale_quote"] is False
-        deps.market_port.get_current_price.assert_not_called()
+        as_mock(deps.market_port).get_current_price.assert_not_called()
 
     def test_quote_older_than_the_last_started_session_is_flagged(
         self, repository_port: Mock, llm_port: Mock
@@ -6534,8 +6582,8 @@ class TestStaleQuote:
 
         midday = datetime(2026, 10, 19, 17, 0, tzinfo=UTC)
         deps = self._deps(repository_port, llm_port, clock=lambda: midday)
-        deps.quote_port.get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
-        state = {**_initial_state("100"), "asset": self._asset(AssetType.ETF)}
+        as_mock(deps.quote_port).get_quote.return_value = self._quote("105", self._FRIDAY_CLOSE)
+        state: AgentState = {**_initial_state("100"), "asset": self._asset(AssetType.ETF)}
 
         assert _check_price_node(deps, state)["stale_quote"] is True
 
@@ -6546,16 +6594,16 @@ class TestStaleQuote:
         from src.domain.value_objects import AssetType
 
         deps = self._deps(repository_port, llm_port)
-        deps.market_port.get_current_price.return_value = Money(Decimal("64000"))
-        state = {**_initial_state("63000"), "asset": self._asset(AssetType.CRYPTO)}
+        as_mock(deps.market_port).get_current_price.return_value = Money(Decimal("64000"))
+        state: AgentState = {**_initial_state("63000"), "asset": self._asset(AssetType.CRYPTO)}
 
         update = _check_price_node(deps, state)
 
         assert update["current_price"] == Decimal("64000")
         assert "quoted_at" not in update
-        deps.quote_port.get_quote.assert_not_called()
+        as_mock(deps.quote_port).get_quote.assert_not_called()
 
-    def _stale_settlement_state(self) -> dict:
+    def _stale_settlement_state(self) -> AgentState:
         from src.domain.value_objects import AssetType
 
         return {
@@ -6563,7 +6611,7 @@ class TestStaleQuote:
             "asset": self._asset(AssetType.STOCK),
             "current_price": Decimal("100"),
             # Ruch ponad próg — bez DAT-14 diagnoza LLM by poleciała.
-            "delta": Decimal("0.06"),
+            "delta": Ratio(Decimal("0.06")),
             "quoted_at": self._FRIDAY_CLOSE,
             "stale_quote": False,
         }
@@ -6615,7 +6663,7 @@ class TestStaleQuote:
 
         repository_port.get_unverified_prediction.return_value = self._monday_prediction()
         deps = self._deps(repository_port, llm_port, stale_quote_enabled=True)
-        state = {
+        state: AgentState = {
             **self._stale_settlement_state(),
             "current_price": Decimal("106"),
             "quoted_at": datetime(2026, 10, 19, 20, 0, tzinfo=UTC),
@@ -6633,10 +6681,10 @@ class TestStaleQuote:
         from src.application.agent_graph import _save_node
 
         repository_port.save_prediction.return_value = "pred-2"
-        state = {
+        state: AgentState = {
             **_initial_state("100"),
             "current_price": Decimal("106"),
-            "delta": Decimal("0.06"),
+            "delta": Ratio(Decimal("0.06")),
             "stale_quote": True,
         }
 
@@ -6663,7 +6711,7 @@ class TestSessionCloseSettlement:
     _TUESDAY_PREOPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
 
     @staticmethod
-    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides: Any) -> AgentGraphDeps:
         from src.application.ports import QuotePort
 
         fields = {
@@ -6681,21 +6729,26 @@ class TestSessionCloseSettlement:
         return make_deps(**fields)
 
     @staticmethod
-    def _stock_state(**extra) -> dict:
+    def _stock_state(**extra: Any) -> AgentState:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
 
-        return {
-            **_initial_state("100"),
-            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
-            **extra,
-        }
+        return cast(
+            AgentState,
+            {
+                **_initial_state("100"),
+                "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+                **extra,
+            },
+        )
 
     @staticmethod
-    def _close(price: str, day: tuple[int, int, int], source: str = "quote_close"):
+    def _close(
+        price: str, day: tuple[int, int, int], source: str = "quote_close"
+    ) -> SessionClose:
         from datetime import date
 
-        from src.domain.session_close import SessionClose, SessionCloseSource
+        from src.domain.session_close import SessionCloseSource
 
         return SessionClose(Money(Decimal(price)), date(*day), SessionCloseSource(source))
 
@@ -6723,8 +6776,8 @@ class TestSessionCloseSettlement:
         )
         off = self._deps(repository_port, llm_port)
         on = self._deps(repository_port, llm_port, session_close_settlement_enabled=True)
-        off.quote_port.get_quote.return_value = quote
-        on.quote_port.get_quote.return_value = quote
+        as_mock(off.quote_port).get_quote.return_value = quote
+        as_mock(on.quote_port).get_quote.return_value = quote
 
         assert "session_close" not in _check_price_node(off, self._stock_state())
         assert _check_price_node(on, self._stock_state())["session_close"] == self._close(
@@ -6844,7 +6897,7 @@ class TestExecutableEntrySettlement:
     _TUESDAY_PREOPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
 
     @staticmethod
-    def _deps(repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+    def _deps(repository_port: Mock, llm_port: Mock, **overrides: Any) -> AgentGraphDeps:
         from src.application.ports import QuotePort
 
         fields = {
@@ -6862,9 +6915,7 @@ class TestExecutableEntrySettlement:
         return make_deps(**fields)
 
     @classmethod
-    def _quote(cls, open_price: str = "105"):
-        from src.domain.value_objects import Quote
-
+    def _quote(cls, open_price: str = "105") -> Quote:
         return Quote(
             price=Money(Decimal("106")),
             quoted_at=cls._MONDAY_CLOSE,
@@ -6873,15 +6924,18 @@ class TestExecutableEntrySettlement:
         )
 
     @staticmethod
-    def _stock_state(**extra) -> dict:
+    def _stock_state(**extra: Any) -> AgentState:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
 
-        return {
-            **_initial_state("100"),
-            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
-            **extra,
-        }
+        return cast(
+            AgentState,
+            {
+                **_initial_state("100"),
+                "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+                **extra,
+            },
+        )
 
     @staticmethod
     def _monday_bullish() -> Prediction:
@@ -6901,8 +6955,8 @@ class TestExecutableEntrySettlement:
 
         off = self._deps(repository_port, llm_port)
         on = self._deps(repository_port, llm_port, executable_entry_enabled=True)
-        off.quote_port.get_quote.return_value = self._quote()
-        on.quote_port.get_quote.return_value = self._quote()
+        as_mock(off.quote_port).get_quote.return_value = self._quote()
+        as_mock(on.quote_port).get_quote.return_value = self._quote()
 
         assert "session_quote" not in _check_price_node(off, self._stock_state())
         assert _check_price_node(on, self._stock_state())["session_quote"] == self._quote()
@@ -7012,7 +7066,7 @@ class TestPaperLedgerInGraph:
     _NOW = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
 
     @classmethod
-    def _deps(cls, repository_port: Mock, llm_port: Mock, **overrides) -> AgentGraphDeps:
+    def _deps(cls, repository_port: Mock, llm_port: Mock, **overrides: Any) -> AgentGraphDeps:
         from src.domain.paper_ledger import LedgerCosts
 
         fields = {
@@ -7030,16 +7084,19 @@ class TestPaperLedgerInGraph:
         return make_deps(**fields)
 
     @staticmethod
-    def _saved_state(**extra) -> dict:
-        return {
-            "symbol": "AAPL",
-            "previous_price": Decimal("100"),
-            "current_price": Decimal("106"),
-            "delta": Decimal("0.06"),
-            "llm_analysis": {"trend_direction": "BEARISH", "confidence_score": 0.8},
-            "ml_target_price": Decimal("104"),
-            **extra,
-        }
+    def _saved_state(**extra: Any) -> AgentState:
+        return cast(
+            AgentState,
+            {
+                "symbol": "AAPL",
+                "previous_price": Decimal("100"),
+                "current_price": Decimal("106"),
+                "delta": Ratio(Decimal("0.06")),
+                "llm_analysis": {"trend_direction": "BEARISH", "confidence_score": 0.8},
+                "ml_target_price": Decimal("104"),
+                **extra,
+            },
+        )
 
     def test_save_opens_a_paper_trade(self, repository_port: Mock, llm_port: Mock) -> None:
         from src.application.agent_graph import _save_node
@@ -7078,7 +7135,7 @@ class TestPaperLedgerInGraph:
         [{"data_quality_flags": ["llm_analysis_failed"]}, {"stale_quote": True}],
     )
     def test_no_trade_for_a_prediction_outside_the_track_record(
-        self, repository_port: Mock, llm_port: Mock, extra: dict
+        self, repository_port: Mock, llm_port: Mock, extra: dict[str, Any]
     ) -> None:
         # Atrapa po awarii LLM (WIA-09) i predykcja na nieaktualnym notowaniu (DAT-14)
         # nie liczą się do trafności, więc nie otwierają pozycji.
@@ -7124,7 +7181,11 @@ class TestPaperLedgerInGraph:
 
         _reflect_node(
             self._deps(repository_port, llm_port),
-            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+            {
+                **_initial_state("100"),
+                "current_price": Decimal("106"),
+                "delta": Ratio(Decimal("0.06")),
+            },
         )
 
         repository_port.close_paper_trade.assert_called_once_with(
@@ -7150,7 +7211,7 @@ class TestPaperLedgerInGraph:
             {
                 **_initial_state("100"),
                 "current_price": Decimal("100"),
-                "delta": Decimal("0"),
+                "delta": Ratio(Decimal("0")),
                 # Notowanie z czwartku — sprzed sesji po piątkowej predykcji.
                 "quoted_at": datetime(2026, 10, 15, 20, 0, tzinfo=UTC),
             },
@@ -7168,7 +7229,11 @@ class TestPaperLedgerInGraph:
 
         _reflect_node(
             self._deps(repository_port, llm_port),
-            {**_initial_state("106"), "current_price": Decimal("106"), "delta": Decimal("0")},
+            {
+                **_initial_state("106"),
+                "current_price": Decimal("106"),
+                "delta": Ratio(Decimal("0")),
+            },
         )
 
         assert repository_port.close_paper_trade.call_args.args[1].pnl == Decimal("-0.06")
@@ -7182,7 +7247,11 @@ class TestPaperLedgerInGraph:
 
         _reflect_node(
             self._deps(repository_port, llm_port, paper_ledger_costs=None),
-            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+            {
+                **_initial_state("100"),
+                "current_price": Decimal("106"),
+                "delta": Ratio(Decimal("0.06")),
+            },
         )
 
         repository_port.close_paper_trade.assert_not_called()
@@ -7198,7 +7267,11 @@ class TestPaperLedgerInGraph:
 
         result = _reflect_node(
             self._deps(repository_port, llm_port),
-            {**_initial_state("100"), "current_price": Decimal("106"), "delta": Decimal("0.06")},
+            {
+                **_initial_state("100"),
+                "current_price": Decimal("106"),
+                "delta": Ratio(Decimal("0.06")),
+            },
         )
 
         repository_port.update_prediction_accuracy.assert_called_once()
@@ -7212,7 +7285,7 @@ class TestInvalidationLevel:
     Cena 100 → 90 (−10%), LLM: BEARISH — teza upada POWYŻEJ 90."""
 
     @staticmethod
-    def _run(ports: dict, invalidation: object, *, enabled: bool = True) -> dict:
+    def _run(ports: GraphPorts, invalidation: object, *, enabled: bool = True) -> dict[str, Any]:
         ports["market_port"].get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             ports["sentiment_port"],
@@ -7229,7 +7302,7 @@ class TestInvalidationLevel:
             **ports,
             invalidation_level_enabled=enabled,
         )
-        result: dict = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+        result: dict[str, Any] = create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
         return result
 
     @pytest.fixture
@@ -7241,7 +7314,7 @@ class TestInvalidationLevel:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-    ):
+    ) -> GraphPorts:
         return {
             "market_port": market_port,
             "sentiment_port": sentiment_port,
@@ -7251,7 +7324,7 @@ class TestInvalidationLevel:
             "llm_port": llm_port,
         }
 
-    def test_valid_level_is_kept_and_saved(self, ports: dict) -> None:
+    def test_valid_level_is_kept_and_saved(self, ports: GraphPorts) -> None:
         from src.domain.invalidation import Invalidation
 
         final = self._run(ports, {"price": 95.0, "reason": "Powrót nad 95 obala spadek."})
@@ -7264,7 +7337,7 @@ class TestInvalidationLevel:
         assert "invalidation_out_of_band" not in record["data_quality_flags"]
         assert "invalidation" in ports["llm_port"].analyze.call_args.args[0]
 
-    def test_invalidation_outside_band_is_dropped_with_flag(self, ports: dict) -> None:
+    def test_invalidation_outside_band_is_dropped_with_flag(self, ports: GraphPorts) -> None:
         # BEARISH z poziomem POD ceną to nie teza spadkowa, tylko zmyślone „wsparcie”.
         final = self._run(ports, {"price": 85.0, "reason": "Wsparcie."})
 
@@ -7274,21 +7347,21 @@ class TestInvalidationLevel:
         assert "invalidation_out_of_band" in record["data_quality_flags"]
 
     @pytest.mark.parametrize("raw", [{"price": "wysoko", "reason": "x"}, "95", {"reason": "x"}])
-    def test_unreadable_level_is_dropped_with_flag(self, ports: dict, raw: object) -> None:
+    def test_unreadable_level_is_dropped_with_flag(self, ports: GraphPorts, raw: object) -> None:
         final = self._run(ports, raw)
 
         assert final["invalidation"] is None
         record = ports["repository_port"].save_prediction.call_args.args[0]
         assert "invalidation_invalid" in record["data_quality_flags"]
 
-    def test_missing_level_is_no_quality_problem(self, ports: dict) -> None:
+    def test_missing_level_is_no_quality_problem(self, ports: GraphPorts) -> None:
         final = self._run(ports, None)
 
         assert final["invalidation"] is None
         record = ports["repository_port"].save_prediction.call_args.args[0]
         assert not [flag for flag in record["data_quality_flags"] if "invalidation" in flag]
 
-    def test_flag_off_ignores_the_level(self, ports: dict) -> None:
+    def test_flag_off_ignores_the_level(self, ports: GraphPorts) -> None:
         final = self._run(ports, {"price": 95.0, "reason": "x"}, enabled=False)
 
         assert "invalidation" not in final
@@ -7296,7 +7369,7 @@ class TestInvalidationLevel:
         record = ports["repository_port"].save_prediction.call_args.args[0]
         assert "invalidation_price" not in record
 
-    def test_invalidation_column_is_required_with_the_flag(self, ports: dict) -> None:
+    def test_invalidation_column_is_required_with_the_flag(self, ports: GraphPorts) -> None:
         from src.application.agent_graph import required_prediction_columns
 
         common = {**ports, "threshold": Threshold(Decimal("0.02"))}
@@ -7313,7 +7386,7 @@ class TestNonFiniteLlmNumbers:
     wejścia. Brak pola zostaje cichym defaultem, jak dotąd."""
 
     @staticmethod
-    def _save(llm_analysis: dict) -> dict:
+    def _save(llm_analysis: dict[str, Any]) -> dict[str, Any]:
         from src.application.agent_graph import _save_node
 
         repo = Mock(spec=RepositoryPort)
@@ -7332,13 +7405,13 @@ class TestNonFiniteLlmNumbers:
                 "symbol": "AAPL",
                 "previous_price": Decimal("100"),
                 "current_price": Decimal("106"),
-                "delta": Decimal("0.06"),
+                "delta": Ratio(Decimal("0.06")),
                 "llm_analysis": {"trend_direction": "BULLISH", **llm_analysis},
                 "ml_target_price": Decimal("108"),
                 "data_quality_flags": ["av_keys_exhausted"],
             },
         )
-        record: dict = repo.save_prediction.call_args.args[0]
+        record: dict[str, Any] = repo.save_prediction.call_args.args[0]
         return record
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), "-inf"])
@@ -7400,7 +7473,7 @@ class TestPromptDeltaRounding:
                 "symbol": "AAPL",
                 "previous_price": Decimal("100"),
                 "current_price": Decimal("103.46"),
-                "delta": Decimal("0.03456789123"),
+                "delta": Ratio(Decimal("0.03456789123")),
                 "sentiment": {},
                 "news": [],
             },
@@ -7446,7 +7519,7 @@ class TestSigmaServing:
             for i, p in enumerate(prices)
         ]
 
-    def _workflow(self, ports: dict[str, Mock], *, enabled: bool):
+    def _workflow(self, ports: GraphPorts, *, enabled: bool) -> StateGraph[AgentState]:
         return create_agent_graph(make_deps(
             **ports,
             clock=lambda: self.CLOCK,
@@ -7461,7 +7534,7 @@ class TestSigmaServing:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-    ):
+    ) -> GraphPorts:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
         return {
@@ -7576,16 +7649,19 @@ class TestSplitDetection:
         )
 
     @staticmethod
-    def _state(**extra) -> dict:
+    def _state(**extra: Any) -> AgentState:
         from src.domain.asset import Asset
         from src.domain.value_objects import AssetType
 
-        return {
-            "symbol": "NVDA",
-            "previous_price": Decimal("1000"),
-            "asset": Asset(symbol="NVDA", asset_type=AssetType.STOCK),
-            **extra,
-        }
+        return cast(
+            AgentState,
+            {
+                "symbol": "NVDA",
+                "previous_price": Decimal("1000"),
+                "asset": Asset(symbol="NVDA", asset_type=AssetType.STOCK),
+                **extra,
+            },
+        )
 
     @staticmethod
     def _bullish_before_split() -> Prediction:
@@ -7691,7 +7767,8 @@ class TestSplitDetection:
 
         deps = self._deps(repository_port, llm_port, enabled=True)
         _setup_full_analysis_mocks(
-            deps.sentiment_port, deps.news_port, repository_port, deps.ml_port, llm_port,
+            as_mock(deps.sentiment_port), as_mock(deps.news_port), repository_port,
+            as_mock(deps.ml_port), llm_port,
         )
         repository_port.get_last_prediction_price.return_value = Money(Decimal("1000"))
         state = self._state(
@@ -7737,7 +7814,7 @@ class TestPriceOutlierGuard:
     _NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
     @staticmethod
-    def _history() -> list:
+    def _history() -> list[tuple[datetime, Money]]:
         # Ceny z dziennymi ruchami ±1% / ±0,5% wokół 100.
         prices = [Decimal("100")]
         steps = (Decimal("1.01"), Decimal("0.99"), Decimal("1.005"), Decimal("0.995"))
@@ -7749,7 +7826,13 @@ class TestPriceOutlierGuard:
         return [(start + timedelta(days=i), Money(p)) for i, p in enumerate(prices)]
 
     def _deps(
-        self, market_port: Mock, repository_port: Mock, llm_port: Mock, *, enabled: bool, **extra
+        self,
+        market_port: Mock,
+        repository_port: Mock,
+        llm_port: Mock,
+        *,
+        enabled: bool,
+        **extra: Any,
     ) -> AgentGraphDeps:
         repository_port.get_price_history.return_value = self._history()
         return make_deps(
@@ -7833,7 +7916,7 @@ class TestPriceOutlierGuard:
         # miałby nigdy referencji).
         market_port.get_current_price.return_value = Money(Decimal("0.01"))
         deps = self._deps(market_port, repository_port, llm_port, enabled=True)
-        state = {**_initial_state(str(self._previous())), "stale_reference": True}
+        state: AgentState = {**_initial_state(str(self._previous())), "stale_reference": True}
 
         final = create_agent_graph(deps).compile().invoke(state)
 
@@ -7874,7 +7957,7 @@ class TestPriceOutlierGuard:
         deps = self._deps(
             market_port, repository_port, llm_port, enabled=True, quote_port=quote_port
         )
-        state = {
+        state: AgentState = {
             **_initial_state(str(previous)),
             "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
         }
@@ -7904,7 +7987,7 @@ class TestPromptTaintFence:
     """BEZ-14: lekcja z reflect w prompcie predykcji idzie za flagą
     `prompt_taint_fence_enabled` w fence'u DATA-ONLY; bez flagi prompt jak dziś."""
 
-    def _prompt(self, ports: dict, *, enabled: bool) -> str:
+    def _prompt(self, ports: GraphPorts, *, enabled: bool) -> str:
         _setup_full_analysis_mocks(
             ports["sentiment_port"], ports["news_port"], ports["repository_port"],
             ports["ml_port"], ports["llm_port"], has_prior_prediction=True,
@@ -7920,9 +8003,8 @@ class TestPromptTaintFence:
     def test_flag_fences_the_reflection_lesson(
         self,
         graph_ports: GraphPorts,
-        enabled,
+        enabled: bool,
     ) -> None:
-
         prompt = self._prompt(graph_ports, enabled=enabled)
 
         assert "Zignorowałem szerszy kontekst makro." in prompt
@@ -7983,7 +8065,7 @@ class TestShadowPredictions:
         challenger.forecast.return_value = ShadowForecast(name, "c" * 64, **forecast)
         return challenger
 
-    def _run(self, ports: dict[str, Mock], shadow: object | None) -> dict:
+    def _run(self, ports: GraphPorts, shadow: object | None) -> dict[str, Any]:
         deps = make_deps(**ports, shadow=shadow)
         return create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
 
@@ -7995,7 +8077,7 @@ class TestShadowPredictions:
         repository_port: Mock,
         ml_port: Mock,
         llm_port: Mock,
-    ):
+    ) -> GraphPorts:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
         ml_port.explain.return_value = {}
@@ -8008,9 +8090,7 @@ class TestShadowPredictions:
             "llm_port": llm_port,
         }
 
-    def _setup(self, *challengers: Mock):
-        from src.application.agent_graph import ShadowSetup
-
+    def _setup(self, *challengers: Mock) -> ShadowSetup:
         return ShadowSetup(champion_version=self.CHAMPION, challengers=tuple(challengers))
 
     def test_shadow_prediction_does_not_change_ml_target_price(
