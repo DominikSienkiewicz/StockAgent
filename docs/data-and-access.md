@@ -42,6 +42,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `shadow_predictions` | `075`, `083` | Model output: the champion's and the challengers' forecasts of the ML leg per saved prediction (model name, weights sha256, return or probability, ML-33); since `083` also the trend and confidence of a prompt or model variant run in shadow (EXP-26) | on, no policies | Fast Loop (`shadow_predictions_enabled`, `shadow_prompt_variant_enabled`) | Slow Loop (promotion verdict in the step summary; the ML read skips the variant's rows) |
 | `paper_trades` | `073` | Model output: the append-only paper ledger (WIA-59) — one paper position per saved prediction (side, entry price and time, cost), closed once at settlement; `row_hash = sha256(canonical entry + prev_hash)` chains the rows, triggers allow only the one-time close and refuse `DELETE` and `TRUNCATE` | on, no policies; `service_role` without `DELETE` and `TRUNCATE` | Fast Loop (`paper_ledger_enabled`: entry in save, close in reflect) | Fast Loop (equity curve, chain head for publication) |
 | `bot_state` | `079` | Operational: the `getUpdates` offset of the owner's Telegram bot (MAIL-48) — one row per channel, no message text and no chat id | on, no policies | Bot (`telegram_bot_enabled`, after the commands of a run) | Bot (start of a run) |
+| `symbol_mutes` | `080` | User settings: symbols muted from the owner's bot (MAIL-45) — symbol, end of the mute, time of the last `/mute`; symbols are added only through `config.toml` | on, no policies | Bot (`symbol_mutes_enabled`: `/mute` upserts, `/unmute` deletes) | Fast Loop (`symbol_mutes_enabled`: a muted symbol gets no paid analysis and no section, only its price snapshot), Bot (`/watch`) |
 
 The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function still run with the caller's path:
 
@@ -109,7 +110,9 @@ Nothing is deleted automatically: there is no retention job and no TTL in the da
 - `subscribers` is maintained by hand. Deleting a row removes that recipient's email address
   from the database; no other relation stores it.
 - `bot_state` holds one row per bot channel, overwritten after every bot run that handled
-  a command.
+  a command. `symbol_mutes` holds one row per muted symbol: `/mute` overwrites it, `/unmute`
+  deletes it, and an expired mute stays until the next `/mute` or `/unmute` of that symbol
+  (the Fast Loop ignores it after `muted_until`).
 - `digests` grows by one upserted row per cycle, and the `digests` bucket keeps every archived
   email; the signed links expire after 7 days, the files do not.
 

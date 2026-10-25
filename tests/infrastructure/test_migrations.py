@@ -110,6 +110,7 @@ MIGRATION_FILES = [
     "075_shadow_predictions.sql",
     "076_rag_point_in_time.sql",
     "079_bot_state.sql",
+    "080_symbol_mutes.sql",
     "083_shadow_prediction_trend.sql",
 ]
 
@@ -4583,6 +4584,69 @@ class TestMigration079BotState:
             cur.execute(migration)
             cur.execute(migration)
         assert "update_offset" in _columns(migrated_pg_conn, "bot_state")
+
+
+@pytest.mark.containers
+class TestMigration080SymbolMutes:
+    """MAIL-45: wyciszenia z bota — jeden wiersz na symbol, ponowne /mute nadpisuje,
+    /unmute usuwa. Baza nie trzyma symboli dodanych z bota (decyzja: opcja b)."""
+
+    def test_symbol_mutes_keep_one_row_per_symbol(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"symbol", "muted_until", "created_at"} <= _columns(
+            migrated_pg_conn, "symbol_mutes"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            for until in ("2026-11-01T08:00:00+00:00", "2026-11-08T08:00:00+00:00"):
+                cur.execute(
+                    "INSERT INTO symbol_mutes (symbol, muted_until) VALUES ('NVDA', %s) "
+                    "ON CONFLICT (symbol) DO UPDATE SET muted_until = EXCLUDED.muted_until",
+                    (until,),
+                )
+            cur.execute("SELECT symbol, muted_until FROM symbol_mutes")
+            assert cur.fetchall() == [("NVDA", datetime(2026, 11, 8, 8, 0, tzinfo=UTC))]
+            cur.execute("DELETE FROM symbol_mutes WHERE symbol = 'NVDA'")
+            cur.execute("SELECT count(*) FROM symbol_mutes")
+            assert cur.fetchone() == (0,)
+
+    @pytest.mark.parametrize("symbol", ["nvda", ""])
+    def test_symbol_mutes_reject_a_lowercase_or_empty_symbol(
+        self, migrated_pg_conn: psycopg2.extensions.connection, symbol: str
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO symbol_mutes (symbol, muted_until) VALUES (%s, NOW())", (symbol,)
+            )
+
+    def test_symbol_mutes_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'symbol_mutes'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "symbol_mutes") for role in PUBLIC_API_ROLES
+            ]
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO symbol_mutes (symbol, muted_until) VALUES ('TSLA', NOW()) "
+                "RETURNING symbol"
+            )
+            assert cur.fetchone() == ("TSLA",)
+            cur.execute("DELETE FROM symbol_mutes WHERE symbol = 'TSLA' RETURNING symbol")
+            assert cur.fetchone() == ("TSLA",)
+
+        assert public == [False, False]
+
+    def test_080_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "080_symbol_mutes.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+        assert "muted_until" in _columns(migrated_pg_conn, "symbol_mutes")
 
 
 @pytest.mark.containers
