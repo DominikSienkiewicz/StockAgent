@@ -11,6 +11,7 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 """
 
 import os
+from collections.abc import Iterator
 
 import pytest
 from hypothesis import settings as hypothesis_settings
@@ -66,7 +67,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _closed_http_circuits():
+def _closed_http_circuits() -> Iterator[None]:
     """NIEZ-31: obwody HTTP żyją przez cały proces — test, który otworzył obwód
     hosta, nie może odciąć tego hosta kolejnym testom."""
     from src.infrastructure.adapters._http import process_circuits
