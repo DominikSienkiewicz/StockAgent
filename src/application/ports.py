@@ -43,7 +43,7 @@ from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, Referen
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.shadow_prompt import ShadowTrendForecast
-from src.domain.shock import DailyChange
+from src.domain.shock import DailyChange, SentShockLevel
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.training_labels import FeatureSnapshot
@@ -781,10 +781,16 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
         """#11 — persystuje wysłany alert szoku (migracja 021).
         `UNIQUE(symbol, alert_date)` egzekwuje debounce po stronie bazy."""
+
+    @abstractmethod
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        """ALR-16 — szczeble drabiny eskalacji wysłane w dniu `alert_date` (kolumna
+        `level`, migracja 081): symbol → szczeble rosnąco. Bez 081 → `PortError`;
+        wołający pilnuje flagi `shock_escalation_enabled`."""
 
     @abstractmethod
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:

@@ -75,6 +75,7 @@ from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, Referen
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.shadow_prompt import ShadowTrendForecast
+from src.domain.shock import SentShockLevel, ShockDirection
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
@@ -160,7 +161,8 @@ class InMemoryRepository(RepositoryPort):
         self._fundamentals: dict[str, Fundamentals] = {}
         self._earnings: dict[str, CachedEarningsDate] = {}
         self._regime: list[tuple[datetime, MarketRegime, RegimeState]] = []
-        self._shock_alerts: dict[tuple[str, date], StoredShockAlert] = {}
+        # Klucz jak UNIQUE(symbol, alert_date, level) z migracji 081 (ALR-16).
+        self._shock_alerts: dict[tuple[str, date, int], StoredShockAlert] = {}
         self._price_levels: dict[str, Row] = {}
         self._scorecards: list[Row] = []
         # FIN-25: chwila zapisu przy wierszu — jak `llm_calls.created_at`.
@@ -781,19 +783,30 @@ class InMemoryRepository(RepositoryPort):
         return sorted(recent, key=lambda alert: alert.occurred_at, reverse=True)
 
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
         with self._lock:
-            # UNIQUE(symbol, alert_date) — drugi alert tego dnia odbija się jak w bazie.
-            key = (symbol, alert_date)
+            # UNIQUE(symbol, alert_date, level) — ten sam szczebel dnia odbija się jak w bazie.
+            key = (symbol, alert_date, level)
             if key in self._shock_alerts:
-                raise ValueError(f"shock alert for {symbol} on {alert_date} already exists")
+                raise ValueError(
+                    f"shock alert for {symbol} on {alert_date} (level {level}) already exists"
+                )
             self._shock_alerts[key] = StoredShockAlert(
                 symbol=symbol, delta=delta, direction=direction, created_at=self._now()
             )
 
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
-        return {key for key in self._shock_alerts if key[1] >= since}
+        return {(symbol, day) for symbol, day, _level in self._shock_alerts if day >= since}
+
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        sent: dict[str, list[SentShockLevel]] = {}
+        for (symbol, day, level), alert in sorted(self._shock_alerts.items()):
+            if day == alert_date:
+                sent.setdefault(symbol, []).append(
+                    SentShockLevel(level=level, direction=ShockDirection(alert.direction))
+                )
+        return {symbol: tuple(levels) for symbol, levels in sent.items()}
 
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         latest: dict[str, datetime] = {}

@@ -499,6 +499,29 @@ class TestShadowTrendPrediction:
         assert [row.forecast.model_name for row in settled] == ["champion"]
 
 
+class TestShockAlertLevels:
+    """ALR-16 (migracja 081): szczebel 1 bez klucza `level`, eskalacja z kluczem —
+    oba przez prawdziwy PostgREST, odczyt szczebli dnia i odbicie powtórzonego szczebla."""
+
+    def test_rungs_round_trip_and_a_repeated_rung_is_rejected(
+        self, repository: SupabaseRepository
+    ) -> None:
+        from datetime import date
+
+        from src.domain.shock import SentShockLevel, ShockDirection
+
+        day = date(2026, 10, 24)
+        repository.save_shock_alert("T17SA", day, -0.045, "DOWN")
+        repository.save_shock_alert("T17SA", day, -0.095, "DOWN", level=2)
+
+        assert repository.get_shock_alert_levels(day)["T17SA"] == (
+            SentShockLevel(level=1, direction=ShockDirection.DOWN),
+            SentShockLevel(level=2, direction=ShockDirection.DOWN),
+        )
+        with pytest.raises(PortError):
+            repository.save_shock_alert("T17SA", day, -0.12, "DOWN", level=2)
+
+
 class TestSchemaAndRoles:
     def test_unknown_column_is_rejected_as_not_found(
         self, repository: SupabaseRepository

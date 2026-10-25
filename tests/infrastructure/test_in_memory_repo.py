@@ -319,3 +319,26 @@ def test_judged_diagnoses_leave_the_sample_and_a_rejection_hides_the_lesson() ->
     assert rows["AMD"]["correction_insights"] == DIAGNOSIS_REJECTED_INSIGHT
     assert rows["AMD"]["rejected_diagnosis"] == "Rynek był zmienny."
     assert rows["NVDA"]["correction_insights"] == "Zignorowałem Fed."
+
+
+def test_shock_alert_levels_follow_the_ladder_rungs() -> None:
+    # ALR-16: drugi szczebel dnia mieści się obok pierwszego, ten sam szczebel odbija
+    # się jak UNIQUE(symbol, alert_date, level) z migracji 081.
+    from datetime import date
+
+    from src.domain.shock import SentShockLevel, ShockDirection
+
+    repo = _repo(_Clock())
+    day = date(2026, 10, 24)
+    repo.save_shock_alert("NVDA", day, -0.045, "DOWN")
+    repo.save_shock_alert("NVDA", day, -0.095, "DOWN", level=2)
+
+    assert repo.get_sent_shock_alerts(day) == {("NVDA", day)}
+    assert repo.get_shock_alert_levels(day) == {
+        "NVDA": (
+            SentShockLevel(level=1, direction=ShockDirection.DOWN),
+            SentShockLevel(level=2, direction=ShockDirection.DOWN),
+        )
+    }
+    with pytest.raises(ValueError, match="already exists"):
+        repo.save_shock_alert("NVDA", day, -0.12, "DOWN", level=2)

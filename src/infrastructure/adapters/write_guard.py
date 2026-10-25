@@ -68,6 +68,7 @@ from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, Referen
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.shadow_prompt import ShadowTrendForecast
+from src.domain.shock import SentShockLevel
 from src.domain.value_objects import AssetType, Fundamentals, Money
 from src.domain.watchlist import SymbolMute
 
@@ -155,6 +156,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_sent_shock_alerts",
         "get_shock_alert_times",
         "get_shock_alerts_since",
+        "get_shock_alert_levels",
         "get_last_report_at",
         "get_active_price_levels",
         "get_previous_verdict",
@@ -360,6 +362,9 @@ class ReadOnlyRepository(RepositoryPort):
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         return self._delegate.get_shock_alert_times(since)
 
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        return self._delegate.get_shock_alert_levels(alert_date)
+
     def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
         return self._delegate.get_shock_alerts_since(since)
 
@@ -502,7 +507,7 @@ class ReadOnlyRepository(RepositoryPort):
         self._skipped.skip("mark_commitment_revealed")
 
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
         self._skipped.skip("save_shock_alert")
 

@@ -2489,6 +2489,74 @@ class TestShockAlerts:
         assert payload["alert_date"] == "2026-07-10"
         assert payload["direction"] == "DOWN"
 
+    def test_first_level_payload_has_no_level_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ALR-16: szczebel 1 to DEFAULT kolumny z 081 — zapis jak przed migracją,
+        # więc flaga drabiny off nie dotyka bazy bez 081.
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_shock_alert("BTC", date(2026, 7, 10), -0.082, "DOWN")
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert "level" not in payload
+
+    def test_escalation_writes_its_level(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 2}])
+
+        repo.save_shock_alert("NVDA", date(2026, 10, 24), -0.095, "DOWN", level=2)
+
+        payload = mock_client.table.return_value.insert.call_args.args[0]
+        assert payload["level"] == 2
+        assert payload["symbol"] == "NVDA"
+
+    def test_levels_of_the_day_group_rungs_per_symbol(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.domain.shock import SentShockLevel, ShockDirection
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq"],
+            [
+                {"symbol": "NVDA", "level": 2, "direction": "DOWN"},
+                {"symbol": "NVDA", "level": 1, "direction": "DOWN"},
+                {"symbol": "BTC", "level": 1, "direction": "UP"},
+            ],
+        )
+
+        levels = repo.get_shock_alert_levels(date(2026, 10, 24))
+
+        mock_client.table.assert_called_with("shock_alerts")
+        mock_client.table.return_value.select.return_value.eq.assert_called_with(
+            "alert_date", "2026-10-24"
+        )
+        assert levels == {
+            "NVDA": (
+                SentShockLevel(level=1, direction=ShockDirection.DOWN),
+                SentShockLevel(level=2, direction=ShockDirection.DOWN),
+            ),
+            "BTC": (SentShockLevel(level=1, direction=ShockDirection.UP),),
+        }
+
+    def test_unreadable_level_row_fails_the_whole_read(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # Pominięty szczebel mógłby wyjść drugi raz — watch na ten przebieg wraca do
+        # „jeden alert dziennie”, zamiast zgadywać.
+        from src.application.errors import MalformedPayload
+
+        _set_chain_response(
+            mock_client,
+            ["table", "select", "eq"],
+            [{"symbol": "NVDA", "level": 1, "direction": "SIDEWAYS"}],
+        )
+
+        with pytest.raises(MalformedPayload):
+            repo.get_shock_alert_levels(date(2026, 10, 24))
+
     def test_get_sent_returns_symbol_date_pairs(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:

@@ -83,6 +83,7 @@ from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.shadow_prompt import ShadowTrendForecast
+from src.domain.shock import SentShockLevel, ShockDirection
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.training_labels import FeatureSnapshot
@@ -101,6 +102,9 @@ DEFAULT_TABLE = "prediction_logs"
 DEFAULT_FEATURE_VIEW = "ml_feature_store"
 DEFAULT_SNAPSHOT_TABLE = "price_snapshots"
 DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
+
+# ALR-16: kierunki szoku, które watch zapisuje w `shock_alerts.direction`.
+_SHOCK_DIRECTIONS = frozenset(direction.value for direction in ShockDirection)
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
@@ -2122,18 +2126,44 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         return Money(Decimal(str(price))), datetime.fromisoformat(stamp)
 
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
         # UNIQUE(symbol, alert_date) w migracji 021 jest twardym debounce'em —
         # nawet gdy dwa przebiegi watcha wystartują równolegle.
-        self._client.table("shock_alerts").insert(
-            {
-                "symbol": symbol,
-                "alert_date": alert_date.isoformat(),
-                "delta": delta,
-                "direction": direction,
-            }
-        ).execute()
+        row: dict[str, Any] = {
+            "symbol": symbol,
+            "alert_date": alert_date.isoformat(),
+            "delta": delta,
+            "direction": direction,
+        }
+        # ALR-16: szczebel 1 to DEFAULT kolumny z 081, więc zapis bez drabiny wygląda
+        # jak przed migracją; klucz `level` niesie tylko eskalacja (za flagą po 081).
+        if level != 1:
+            row["level"] = level
+        self._client.table("shock_alerts").insert(row).execute()
+
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        # SUROWO (ARCH-33): bez migracji 081 leci `PortError`, a watch na ten przebieg
+        # wraca do „jeden alert dziennie”.
+        response = (
+            self._client.table("shock_alerts")
+            .select("symbol, level, direction")
+            .eq("alert_date", alert_date.isoformat())
+            .execute()
+        )
+        sent: dict[str, list[SentShockLevel]] = {}
+        for row in _rows(response):
+            symbol, level, direction = row.get("symbol"), row.get("level"), row.get("direction")
+            if symbol is None or not isinstance(level, int) or direction not in _SHOCK_DIRECTIONS:
+                # Pominięty szczebel mógłby wyjść drugi raz — lepiej cały przebieg bez drabiny.
+                raise MalformedPayload(f"shock_alerts: nieczytelny szczebel {row!r}")
+            sent.setdefault(str(symbol), []).append(
+                SentShockLevel(level=level, direction=ShockDirection(direction))
+            )
+        return {
+            symbol: tuple(sorted(levels, key=lambda rung: rung.level))
+            for symbol, levels in sent.items()
+        }
 
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
         # Graceful: brak migracji 021 → pusty zbiór (debounce zostaje tylko
