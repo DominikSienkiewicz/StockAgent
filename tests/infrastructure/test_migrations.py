@@ -4405,7 +4405,7 @@ class TestMigration076RagPointInTime:
         assert symbols == ["AAPL", "AAPL", "FUT", "LATE", "MSFT", "OLD"]
 
     def test_only_the_service_role_executes_it_and_its_search_path_is_pinned(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         with supabase_like_conn.cursor() as cur:
             cur.execute(
