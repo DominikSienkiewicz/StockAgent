@@ -84,6 +84,11 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
   (DOC-30).
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
 
+## Dziennik decyzji (DOC-40)
+
+- Pozycja roadmapy ma numer `R-N`, definiowany wyłącznie w `docs/decisions.md`; decyzje
+  architektoniczne to wpisy `D-N` tamże, incydenty — wiersze w `docs/engineering-log.md`.
+
 ## Język
 
 - Komentarze w kodzie i treść raportu mailowego: **polski**.

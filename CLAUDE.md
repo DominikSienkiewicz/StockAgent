@@ -35,10 +35,12 @@ domain  ←  application  ←  infrastructure
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
 - **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py` / `main_scorecard.py`** — DI Container.
-  Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (#11)
+  Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (R-11)
   i `main_deadman.py` (NIEZ-11) reużywają fabryk z `main_agent` i NIE WOŁAJĄ żadnego
-  płatnego portu ani `save_price_snapshot`. `main_scorecard.py` (WIA-52) tylko czyta bazę
-  i zapisuje plik strony — bez płatnych portów i bez zapisu do bazy.
+  płatnego portu ani `save_price_snapshot`; watch zapisuje do bazy wyłącznie stemple swoich
+  alarmów (`shock_alerts`, `price_level_alerts`, `prediction_logs.invalidation_alerted_at`).
+  `main_scorecard.py` (WIA-52) tylko czyta bazę i zapisuje pliki strony (scorecard,
+  `scorecard.json`, strona statusu NIEZ-33) — bez płatnych portów i bez zapisu do bazy.
   Każde narzędzie jednorazowe to podkomenda `main_tools.py`, które jako jedyne składa dla niego
   `Settings` i adaptery, a `src/tools/` trzyma wyłącznie czyste funkcje — osobny `main_<x>.py`
   dostaje tylko entry-point z własnym workflow (ARCH-39, bez wyjątków).
@@ -59,7 +61,13 @@ Analogicznie nowa sekcja maila = nowy moduł `src/application/report_<nazwa>.py`
 (`application/report_builder.py`), które sekcja deklaruje w `context_fields`. Pole
 czytane przez wspólne wejście sekcji (`SectionInput`) albo przez kilka sekcji trafia do
 `SHARED_CONTEXT_FIELDS`; `tests/application/test_report_registry.py` pilnuje, że każde
-pole ma dokładnie jednego konsumenta (ARCH-12). Pole z odczytów repozytorium wypełnia
+pole ma dokładnie jednego konsumenta (ARCH-12). Nowa sekcja dopisuje też swój klucz do
+`MAIL_ORDER` (ten sam plik testów) i wiersz z kolumną `Key` w tabeli sekcji
+`docs/report-email.md` (`tests/test_docs_contract.py`). Kolory tekstu biorą się z `PALETTE`
+(`report_formatting.py`) — `tests/application/test_report_a11y.py` liczy kontrast AA każdego
+tekstu na jego tle. „Portfel” w nazwach sekcji to realne pozycje (`💼 Twój portfel`), liczby
+z równych wag to „watchlista”; etykiety rekomendacji i prefiks tematu są w
+`src/domain/polish_labels.py`. Pole z odczytów repozytorium wypełnia
 `ReportAssembler.assemble` (`application/use_cases/assemble_report.py`) przez
 `dataclasses.replace`; pole z adaptera (np. portfel właściciela) dokłada
 `main_agent._report_inputs`.
@@ -70,8 +78,13 @@ wysyłki i wstrzykuje hooki świata (`time.sleep`, `redact_secrets`, `symbol_con
 Logika cyklu i raportu żyje w `src/application/use_cases/`: `run_cycle.py`
 (`RunFastLoopCycle` — przebieg symboli z jednym `CycleOptions`), `assemble_report.py`
 (`ReportAssembler` — zna tylko `RepositoryPort` i `ReportFlags`, nigdy `Settings`; okno
-track recordu czyta raz na dispatch `TrackRecordReads`), `publish_public_scorecard.py`
-i `reveal_attestations.py` (wyłącznie na portach). `main_agent.deliver_report`
+track recordu czyta raz na dispatch `TrackRecordReads`), `publish_public_scorecard.py` (strona
+i `scorecard.json`, WIA-81), `publish_status_page.py` (strona statusu i `badge.json` z
+`cycle_runs`, NIEZ-33) i `reveal_attestations.py` (`reconcile` na starcie runu stempluje
+`revealed_at` tylko revealom obecnym w checkoucie `attestation-log`, `run` po raporcie tylko
+publikuje — WIA-15); wszystkie wyłącznie na portach. Commitmenty cyklu zbiera
+`CycleCommitmentCollector` (`application/attestation_cycle.py`), a `main_agent` po przebiegu
+symboli publikuje jedną linię rootu Merkle'a na cykl (WIA-60). `main_agent.deliver_report`
 (composition, bo kanały buduje z `Settings`) składa i rozsyła raport i zwraca
 `DeliveryOutcome` (`application/report_delivery.py`) ze statusem każdego kanału
 (ARCH-02, ARCH-06, ARCH-07, ARCH-08).
@@ -86,8 +99,13 @@ i `reveal_attestations.py` (wyłącznie na portach). `main_agent.deliver_report`
   prezentacji (`report_formatting.pct`, `format_pct_pl`).
 - Stan grafu (`AgentState.delta`, `drift`) i `PriceDelta.fraction` to ułamki;
   `PriceDelta.percentage` to zdeprecjonowany alias ułamka (do usunięcia, ARCH-14).
-- Starsze pola `_pct` z ułamkiem mają już typ `Ratio` i czekają na zmianę nazwy —
-  rozstrzyga typ, nie nazwa.
+- Pole z ułamkiem nosi typ `Ratio` i nazwę `*_ratio` (np. `actual_change_ratio`,
+  `return_ratio`, `change_ratio`, `eur_pln_30d_change_ratio`); progi alertów to
+  `elevated_threshold` / `critical_threshold` typu `Ratio`. Sufiks `_pct` zostaje tylko przy
+  prawdziwym procencie (`price_delta_pct`, `min_pct` / `max_pct`, `improvement_pct`,
+  `hit_rate_pct`) i w kontraktach poza kodem: klucze JSON narzędzia LLM `get_macro`
+  (`eur_pln_30d_change_pct`, `usd_pln_30d_change_pct`) niosą ułamek, ale ich zmiana to
+  zmiana przepisu predykcji (tylko za flagą).
 
 ## TDD — testy przed implementacją
 
@@ -105,6 +123,12 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration and not containers"`,
   a testy kontenerowe osobnym krokiem `pytest -m containers`.
 - Mocki portów: `Mock(spec=SomePort)`.
+- Payloady dostawców: `tests/fixtures/providers/` (TEST-16). Nowy parser adaptera = plik w
+  kształcie prawdziwej odpowiedzi (bez kluczy i treści newsów) + test w
+  `tests/infrastructure/test_provider_shapes.py`.
+- Nowa kolumna, RPC albo metoda `SupabaseRepository` = test kontraktowy w
+  `tests/infrastructure/test_supabase_repo_postgrest.py` (marker `containers`, prawdziwy
+  PostgREST z JWT, jeden zestaw kontenerów na moduł, TEST-17).
 
 ## Reguły domenowe / FinOps
 
@@ -120,13 +144,17 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
   ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
   `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
-  nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu (#6).
+  nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu.
   Jedyny wyjątek (FIN-12): symbol odcięty sufitem płatnych wywołań cyklu
   (`max_paid_llm_calls_per_cycle`, węzeł `budget_exhausted`) kończy jako 'ignored'
   BEZ snapshotu ceny — inaczej następny cykl liczyłby Δ od nowej ceny i ruch ponad
-  progiem zniknąłby bez analizy.
+  progiem zniknąłby bez analizy. Drugi wyjątek (DAT-15, za `price_outlier_guard_enabled`):
+  odczyt ceny, który detektor MAD uznał za anomalię, a `pc` notowania jej nie potwierdził,
+  kończy jako 'ignored' BEZ snapshotu i bez rozliczenia; stęchła referencja wyłącza strażnika.
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
+  Po podejrzanym splicie (DAT-23, za `split_detection_enabled`) reflect rozlicza ceną
+  w jednostkach predykcji (`to_pre_split_price`), a bramka liczy ruch od skorygowanej referencji.
 - **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
   zwraca exit 1 tylko gdy **wszystkie** symbole padły. Niedostarczenie raportu (mail
   Fast Loopa albo recap Slow Loopa, gdy kanał jest skonfigurowany) też zostawia exit 0,
@@ -139,7 +167,25 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   łapie klasy taksonomii, nie `except Exception` — `tests/test_exception_ratchet.py`
   pilnuje, żeby szerokich handlerów nie przybywało (obniżaj baseline, gdy któryś
   znika). Sesje z `build_session()` mają circuit breaker per host na czas procesu
-  (NIEZ-31).
+  (NIEZ-31). Adapter HTTP woła `translated_get`, `raise_for_status_translated` i
+  `json_payload` z `_http.py`, adapter SDK LLM — `as_port_error(exc, sdk_error_kind(exc))`;
+  każda publiczna metoda `SupabaseRepository` tłumaczy `APIError` i błędy httpx dekoratorem
+  klasy `_translates_public_methods`.
+- **Paper ledger (WIA-59)**: `paper_trades` jest append-only — save otwiera pozycję, reflect
+  zamyka ją raz. `row_hash = sha256(canonicalize(wejście) + prev_hash)` liczy domena
+  (`paper_ledger.py`); baza pilnuje liniowości i jednorazowego zamknięcia. Zmiana
+  kanonizacji wpisu = nowa `LEDGER_VERSION`. Błąd zapisu ledgera tylko loguje (`PortError`).
+- **Champion/challenger (ML-33)**: prognoza challengera (`ml_challengers`, wagi z Release
+  `model-latest`) trafia wyłącznie do `shadow_predictions` i nie może zmienić ceny, promptu,
+  rady ani rekordu predykcji. Regułę promocji ma domena (`should_promote`), Slow Loop tylko
+  raportuje werdykt — podmiana serwowanych wag należy do właściciela.
+- **Trening ML**: jedyną regułą, które wiersze trenują fold walk-forward, jest
+  `purge_training_indices` (`domain/backtest.py`, ML-26). Każdy trening niesie
+  `TrainingProvenance` (odcisk zbioru, parametry z jawnym `random_state`, wersja XGBoost, SHA
+  kodu), zapis wag pisze sidecar `.json`, a `main_tools.py reproduce-training` sprawdza
+  odtworzenie (ML-22).
+- **Archiwum digestów (MAIL-24)**: `DigestArchivePort` i prywatny bucket Supabase Storage
+  `digests`; podpisany link (TTL 7 dni) dostaje wyłącznie mail i push właściciela (BEZ-01).
 
 ## Migracje bazy
 
@@ -159,6 +205,12 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   nowa funkcja = `REVOKE EXECUTE ... FROM PUBLIC` i `GRANT EXECUTE ... TO service_role`
   w bloku `DO` z guardem `pg_roles`. Test emulacji ról w `test_migrations.py` pada,
   gdy któregoś brakuje; szczegóły w `docs/data-and-access.md`.
+- Flaga zależna od migracji ma wpis w `FLAG_REQUIRED_MIGRATION`
+  (`src/domain/feature_requirements.py`); Fast Loop, Slow Loop i watch wyłączają na czas
+  przebiegu flagi, których migracji baza jeszcze nie ma (`schema_version()`, migracja 071).
+  Mapę z kolumną Migration tabeli flag w `docs/configuration.md` pilnuje
+  `tests/test_feature_requirements_wiring.py`. Nowa migracja = też wiersz w
+  `MIGRATION_PROBES` w `scripts/prod-state-check.sh` (`tests/test_prod_state_probes.py`).
 
 ## Sekrety
 
@@ -178,6 +230,15 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   = ten sam klucz z placeholderem w `.env.example` w tym samym kroku.
 - Sygnał, że robisz to dobrze: `.env` i `.env.example` mają ten sam zestaw kluczy,
   a różnią się wyłącznie wartościami sekretów.
+
+## Dziennik decyzji (DOC-40)
+
+- Pozycja roadmapy ma numer `R-N`, definiowany wyłącznie w `docs/decisions.md`. W kodzie,
+  `config.toml` i docs nie pisz „roadmap #N”; `tests/test_decision_log.py` pilnuje, że każde
+  `R-N` ma wiersz.
+- Nowa decyzja architektoniczna = wpis `D-N` w `docs/decisions.md` (data, status, hashe
+  commitów, strażnicy). Nowy incydent = wiersz w `docs/engineering-log.md` (incydent → reguła →
+  test).
 
 ## Język
 
