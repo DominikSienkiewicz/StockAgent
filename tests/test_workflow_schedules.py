@@ -53,3 +53,20 @@ def test_status_section_dates_the_pause_and_links_the_checklist_and_the_runs() -
     assert "02fc397" in section
     assert "docs/resume-checklist.md" in section
     assert "https://github.com/DominikSienkiewicz/StockAgent/actions" in section
+
+
+def _limitations_section(readme: str) -> str:
+    _, _, rest = readme.partition("\n## What this does NOT prove")
+    return rest.split("\n## ", 1)[0]
+
+
+def test_active_fast_loop_readme_limitations_do_not_describe_a_paused_run() -> None:
+    """Pkt 5 i 6 „What this does NOT prove” mówiły o pauzie od 2026-08-17, choć cron
+    działa od 2026-10-23 i sekcja Status opisuje wznowienie — README przeczyło sobie."""
+    if not _fast_loop_schedule():
+        pytest.skip("cron Fast Loopa zakomentowany — pauza w README jest prawdą")
+    section = _limitations_section(README.read_text(encoding="utf-8"))
+
+    assert section
+    assert "paused" not in section
+    assert "2026-08-17" not in section

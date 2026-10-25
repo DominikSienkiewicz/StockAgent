@@ -247,15 +247,18 @@ claim is written next to the code, where a change has to face it.
    meter does not see.
 4. **No trained weights yet.** The XGBoost leg runs on the no-change baseline, and the report
    and the council prompt label it as cold-start (see [Status](#status)).
-5. **Nothing is public yet, and the daily run is paused.** The public scorecard and the
-   attestation log are implemented and unit-tested but not deployed (see the
-   [resume checklist](docs/resume-checklist.md)), and with the daily run paused since
-   2026-08-17 no live track record is accumulating.
+5. **Nothing is public yet, and the live track record starts from zero.** The public
+   scorecard and the attestation log are implemented and unit-tested but not deployed (see
+   the [resume checklist](docs/resume-checklist.md)). The daily run resumed on 2026-10-23 on
+   a new, empty database (see [Status](#status)), so the live track record only starts
+   accumulating then: the first run records reference prices and nothing settles before
+   the second.
 6. **A short track record is an anecdote.** Telling a 55% hit rate from a coin flip with a
    one-sided test (α = 0.05, 80% power) takes about 617 settled directional predictions in
    `n_eff` (`required_n` in [`src/domain/significance.py`](src/domain/significance.py)). The
    public scorecard prints that number, the window's `n_eff` and, at the window's pace, the
-   date the sample would suffice; while the daily run is paused there is no inflow and no date.
+   date the sample would suffice; until predictions on the new database settle there is no
+   pace and no date.
 
 Each channel carries its own honesty note:
 
