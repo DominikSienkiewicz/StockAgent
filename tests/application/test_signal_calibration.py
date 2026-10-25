@@ -6,6 +6,8 @@ z „BULLISH 0.8” zawyża hit-rate, którym ranking kalibruje predykcje kierun
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.application.signal_calibration import (
     directional_calibration_curve,
     split_calibration_samples,
@@ -98,7 +100,7 @@ def test_timed_samples_keep_directional_rows_with_their_moment() -> None:
 
     from src.application.signal_calibration import timed_directional_samples
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"confidence_score": 0.7, "is_trend_correct": True, "predicted_trend": "BULLISH",
          "timestamp": "2026-10-01T05:30:00+00:00"},
         {"confidence_score": 0.6, "is_trend_correct": False, "predicted_trend": "BEARISH",

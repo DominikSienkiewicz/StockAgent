@@ -7,6 +7,7 @@ Wiring z `Settings` (aliasy w `main_agent`) pilnują testy w
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -31,6 +32,7 @@ from src.application.use_cases.publish_public_scorecard import (
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.cycle_maturity import CycleMaturity
 from src.domain.evaluation_protocol import EvaluationProtocol
+from src.domain.paper_ledger import LedgerTrade
 from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
 
 STARTED_AT = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
@@ -437,7 +439,9 @@ class TestReceiptLineFollowsTheReceiptsFlag:
 # -- ML-28: kalibracja izotoniczna w rankingu sygnałów (flaga) ---------------------
 
 
-def _calibration_row(days_ago: int, confidence: float, correct: bool, trend: str = "BULLISH"):
+def _calibration_row(
+    days_ago: int, confidence: float, correct: bool, trend: str = "BULLISH"
+) -> dict[str, Any]:
     from datetime import timedelta
 
     return {
@@ -448,9 +452,9 @@ def _calibration_row(days_ago: int, confidence: float, correct: bool, trend: str
     }
 
 
-def _overconfident_history() -> list[dict[str, object]]:
+def _overconfident_history() -> list[dict[str, Any]]:
     """0.9 trafia rzadziej niż 0.6 w obu oknach (45 i 10 dni temu)."""
-    rows: list[dict[str, object]] = []
+    rows: list[dict[str, Any]] = []
     for days_ago in (45, 10):
         for confidence, hits, misses in ((0.6, 12, 8), (0.9, 11, 9)):
             rows += [_calibration_row(days_ago, confidence, True)] * hits
@@ -459,7 +463,10 @@ def _overconfident_history() -> list[dict[str, object]]:
 
 
 def _isotonic_flags(**overrides: bool) -> ReportFlags:
-    values = {"calibrated_confidence_enabled": True, "isotonic_calibration_enabled": True}
+    values: dict[str, Any] = {
+        "calibrated_confidence_enabled": True,
+        "isotonic_calibration_enabled": True,
+    }
     values.update(overrides)
     return ReportFlags(track_record_days=30, reflection_min_age_hours=12, **values)
 
@@ -520,7 +527,7 @@ def test_sideways_rows_stay_out_of_the_isotonic_history() -> None:
     assert context.signal_isotonic_calibration is None
 
 
-def test_failed_isotonic_history_read_keeps_the_buckets(caplog) -> None:
+def test_failed_isotonic_history_read_keeps_the_buckets(caplog: pytest.LogCaptureFixture) -> None:
     from src.application.errors import ProviderUnavailable
 
     repo = _repo()
@@ -539,7 +546,7 @@ def test_failed_isotonic_history_read_keeps_the_buckets(caplog) -> None:
     assert "isotonic" in caplog.text.lower()
 
 
-def _ledger_trades() -> list:
+def _ledger_trades() -> list[LedgerTrade]:
     from decimal import Decimal
 
     from src.domain.paper_ledger import (

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from src.application.council_prompts import investor_prompt
 from src.domain.council import CouncilInput, InvestorPersona
-from src.domain.value_objects import Fundamentals, ValuationVerdict
+from src.domain.value_objects import Fundamentals, Percent, ValuationVerdict
 
 _BUFFETT = InvestorPersona(
     name="Warren Buffett",
@@ -19,9 +19,9 @@ def _input(
     return CouncilInput(
         symbol="AAPL",
         current_price=Decimal("190.00"),
-        price_delta_pct=Decimal("0.012"),
+        price_delta_pct=Percent(Decimal("0.012")),
         sentiment_score=0.5,
-        news_articles=["headline A"],
+        news_articles=("headline A",),
         llm_trend="UP",
         llm_confidence=0.7,
         ml_price_target=Decimal("195.00"),

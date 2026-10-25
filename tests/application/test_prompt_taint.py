@@ -36,6 +36,7 @@ from src.application.decision_receipt import DecisionReceipt
 from src.application.prompts import get_mistake_diagnosis_prompt, get_prediction_prompt
 from src.application.use_cases.weekly_recap import _narrative_prompt
 from src.domain.council import CouncilInput, InvestorOpinion, InvestorPersona
+from src.domain.value_objects import Percent
 from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
 
 CORPUS = Path(__file__).parents[1] / "fixtures" / "prompt_injection_corpus.txt"
@@ -67,7 +68,7 @@ def _council_input(news: tuple[str, ...] = ("Acme raises guidance",)) -> Council
     return CouncilInput(
         symbol="ACME",
         current_price=Decimal("142.50"),
-        price_delta_pct=Decimal("-3.20"),
+        price_delta_pct=Percent(Decimal("-3.20")),
         sentiment_score=-0.21,
         news_articles=news,
         llm_trend="BEARISH",

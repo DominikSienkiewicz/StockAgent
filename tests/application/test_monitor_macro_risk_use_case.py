@@ -26,7 +26,7 @@ from src.application.use_cases.monitor_macro_risk import (
 from src.domain.drawdown import DrawdownSignal
 from src.domain.macro_risk import MacroAlertLevel, MacroRiskInstrumentType
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
-from src.domain.value_objects import Money
+from src.domain.value_objects import Money, Ratio
 
 
 def _history(*prices: str) -> list[tuple[datetime, Money]]:
@@ -159,8 +159,8 @@ class TestOverallAlert:
         macro_port.fetch_polish_macro.return_value = PolishMacroSnapshot(
             eur_pln=Decimal("4.55"),
             usd_pln=Decimal("4.20"),
-            eur_pln_30d_change_ratio=Decimal("0.06"),  # +6% → CRITICAL stress
-            usd_pln_30d_change_ratio=Decimal("0.04"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.06")),  # +6% → CRITICAL stress
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.04")),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
 
@@ -212,8 +212,8 @@ class TestPolishMacroIntegration:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.40"),
             usd_pln=Decimal("4.05"),
-            eur_pln_30d_change_ratio=Decimal("0.025"),
-            usd_pln_30d_change_ratio=Decimal("0.01"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.025")),
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.01")),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         macro_port.fetch_polish_macro.return_value = snap
@@ -314,7 +314,7 @@ class TestHedgeEffectiveness:
     dodatnio (zepsuty hedge) — 'odwrócony'. Domyślnie wyłączone."""
 
     def _wire(
-        self, market: Mock, repo: Mock, histories: dict[str, list]
+        self, market: Mock, repo: Mock, histories: dict[str, list[tuple[datetime, Money]]]
     ) -> None:
         repo.get_price_history.side_effect = (
             lambda sym, days: histories.get(sym, [])

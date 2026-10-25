@@ -12,6 +12,7 @@ import re
 from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -360,7 +361,7 @@ class TestMinimumSamples:
         ]
         return {"NVDA": series(1.0), "MSFT": series(0.5), "GLD": gld}
 
-    def _run(self, repo: Mock, days: int, **kwargs: object) -> PortfolioRiskReport:
+    def _run(self, repo: Mock, days: int, **kwargs: Any) -> PortfolioRiskReport:
         history = self._history(days)
         repo.get_price_history.side_effect = lambda sym, days: history[sym]
         return PortfolioRiskUseCase(
@@ -495,6 +496,7 @@ class TestPositionRisk:
         expected = historical_var([nvda_weight * r for r in nvda_returns], 0.95)
         assert risk.var == pytest.approx(expected)
         # Równe wagi watchlisty dałyby wyraźnie większy VaR.
+        assert risk.var is not None
         assert risk.var < historical_var([0.5 * r for r in nvda_returns], 0.95)
 
     def test_reads_only_held_symbols(self, repository_port: Mock) -> None:

@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.application.attestation_cycle import (
     CycleCommitmentCollector,
     attestation_cycle_id,
@@ -105,7 +107,7 @@ def test_seal_helper_seals_only_a_cycle_collector() -> None:
     publisher.publish_commitment.assert_called_once()
 
 
-def test_failed_root_publish_is_logged(caplog) -> None:
+def test_failed_root_publish_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     collector, publisher = _collector()
     publisher.publish_commitment.return_value = ""
 

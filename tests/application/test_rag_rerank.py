@@ -1,3 +1,4 @@
+from typing import Any
 from unittest.mock import Mock
 
 from src.application.agent_graph import _build_similar_context
@@ -6,7 +7,7 @@ from src.application.rag_rerank import rerank_analogs
 
 
 class TestBuildSimilarContextRerank:
-    def test_reranks_by_outcome_in_built_text(self):
+    def test_reranks_by_outcome_in_built_text(self) -> None:
         repo = Mock(spec=RepositoryPort)
         repo.find_similar_predictions.return_value = [
             {"news_summary": "ALPHA", "predicted_trend": "BULLISH",
@@ -21,7 +22,7 @@ class TestBuildSimilarContextRerank:
 
 
 class TestRerankAnalogs:
-    def test_correct_analog_outranks_incorrect_at_equal_similarity(self):
+    def test_correct_analog_outranks_incorrect_at_equal_similarity(self) -> None:
         records = [
             {"id": "a", "similarity": 0.8, "is_trend_correct": False},
             {"id": "b", "similarity": 0.8, "is_trend_correct": True},
@@ -29,7 +30,7 @@ class TestRerankAnalogs:
         result = rerank_analogs(records, outcome_weight=0.3)
         assert [r["id"] for r in result] == ["b", "a"]
 
-    def test_none_outcome_is_neutral(self):
+    def test_none_outcome_is_neutral(self) -> None:
         # a: 0.9 + 0 ; b: 0.85 + 0.3 = 1.15 → b wygrywa mimo niższego similarity.
         records = [
             {"id": "a", "similarity": 0.9, "is_trend_correct": None},
@@ -38,7 +39,7 @@ class TestRerankAnalogs:
         result = rerank_analogs(records, outcome_weight=0.3)
         assert [r["id"] for r in result] == ["b", "a"]
 
-    def test_outcome_weight_zero_preserves_similarity_order(self):
+    def test_outcome_weight_zero_preserves_similarity_order(self) -> None:
         records = [
             {"id": "a", "similarity": 0.7, "is_trend_correct": True},
             {"id": "b", "similarity": 0.9, "is_trend_correct": False},
@@ -46,7 +47,7 @@ class TestRerankAnalogs:
         result = rerank_analogs(records, outcome_weight=0.0)
         assert [r["id"] for r in result] == ["b", "a"]
 
-    def test_top_k_truncates(self):
+    def test_top_k_truncates(self) -> None:
         records = [
             {"id": str(i), "similarity": i / 10, "is_trend_correct": None}
             for i in range(5)
@@ -54,7 +55,7 @@ class TestRerankAnalogs:
         result = rerank_analogs(records, outcome_weight=0.3, top_k=2)
         assert len(result) == 2
 
-    def test_missing_similarity_treated_as_zero(self):
+    def test_missing_similarity_treated_as_zero(self) -> None:
         records = [
             {"id": "a", "is_trend_correct": True},
             {"id": "b", "similarity": 0.1, "is_trend_correct": False},
@@ -71,7 +72,7 @@ class TestPointInTimeAnalogs:
     w reranku. Mniej kandydatów po filtrze, więc retrieval bierze ich więcej."""
 
     @staticmethod
-    def _analog(name: str, correct: bool | None, similarity: float) -> dict:
+    def _analog(name: str, correct: bool | None, similarity: float) -> dict[str, Any]:
         return {
             "news_summary": name,
             "predicted_trend": "BULLISH",
