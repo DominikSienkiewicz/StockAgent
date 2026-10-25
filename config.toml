@@ -444,8 +444,10 @@ llm_pricing."gpt-5-mini" = { input = 0.25, cache_read = 0.025, output = 2.00 }
 llm_pricing."gpt-4o" = { input = 2.50, cache_read = 1.25, output = 10.00 }
 llm_pricing."text-embedding-3-small" = { input = 0.02 }
 # options_flow: option-chain to endpoint PREMIUM Finnhuba — na free tier zwraca 403,
-# więc sygnał nie powstaje, a każdy cykl marnuje ~39 requestów. Off do czasu planu premium.
-# Odblokowuje R-18 (edge vs implied move).
+# więc sygnał nie powstaje, a każdy cykl marnowałby ~39 requestów za bramką. Off z decyzji
+# (DAT-24): zamiast planu premium darmowe przybliżenia edge — zmienność zrealizowana,
+# DVOL Deribit dla krypto (`deribit_dvol_enabled` niżej) i VIX × beta. Płatny plan Finnhub
+# dopiero po pozytywnym wyniku edge_sigma. Odblokowuje R-18 (edge vs implied move).
 options_flow_enabled = false
 # WIA-28: horyzont edge akcji i ETF z kalendarza NYSE (godziny do następnego dnia
 # handlowego: ~72 h w piątek, dłużej przed świętem) zamiast stałych 24 h. Zmienia
