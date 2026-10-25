@@ -136,4 +136,4 @@ ignore_missing_imports = true
 # Gołe `uv run mypy` = bramka CI. `tests/` dochodzi ratchetem po katalogach,
 # dopiero gdy dany katalog jest czysty pod strict (TEST-13: od "tests/domain").
 # Dodanego katalogu nie wolno zdjąć — pilnuje tego tests/test_quality_gate_sync.py.
-files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain", "tests/tools", "tests/infrastructure"]
+files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain", "tests/tools", "tests/infrastructure", "tests/application"]

@@ -8268,8 +8268,14 @@ class TestCorporateEventsInCycle:
 
     @staticmethod
     def _deps(
-        market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
-        *, enabled: bool,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        *,
+        enabled: bool,
     ) -> AgentGraphDeps:
         return AgentGraphDeps(
             market_port=market_port, sentiment_port=sentiment_port,
@@ -8282,9 +8288,15 @@ class TestCorporateEventsInCycle:
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_fresh_filing_reaches_the_prompt_only_with_the_flag(
-        self, market_port, sentiment_port, news_port,
-        repository_port, ml_port, llm_port, enabled,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        enabled: bool,
+    ) -> None:
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port, news_port, repository_port, ml_port, llm_port,
@@ -8293,7 +8305,7 @@ class TestCorporateEventsInCycle:
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=enabled,
         )
-        state = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
+        state: AgentState = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
 
         create_agent_graph(deps).compile().invoke(state)
 
@@ -8311,24 +8323,37 @@ class TestCorporateEventsInCycle:
         ids=["fresh-8k", "no-fresh-8k", "unknown"],
     )
     def test_ignored_cycle_writes_the_fresh_8k_feature(
-        self, market_port, sentiment_port, news_port,
-        repository_port, ml_port, llm_port, state_extra, expected,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        state_extra: dict[str, object],
+        expected: float | None,
+    ) -> None:
         market_port.get_current_price.return_value = Money(Decimal("99.5"))
         deps = self._deps(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=True,
         )
 
-        create_agent_graph(deps).compile().invoke({**_initial_state("100.0"), **state_extra})
+        state = cast(AgentState, {**_initial_state("100.0"), **state_extra})
+        create_agent_graph(deps).compile().invoke(state)
 
         _symbol, features = repository_port.save_feature_snapshot.call_args.args
         assert features["fresh_8k"] == expected
 
     def test_flag_off_keeps_the_feature_vector_unchanged(
-        self, market_port, sentiment_port, news_port,
-        repository_port, ml_port, llm_port,
-    ):
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
         from src.application.ml_features import FREE_SNAPSHOT_FEATURES
 
         market_port.get_current_price.return_value = Money(Decimal("99.5"))
@@ -8336,7 +8361,7 @@ class TestCorporateEventsInCycle:
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
             enabled=False,
         )
-        state = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
+        state: AgentState = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
 
         create_agent_graph(deps).compile().invoke(state)
 

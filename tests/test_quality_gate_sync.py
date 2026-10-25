@@ -28,7 +28,7 @@ GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 # TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
-MYPY_RATCHET = ("tests/domain", "tests/tools", "tests/infrastructure")
+MYPY_RATCHET = ("tests/domain", "tests/tools", "tests/infrastructure", "tests/application")
 
 
 def _entrypoints() -> list[str]:
