@@ -104,6 +104,26 @@ class TestModelRoutingWiring:
         assert llm._max_escalations == 2
         assert llm._quota_monitor is monitor
 
+    def test_cascade_marks_the_answer_with_the_model_from_the_recipe_notation(
+        self, settings: Settings, mocker: Any
+    ) -> None:
+        # FIN-21: kwit dostaje model, który odpowiedział, w notacji przepisu
+        # (`dostawca:model`, jak połówki `llm_model` przy routingu).
+        from src.application.ports import LLM_ROUTED_MODEL_KEY
+
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+        mocker.patch(
+            "src.infrastructure.llm.openai_client.OpenAIAdapter.analyze",
+            return_value={"trend_direction": "BULLISH", "confidence_score": 0.9},
+        )
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+
+        answer = main_agent.build_llm_adapter(settings).analyze("prompt")
+
+        assert answer.get(LLM_ROUTED_MODEL_KEY) == "openai:gpt-5-mini"
+
 
 class TestCouncilLLMFactory:
     """Heterogeniczna strategia LLM — rada doradcza (15+1 wywołań × 22 symbole

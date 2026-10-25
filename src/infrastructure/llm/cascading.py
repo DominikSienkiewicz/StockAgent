@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any
 
-from src.application.ports import LLMPort
+from src.application.ports import LLM_ROUTED_MODEL_KEY, LLMPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -41,6 +41,10 @@ class CascadingLLMAdapter(LLMPort):
     (WARNING przy każdej awarii, alert do `quota_monitor` raz na instancję —
     niedziałający routing nie może się schować). Rezerwacja eskalacji idzie pod
     lockiem: symbole cyklu biegną równolegle, a sufit jest wspólny.
+
+    FIN-21: z tożsamościami `cheap_model` / `frontier_model` (`dostawca:model`)
+    każdy wynik `analyze` niesie `LLM_ROUTED_MODEL_KEY` — model, który faktycznie
+    odpowiedział — żeby kwit predykcji pozwolił porównać trafność per model.
     """
 
     def __init__(
@@ -50,9 +54,14 @@ class CascadingLLMAdapter(LLMPort):
         routing_floor: float = DEFAULT_ROUTING_FLOOR,
         max_escalations: int = DEFAULT_MAX_ESCALATIONS,
         quota_monitor: QuotaMonitor | None = None,
+        *,
+        cheap_model: str | None = None,
+        frontier_model: str | None = None,
     ) -> None:
         self._cheap = cheap
         self._frontier = frontier
+        self._cheap_model = cheap_model
+        self._frontier_model = frontier_model
         self._routing_floor = routing_floor
         self._max_escalations = max_escalations
         self._quota_monitor = quota_monitor
@@ -71,12 +80,12 @@ class CascadingLLMAdapter(LLMPort):
 
         # Pewny wynik (lub == floor) — nie eskalujemy, nie ruszamy budżetu.
         if confidence >= self._routing_floor:
-            return cheap_result
+            return _marked(cheap_result, self._cheap_model)
 
         # Wynik niepewny — eskalujemy tylko gdy budżet jeszcze jest.
         escalation = self._reserve_escalation()
         if escalation is None:
-            return cheap_result
+            return _marked(cheap_result, self._cheap_model)
 
         logger.info(
             "Escalating to frontier LLM: cheap confidence %.3f < floor %.3f "
@@ -87,10 +96,11 @@ class CascadingLLMAdapter(LLMPort):
             self._max_escalations,
         )
         try:
-            return self._frontier.analyze(prompt)
+            frontier_result = self._frontier.analyze(prompt)
         except Exception as exc:
             self._report_frontier_failure(exc)
-            return cheap_result
+            return _marked(cheap_result, self._cheap_model)
+        return _marked(frontier_result, self._frontier_model)
 
     def analyze_mistake(self, prompt: str) -> str:
         # Świadomy wybór: diagnoza błędu to free-form tekst (correction insight),
@@ -143,6 +153,14 @@ class CascadingLLMAdapter(LLMPort):
                 occurred_at=datetime.now(UTC),
             )
         )
+
+
+def _marked(result: dict[str, Any], model: str | None) -> dict[str, Any]:
+    """FIN-21: kopia wyniku ze znacznikiem modelu, który odpowiedział. Bez tożsamości
+    modelu (adapter złożony bez `cheap_model` / `frontier_model`) wynik bez zmian."""
+    if model is None:
+        return result
+    return {**result, LLM_ROUTED_MODEL_KEY: model}
 
 
 def _extract_confidence(result: dict[str, Any]) -> float:

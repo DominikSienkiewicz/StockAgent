@@ -400,12 +400,17 @@ def _build_primary_llm(
             quota_monitor,
             usage_sink,
         )
+        # FIN-21: tożsamości w notacji przepisu — kwit dostaje `model_used`, czyli
+        # połówkę `llm_model`, która faktycznie odpowiedziała.
+        cheap_model, frontier_model = _routing_identities(settings)
         return CascadingLLMAdapter(
             cheap=cheap,
             frontier=frontier,
             routing_floor=settings.routing_floor,
             max_escalations=settings.routing_max_escalations,
             quota_monitor=quota_monitor,
+            cheap_model=cheap_model,
+            frontier_model=frontier_model,
         )
 
     if settings.llm_provider == "anthropic":
@@ -1362,13 +1367,19 @@ def _provider_default_model(provider: str) -> str:
     return OPENAI_DEFAULT
 
 
+def _routing_identities(settings: Settings) -> tuple[str, str]:
+    """(tani, frontier) kaskady routingu jako `dostawca:model` — tani jest zawsze
+    OpenAI (`_build_primary_llm`)."""
+    return (
+        f"openai:{settings.router_cheap_model}",
+        f"{settings.router_frontier_provider}:{settings.router_frontier_model}",
+    )
+
+
 def _main_llm_identity(settings: Settings) -> tuple[str, str]:
     """(provider, model) głównego LLM — te same reguły co `build_llm_adapter`."""
     if settings.model_routing_enabled:
-        return "routing", (
-            f"openai:{settings.router_cheap_model}"
-            f"|{settings.router_frontier_provider}:{settings.router_frontier_model}"
-        )
+        return "routing", "|".join(_routing_identities(settings))
     return settings.llm_provider, _provider_default_model(settings.llm_provider)
 
 

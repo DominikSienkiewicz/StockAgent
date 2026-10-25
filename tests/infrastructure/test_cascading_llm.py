@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.application.ports import LLMPort
+from src.application.ports import LLM_ROUTED_MODEL_KEY, LLMPort
 from src.infrastructure.llm.cascading import CascadingLLMAdapter
 
 
@@ -276,6 +276,66 @@ class TestFrontierFailure:
         adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier)
 
         assert adapter.analyze("p")["_source"] == "cheap"
+
+
+class TestRoutedModelMarker:
+    """FIN-21: wynik kaskady niesie model, który faktycznie odpowiedział
+    (`LLM_ROUTED_MODEL_KEY`), żeby kwit predykcji pozwolił porównać trafność per
+    model. Bez tożsamości modeli (`cheap_model` / `frontier_model`) adapter nie ma
+    czego wpisać i zwraca wynik bez znacznika."""
+
+    CHEAP = "openai:gpt-5-mini"
+    FRONTIER = "anthropic:claude-sonnet-4-6"
+
+    def _adapter(self, cheap: Mock, frontier: Mock, **kwargs: Any) -> CascadingLLMAdapter:
+        return CascadingLLMAdapter(
+            cheap=cheap,
+            frontier=frontier,
+            cheap_model=self.CHEAP,
+            frontier_model=self.FRONTIER,
+            **kwargs,
+        )
+
+    def test_confident_cheap_answer_is_marked_with_the_cheap_model(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        cheap.analyze.return_value = _result(0.9, "cheap")
+
+        result = self._adapter(cheap, frontier).analyze("p")
+
+        assert result.get(LLM_ROUTED_MODEL_KEY) == self.CHEAP
+        assert result["_source"] == "cheap"
+
+    def test_escalated_answer_is_marked_with_the_frontier_model(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        cheap.analyze.return_value = _result(0.3, "cheap")
+        frontier.analyze.return_value = _result(0.9, "frontier")
+
+        result = self._adapter(cheap, frontier).analyze("p")
+
+        assert result.get(LLM_ROUTED_MODEL_KEY) == self.FRONTIER
+        assert result["_source"] == "frontier"
+
+    def test_cheap_answer_after_exhausted_budget_is_marked_with_the_cheap_model(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        cheap.analyze.return_value = _result(0.1, "cheap")
+
+        result = self._adapter(cheap, frontier, max_escalations=0).analyze("p")
+
+        assert result.get(LLM_ROUTED_MODEL_KEY) == self.CHEAP
+        frontier.analyze.assert_not_called()
+
+    def test_marker_does_not_mutate_the_answer_of_the_inner_port(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        answer = _result(0.9, "cheap")
+        cheap.analyze.return_value = answer
+
+        self._adapter(cheap, frontier).analyze("p")
+
+        assert answer == _result(0.9, "cheap")
 
 
 class _RendezvousCap(int):

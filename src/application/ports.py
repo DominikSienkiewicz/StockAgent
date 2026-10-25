@@ -1100,6 +1100,10 @@ class TrainingDataPort(ABC):
 # je przed normalizacją analizy i dopisuje flagę jakości `llm_failover`.
 LLM_FAILOVER_PROVIDER_KEY = "_llm_provider"
 LLM_FAILOVER_MODEL_KEY = "_llm_model"
+# FIN-21: klucz, którym kaskada routingu modeli znakuje wynik `LLMPort.analyze`
+# modelem, który faktycznie odpowiedział (`dostawca:model`). Graf zdejmuje go przed
+# normalizacją analizy i zapisuje jako `model_used` w kwicie v2.
+LLM_ROUTED_MODEL_KEY = "_llm_routed_model"
 
 
 class LLMPort(ABC):
@@ -1110,7 +1114,8 @@ class LLMPort(ABC):
         """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu.
 
         Wynik od dostawcy zapasowego (NIEZ-44) niesie dodatkowo
-        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`."""
+        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`, a wynik kaskady
+        routingu modeli (FIN-21) — `LLM_ROUTED_MODEL_KEY`."""
 
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:
