@@ -97,7 +97,7 @@ def _pytest_marker_expression(command: str) -> str | None:
 
 
 def test_integration_smoke_runs_only_integration_marker() -> None:
-    spec = _smoke_spec()
+    spec: dict[Any, Any] = _smoke_spec()
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
     triggers = spec.get("on", spec.get(True))
     steps = [step for job in spec["jobs"].values() for step in job.get("steps", [])]
@@ -239,7 +239,7 @@ def test_job_concurrency_groups_never_reuse_a_workflow_group() -> None:
     assert job_groups, "żaden job nie deklaruje grupy — test nic by nie pilnował"
     assert workflow_groups & job_groups == set(), (
         "ta sama grupa na poziomie workflowu i joba zakleszcza run: "
-        f"{sorted(workflow_groups & job_groups)}"
+        f"{sorted(workflow_groups & job_groups, key=str)}"
     )
 
 
@@ -252,7 +252,7 @@ def test_hourly_shock_watch_stays_out_of_the_writers_queue() -> None:
 
 # CI-10: polityki workflowów były dotrzymane ręcznie i nierówno. Test parsuje każdy plik
 # z `.github/workflows/`, więc nowy workflow podlega im od pierwszego commitu.
-def _triggers(spec: dict[str, Any]) -> dict[str, Any]:
+def _triggers(spec: dict[Any, Any]) -> dict[str, Any]:
     """Wyzwalacze workflowu; PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True."""
     triggers = spec.get("on", spec.get(True)) or {}
     return triggers if isinstance(triggers, dict) else {}

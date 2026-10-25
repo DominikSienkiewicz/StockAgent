@@ -22,11 +22,11 @@ def _make_response(payload: dict[str, Any]) -> MagicMock:
     return resp
 
 
-def test_concurrent_first_call_fetches_feed_once(mocker) -> None:
+def test_concurrent_first_call_fetches_feed_once(mocker: Any) -> None:
     call_count = {"n": 0}
     lock = threading.Lock()
 
-    def _slow_get(*_args, **_kwargs):
+    def _slow_get(*_args: object, **_kwargs: object) -> MagicMock:
         with lock:
             call_count["n"] += 1
         time.sleep(0.02)  # poszerza okno race'a leniwego fetchu

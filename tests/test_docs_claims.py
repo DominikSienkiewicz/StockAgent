@@ -224,7 +224,7 @@ def test_sources_table_has_no_duplicate_rows() -> None:
 def test_sources_rows_saying_off_by_default_name_flags_that_default_to_false() -> None:
     from src.config import Settings
 
-    wrong = []
+    wrong: list[str] = []
     for row in _sources_rows():
         if "Off by default" not in row:
             continue

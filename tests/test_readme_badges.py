@@ -20,7 +20,8 @@ VERSIONED_BADGES = {"LangGraph": "langgraph", "XGBoost": "xgboost"}
 
 def _locked_version(package: str) -> str:
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
-    return next(p["version"] for p in lock["package"] if p["name"] == package)
+    version: str = next(p["version"] for p in lock["package"] if p["name"] == package)
+    return version
 
 
 @pytest.mark.parametrize("badge, package", VERSIONED_BADGES.items())

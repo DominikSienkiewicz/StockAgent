@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,13 +19,19 @@ from src.application.errors import ProviderUnavailable
 from src.application.ports import DigestArchivePort, DigestRecord, RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
-from src.application.report_delivery import ChannelDelivery, DeliveryStatus, ReportChannel
+from src.application.report_delivery import (
+    ChannelDelivery,
+    DeliveryOutcome,
+    DeliveryStatus,
+    ReportChannel,
+)
 from src.application.report_evidence import PaperCosts
 from src.application.run_context import RunContext
 from src.application.track_record_window import TrackRecordReads
 from src.application.use_cases.assemble_report import AssembledReport
 from src.config import Settings
 from src.domain.subscriber import Subscriber
+from tests.settings_kwargs import NO_ENV_FILE
 
 STARTED = datetime(2026, 10, 15, 5, 30, tzinfo=UTC)
 URL = "https://proj.supabase.co/storage/v1/object/sign/digests/c.html?token=t"
@@ -33,7 +40,7 @@ URL = "https://proj.supabase.co/storage/v1/object/sign/digests/c.html?token=t"
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -57,8 +64,8 @@ def _assembled() -> AssembledReport:
     )
 
 
-def _deliver(settings: Settings, notifier: MagicMock, **overrides: object):
-    kwargs: dict[str, object] = {
+def _deliver(settings: Settings, notifier: MagicMock, **overrides: Any) -> DeliveryOutcome:
+    kwargs: dict[str, Any] = {
         "results": [SymbolResult(symbol="AAPL", status="ignored", delta=Decimal("0.004"))],
         "started_at": STARTED,
         "duration": 1.0,
@@ -71,10 +78,10 @@ def _deliver(settings: Settings, notifier: MagicMock, **overrides: object):
         "all_symbols": ["AAPL"],
     }
     kwargs.update(overrides)
-    return main_agent.deliver_report(_assembled, **kwargs)  # type: ignore[arg-type]
+    return main_agent.deliver_report(_assembled, **kwargs)
 
 
-def _archive(mocker, store: object = URL) -> MagicMock:
+def _archive(mocker: Any, store: object = URL) -> MagicMock:
     archive = MagicMock(spec=DigestArchivePort)
     if isinstance(store, Exception):
         archive.store.side_effect = store
@@ -95,7 +102,9 @@ class TestBuildDigestArchive:
 
         assert main_agent.build_digest_archive(settings) is None
 
-    def test_flag_on_builds_the_supabase_storage_archive(self, settings: Settings, mocker) -> None:
+    def test_flag_on_builds_the_supabase_storage_archive(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         from src.infrastructure.adapters.supabase_storage_archive import (
             SupabaseStorageDigestArchive,
         )
@@ -118,7 +127,7 @@ def test_cycle_id_is_the_utc_start_and_run_without_personal_data() -> None:
     assert main_agent.digest_cycle_id(STARTED, None) == "20261015T0530Z-local"
 
 
-def test_owner_mail_links_the_archived_digest(settings: Settings, mocker) -> None:
+def test_owner_mail_links_the_archived_digest(settings: Settings, mocker: Any) -> None:
     archive = _archive(mocker)
     notifier = MagicMock()
 
@@ -137,7 +146,9 @@ def test_owner_mail_links_the_archived_digest(settings: Settings, mocker) -> Non
     assert ChannelDelivery(ReportChannel.ARCHIVE, DeliveryStatus.SENT) in outcome.channels
 
 
-def test_archive_failure_still_sends_the_mail_without_a_link(settings: Settings, mocker) -> None:
+def test_archive_failure_still_sends_the_mail_without_a_link(
+    settings: Settings, mocker: Any
+) -> None:
     archive = _archive(mocker, ProviderUnavailable("bucket missing"))
     notifier = MagicMock()
 
@@ -150,7 +161,7 @@ def test_archive_failure_still_sends_the_mail_without_a_link(settings: Settings,
     assert outcome.delivered is True
 
 
-def test_flag_off_mail_has_no_archive_channel(settings: Settings, mocker) -> None:
+def test_flag_off_mail_has_no_archive_channel(settings: Settings, mocker: Any) -> None:
     settings.digest_archive_enabled = False
     notifier = MagicMock()
 
@@ -160,7 +171,7 @@ def test_flag_off_mail_has_no_archive_channel(settings: Settings, mocker) -> Non
     assert all(c.channel is not ReportChannel.ARCHIVE for c in outcome.channels)
 
 
-def test_only_the_owner_subscriber_gets_the_link(settings: Settings, mocker) -> None:
+def test_only_the_owner_subscriber_gets_the_link(settings: Settings, mocker: Any) -> None:
     # BEZ-01: podpisany URL otwiera mail właściciela z portfelem — obcy go nie dostaje.
     _archive(mocker)
     settings.resend_api_key = "re_test"
@@ -190,7 +201,7 @@ def test_only_the_owner_subscriber_gets_the_link(settings: Settings, mocker) -> 
     assert "Otwórz w przeglądarce" not in sent["reader@example.com"]
 
 
-def test_push_digest_carries_the_link(settings: Settings, mocker) -> None:
+def test_push_digest_carries_the_link(settings: Settings, mocker: Any) -> None:
     _archive(mocker)
     settings.messenger_digest_enabled = True
     push = MagicMock()

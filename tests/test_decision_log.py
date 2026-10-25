@@ -278,7 +278,7 @@ def test_engineering_log_rows_carry_rule_guard_and_commit() -> None:
     ]
 
     assert len(rows) >= 8, "dziennik inżynierski ma za mało incydentów"
-    problems = []
+    problems: list[tuple[str, str | list[str]]] = []
     for row in rows:
         cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
         if len(cells) != 4:

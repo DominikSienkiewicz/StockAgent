@@ -65,14 +65,16 @@ FORBIDDEN_NONSECRET_KEYS = {
 }
 
 
-def _steps() -> list[dict[str, object]]:
+def _steps() -> list[dict[str, Any]]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return spec["jobs"]["run-market-agent"]["steps"]
+    steps: list[dict[str, Any]] = spec["jobs"]["run-market-agent"]["steps"]
+    return steps
 
 
 def _run_agent_env() -> dict[str, object]:
     run_step = next(s for s in _steps() if str(s.get("run", "")).endswith("main_agent.py"))
-    return run_step.get("env", {})
+    env: dict[str, object] = run_step.get("env", {})
+    return env
 
 
 def test_all_required_secrets_are_mapped() -> None:
@@ -729,7 +731,8 @@ def _slow_loop_trainer_env() -> dict[str, object]:
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
     run_step = next(s for s in steps if str(s.get("run", "")).endswith("main_trainer.py"))
-    return run_step.get("env", {})
+    env: dict[str, object] = run_step.get("env", {})
+    return env
 
 
 def test_slow_loop_maps_real_alpha_vantage_secret() -> None:
@@ -943,7 +946,7 @@ def _jobs_injecting_csv_secret() -> list[tuple[str, list[dict[str, object]]]]:
     return found
 
 
-def _is_mask_step(step: dict[str, object]) -> bool:
+def _is_mask_step(step: dict[str, Any]) -> bool:
     env = dict(step.get("env") or {})
     run = str(step.get("run", ""))
     return env.get(CSV_SECRET) == CSV_SECRET_REF and (
@@ -1063,7 +1066,7 @@ def test_env_example_ships_a_session_pooler_db_url_placeholder() -> None:
 FAST_LOOP_WORKFLOW = "fast_loop_12h.yml"
 
 
-def _active_schedule(spec: Mapping[str, Any]) -> list[Any]:
+def _active_schedule(spec: Mapping[Any, Any]) -> list[Any]:
     """Wpisy `schedule` workflow; zakomentowany blok = pusta lista."""
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
     triggers = spec.get("on", spec.get(True)) or {}
@@ -1136,7 +1139,7 @@ def _resume_ready_config(**overrides: Any) -> dict[str, Any]:
     return {**config, **overrides}
 
 
-def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[Any, Any]:
     step: dict[str, Any] = {"run": f"uv run python {entrypoint}"}
     if env is not None:
         step["env"] = dict(env)
@@ -1148,7 +1151,7 @@ def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -
 _AGENT_ENV = {"PAID_CALLS_ENABLED": "true", "DB_WRITES_ENABLED": "true"}
 
 
-def _resume_ready_workflows() -> dict[str, dict[str, Any]]:
+def _resume_ready_workflows() -> dict[str, dict[Any, Any]]:
     return {
         FAST_LOOP_WORKFLOW: _scheduled_workflow("main_agent.py", _AGENT_ENV),
         "deadman_daily.yml": _scheduled_workflow("main_deadman.py"),

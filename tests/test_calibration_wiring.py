@@ -15,12 +15,13 @@ import main_agent
 import main_trainer
 from src.application.ports import LLMPort, RepositoryPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -47,7 +48,7 @@ class TestCalibrationJudgeScoreVersion:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
         mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
-        judge_cls = mocker.patch(
+        judge_cls: MagicMock = mocker.patch(
             "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
         )
         judge_cls.return_value.run.return_value = {"status": "calibrated"}

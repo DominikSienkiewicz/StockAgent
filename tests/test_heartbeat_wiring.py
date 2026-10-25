@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,12 +19,13 @@ import main_trainer
 from src.application.ports import HeartbeatPort
 from src.config import Settings
 from src.infrastructure.adapters.http_heartbeat import HttpHeartbeat, NullHeartbeat
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -38,28 +40,28 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def mock_external_clients(mocker):
+def mock_external_clients(mocker: Any) -> None:
     mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
 
 
 @pytest.fixture
-def heartbeat(mocker) -> MagicMock:
+def heartbeat(mocker: Any) -> MagicMock:
     port = MagicMock(spec=HeartbeatPort)
     mocker.patch("main_agent.build_heartbeat", return_value=port)
     return port
 
 
 class TestBuildHeartbeat:
-    def test_without_a_url_the_heartbeat_is_null(self, settings) -> None:
+    def test_without_a_url_the_heartbeat_is_null(self, settings: Settings) -> None:
         assert isinstance(main_agent.build_heartbeat(settings), NullHeartbeat)
 
-    def test_blank_url_is_treated_as_missing(self, settings) -> None:
+    def test_blank_url_is_treated_as_missing(self, settings: Settings) -> None:
         settings.heartbeat_url = "  "
 
         assert isinstance(main_agent.build_heartbeat(settings), NullHeartbeat)
 
-    def test_url_builds_the_http_heartbeat(self, settings) -> None:
+    def test_url_builds_the_http_heartbeat(self, settings: Settings) -> None:
         settings.heartbeat_url = "https://hc-ping.com/5f3c0b9e-7a1d-4c2e-9b8f-0d6a2e4c1b7f"
 
         assert isinstance(main_agent.build_heartbeat(settings), HttpHeartbeat)
@@ -67,7 +69,7 @@ class TestBuildHeartbeat:
 
 class TestFastLoopHeartbeat:
     def test_successful_cycle_pings_ok(
-        self, settings, mock_external_clients, mocker, heartbeat
+        self, settings: Settings, mock_external_clients: None, mocker: Any, heartbeat: MagicMock
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
@@ -79,7 +81,7 @@ class TestFastLoopHeartbeat:
         heartbeat.ping.assert_called_once_with(ok=True)
 
     def test_cycle_where_every_symbol_failed_pings_a_failure(
-        self, settings, mock_external_clients, mocker, heartbeat
+        self, settings: Settings, mock_external_clients: None, mocker: Any, heartbeat: MagicMock
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.side_effect = RuntimeError("API down")
@@ -90,7 +92,7 @@ class TestFastLoopHeartbeat:
 
         heartbeat.ping.assert_called_once_with(ok=False)
 
-    def test_refused_start_pings_a_failure(self, settings, heartbeat) -> None:
+    def test_refused_start_pings_a_failure(self, settings: Settings, heartbeat: MagicMock) -> None:
         # FIN-35: zapis z atrapami = odmowa startu (exit 2) — to nie jest zdrowy przebieg.
         settings.paid_calls_enabled = False
 
@@ -99,7 +101,7 @@ class TestFastLoopHeartbeat:
         heartbeat.ping.assert_called_once_with(ok=False)
 
     def test_crashed_cycle_pings_a_failure_and_reraises(
-        self, settings, mock_external_clients, mocker, heartbeat
+        self, settings: Settings, mock_external_clients: None, mocker: Any, heartbeat: MagicMock
     ) -> None:
         mocker.patch("main_agent.build_use_case", side_effect=RuntimeError("DI broke"))
 
@@ -109,7 +111,12 @@ class TestFastLoopHeartbeat:
         heartbeat.ping.assert_called_once_with(ok=False)
 
     def test_failed_ping_is_only_logged(
-        self, settings, mock_external_clients, mocker, heartbeat, caplog
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        heartbeat: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         heartbeat.ping.side_effect = RuntimeError("heartbeat ping failed (ConnectTimeout)")
         fake_uc = MagicMock()
@@ -125,7 +132,7 @@ class TestFastLoopHeartbeat:
 
 class TestSlowLoopHeartbeat:
     def test_successful_training_pings_ok(
-        self, settings, mock_external_clients, mocker, heartbeat
+        self, settings: Settings, mock_external_clients: None, mocker: Any, heartbeat: MagicMock
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "n_samples": 3}
@@ -137,7 +144,7 @@ class TestSlowLoopHeartbeat:
         heartbeat.ping.assert_called_once_with(ok=True)
 
     def test_failed_feature_store_refresh_pings_a_failure(
-        self, settings, mock_external_clients, mocker, heartbeat
+        self, settings: Settings, mock_external_clients: None, mocker: Any, heartbeat: MagicMock
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.refresh_feature_store.side_effect = RuntimeError("DB down")

@@ -18,13 +18,14 @@ from pytest_mock import MockerFixture
 import main_agent
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def cycle_settings() -> Settings:
     # Jak smoke testy entry pointa: bez `.env`, zapis i płatne porty jak w GHA.
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],

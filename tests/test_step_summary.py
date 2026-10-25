@@ -10,6 +10,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +20,9 @@ import main_trainer
 import main_watch
 from src.application.ports import RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
+from src.application.report_builder import ReportContext
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 # ARCH-06: sekcje raportu składa `ReportAssembler` — tam patchujemy odczyty.
 ASSEMBLY = "src.application.use_cases.assemble_report"
@@ -28,7 +31,7 @@ ASSEMBLY = "src.application.use_cases.assemble_report"
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -43,7 +46,7 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def mock_external_clients(mocker):
+def mock_external_clients(mocker: Any) -> None:
     mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
 
@@ -55,7 +58,7 @@ def summary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def _fast_loop_use_case(mocker) -> MagicMock:
+def _fast_loop_use_case(mocker: Any) -> MagicMock:
     fake_uc = MagicMock()
     fake_uc.run.side_effect = [
         {"status": "saved", "delta": Decimal("0.05"), "prediction_id": "p1"},
@@ -68,7 +71,7 @@ def _fast_loop_use_case(mocker) -> MagicMock:
 
 class TestFastLoopSummary:
     def test_main_appends_aggregates_to_the_step_summary(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         _fast_loop_use_case(mocker)
         mocker.patch("main_agent._dispatch_reports", return_value=True)
@@ -87,7 +90,7 @@ class TestFastLoopSummary:
         assert "timed out" not in markdown
 
     def test_summary_is_appended_not_overwritten(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         summary_file.write_text("previous step\n", encoding="utf-8")
         _fast_loop_use_case(mocker)
@@ -100,7 +103,12 @@ class TestFastLoopSummary:
         assert "## Fast Loop" in markdown
 
     def test_without_the_variable_nothing_is_written(
-        self, settings, mock_external_clients, mocker, monkeypatch, tmp_path
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
         _fast_loop_use_case(mocker)
@@ -112,7 +120,13 @@ class TestFastLoopSummary:
         assert list(tmp_path.iterdir()) == []
 
     def test_unwritable_summary_does_not_change_the_exit_code(
-        self, settings, mock_external_clients, mocker, monkeypatch, tmp_path, caplog
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Katalog zamiast pliku → OSError przy otwarciu do dopisania.
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
@@ -125,7 +139,7 @@ class TestFastLoopSummary:
         assert "step summary" in caplog.text.lower()
 
     def test_failed_email_is_reported_as_not_delivered(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         _fast_loop_use_case(mocker)
         mocker.patch("main_agent.build_notifier", return_value=MagicMock())
@@ -136,7 +150,7 @@ class TestFastLoopSummary:
         assert "| Report email | not delivered |" in summary_file.read_text(encoding="utf-8")
 
     def test_without_an_email_channel_delivery_is_not_configured(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         # notifications_enabled=false → NullNotifier: nic nie wychodzi, ale to nie awaria.
         _fast_loop_use_case(mocker)
@@ -151,7 +165,7 @@ class TestDispatchReportsDeliveryResult:
     """`_dispatch_reports` zwraca, czy mail wyszedł — summary i `cycle_runs` go czytają."""
 
     @staticmethod
-    def _dispatch(settings: Settings, mocker, notifier: MagicMock) -> bool:
+    def _dispatch(settings: Settings, mocker: Any, notifier: MagicMock) -> bool:
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
         settings.cycle_diff_enabled = False
@@ -173,19 +187,21 @@ class TestDispatchReportsDeliveryResult:
             notifier=notifier,
             subscribers=[],
             all_symbols=["QQQA"],
-            context=main_agent.ReportContext(),
+            context=ReportContext(),
         )
 
-    def test_sent_email_is_delivered(self, settings, mocker) -> None:
+    def test_sent_email_is_delivered(self, settings: Settings, mocker: Any) -> None:
         assert self._dispatch(settings, mocker, MagicMock()) is True
 
-    def test_failed_email_is_not_delivered(self, settings, mocker) -> None:
+    def test_failed_email_is_not_delivered(self, settings: Settings, mocker: Any) -> None:
         notifier = MagicMock()
         notifier.send_report.side_effect = RuntimeError("Resend 503")
 
         assert self._dispatch(settings, mocker, notifier) is False
 
-    def test_report_that_never_got_built_is_not_delivered(self, settings, mocker) -> None:
+    def test_report_that_never_got_built_is_not_delivered(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         mocker.patch(f"{ASSEMBLY}.build_track_record", side_effect=RuntimeError("boom"))
         settings.messenger_digest_enabled = False
         settings.attestation_enabled = False
@@ -203,16 +219,16 @@ class TestDispatchReportsDeliveryResult:
             notifier=MagicMock(),
             subscribers=[],
             all_symbols=["QQQA"],
-            context=main_agent.ReportContext(),
+            context=ReportContext(),
         )
 
         assert delivered is False
 
 
 class TestWatchSummary:
-    def test_main_appends_checked_stale_and_sent(self, mocker, summary_file) -> None:
+    def test_main_appends_checked_stale_and_sent(self, mocker: Any, summary_file: Path) -> None:
         settings = Settings(
-            _env_file=None,
+            **NO_ENV_FILE,
             openai_api_key="sk-test",
             finnhub_api_key="fh",
             alpha_vantage_api_keys=["av1"],
@@ -246,7 +262,7 @@ class TestWatchSummary:
         from src.domain.value_objects import Money
 
         settings = Settings(
-            _env_file=None,
+            **NO_ENV_FILE,
             openai_api_key="sk-test",
             finnhub_api_key="fh",
             alpha_vantage_api_keys=["av1"],
@@ -275,7 +291,7 @@ class TestWatchSummary:
 
 class TestTrainerSummary:
     def test_main_appends_status_counts(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
@@ -294,7 +310,7 @@ class TestTrainerSummary:
             assert symbol not in markdown
 
     def test_summary_shows_the_feature_snapshot_models(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         from src.application.use_cases.train_model import SnapshotModelsResult
         from src.domain.model_scorecard import TrainingOutcome, TrainingReport
@@ -320,7 +336,7 @@ class TestTrainerSummary:
         assert "| Free features (all cycles) | skipped | 0 | n/a | n/a |" in markdown
 
     def test_summary_shows_the_label_overlap_of_the_pooled_model(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         # ML-25: liczba nakładających się etykiet z wyniku treningu wspólnego.
         fake_uc = MagicMock()
@@ -339,7 +355,7 @@ class TestTrainerSummary:
         assert "| Label overlaps (settle after the next row) | 7 / 230 |" in markdown
 
     def test_direction_variant_runs_only_with_its_flag(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         # ML-30: wariant binarny to sama ewaluacja w Slow Loopie, za flagą off.
         from src.domain.direction_variant import DirectionReport
@@ -365,7 +381,7 @@ class TestTrainerSummary:
         assert "### Direction classifier (ML-30)" in summary_file.read_text(encoding="utf-8")
 
     def test_failed_direction_variant_does_not_fail_the_run(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "n_samples": 12}
@@ -378,7 +394,7 @@ class TestTrainerSummary:
         assert "Direction classifier" not in summary_file.read_text(encoding="utf-8")
 
     def test_challenger_review_runs_only_with_the_shadow_flag(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         # ML-33: werdykt promocji challengerów nogi ML w summary, za flagą off.
         from src.domain.promotion import SettledShadowForecast, ShadowForecast
@@ -408,7 +424,7 @@ class TestTrainerSummary:
         assert "| direction | direction Brier | 1 | 1 |" in markdown
 
     def test_failed_challenger_review_does_not_fail_the_run(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         from src.application.errors import NotFound
 
@@ -425,7 +441,7 @@ class TestTrainerSummary:
         assert "Champion/challenger" not in summary_file.read_text(encoding="utf-8")
 
     def test_failed_feature_store_refresh_still_writes_a_summary(
-        self, settings, mock_external_clients, mocker, summary_file
+        self, settings: Settings, mock_external_clients: None, mocker: Any, summary_file: Path
     ) -> None:
         fake_uc = MagicMock()
         fake_uc.refresh_feature_store.side_effect = RuntimeError("DB down")

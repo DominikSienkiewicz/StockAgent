@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 import pytest
 import requests
@@ -20,9 +21,12 @@ from src.infrastructure.adapters._http import build_session
 
 
 class _OkAdapter(HTTPAdapter):
-    def send(self, request, **kwargs):  # type: ignore[no-untyped-def]
+    def send(
+        self, request: requests.PreparedRequest, *args: Any, **kwargs: Any
+    ) -> requests.Response:
         response = requests.Response()
         response.status_code = 200
+        assert request.url is not None
         response.url = request.url
         response.request = request
         response._content = b"{}"
@@ -59,11 +63,16 @@ def test_fast_loop_run_installs_one_meter_and_hands_it_to_the_cycle(
 
 def test_meter_is_uninstalled_after_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
     meters: list[HttpCallMeter | None] = []
-    monkeypatch.setattr(
-        main_agent,
-        "_run_fast_loop",
-        lambda settings, clock, http_meter=None: meters.append(http_meter) or 0,
-    )
+
+    def fake_run(
+        settings: Settings,
+        clock: Callable[[], datetime],
+        http_meter: HttpCallMeter | None = None,
+    ) -> int:
+        meters.append(http_meter)
+        return 0
+
+    monkeypatch.setattr(main_agent, "_run_fast_loop", fake_run)
     main_agent._run_fast_loop_metered(
         Settings.model_construct(), clock=lambda: datetime(2026, 1, 1)
     )

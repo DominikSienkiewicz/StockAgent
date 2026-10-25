@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
@@ -25,12 +26,13 @@ from src.config import Settings
 from src.domain.finops import PAID_LLM_SOURCES
 from src.infrastructure.llm.failover import FailoverLLMAdapter
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         anthropic_api_key="sk-ant-test",
         llm_provider="anthropic",
@@ -47,7 +49,7 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def failing_primary(mocker) -> Mock:
+def failing_primary(mocker: Any) -> Mock:
     # Awaria dostawcy po retry (decyzja: failover tylko przy 429/5xx/timeout/sieci).
     primary = Mock(spec=LLMPort)
     primary.analyze.side_effect = TimeoutError("read timed out")
@@ -57,7 +59,7 @@ def failing_primary(mocker) -> Mock:
 
 
 @pytest.fixture
-def secondary(mocker) -> Mock:
+def secondary(mocker: Any) -> Mock:
     port = Mock(spec=LLMPort)
     port.analyze.return_value = {"trend_direction": "BULLISH", "confidence_score": 0.7}
     port.analyze_mistake.return_value = "fallback insight"
@@ -65,7 +67,7 @@ def secondary(mocker) -> Mock:
 
 
 class TestBuildLLMAdapter:
-    def test_fallback_is_off_by_default(self, settings, mocker) -> None:
+    def test_fallback_is_off_by_default(self, settings: Settings, mocker: Any) -> None:
         mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
 
         adapter = main_agent.build_llm_adapter(settings)
@@ -73,7 +75,7 @@ class TestBuildLLMAdapter:
         assert not isinstance(adapter, FailoverLLMAdapter)
 
     def test_configured_fallback_wraps_the_main_adapter(
-        self, settings, mocker, failing_primary, secondary
+        self, settings: Settings, mocker: Any, failing_primary: Mock, secondary: Mock
     ) -> None:
         settings.llm_fallback_provider = "openai"
         settings.llm_fallback_model = "gpt-4o"
@@ -89,7 +91,7 @@ class TestBuildLLMAdapter:
         assert adapter.analyze("prompt")[LLM_FAILOVER_PROVIDER_KEY] == "openai"
 
     def test_fallback_model_defaults_to_the_provider_default(
-        self, settings, mocker, failing_primary, secondary
+        self, settings: Settings, mocker: Any, failing_primary: Mock, secondary: Mock
     ) -> None:
         from src.infrastructure.llm.openai_client import DEFAULT_MODEL
 
@@ -100,7 +102,9 @@ class TestBuildLLMAdapter:
 
         assert build_single.call_args.args[2] == DEFAULT_MODEL
 
-    def test_missing_fallback_key_keeps_the_main_adapter(self, settings, mocker, caplog) -> None:
+    def test_missing_fallback_key_keeps_the_main_adapter(
+        self, settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         settings.llm_provider = "openai"
         settings.llm_fallback_provider = "anthropic"
         settings.anthropic_api_key = None
@@ -113,7 +117,7 @@ class TestBuildLLMAdapter:
         assert "ANTHROPIC_API_KEY" in caplog.text
 
     def test_fallback_call_is_metered_under_llm(
-        self, settings, mocker, failing_primary, secondary
+        self, settings: Settings, mocker: Any, failing_primary: Mock, secondary: Mock
     ) -> None:
         settings.llm_fallback_provider = "openai"
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
@@ -127,7 +131,7 @@ class TestBuildLLMAdapter:
         assert dict(telemetry.snapshot().paid_calls) == {"llm": 2}
 
     def test_fallback_allowance_refuses_the_secondary_before_the_provider(
-        self, settings, mocker, failing_primary, secondary
+        self, settings: Settings, mocker: Any, failing_primary: Mock, secondary: Mock
     ) -> None:
         from src.application.metering import PaidCallAllowance
 
@@ -144,7 +148,9 @@ class TestBuildLLMAdapter:
         secondary.analyze.assert_not_called()
         assert dict(telemetry.snapshot().paid_calls) == {}
 
-    def test_primary_success_meters_nothing_extra(self, settings, mocker, secondary) -> None:
+    def test_primary_success_meters_nothing_extra(
+        self, settings: Settings, mocker: Any, secondary: Mock
+    ) -> None:
         primary = Mock(spec=LLMPort)
         primary.analyze.return_value = {"trend_direction": "SIDEWAYS"}
         mocker.patch(
@@ -161,14 +167,15 @@ class TestBuildLLMAdapter:
 
 
 class TestFastLoopWiring:
-    def _deps(self, settings, mocker) -> MagicMock:
+    def _deps(self, settings: Settings, mocker: Any) -> MagicMock:
         mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
         use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
         main_agent.build_use_case(settings)
-        return use_case_cls.call_args.args[0]
+        deps: MagicMock = use_case_cls.call_args.args[0]
+        return deps
 
     def test_fallback_call_reaches_the_cycle_budget(
-        self, settings, mocker, failing_primary, secondary
+        self, settings: Settings, mocker: Any, failing_primary: Mock, secondary: Mock
     ) -> None:
         # FIN-12: sufit liczy wydane wywołania z tej samej telemetrii co graf.
         settings.llm_fallback_provider = "openai"
@@ -181,7 +188,7 @@ class TestFastLoopWiring:
         assert isinstance(deps.llm_port, FailoverLLMAdapter)
         assert deps.telemetry.paid_calls_of(PAID_LLM_SOURCES) == 1
 
-    def test_local_stub_run_has_no_failover(self, settings, mocker) -> None:
+    def test_local_stub_run_has_no_failover(self, settings: Settings, mocker: Any) -> None:
         # FIN-35: atrapy nie wysyłają requestów, więc nie ma czego przełączać.
         settings.paid_calls_enabled = False
         settings.llm_fallback_provider = "openai"
@@ -201,12 +208,19 @@ class TestSlowLoopWiring:
     request do zapasowego; sufit tygodniowy zostaje twardy."""
 
     @staticmethod
-    def _paid(settings, caplog) -> main_trainer._SlowLoopPaidLLM:
+    def _paid(
+        settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> main_trainer._SlowLoopPaidLLM:
         with caplog.at_level(logging.INFO, logger="main_trainer"):
             return main_trainer._SlowLoopPaidLLM(settings, QuotaMonitor(), UsageLedger())
 
     def test_with_a_fallback_recap_gets_two_calls_and_fails_over(
-        self, settings, mocker, failing_primary, secondary, caplog
+        self,
+        settings: Settings,
+        mocker: Any,
+        failing_primary: Mock,
+        secondary: Mock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         from src.application.metering import PaidBudgetExhausted
 
@@ -226,7 +240,9 @@ class TestSlowLoopWiring:
         assert failing_primary.analyze.call_count == 1
         assert secondary.analyze.call_count == 1
 
-    def test_without_a_fallback_each_job_keeps_one_call(self, settings, mocker, caplog) -> None:
+    def test_without_a_fallback_each_job_keeps_one_call(
+        self, settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from src.application.metering import PaidBudgetExhausted
 
         primary = Mock(spec=LLMPort)
@@ -245,7 +261,9 @@ class TestSlowLoopWiring:
             port.analyze("prompt")
         assert primary.analyze.call_count == 1
 
-    def test_fallback_without_its_key_adds_no_call(self, settings, caplog) -> None:
+    def test_fallback_without_its_key_adds_no_call(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # Adapter zapasowy nie powstanie (brak klucza), więc nie ma czego budżetować.
         settings.llm_provider = "openai"
         settings.llm_fallback_provider = "anthropic"
@@ -256,7 +274,9 @@ class TestSlowLoopWiring:
 
         assert "allowed={'recap': 1}" in caplog.text
 
-    def test_local_stub_run_adds_no_call(self, settings, caplog) -> None:
+    def test_local_stub_run_adds_no_call(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         settings.paid_calls_enabled = False
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
@@ -266,7 +286,12 @@ class TestSlowLoopWiring:
         assert "allowed={'recap': 1}" in caplog.text
 
     def test_weekly_ceiling_stays_hard(
-        self, settings, mocker, failing_primary, secondary, caplog
+        self,
+        settings: Settings,
+        mocker: Any,
+        failing_primary: Mock,
+        secondary: Mock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # Sufit 3: recap ma pierwszeństwo (2), sędzia dostaje resztę (1) — jego jedyne
         # wywołanie zużywa request do głównego, więc failover sędziego nie startuje.
@@ -284,7 +309,12 @@ class TestSlowLoopWiring:
         assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 1}
 
     def test_jobs_keep_separate_allowances(
-        self, settings, mocker, failing_primary, secondary, caplog
+        self,
+        settings: Settings,
+        mocker: Any,
+        failing_primary: Mock,
+        secondary: Mock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
@@ -298,7 +328,7 @@ class TestSlowLoopWiring:
         # Failover recapu nie zjada przydziału sędziego.
         assert secondary.analyze.call_count == 2
 
-    def test_local_stub_run_has_no_failover(self, settings, mocker) -> None:
+    def test_local_stub_run_has_no_failover(self, settings: Settings, mocker: Any) -> None:
         settings.paid_calls_enabled = False
         settings.db_writes_enabled = False
         settings.llm_fallback_provider = "openai"
@@ -314,7 +344,7 @@ class TestSlowLoopWiring:
 class TestFallbackSettings:
     def test_defaults_off(self) -> None:
         settings = Settings(
-            _env_file=None,
+            **NO_ENV_FILE,
             openai_api_key="sk-test",
             finnhub_api_key="fh",
             alpha_vantage_api_keys=["av1"],
@@ -324,7 +354,7 @@ class TestFallbackSettings:
 
         assert (settings.llm_fallback_provider, settings.llm_fallback_model) == (None, None)
 
-    def test_fallback_fields_are_outside_the_recipe_hash(self, settings) -> None:
+    def test_fallback_fields_are_outside_the_recipe_hash(self, settings: Settings) -> None:
         # Decyzja właściciela: NON_RECIPE — predykcja od zapasowego niesie własny
         # przepis (flaga `llm_failover` + faktyczny model w kwicie).
         from src.config import NON_RECIPE_SETTINGS_FIELDS
@@ -339,11 +369,11 @@ class TestFallbackSettings:
     def test_unknown_provider_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="llm_fallback_provider"):
             Settings(
-                _env_file=None,
+                **NO_ENV_FILE,
                 openai_api_key="sk-test",
                 finnhub_api_key="fh",
                 alpha_vantage_api_keys=["av1"],
                 supabase_url="https://test.supabase.co",
                 supabase_key="anon",
-                llm_fallback_provider="gemini",
+                llm_fallback_provider=cast("Any", "gemini"),
             )

@@ -11,20 +11,24 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 import main_watch
-from src.application.ports import PreviousVerdict, RepositoryPort
+from src.application.ports import OpenInvalidation, PreviousVerdict, RepositoryPort
 from src.config import Settings
+from src.domain.portfolio import Portfolio
+from src.domain.price_levels import PriceLevelAlert
 from src.domain.value_objects import Money
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -59,7 +63,7 @@ def _market(price: str) -> MagicMock:
 
 
 class TestWatchCycle:
-    def test_big_drop_emits_one_alert(self, settings) -> None:
+    def test_big_drop_emits_one_alert(self, settings: Settings) -> None:
         repo = _repo("100", age_hours=1.0)
         push = MagicMock()
 
@@ -71,7 +75,7 @@ class TestWatchCycle:
         push.send_report.assert_called_once()
         repo.save_shock_alert.assert_called_once()
 
-    def test_watch_never_writes_a_price_snapshot(self, settings) -> None:
+    def test_watch_never_writes_a_price_snapshot(self, settings: Settings) -> None:
         # Regresja krytyczna: nadpisanie snapshotu co godzinę zamknęłoby bramkę
         # volatility Fast Loopa — delta liczyłaby się względem ceny sprzed godziny.
         repo = _repo("100", age_hours=1.0)
@@ -82,7 +86,7 @@ class TestWatchCycle:
 
         repo.save_price_snapshot.assert_not_called()
 
-    def test_stale_snapshot_suppresses_the_alert(self, settings) -> None:
+    def test_stale_snapshot_suppresses_the_alert(self, settings: Settings) -> None:
         repo = _repo("100", age_hours=48.0)
         push = MagicMock()
 
@@ -91,7 +95,7 @@ class TestWatchCycle:
         ) == 0
         push.send_report.assert_not_called()
 
-    def test_stale_snapshot_skips_the_price_fetch(self, settings) -> None:
+    def test_stale_snapshot_skips_the_price_fetch(self, settings: Settings) -> None:
         # Stęchła referencja i tak tłumi alert, więc pobieranie ceny to czysty
         # koszt (limit Finnhuba) bez żadnej szansy na wynik.
         repo = _repo("100", age_hours=48.0)
@@ -101,7 +105,9 @@ class TestWatchCycle:
 
         market.get_current_price.assert_not_called()
 
-    def test_all_stale_snapshots_log_blind_warning(self, settings, caplog) -> None:
+    def test_all_stale_snapshots_log_blind_warning(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # Gdy Fast Loop stoi, każda referencja jest stęchła i watch nie może
         # zgłosić niczego. „0 alertów" na INFO wyglądałoby jak zdrowy przebieg.
         settings.symbols = ["AAPL", "MSFT"]
@@ -116,7 +122,9 @@ class TestWatchCycle:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("ślepy" in r.getMessage() for r in warnings)
 
-    def test_partly_stale_snapshots_do_not_log_blind_warning(self, settings, caplog) -> None:
+    def test_partly_stale_snapshots_do_not_log_blind_warning(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         settings.symbols = ["AAPL", "MSFT"]
         now = datetime.now(UTC)
         repo = _repo("100", age_hours=1.0, now=now)
@@ -133,14 +141,14 @@ class TestWatchCycle:
 
         assert not any("ślepy" in r.getMessage() for r in caplog.records)
 
-    def test_small_move_is_not_a_shock(self, settings) -> None:
+    def test_small_move_is_not_a_shock(self, settings: Settings) -> None:
         repo = _repo("100", age_hours=1.0)
 
         assert main_watch.run_watch(
             settings, repository=repo, market=_market("97"), push_notifier=MagicMock()
         ) == 0
 
-    def test_debounce_blocks_a_second_alert_the_same_day(self, settings) -> None:
+    def test_debounce_blocks_a_second_alert_the_same_day(self, settings: Settings) -> None:
         # Zegar zamrożony przez szew `now=`: `run_watch` liczy dzień alertu
         # w UTC, więc klucz debounce'u musi pochodzić z TEJ SAMEJ chwili.
         # Wcześniej klucz brał się z `date.today()` (data LOKALNA), przez co test
@@ -163,7 +171,7 @@ class TestWatchCycle:
         ) == 0
         push.send_report.assert_not_called()
 
-    def test_per_symbol_failure_does_not_break_the_run(self, settings) -> None:
+    def test_per_symbol_failure_does_not_break_the_run(self, settings: Settings) -> None:
         settings.symbols = ["AAPL", "MSFT"]
         repo = _repo("100", age_hours=1.0)
         market = MagicMock()
@@ -173,7 +181,7 @@ class TestWatchCycle:
             settings, repository=repo, market=market, push_notifier=MagicMock()
         ) == 1
 
-    def test_flag_off_short_circuits(self, settings) -> None:
+    def test_flag_off_short_circuits(self, settings: Settings) -> None:
         settings.shock_alerts_enabled = False
         repo = _repo("100", age_hours=1.0)
 
@@ -183,7 +191,7 @@ class TestWatchCycle:
         repo.get_last_price_snapshot.assert_not_called()
 
 
-def test_main_builds_settings_via_from_env(settings, mocker) -> None:
+def test_main_builds_settings_via_from_env(settings: Settings, mocker: Any) -> None:
     # ARCH-23: ten sam punkt wejścia konfiguracji co main_agent (`Settings.from_env`),
     # bez gołego `Settings()` z ignorem mypy.
     settings_cls = mocker.patch("main_watch.Settings")
@@ -196,7 +204,7 @@ def test_main_builds_settings_via_from_env(settings, mocker) -> None:
     settings_cls.from_env.assert_called_once_with()
 
 
-def test_main_wires_free_adapters_only(settings, mocker) -> None:
+def test_main_wires_free_adapters_only(settings: Settings, mocker: Any) -> None:
     # `main()` składa adaptery fabrykami z `main_agent` (import lokalny). Rename
     # buildera przeszedłby przez testy `run_watch`, a wywaliłby sam entry-point.
     repository = mocker.patch("main_agent.build_repository")
@@ -231,7 +239,9 @@ def test_main_wires_free_adapters_only(settings, mocker) -> None:
         builder.assert_not_called()
 
 
-def test_main_hands_the_nbp_port_to_the_scan_only_with_nbp_enabled(settings, mocker) -> None:
+def test_main_hands_the_nbp_port_to_the_scan_only_with_nbp_enabled(
+    settings: Settings, mocker: Any
+) -> None:
     # ALR-08: udział pozycji w złotych potrzebuje kursów NBP; bez `nbp_enabled` watch
     # nie buduje portu kursów, a skan idzie jak przed ALR-08.
     mocker.patch("main_agent.build_repository")
@@ -255,7 +265,7 @@ def test_main_hands_the_nbp_port_to_the_scan_only_with_nbp_enabled(settings, moc
 
 
 class TestWatchMain:
-    def test_main_returns_1_when_every_symbol_raises(self, settings, mocker) -> None:
+    def test_main_returns_1_when_every_symbol_raises(self, settings: Settings, mocker: Any) -> None:
         # NIEZ-05: padnięta baza dawała zielony run z „0 alertów”.
         settings.symbols = ["AAPL", "MSFT"]
         settings.telegram_bot_token = "tg-token"
@@ -268,7 +278,9 @@ class TestWatchMain:
 
         assert main_watch.main(settings) == 1
 
-    def test_main_without_push_channel_persists_no_alert(self, settings, mocker) -> None:
+    def test_main_without_push_channel_persists_no_alert(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         # ALR-01: NullNotifier „wysyłał” alert, a zapis blokował debounce na dobę.
         moment = datetime.now(UTC)
         repo = _repo("100", age_hours=1.0, now=moment)
@@ -281,7 +293,7 @@ class TestWatchMain:
         repo.save_shock_alert.assert_not_called()
         build_push.assert_not_called()
 
-    def test_scan_without_push_channel_sends_and_saves_nothing(self, settings) -> None:
+    def test_scan_without_push_channel_sends_and_saves_nothing(self, settings: Settings) -> None:
         moment = datetime.now(UTC)
         repo = _repo("100", age_hours=1.0, now=moment)
 
@@ -293,7 +305,7 @@ class TestWatchMain:
         repo.save_shock_alert.assert_not_called()
 
 
-def test_alert_carries_the_detection_time_in_the_display_timezone(settings) -> None:
+def test_alert_carries_the_detection_time_in_the_display_timezone(settings: Settings) -> None:
     # MAIL-14: push szoku mówi, KIEDY go wykryto — w czasie lokalnym, nie UTC.
     moment = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
     settings.display_timezone = "Europe/Warsaw"
@@ -309,7 +321,7 @@ def test_alert_carries_the_detection_time_in_the_display_timezone(settings) -> N
     assert "05:30" not in body
 
 
-def test_alert_writes_the_move_with_a_polish_decimal_comma(settings) -> None:
+def test_alert_writes_the_move_with_a_polish_decimal_comma(settings: Settings) -> None:
     # MAIL-58 etap 1b: push szoku to temat i treść dla czytelnika — „-5,2%”, nie „-5.2%”.
     moment = datetime(2026, 10, 16, 5, 30, tzinfo=UTC)
     repo = _repo("100", age_hours=1.0, now=moment)
@@ -324,7 +336,9 @@ def test_alert_writes_the_move_with_a_polish_decimal_comma(settings) -> None:
     assert sent["plain_text"].startswith("📉 AAPL -5,2% od ostatniego snapshotu ceny")
 
 
-def test_watch_starts_with_stubbed_paid_ports_and_database_writes(settings, mocker) -> None:
+def test_watch_starts_with_stubbed_paid_ports_and_database_writes(
+    settings: Settings, mocker: Any
+) -> None:
     # FIN-35: odmowa startu dotyczy tylko jobów z płatnymi portami — watch żadnego
     # nie woła, więc kombinacja zapis + atrapy go nie zatrzymuje.
     settings.db_writes_enabled = True
@@ -346,7 +360,9 @@ class TestNyseClosedDayWatch:
 
     _CHRISTMAS = datetime(2026, 12, 25, 5, 30, tzinfo=UTC)
 
-    def _scan(self, settings, now: datetime, caplog) -> tuple[MagicMock, object]:
+    def _scan(
+        self, settings: Settings, now: datetime, caplog: pytest.LogCaptureFixture
+    ) -> tuple[MagicMock, main_watch.WatchOutcome]:
         settings.symbols = ["AAPL"]
         settings.crypto_symbols = ["BTC"]
         repo = _repo("100", age_hours=1.0, now=now)
@@ -357,7 +373,9 @@ class TestNyseClosedDayWatch:
             )
         return repo, outcome
 
-    def test_holiday_checks_only_crypto(self, settings, caplog) -> None:
+    def test_holiday_checks_only_crypto(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         settings.nyse_closure_skip_enabled = True
 
         repo, outcome = self._scan(settings, self._CHRISTMAS, caplog)
@@ -370,7 +388,9 @@ class TestNyseClosedDayWatch:
             for rec in caplog.records
         ), [rec.message for rec in caplog.records]
 
-    def test_trading_day_checks_stocks_too(self, settings, caplog) -> None:
+    def test_trading_day_checks_stocks_too(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         settings.nyse_closure_skip_enabled = True
 
         repo, _ = self._scan(settings, datetime(2026, 12, 23, 5, 30, tzinfo=UTC), caplog)
@@ -378,7 +398,9 @@ class TestNyseClosedDayWatch:
         checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
         assert checked == ["AAPL", "BTC"]
 
-    def test_flag_off_checks_stocks_on_a_holiday(self, settings, caplog) -> None:
+    def test_flag_off_checks_stocks_on_a_holiday(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         repo, _ = self._scan(settings, self._CHRISTMAS, caplog)
 
         checked = [c.args[0] for c in repo.get_last_price_snapshot.call_args_list]
@@ -388,7 +410,7 @@ class TestNyseClosedDayWatch:
 class TestWatchHeartbeat:
     """NIEZ-13: zewnętrzny watchdog dostaje ping na końcu przebiegu watcha."""
 
-    def test_main_pings_heartbeat_with_ok_flag(self, settings, mocker) -> None:
+    def test_main_pings_heartbeat_with_ok_flag(self, settings: Settings, mocker: Any) -> None:
         from src.application.ports import HeartbeatPort
 
         heartbeat = MagicMock(spec=HeartbeatPort)
@@ -404,7 +426,9 @@ class TestWatchHeartbeat:
 
         heartbeat.ping.assert_called_once_with(ok=True)
 
-    def test_run_where_every_symbol_failed_pings_a_failure(self, settings, mocker) -> None:
+    def test_run_where_every_symbol_failed_pings_a_failure(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         from src.application.ports import HeartbeatPort
 
         heartbeat = MagicMock(spec=HeartbeatPort)
@@ -420,7 +444,9 @@ class TestWatchHeartbeat:
 
         heartbeat.ping.assert_called_once_with(ok=False)
 
-    def test_failed_ping_does_not_change_the_exit_code(self, settings, mocker, caplog) -> None:
+    def test_failed_ping_does_not_change_the_exit_code(
+        self, settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from src.application.ports import HeartbeatPort
 
         heartbeat = MagicMock(spec=HeartbeatPort)
@@ -463,7 +489,7 @@ class TestDailyChangeWatch:
 
     _FRIDAY_SESSION = datetime(2026, 10, 16, 15, 7, tzinfo=UTC)
 
-    def test_daily_change_drives_alert_without_snapshot(self, settings) -> None:
+    def test_daily_change_drives_alert_without_snapshot(self, settings: Settings) -> None:
         repo = _no_snapshot_repo()
         push = MagicMock()
 
@@ -481,7 +507,7 @@ class TestDailyChangeWatch:
         repo.save_shock_alert.assert_called_once()
         repo.save_price_snapshot.assert_not_called()
 
-    def test_saturday_reading_of_friday_move_does_not_alert(self, settings) -> None:
+    def test_saturday_reading_of_friday_move_does_not_alert(self, settings: Settings) -> None:
         # `dp` w sobotę to piątkowy ruch — bez guardu na `t` dublowałby piątkowy alert.
         saturday = datetime(2026, 10, 17, 9, 7, tzinfo=UTC)
         friday_close = datetime(2026, 10, 16, 20, 0, tzinfo=UTC)
@@ -499,7 +525,7 @@ class TestDailyChangeWatch:
         assert sent == 0
         push.send_report.assert_not_called()
 
-    def test_fresh_reading_wins_over_snapshot_with_a_single_alert(self, settings) -> None:
+    def test_fresh_reading_wins_over_snapshot_with_a_single_alert(self, settings: Settings) -> None:
         # Oba źródła widzą szok: jeden alert, a snapshot i cena bieżąca nie są czytane.
         now = self._FRIDAY_SESSION
         repo = _repo("100", age_hours=1.0, now=now)
@@ -520,7 +546,7 @@ class TestDailyChangeWatch:
         repo.get_last_price_snapshot.assert_not_called()
         market.get_current_price.assert_not_called()
 
-    def test_fresh_calm_reading_is_final(self, settings) -> None:
+    def test_fresh_calm_reading_is_final(self, settings: Settings) -> None:
         # Świeży odczyt rozstrzyga — snapshot nie dokłada drugiej opinii o tym samym symbolu.
         now = self._FRIDAY_SESSION
         repo = _repo("100", age_hours=1.0, now=now)
@@ -537,7 +563,7 @@ class TestDailyChangeWatch:
         assert sent == 0
         repo.get_last_price_snapshot.assert_not_called()
 
-    def test_stale_reading_falls_back_to_the_snapshot(self, settings) -> None:
+    def test_stale_reading_falls_back_to_the_snapshot(self, settings: Settings) -> None:
         saturday = datetime(2026, 10, 17, 9, 7, tzinfo=UTC)
         repo = _repo("100", age_hours=1.0, now=saturday)
         push = MagicMock()
@@ -556,7 +582,9 @@ class TestDailyChangeWatch:
             "📉 AAPL -10,0% od ostatniego snapshotu ceny"
         )
 
-    def test_failing_reading_falls_back_to_the_snapshot(self, settings, caplog) -> None:
+    def test_failing_reading_falls_back_to_the_snapshot(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         now = self._FRIDAY_SESSION
         repo = _repo("100", age_hours=1.0, now=now)
         daily = _daily("-0.09", now)
@@ -575,7 +603,7 @@ class TestDailyChangeWatch:
         assert outcome.sent == 1 and outcome.failures == 0
         assert any("AAPL" in r.getMessage() for r in caplog.records)
 
-    def test_stock_alert_names_the_previous_close(self, settings) -> None:
+    def test_stock_alert_names_the_previous_close(self, settings: Settings) -> None:
         now = self._FRIDAY_SESSION
         push = MagicMock()
 
@@ -592,7 +620,7 @@ class TestDailyChangeWatch:
             "📉 AAPL -9,0% od poprzedniego zamknięcia"
         )
 
-    def test_crypto_alert_names_the_24h_window(self, settings) -> None:
+    def test_crypto_alert_names_the_24h_window(self, settings: Settings) -> None:
         settings.symbols = []
         settings.crypto_symbols = ["BTC"]
         now = self._FRIDAY_SESSION
@@ -611,7 +639,9 @@ class TestDailyChangeWatch:
             "📉 BTC -8,0% w ciągu ostatnich 24 h"
         )
 
-    def test_fresh_readings_keep_the_watch_from_being_blind(self, settings, caplog) -> None:
+    def test_fresh_readings_keep_the_watch_from_being_blind(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # Fast Loop stoi (wszystkie snapshoty stęchłe), ale dzienna zmiana jest świeża.
         now = self._FRIDAY_SESSION
         repo = _repo("100", age_hours=48.0, now=now)
@@ -629,7 +659,7 @@ class TestDailyChangeWatch:
         assert outcome.checked == 1 and outcome.stale == 0
         assert not any("ślepy" in r.getMessage() for r in caplog.records)
 
-    def test_debounce_also_covers_the_daily_change(self, settings) -> None:
+    def test_debounce_also_covers_the_daily_change(self, settings: Settings) -> None:
         now = self._FRIDAY_SESSION
         repo = _no_snapshot_repo()
         repo.get_sent_shock_alerts.return_value = {("AAPL", now.date())}
@@ -646,7 +676,9 @@ class TestDailyChangeWatch:
         daily.get_daily_change.assert_not_called()
 
 
-def test_main_feeds_the_free_router_as_the_daily_change_source(settings, mocker) -> None:
+def test_main_feeds_the_free_router_as_the_daily_change_source(
+    settings: Settings, mocker: Any
+) -> None:
     # ALR-02: router darmowych cen (Finnhub /quote, CoinGecko) jest też źródłem
     # dziennej zmiany; płatne fabryki dalej nietknięte.
     from src.infrastructure.adapters.routing_market_data import RoutingMarketDataPort
@@ -684,7 +716,7 @@ class TestCryptoRollingWindowCooldown:
 
     _AFTER_MIDNIGHT = datetime(2026, 10, 17, 0, 7, tzinfo=UTC)
 
-    def _scan(self, settings, alerted_hours_ago: float) -> tuple[int, MagicMock]:
+    def _scan(self, settings: Settings, alerted_hours_ago: float) -> tuple[int, MagicMock]:
         now = self._AFTER_MIDNIGHT
         alerted_at = now - timedelta(hours=alerted_hours_ago)
         repo = _no_snapshot_repo()
@@ -703,7 +735,9 @@ class TestCryptoRollingWindowCooldown:
         )
         return sent, push
 
-    def test_crypto_alert_from_23_hours_ago_suppresses_the_daily_change(self, settings) -> None:
+    def test_crypto_alert_from_23_hours_ago_suppresses_the_daily_change(
+        self, settings: Settings
+    ) -> None:
         settings.symbols = []
         settings.crypto_symbols = ["BTC"]
 
@@ -712,7 +746,7 @@ class TestCryptoRollingWindowCooldown:
         assert sent == 0
         push.send_report.assert_not_called()
 
-    def test_crypto_alert_from_25_hours_ago_does_not_suppress(self, settings) -> None:
+    def test_crypto_alert_from_25_hours_ago_does_not_suppress(self, settings: Settings) -> None:
         settings.symbols = []
         settings.crypto_symbols = ["BTC"]
 
@@ -721,7 +755,7 @@ class TestCryptoRollingWindowCooldown:
         assert sent == 1
         assert "BTC" in push.send_report.call_args.kwargs["subject"]
 
-    def test_stocks_ignore_the_rolling_window(self, settings) -> None:
+    def test_stocks_ignore_the_rolling_window(self, settings: Settings) -> None:
         # `dp` akcji liczy się od poprzedniego zamknięcia — świeżość dnia UTC wystarcza.
         settings.symbols = ["AAPL"]
         settings.crypto_symbols = ["BTC"]
@@ -739,7 +773,7 @@ class TestQuietHoursWatch:
     _NIGHT = datetime(2026, 10, 16, 1, 30, tzinfo=UTC)  # 03:30 w Warszawie
     _DAY = datetime(2026, 10, 16, 8, 30, tzinfo=UTC)  # 10:30 w Warszawie
 
-    def _push(self, settings, now: datetime) -> MagicMock:
+    def _push(self, settings: Settings, now: datetime) -> MagicMock:
         settings.display_timezone = "Europe/Warsaw"
         push = MagicMock()
         main_watch.run_watch(
@@ -752,28 +786,28 @@ class TestQuietHoursWatch:
         push.send_report.assert_called_once()
         return push
 
-    def test_night_alert_is_delivered_silently(self, settings) -> None:
+    def test_night_alert_is_delivered_silently(self, settings: Settings) -> None:
         settings.quiet_hours_enabled = True
 
         push = self._push(settings, self._NIGHT)
 
         assert push.send_report.call_args.kwargs["silent"] is True
 
-    def test_daytime_alert_keeps_the_sound(self, settings) -> None:
+    def test_daytime_alert_keeps_the_sound(self, settings: Settings) -> None:
         settings.quiet_hours_enabled = True
 
         push = self._push(settings, self._DAY)
 
         assert push.send_report.call_args.kwargs["silent"] is False
 
-    def test_flag_off_never_silences(self, settings) -> None:
+    def test_flag_off_never_silences(self, settings: Settings) -> None:
         settings.quiet_hours_enabled = False
 
         push = self._push(settings, self._NIGHT)
 
         assert push.send_report.call_args.kwargs["silent"] is False
 
-    def test_window_comes_from_settings(self, settings) -> None:
+    def test_window_comes_from_settings(self, settings: Settings) -> None:
         from datetime import time
 
         settings.quiet_hours_enabled = True
@@ -818,10 +852,10 @@ class TestAlertContext:
 
     def _body(
         self,
-        settings,
+        settings: Settings,
         repo: MagicMock,
         *,
-        portfolio: object = None,
+        portfolio: Portfolio | None = None,
         prices: dict[str, str] | None = None,
     ) -> str:
         settings.display_timezone = "Europe/Warsaw"
@@ -838,7 +872,7 @@ class TestAlertContext:
         body: str = push.send_report.call_args.kwargs["plain_text"]
         return body
 
-    def _portfolio(self) -> object:
+    def _portfolio(self) -> Portfolio:
         from src.domain.portfolio import Portfolio, Position
 
         return Portfolio(
@@ -849,7 +883,7 @@ class TestAlertContext:
             as_of=self._NOW - timedelta(days=1),
         )
 
-    def test_alert_body_includes_previous_verdict_and_position(self, settings) -> None:
+    def test_alert_body_includes_previous_verdict_and_position(self, settings: Settings) -> None:
         repo = self._repo()
         repo.get_previous_verdict.return_value = _previous_verdict(
             "BUY", 0.72, self._NOW - timedelta(days=1)
@@ -865,7 +899,7 @@ class TestAlertContext:
         assert body.startswith("📉 AAPL -10,0% od ostatniego snapshotu ceny")
         assert body.rstrip().endswith("pełna analiza w najbliższym dziennym digeście.")
 
-    def test_week_old_verdict_carries_its_age(self, settings) -> None:
+    def test_week_old_verdict_carries_its_age(self, settings: Settings) -> None:
         repo = self._repo()
         repo.get_previous_verdict.return_value = _previous_verdict(
             "SELL", 0.55, self._NOW - timedelta(days=8)
@@ -875,7 +909,7 @@ class TestAlertContext:
 
         assert "Rada 8 dni temu: SPRZEDAJ, zgoda 55%" in body
 
-    def test_alert_quotes_the_last_prediction_reasoning(self, settings) -> None:
+    def test_alert_quotes_the_last_prediction_reasoning(self, settings: Settings) -> None:
         from src.application.ports import LatestPrediction
 
         repo = self._repo()
@@ -892,7 +926,7 @@ class TestAlertContext:
         assert line.endswith("…")
         assert len(line) < 320
 
-    def test_symbol_outside_the_portfolio_gets_no_position_line(self, settings) -> None:
+    def test_symbol_outside_the_portfolio_gets_no_position_line(self, settings: Settings) -> None:
         from src.domain.portfolio import Portfolio, Position
 
         portfolio = Portfolio(
@@ -906,7 +940,7 @@ class TestAlertContext:
 
         assert "Twoja pozycja" not in body
 
-    def test_stale_portfolio_is_marked(self, settings) -> None:
+    def test_stale_portfolio_is_marked(self, settings: Settings) -> None:
         from src.domain.portfolio import Portfolio, Position
 
         portfolio = Portfolio(
@@ -921,12 +955,12 @@ class TestAlertContext:
         assert "Twoja pozycja: 100% portfela, +0,0% od zakupu" in body
         assert "stan portfela z 06.09.2026 — może być nieaktualny" in body
 
-    def test_failing_context_reads_keep_the_alert(self, settings) -> None:
+    def test_failing_context_reads_keep_the_alert(self, settings: Settings) -> None:
         repo = self._repo()
         repo.get_previous_verdict.side_effect = RuntimeError("Supabase 503")
         repo.get_latest_prediction.side_effect = RuntimeError("Supabase 503")
 
-        def broken_portfolio() -> object:
+        def broken_portfolio() -> Portfolio | None:
             raise RuntimeError("positions down")
 
         settings.display_timezone = "Europe/Warsaw"
@@ -944,14 +978,14 @@ class TestAlertContext:
         body = push.send_report.call_args.kwargs["plain_text"]
         assert "Rada" not in body and "Twoja pozycja" not in body
 
-    def test_context_never_writes_a_price_snapshot(self, settings) -> None:
+    def test_context_never_writes_a_price_snapshot(self, settings: Settings) -> None:
         repo = self._repo()
 
         self._body(settings, repo, portfolio=self._portfolio(), prices={"AAPL": "90", "MSFT": "1"})
 
         repo.save_price_snapshot.assert_not_called()
 
-    def test_portfolio_flag_off_reads_no_positions(self, settings, mocker) -> None:
+    def test_portfolio_flag_off_reads_no_positions(self, settings: Settings, mocker: Any) -> None:
         # Domyślny loader to fabryka Fast Loopa: bez `portfolio_positions_enabled`
         # nie dotyka tabeli `positions`.
         positions_port = mocker.patch("main_agent.build_positions_port")
@@ -989,7 +1023,7 @@ class TestPositionShareInZlotys:
         return port
 
     @staticmethod
-    def _mixed_portfolio(as_of: datetime):
+    def _mixed_portfolio(as_of: datetime) -> Portfolio:
         from src.domain.portfolio import Portfolio, Position
 
         return Portfolio(
@@ -1003,7 +1037,7 @@ class TestPositionShareInZlotys:
             as_of=as_of,
         )
 
-    def _body(self, settings, fx_port: MagicMock | None) -> str:
+    def _body(self, settings: Settings, fx_port: MagicMock | None) -> str:
         settings.display_timezone = "Europe/Warsaw"
         repo = _repo("100", age_hours=1.0, now=self._NOW)
         repo.get_previous_verdict.return_value = None
@@ -1027,24 +1061,28 @@ class TestPositionShareInZlotys:
         body: str = push.send_report.call_args.kwargs["plain_text"]
         return body
 
-    def test_share_of_the_usd_position_is_converted_with_the_nbp_rate(self, settings) -> None:
+    def test_share_of_the_usd_position_is_converted_with_the_nbp_rate(
+        self, settings: Settings
+    ) -> None:
         body = self._body(settings, self._fx(USD="4.00"))
 
         # 10 × 90 USD × 4,00 = 3 600 zł z 8 600 zł (41,9%); z kwot natywnych: 900 / 5 900.
         assert "Twoja pozycja: 42% portfela, +12,5% od zakupu" in body
 
-    def test_without_a_nbp_rate_the_share_is_left_out_but_the_alert_goes(self, settings) -> None:
+    def test_without_a_nbp_rate_the_share_is_left_out_but_the_alert_goes(
+        self, settings: Settings
+    ) -> None:
         body = self._body(settings, self._fx())
 
         assert "Twoja pozycja: +12,5% od zakupu" in body
         assert "% portfela" not in body
 
-    def test_without_an_fx_port_the_share_is_left_out(self, settings) -> None:
+    def test_without_an_fx_port_the_share_is_left_out(self, settings: Settings) -> None:
         body = self._body(settings, None)
 
         assert "Twoja pozycja: +12,5% od zakupu" in body
 
-    def test_a_failing_rate_read_never_stops_the_alert(self, settings) -> None:
+    def test_a_failing_rate_read_never_stops_the_alert(self, settings: Settings) -> None:
         fx = self._fx(USD="4.00")
         fx.get_rate.side_effect = RuntimeError("NBP 503")
 
@@ -1052,7 +1090,7 @@ class TestPositionShareInZlotys:
 
         assert "Twoja pozycja: +12,5% od zakupu" in body
 
-    def test_only_todays_rates_are_requested(self, settings) -> None:
+    def test_only_todays_rates_are_requested(self, settings: Settings) -> None:
         fx = self._fx(USD="4.00")
 
         self._body(settings, fx)
@@ -1080,7 +1118,9 @@ class TestPriceLevelAlerts:
         )
 
     @staticmethod
-    def _alert(last_seen: str | None, *, direction: str = "ABOVE", note: str | None = None):
+    def _alert(
+        last_seen: str | None, *, direction: str = "ABOVE", note: str | None = None
+    ) -> PriceLevelAlert:
         from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
 
         return PriceLevelAlert(
@@ -1094,7 +1134,9 @@ class TestPriceLevelAlerts:
             last_seen_price=Decimal(last_seen) if last_seen is not None else None,
         )
 
-    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None):
+    def _scan(
+        self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None
+    ) -> int:
         return main_watch.scan_price_levels(
             settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
         )
@@ -1106,7 +1148,7 @@ class TestPriceLevelAlerts:
         return repo
 
     def test_crossing_sends_the_push_with_the_note_and_disables_the_alert(
-        self, settings
+        self, settings: Settings
     ) -> None:
         repo = self._repo(self._alert("148", note="realizacja części zysku"))
         push = MagicMock()
@@ -1122,7 +1164,7 @@ class TestPriceLevelAlerts:
         repo.mark_price_level_triggered.assert_called_once_with("7", Decimal("151.2"), self._NOW)
         repo.record_price_level_reading.assert_not_called()
 
-    def test_falling_through_a_level_names_the_drop(self, settings) -> None:
+    def test_falling_through_a_level_names_the_drop(self, settings: Settings) -> None:
         repo = self._repo(self._alert("152", direction="BELOW"))
         push = MagicMock()
 
@@ -1130,7 +1172,7 @@ class TestPriceLevelAlerts:
 
         assert push.send_report.call_args.kwargs["subject"] == "🎯 NVDA spadła do 150"
 
-    def test_price_on_the_same_side_only_records_the_reading(self, settings) -> None:
+    def test_price_on_the_same_side_only_records_the_reading(self, settings: Settings) -> None:
         repo = self._repo(self._alert("152"))
         push = MagicMock()
 
@@ -1140,7 +1182,7 @@ class TestPriceLevelAlerts:
         repo.record_price_level_reading.assert_called_once_with("7", Decimal("155"))
         repo.mark_price_level_triggered.assert_not_called()
 
-    def test_first_reading_is_the_reference_not_a_hit(self, settings) -> None:
+    def test_first_reading_is_the_reference_not_a_hit(self, settings: Settings) -> None:
         repo = self._repo(self._alert(None))
         push = MagicMock()
 
@@ -1148,7 +1190,7 @@ class TestPriceLevelAlerts:
 
         repo.record_price_level_reading.assert_called_once_with("7", Decimal("151"))
 
-    def test_config_list_is_added_to_the_table(self, settings) -> None:
+    def test_config_list_is_added_to_the_table(self, settings: Settings) -> None:
         from src.config import PriceAlertSettings
         from src.domain.price_levels import LevelDirection, PriceLevel
 
@@ -1161,7 +1203,7 @@ class TestPriceLevelAlerts:
             (PriceLevel(symbol="NVDA", level=Decimal("150"), direction=LevelDirection.ABOVE),)
         )
 
-    def test_flag_off_touches_nothing(self, settings) -> None:
+    def test_flag_off_touches_nothing(self, settings: Settings) -> None:
         repo = self._repo(self._alert("148"))
         market = _market("151")
 
@@ -1177,7 +1219,7 @@ class TestPriceLevelAlerts:
         assert repo.method_calls == []
         market.get_current_price.assert_not_called()
 
-    def test_without_a_push_channel_the_hit_waits_untouched(self, settings) -> None:
+    def test_without_a_push_channel_the_hit_waits_untouched(self, settings: Settings) -> None:
         repo = self._repo(self._alert("148"))
 
         assert self._scan(self._settings(settings), repo, "151", None) == 0
@@ -1185,7 +1227,9 @@ class TestPriceLevelAlerts:
         repo.mark_price_level_triggered.assert_not_called()
         repo.record_price_level_reading.assert_not_called()
 
-    def test_missing_table_skips_the_scan(self, settings, caplog) -> None:
+    def test_missing_table_skips_the_scan(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         repo = self._repo()
         repo.get_active_price_levels.side_effect = RuntimeError("PGRST205")
 
@@ -1195,7 +1239,7 @@ class TestPriceLevelAlerts:
         assert "057" in caplog.text
 
     def test_level_scan_never_writes_a_price_snapshot_or_calls_paid_ports(
-        self, settings, mocker
+        self, settings: Settings, mocker: Any
     ) -> None:
         paid_builders = [
             mocker.patch(f"main_agent.{name}")
@@ -1209,7 +1253,9 @@ class TestPriceLevelAlerts:
         for builder in paid_builders:
             builder.assert_not_called()
 
-    def test_main_runs_the_level_scan_on_the_watch_adapters(self, settings, mocker) -> None:
+    def test_main_runs_the_level_scan_on_the_watch_adapters(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         repository = mocker.patch("main_agent.build_repository")
         market = mocker.patch("main_agent.build_market_port")
         push = mocker.patch("main_agent.build_push_notifier")
@@ -1250,7 +1296,7 @@ class TestPortfolioShockWatch:
             }
         )
 
-    def _portfolio(self, *symbols: str):
+    def _portfolio(self, *symbols: str) -> Portfolio:
         from src.domain.portfolio import Portfolio, Position
 
         return Portfolio(
@@ -1298,7 +1344,7 @@ class TestPortfolioShockWatch:
             portfolio_loader=lambda: loaded,  # type: ignore[arg-type, return-value]
         ).sent
 
-    def test_correlated_small_moves_send_one_portfolio_alert(self, settings) -> None:
+    def test_correlated_small_moves_send_one_portfolio_alert(self, settings: Settings) -> None:
         repo = self._repo()
         push = MagicMock()
 
@@ -1314,7 +1360,7 @@ class TestPortfolioShockWatch:
         )
         repo.save_price_snapshot.assert_not_called()
 
-    def test_the_alert_names_the_biggest_movers(self, settings) -> None:
+    def test_the_alert_names_the_biggest_movers(self, settings: Settings) -> None:
         repo = self._repo()
         push = MagicMock()
         market = self._market("97", NVDA="94")  # NVDA −6%, reszta −3%: Σ = −3,75%
@@ -1325,7 +1371,7 @@ class TestPortfolioShockWatch:
         assert "💼 Portfel -3,8%" in body
         assert "NVDA -6,0%" in body
 
-    def test_flag_off_leaves_the_watch_as_it_was(self, settings) -> None:
+    def test_flag_off_leaves_the_watch_as_it_was(self, settings: Settings) -> None:
         repo = self._repo()
         push = MagicMock()
         loader = MagicMock(return_value=self._portfolio())
@@ -1344,7 +1390,7 @@ class TestPortfolioShockWatch:
         loader.assert_not_called()
         repo.save_shock_alert.assert_not_called()
 
-    def test_below_the_portfolio_threshold_stays_silent(self, settings) -> None:
+    def test_below_the_portfolio_threshold_stays_silent(self, settings: Settings) -> None:
         push = MagicMock()
 
         sent = self._run(
@@ -1354,7 +1400,7 @@ class TestPortfolioShockWatch:
         assert sent == 0
         push.send_report.assert_not_called()
 
-    def test_debounce_one_portfolio_alert_a_day(self, settings) -> None:
+    def test_debounce_one_portfolio_alert_a_day(self, settings: Settings) -> None:
         repo = self._repo()
         repo.get_sent_shock_alerts.return_value = {("__PORTFOLIO__", self._NOW.date())}
         push = MagicMock()
@@ -1363,7 +1409,7 @@ class TestPortfolioShockWatch:
         push.send_report.assert_not_called()
 
     def test_a_symbol_alerted_earlier_today_still_counts_toward_the_portfolio(
-        self, settings
+        self, settings: Settings
     ) -> None:
         repo = self._repo()
         repo.get_sent_shock_alerts.return_value = {("NVDA", self._NOW.date())}
@@ -1376,7 +1422,9 @@ class TestPortfolioShockWatch:
         assert sent == 1
         assert "NVDA -6,0%" in push.send_report.call_args.kwargs["plain_text"]
 
-    def test_a_symbol_shock_and_the_portfolio_shock_are_independent(self, settings) -> None:
+    def test_a_symbol_shock_and_the_portfolio_shock_are_independent(
+        self, settings: Settings
+    ) -> None:
         repo = self._repo()
         push = MagicMock()
         market = self._market("97", NVDA="90")  # NVDA −10% (szok symbolu), Σ ≈ −4,75%
@@ -1387,7 +1435,9 @@ class TestPortfolioShockWatch:
         saved = {call.args[0] for call in repo.save_shock_alert.call_args_list}
         assert saved == {"NVDA", "__PORTFOLIO__"}
 
-    def test_without_a_push_channel_it_logs_and_saves_nothing(self, settings, caplog) -> None:
+    def test_without_a_push_channel_it_logs_and_saves_nothing(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         repo = self._repo()
 
         with caplog.at_level(logging.ERROR):
@@ -1397,7 +1447,7 @@ class TestPortfolioShockWatch:
         assert "portfel" in caplog.text.lower()
         repo.save_shock_alert.assert_not_called()
 
-    def test_no_positions_no_portfolio_alert(self, settings) -> None:
+    def test_no_positions_no_portfolio_alert(self, settings: Settings) -> None:
         push = MagicMock()
 
         sent = self._run(self._settings(settings), self._repo(), push=push, portfolio=None)
@@ -1405,7 +1455,7 @@ class TestPortfolioShockWatch:
         assert sent == 0
         push.send_report.assert_not_called()
 
-    def test_positions_without_a_move_are_reported_not_guessed(self, settings) -> None:
+    def test_positions_without_a_move_are_reported_not_guessed(self, settings: Settings) -> None:
         repo = self._repo()
         push = MagicMock()
         portfolio = self._portfolio("NVDA", "AMD", "AVGO", "OFFLIST")
@@ -1420,7 +1470,7 @@ class TestPortfolioShockWatch:
         portfolio_body = next(body for body in bodies if "💼 Portfel" in body)
         assert "75% portfela" in portfolio_body
 
-    def test_daily_change_readings_drive_the_portfolio_too(self, settings) -> None:
+    def test_daily_change_readings_drive_the_portfolio_too(self, settings: Settings) -> None:
         repo = _no_snapshot_repo()
         repo.get_previous_verdict.return_value = None
         repo.get_latest_prediction.return_value = None
@@ -1447,7 +1497,12 @@ class TestPortfolioShockInZlotys:
 
     _NOW = datetime(2026, 10, 27, 14, 0, tzinfo=UTC)
 
-    def _run(self, settings: Settings, fx_port: MagicMock | None, caplog=None) -> MagicMock:
+    def _run(
+        self,
+        settings: Settings,
+        fx_port: MagicMock | None,
+        caplog: pytest.LogCaptureFixture | None = None,
+    ) -> MagicMock:
         from src.domain.portfolio import Portfolio, Position
 
         portfolio = Portfolio(
@@ -1495,7 +1550,7 @@ class TestPortfolioShockInZlotys:
         )
         return push
 
-    def test_weights_are_in_zlotys(self, settings) -> None:
+    def test_weights_are_in_zlotys(self, settings: Settings) -> None:
         from src.application.ports import FxRatePort
         from src.domain.fx import FxRate
 
@@ -1510,7 +1565,9 @@ class TestPortfolioShockInZlotys:
         # Waga AAPL przed ruchem: 10 × 100 × 4 = 4 000 zł z 9 000 zł → −8% × 44,4% = −3,6%.
         assert "💼 Portfel -3,6%" in push.send_report.call_args.kwargs["plain_text"]
 
-    def test_mixed_currencies_without_rates_are_not_assessed(self, settings, caplog) -> None:
+    def test_mixed_currencies_without_rates_are_not_assessed(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         with caplog.at_level(logging.WARNING):
             push = self._run(settings, None)
 
@@ -1532,7 +1589,7 @@ class TestThesisInvalidationAlerts:
         )
 
     @classmethod
-    def _open(cls, trend: str = "BULLISH", level: str = "118"):
+    def _open(cls, trend: str = "BULLISH", level: str = "118") -> OpenInvalidation:
         from src.application.ports import OpenInvalidation
 
         return OpenInvalidation(
@@ -1550,12 +1607,16 @@ class TestThesisInvalidationAlerts:
         repo.get_open_invalidations.return_value = list(open_predictions)
         return repo
 
-    def _scan(self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None):
+    def _scan(
+        self, settings: Settings, repo: MagicMock, price: str, push: MagicMock | None
+    ) -> int:
         return main_watch.scan_invalidations(
             settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
         )
 
-    def test_crossed_level_sends_the_push_and_stamps_the_prediction(self, settings) -> None:
+    def test_crossed_level_sends_the_push_and_stamps_the_prediction(
+        self, settings: Settings
+    ) -> None:
         repo = self._repo(self._open())
         push = MagicMock()
 
@@ -1572,13 +1633,13 @@ class TestThesisInvalidationAlerts:
             self._NOW - timedelta(hours=main_watch.INVALIDATION_LOOKBACK_HOURS)
         )
 
-    def test_level_above_breaks_a_bearish_thesis_on_a_rise(self, settings) -> None:
+    def test_level_above_breaks_a_bearish_thesis_on_a_rise(self, settings: Settings) -> None:
         repo = self._repo(self._open(trend="BEARISH", level="125"))
         push = MagicMock()
 
         assert self._scan(self._settings(settings), repo, "126", push) == 1
 
-    def test_level_not_crossed_sends_nothing(self, settings) -> None:
+    def test_level_not_crossed_sends_nothing(self, settings: Settings) -> None:
         repo = self._repo(self._open())
         push = MagicMock()
 
@@ -1587,7 +1648,7 @@ class TestThesisInvalidationAlerts:
         push.send_report.assert_not_called()
         repo.mark_invalidation_alerted.assert_not_called()
 
-    def test_flag_off_touches_nothing(self, settings) -> None:
+    def test_flag_off_touches_nothing(self, settings: Settings) -> None:
         repo = self._repo(self._open())
         market = _market("100")
 
@@ -1603,14 +1664,16 @@ class TestThesisInvalidationAlerts:
         assert repo.method_calls == []
         market.get_current_price.assert_not_called()
 
-    def test_without_a_push_channel_the_alert_waits(self, settings) -> None:
+    def test_without_a_push_channel_the_alert_waits(self, settings: Settings) -> None:
         repo = self._repo(self._open())
 
         assert self._scan(self._settings(settings), repo, "100", None) == 0
 
         repo.mark_invalidation_alerted.assert_not_called()
 
-    def test_unreadable_predictions_skip_the_scan(self, settings, caplog) -> None:
+    def test_unreadable_predictions_skip_the_scan(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from src.application.errors import ProviderUnavailable
 
         repo = self._repo()
@@ -1622,7 +1685,7 @@ class TestThesisInvalidationAlerts:
         assert "074" in caplog.text
 
     def test_scan_never_writes_a_price_snapshot_or_calls_paid_ports(
-        self, settings, mocker
+        self, settings: Settings, mocker: Any
     ) -> None:
         paid_builders = [
             mocker.patch(f"main_agent.{name}")
@@ -1637,7 +1700,7 @@ class TestThesisInvalidationAlerts:
             builder.assert_not_called()
 
     def test_main_runs_the_invalidation_scan_on_the_watch_adapters(
-        self, settings, mocker
+        self, settings: Settings, mocker: Any
     ) -> None:
         repository = mocker.patch("main_agent.build_repository")
         market = mocker.patch("main_agent.build_market_port")

@@ -16,6 +16,7 @@ import pytest
 
 import main_tools
 from src.domain.portfolio import Position
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 def test_main_tools_requires_a_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
@@ -48,7 +49,7 @@ _NOW = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 def positions_adapter(mocker: Any) -> MagicMock:
     mocker.patch("main_tools._now", return_value=_NOW)
     mocker.patch("src.config.Settings.from_env")
-    adapter_cls = mocker.patch(
+    adapter_cls: MagicMock = mocker.patch(
         "src.infrastructure.adapters.positions_repo.SupabasePositionsAdapter"
     )
     adapter_cls.return_value.current_positions.return_value = [
@@ -222,7 +223,7 @@ def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
     from src.config import Settings
 
     real = Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],

@@ -24,6 +24,7 @@ import yaml
 import main_scorecard
 from src.application.ports import RepositoryPort, WebPublisherPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 ROOT = Path(__file__).parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "scorecard_pages.yml"
@@ -46,7 +47,7 @@ FREE_SECRET_KEYS = {"SUPABASE_URL", "SUPABASE_KEY"}
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],

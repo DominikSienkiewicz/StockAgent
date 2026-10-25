@@ -15,6 +15,7 @@ import tomllib
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -46,6 +47,7 @@ from src.domain.prediction import (
 from src.domain.significance import DEFAULT_ALPHA, DEFAULT_FDR_Q
 from src.domain.track_record import NaiveBaselines
 from src.domain.value_objects import Threshold
+from tests.settings_kwargs import NO_ENV_FILE
 
 ROOT = Path(__file__).parent.parent
 
@@ -57,7 +59,7 @@ def protocol() -> EvaluationProtocol:
 
 def _settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -170,7 +172,7 @@ def test_protocol_hash_is_in_commitment_payload(protocol: EvaluationProtocol) ->
 
     _seal_commitment(deps, record, council=None, recipe=recipe)
 
-    payload = json.loads(record["commitment_payload"])
+    payload = json.loads(cast("str", record["commitment_payload"]))
     assert payload["protocol_sha256"] == protocol.sha256
     assert payload["recipe_version"] == recipe.version
 

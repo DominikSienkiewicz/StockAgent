@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,6 +25,7 @@ from src.application.schema_gate import SCHEMA_ALERT_SOURCE
 from src.config import Settings
 from src.domain.quota import QuotaSeverity
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+from tests.settings_kwargs import NO_ENV_FILE
 
 # 019 < 020 (receipts_enabled) i 021 (shock_alerts_enabled), 042 jest dziś na produkcji.
 SCHEMA_BEHIND_RECEIPTS = 19
@@ -33,7 +35,7 @@ SCHEMA_AHEAD_OF_EVERYTHING = 71
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -51,7 +53,7 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def mock_external_clients(mocker):
+def mock_external_clients(mocker: Any) -> None:
     mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
 
@@ -66,7 +68,7 @@ def summary_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 class _FastLoop:
     """Jeden przebieg `main_agent.main` na atrapach: repozytorium z zadaną wersją schematu."""
 
-    def __init__(self, mocker, settings: Settings, schema: object) -> None:
+    def __init__(self, mocker: Any, settings: Settings, schema: object) -> None:
         self.repository = MagicMock(spec=RepositoryPort)
         if isinstance(schema, Exception):
             self.repository.schema_version.side_effect = schema
@@ -92,13 +94,14 @@ class _FastLoop:
         return used
 
     @property
-    def alerts(self) -> list:
-        return self.build_use_case.call_args.kwargs["quota_monitor"].alerts
+    def alerts(self) -> list[Any]:
+        alerts: list[Any] = self.build_use_case.call_args.kwargs["quota_monitor"].alerts
+        return alerts
 
 
 class TestFastLoopSchemaGate:
     def test_flags_ahead_of_the_schema_are_off_for_the_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         loop = _FastLoop(mocker, settings, SCHEMA_BEHIND_RECEIPTS)
 
@@ -109,7 +112,11 @@ class TestFastLoopSchemaGate:
         assert loop.settings_used.model_scorecard_enabled is True  # migracja 019 jest
 
     def test_the_banner_gets_one_warning_alert(
-        self, settings, mock_external_clients, mocker, caplog
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         loop = _FastLoop(mocker, settings, SCHEMA_BEHIND_RECEIPTS)
 
@@ -123,7 +130,7 @@ class TestFastLoopSchemaGate:
         assert "switched off for this run" in caplog.text
 
     def test_the_repository_is_rebuilt_with_the_gated_flags(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         loop = _FastLoop(mocker, settings, SCHEMA_BEHIND_RECEIPTS)
 
@@ -139,7 +146,7 @@ class TestFastLoopSchemaGate:
         return built
 
     def test_a_migrated_database_leaves_settings_and_repository_alone(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         loop = _FastLoop(mocker, settings, SCHEMA_AHEAD_OF_EVERYTHING)
 
@@ -151,7 +158,12 @@ class TestFastLoopSchemaGate:
         assert loop.build_repository.call_count == 1
 
     def test_an_unavailable_probe_keeps_the_flags_and_notes_it_in_the_summary(
-        self, settings, mock_external_clients, mocker, summary_file, caplog
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        summary_file: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         loop = _FastLoop(mocker, settings, NotFound("PGRST202"))
 
@@ -166,7 +178,7 @@ class TestFastLoopSchemaGate:
         assert "## Fast Loop cycle summary" in markdown
 
     def test_a_null_version_is_not_read_as_an_empty_database(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         loop = _FastLoop(mocker, settings, None)
 
@@ -176,7 +188,7 @@ class TestFastLoopSchemaGate:
         assert loop.alerts == []
 
     def test_a_flag_left_unset_follows_regime_aware_when_checking_the_schema(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # regime_tagging_enabled = None idzie za regime_aware_enabled i potrzebuje 017.
         settings.regime_aware_enabled = True
@@ -190,7 +202,9 @@ class TestFastLoopSchemaGate:
 
 class TestSlowLoopSchemaGate:
     @pytest.fixture
-    def trainer(self, mocker, settings, mock_external_clients):
+    def trainer(
+        self, mocker: Any, settings: Settings, mock_external_clients: None
+    ) -> TestSlowLoopSchemaGate:
         self.use_case = MagicMock()
         self.use_case.run.return_value = {"status": "skipped", "n_samples": 1}
         self.use_case.run_pooled.return_value = {"status": "skipped", "n_samples": 1}
@@ -201,12 +215,12 @@ class TestSlowLoopSchemaGate:
         self.saved_alerts = mocker.patch.object(SupabaseRepository, "save_quota_alert")
         return self
 
-    def _run(self, mocker, settings: Settings, schema: object) -> int:
+    def _run(self, mocker: Any, settings: Settings, schema: object) -> int:
         mocker.patch.object(SupabaseRepository, "schema_version", return_value=schema)
         return main_trainer.main(settings)
 
     def test_flags_ahead_of_the_schema_are_off_for_the_run(
-        self, mocker, settings, trainer
+        self, mocker: Any, settings: Settings, trainer: TestSlowLoopSchemaGate
     ) -> None:
         assert self._run(mocker, settings, SCHEMA_BEHIND_RECEIPTS) == 0
 
@@ -218,21 +232,29 @@ class TestSlowLoopSchemaGate:
         assert self.build_repository.call_args.args[0].receipts_enabled is False
 
     def test_the_alert_is_persisted_for_the_next_email_banner(
-        self, mocker, settings, trainer
+        self, mocker: Any, settings: Settings, trainer: TestSlowLoopSchemaGate
     ) -> None:
         self._run(mocker, settings, SCHEMA_BEHIND_RECEIPTS)
 
         sources = [call.args[0].source for call in self.saved_alerts.call_args_list]
         assert sources.count(SCHEMA_ALERT_SOURCE) == 1
 
-    def test_a_migrated_database_changes_nothing(self, mocker, settings, trainer) -> None:
+    def test_a_migrated_database_changes_nothing(
+        self, mocker: Any, settings: Settings, trainer: TestSlowLoopSchemaGate
+    ) -> None:
         self._run(mocker, settings, SCHEMA_AHEAD_OF_EVERYTHING)
 
         assert self.build_use_case.call_args.args[0] is settings
         sources = [call.args[0].source for call in self.saved_alerts.call_args_list]
         assert SCHEMA_ALERT_SOURCE not in sources
 
-    def test_an_unavailable_probe_keeps_the_flags(self, mocker, settings, trainer, caplog) -> None:
+    def test_an_unavailable_probe_keeps_the_flags(
+        self,
+        mocker: Any,
+        settings: Settings,
+        trainer: TestSlowLoopSchemaGate,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         mocker.patch.object(SupabaseRepository, "schema_version", side_effect=NotFound("x"))
 
         with caplog.at_level(logging.WARNING):
@@ -247,7 +269,7 @@ class TestWatchSchemaGate:
     więc pyta o schemat zaraz po `build_repository`, jak Slow Loop."""
 
     @pytest.fixture
-    def watch(self, mocker):
+    def watch(self, mocker: Any) -> TestWatchSchemaGate:
         self.repository = MagicMock(spec=RepositoryPort)
         self.build_repository = mocker.patch(
             "main_agent.build_repository", return_value=self.repository
@@ -263,7 +285,9 @@ class TestWatchSchemaGate:
         mocker.patch("main_watch.scan_invalidations")
         return self
 
-    def test_flags_ahead_of_the_schema_are_off_for_the_watch(self, settings, watch) -> None:
+    def test_flags_ahead_of_the_schema_are_off_for_the_watch(
+        self, settings: Settings, watch: TestWatchSchemaGate
+    ) -> None:
         self.repository.schema_version.return_value = SCHEMA_BEHIND_RECEIPTS
 
         assert main_watch.main(settings) == 0
@@ -275,7 +299,7 @@ class TestWatchSchemaGate:
         assert self.build_repository.call_args.args[0].shock_alerts_enabled is False
 
     def test_a_migrated_database_leaves_the_watch_settings_alone(
-        self, settings, watch
+        self, settings: Settings, watch: TestWatchSchemaGate
     ) -> None:
         self.repository.schema_version.return_value = SCHEMA_AHEAD_OF_EVERYTHING
 

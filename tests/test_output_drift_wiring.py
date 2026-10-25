@@ -16,6 +16,7 @@ from src.application.quota_monitor import QuotaMonitor
 from src.application.use_cases.monitor_output_drift import DRIFT_ALERT_SOURCE
 from src.config import Settings
 from src.domain.quota import QuotaSeverity
+from tests.settings_kwargs import NO_ENV_FILE
 
 NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 
@@ -23,7 +24,7 @@ NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],

@@ -23,6 +23,7 @@ from src.infrastructure.llm.model_catalog import (
     LocalStubModelCatalog,
     OpenAIModelCatalog,
 )
+from tests.settings_kwargs import NO_ENV_FILE
 
 NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 
@@ -30,7 +31,7 @@ NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         anthropic_api_key="sk-ant-test",
         finnhub_api_key="fh",

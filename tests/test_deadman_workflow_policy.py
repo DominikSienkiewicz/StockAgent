@@ -27,7 +27,8 @@ ALLOWED_SECRET_KEYS = {"SUPABASE_URL", "SUPABASE_KEY", "RESEND_API_KEY", "DIGEST
 
 def _steps() -> list[dict[str, object]]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return spec["jobs"]["check-liveness"]["steps"]
+    steps: list[dict[str, object]] = spec["jobs"]["check-liveness"]["steps"]
+    return steps
 
 
 def _deadman_env() -> dict[str, str]:

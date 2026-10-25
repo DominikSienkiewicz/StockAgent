@@ -10,14 +10,16 @@ from __future__ import annotations
 import tomllib
 from datetime import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from src.config import NON_RECIPE_SETTINGS_FIELDS, RECIPE_SETTINGS_FIELDS, Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 CONFIG_TOML = Path(__file__).parent.parent / "config.toml"
 
-_REQUIRED = {
+_REQUIRED: dict[str, Any] = {
     "openai_api_key": "sk-test",
     "finnhub_api_key": "fh",
     "alpha_vantage_api_keys": ["av1"],
@@ -26,8 +28,8 @@ _REQUIRED = {
 }
 
 
-def _settings(**overrides: object) -> Settings:
-    return Settings(_env_file=None, **{**_REQUIRED, **overrides})  # type: ignore[arg-type]
+def _settings(**overrides: Any) -> Settings:
+    return Settings(**NO_ENV_FILE, **{**_REQUIRED, **overrides})
 
 
 def _toml() -> dict[str, object]:

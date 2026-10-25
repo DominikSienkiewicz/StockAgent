@@ -28,7 +28,7 @@ def _spec() -> dict[str, Any]:
 
 
 def _triggers() -> dict[str, Any]:
-    spec = _spec()
+    spec: dict[Any, Any] = _spec()
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
     triggers = spec.get("on", spec.get(True))
     assert isinstance(triggers, dict), triggers
