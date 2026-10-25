@@ -79,6 +79,7 @@ from src.domain.reference_signal import (
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionCloseSettlement
+from src.domain.shadow_prompt import ShadowTrendForecast
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.training_labels import FeatureSnapshot
@@ -1436,6 +1437,26 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         (
             self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
             .upsert(records, on_conflict="prediction_id,model_name")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        # EXP-26 (migracja 083): wiersz wariantu LLM w tej samej tabeli co noga ML.
+        # Bez kluczy `predicted_return` / `proba` — upsert ich nie dotyka, zostają NULL.
+        record = {
+            "prediction_id": prediction_id,
+            "symbol": symbol,
+            "model_name": forecast.model_name,
+            "model_version": forecast.model_version,
+            "predicted_trend": forecast.predicted_trend.value,
+            "confidence_score": forecast.confidence,
+        }
+        (
+            self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
+            .upsert(record, on_conflict="prediction_id,model_name")
             .execute()
         )
 

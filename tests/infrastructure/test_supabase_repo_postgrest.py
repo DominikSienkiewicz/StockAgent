@@ -432,6 +432,71 @@ class TestLlmCostLedger:
         assert spent == pytest.approx(in_window * 0.002)
 
 
+class TestShadowTrendPrediction:
+    """EXP-26 (migracja 083): trend wariantu promptu albo modelu LLM ląduje w
+    `shadow_predictions` obok predykcji, upsertem po (prediction_id, model_name),
+    a odczyt nogi ML (ML-33) go pomija."""
+
+    VERSION = "e" * 64
+
+    @staticmethod
+    def _rows(conn: psycopg2.extensions.connection, prediction_id: str) -> list[tuple[Any, ...]]:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_name, model_version, predicted_trend, confidence_score, "
+                "predicted_return, proba FROM shadow_predictions WHERE prediction_id = %s",
+                (prediction_id,),
+            )
+            return list(cur.fetchall())
+
+    def test_variant_trend_round_trips_and_a_rerun_overwrites_it(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        from src.domain.prediction import TrendDirection
+        from src.domain.shadow_prompt import ShadowTrendForecast
+
+        prediction_id = repository.save_prediction(prediction_record("T17SHT"))
+
+        for trend, confidence in ((TrendDirection.BEARISH, 0.7), (TrendDirection.BULLISH, 0.6)):
+            repository.save_shadow_trend_prediction(
+                prediction_id,
+                "T17SHT",
+                ShadowTrendForecast("llm_variant", self.VERSION, trend, confidence),
+            )
+
+        assert self._rows(postgrest_stack.conn, prediction_id) == [
+            ("llm_variant", self.VERSION, "BULLISH", 0.6, None, None)
+        ]
+
+    def test_the_ml_leg_read_skips_variant_rows(
+        self, repository: SupabaseRepository
+    ) -> None:
+        from src.domain.prediction import TrendDirection
+        from src.domain.promotion import ShadowForecast
+        from src.domain.shadow_prompt import ShadowTrendForecast
+
+        since = datetime.now(UTC) - timedelta(minutes=1)
+        prediction_id = repository.save_prediction(prediction_record("T17SHML"))
+        repository.save_shadow_predictions(
+            prediction_id, "T17SHML", [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+        )
+        repository.save_shadow_trend_prediction(
+            prediction_id,
+            "T17SHML",
+            ShadowTrendForecast("llm_variant", self.VERSION, TrendDirection.SIDEWAYS, 0.5),
+        )
+        repository.update_prediction_accuracy(
+            prediction_id, Decimal("190.0"), 0.9, True, "Trafiona predykcja."
+        )
+
+        settled = [
+            row for row in repository.get_settled_shadow_predictions(since)
+            if row.prediction_id == prediction_id
+        ]
+
+        assert [row.forecast.model_name for row in settled] == ["champion"]
+
+
 class TestSchemaAndRoles:
     def test_unknown_column_is_rejected_as_not_found(
         self, repository: SupabaseRepository

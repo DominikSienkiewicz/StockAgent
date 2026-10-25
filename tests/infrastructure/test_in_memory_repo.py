@@ -267,3 +267,28 @@ def test_llm_cost_since_sums_priced_calls_saved_in_the_window() -> None:
 
     assert repo.get_llm_cost_since(START + timedelta(hours=1)) == pytest.approx(0.25)
     assert repo.get_llm_cost_since(START) == pytest.approx(0.75)
+
+
+def test_variant_trend_row_stays_out_of_the_ml_leg_read() -> None:
+    # EXP-26: wiersz wariantu LLM dzieli tabelę z nogą ML, ale odczyt ML-33 go pomija.
+    from src.domain.prediction import TrendDirection
+    from src.domain.promotion import ShadowForecast
+    from src.domain.shadow_prompt import ShadowTrendForecast
+
+    clock = _Clock()
+    repo = _repo(clock)
+    prediction_id = repo.save_prediction(_record())
+    repo.save_shadow_predictions(
+        prediction_id, "NVDA", [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+    )
+    repo.save_shadow_trend_prediction(
+        prediction_id,
+        "NVDA",
+        ShadowTrendForecast("llm_variant", "e" * 64, TrendDirection.BEARISH, 0.7),
+    )
+    clock.advance(12)
+    repo.update_prediction_accuracy(prediction_id, Decimal("103.00"), 1.0, True, "Trafiona.")
+
+    settled = repo.get_settled_shadow_predictions(START - timedelta(hours=1))
+
+    assert [row.forecast.model_name for row in settled] == ["champion"]

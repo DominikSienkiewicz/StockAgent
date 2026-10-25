@@ -109,6 +109,7 @@ MIGRATION_FILES = [
     "074_invalidation_price.sql",
     "075_shadow_predictions.sql",
     "076_rag_point_in_time.sql",
+    "083_shadow_prediction_trend.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -4323,6 +4324,90 @@ class TestMigration075ShadowPredictions:
             cur.execute(
                 "SELECT count(*) FROM pg_constraint "
                 "WHERE conrelid = 'shadow_predictions'::regclass AND contype = 'u'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration083ShadowPredictionTrend:
+    """EXP-26: wiersz cienia wariantu promptu albo modelu LLM niesie trend i pewność
+    zamiast zwrotu albo P(wzrost) nogi ML; ta sama tabela i ten sam klucz unikalny."""
+
+    VARIANT = "e" * 64
+
+    @staticmethod
+    def _variant(
+        cur: psycopg2.extensions.cursor,
+        prediction_id: str,
+        trend: str | None,
+        confidence: float | None,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO shadow_predictions "
+            "(prediction_id, symbol, model_name, model_version, predicted_trend, confidence_score) "
+            "VALUES (%s, 'SPT', 'llm_variant', %s, %s, %s)",
+            (prediction_id, TestMigration083ShadowPredictionTrend.VARIANT, trend, confidence),
+        )
+
+    def test_variant_row_carries_the_trend_next_to_the_ml_rows(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"predicted_trend", "confidence_score"} <= _columns(
+            migrated_pg_conn, "shadow_predictions"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = TestMigration075ShadowPredictions._prediction(cur, "SPT_JOIN")
+            TestMigration075ShadowPredictions._shadow(
+                cur, prediction_id, "champion", "a" * 64, predicted_return=0.01
+            )
+            self._variant(cur, prediction_id, "BEARISH", 0.7)
+            cur.execute(
+                "SELECT model_name, predicted_return, proba, predicted_trend, confidence_score "
+                "FROM shadow_predictions WHERE prediction_id = %s ORDER BY model_name",
+                (prediction_id,),
+            )
+            rows = cur.fetchall()
+
+        assert rows == [
+            ("champion", 0.01, None, None, None),
+            ("llm_variant", None, None, "BEARISH", 0.7),
+        ]
+
+    @pytest.mark.parametrize(
+        ("trend", "confidence"), [("UP", 0.5), ("BULLISH", 1.2), ("BULLISH", -0.1)]
+    )
+    def test_rejects_an_unknown_trend_or_a_confidence_outside_the_unit_interval(
+        self,
+        migrated_pg_conn: psycopg2.extensions.connection,
+        trend: str,
+        confidence: float,
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            prediction_id = TestMigration075ShadowPredictions._prediction(cur, "SPT_CHECK")
+            self._variant(cur, prediction_id, trend, confidence)
+
+    def test_a_row_without_any_forecast_is_still_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            prediction_id = TestMigration075ShadowPredictions._prediction(cur, "SPT_EMPTY")
+            self._variant(cur, prediction_id, None, 0.5)
+
+    def test_083_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "083_shadow_prediction_trend.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'shadow_predictions'::regclass "
+                "AND conname = 'shadow_predictions_has_forecast'"
             )
             assert cur.fetchone() == (1,)
 

@@ -63,6 +63,7 @@ from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
+from src.domain.shadow_prompt import ShadowTrendForecast
 from src.domain.value_objects import AssetType, Fundamentals, Money
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,7 @@ class ReadOnlyRepository(RepositoryPort):
         "settle_reference_call",
         "save_corporate_action",
         "save_shadow_predictions",
+        "save_shadow_trend_prediction",
         "append_paper_trade",
         "close_paper_trade",
         "mark_invalidation_alerted",
@@ -409,6 +411,11 @@ class ReadOnlyRepository(RepositoryPort):
         self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
     ) -> None:
         self._skipped.skip("save_shadow_predictions")
+
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        self._skipped.skip("save_shadow_trend_prediction")
 
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         self._skipped.skip("save_prediction")

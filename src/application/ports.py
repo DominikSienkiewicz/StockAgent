@@ -41,6 +41,7 @@ from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
+from src.domain.shadow_prompt import ShadowTrendForecast
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
@@ -276,6 +277,15 @@ class RepositoryPort(ABC):
         re-run w tej samej godzinie nadpisuje predykcję, więc i jej cienie. Pusta
         lista = brak zapytania. Wołane z save_node tylko za flagą
         `shadow_predictions_enabled`."""
+
+    @abstractmethod
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        """EXP-26 — trend i pewność wariantu promptu albo modelu LLM dla jednej
+        predykcji (`shadow_predictions`, kolumny z migracji 083), upsertem po
+        (prediction_id, model_name) jak prognozy nogi ML. Wołane z save_node tylko za
+        flagą `shadow_prompt_variant_enabled`."""
 
     @abstractmethod
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:

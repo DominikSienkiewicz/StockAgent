@@ -67,6 +67,7 @@ from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
+from src.domain.shadow_prompt import ShadowTrendForecast
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
@@ -639,6 +640,26 @@ class InMemoryRepository(RepositoryPort):
                         previous["created_at"] if previous else self._now().isoformat()
                     ),
                 }
+
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        with self._lock:
+            key = (prediction_id, forecast.model_name)
+            previous = self._shadow.get(key)
+            self._shadow[key] = {
+                "prediction_id": prediction_id,
+                "symbol": symbol,
+                "model_name": forecast.model_name,
+                "model_version": forecast.model_version,
+                "predicted_return": None,
+                "proba": None,
+                "predicted_trend": forecast.predicted_trend.value,
+                "confidence_score": forecast.confidence,
+                "created_at": (
+                    previous["created_at"] if previous else self._now().isoformat()
+                ),
+            }
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         settled: list[SettledShadowForecast] = []
