@@ -10,6 +10,7 @@ wygenerował mail. Stopka zamyka ramkę maila otwartą przez nagłówek
 from __future__ import annotations
 
 from src.application.report_formatting import (
+    DATA_SOURCE_LINKS,
     DATA_SOURCES_FOOTER_PL,
     DATA_TERMS_NOTICE,
     INVESTMENT_DISCLAIMER,
@@ -98,6 +99,20 @@ def _technical_footer_text(
 
 
 # ---------------------------------------------------------------------------
+# MAIL-07: źródła danych
+# ---------------------------------------------------------------------------
+
+
+def _render_data_sources_html() -> str:
+    """Lista źródeł z atrybucjami jako linkami; każda fraza linkuje się raz."""
+    rendered = _html(DATA_SOURCES_FOOTER_PL)
+    for phrase, url in DATA_SOURCE_LINKS:
+        anchor = f'<a href="{_html(url)}" style="color: {PALETTE.muted};">{_html(phrase)}</a>'
+        rendered = rendered.replace(_html(phrase), anchor, 1)
+    return rendered
+
+
+# ---------------------------------------------------------------------------
 # Sekcja rejestru (ARCH-12)
 # ---------------------------------------------------------------------------
 
@@ -116,7 +131,7 @@ def _section_html(data: SectionInput) -> str:
       <div style="{_FOOTER_STYLE}">
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         {counters}
-        <div style="margin-bottom: 8px;">{_html(DATA_SOURCES_FOOTER_PL)}</div>
+        <div style="margin-bottom: 8px;">{_render_data_sources_html()}</div>
         <div style="margin-bottom: 8px;">{_html(DATA_TERMS_NOTICE)}</div>
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {run_footer}

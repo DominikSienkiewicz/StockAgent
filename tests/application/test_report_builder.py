@@ -4062,6 +4062,22 @@ def test_footer_carries_provider_attribution_and_terms_notice() -> None:
         assert "Reddit" not in footer
 
 
+def test_footer_links_coingecko_and_fred_attribution_in_html() -> None:
+    # MAIL-07: w HTML atrybucja CoinGecko linkuje do coingecko.com (przewodnik marki
+    # CoinGecko), a „FRED” z listy źródeł do fred.stlouisfed.org. Nota FRED zostaje
+    # zwykłym tekstem, żeby jej brzmienie było dosłowne.
+    html, _ = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0
+    )
+    footer = html[html.index("Źródła danych"):]
+
+    assert re.search(
+        r'<a href="https://www\.coingecko\.com"[^>]*>Powered by CoinGecko</a>', footer
+    )
+    assert re.search(r'<a href="https://fred\.stlouisfed\.org/"[^>]*>FRED</a>', footer)
+    assert _FRED_NOTICE in footer
+
+
 class TestPlainTextSlots:
     """MAIL-09 (G47): wersja tekstowa niesie te same sekcje co HTML tam, gdzie
     istnieje renderer tekstu — klient bez HTML dostawał raport bez kosztu cyklu,

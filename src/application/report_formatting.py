@@ -261,6 +261,13 @@ DATA_TERMS_NOTICE = (
     "tego maila dalej. This product uses the FRED® API but is not endorsed or "
     "certified by the Federal Reserve Bank of St. Louis."
 )
+# MAIL-07: w HTML stopki te frazy z `DATA_SOURCES_FOOTER_PL` linkują do dostawców
+# (CoinGecko wg swojego przewodnika marki, FRED do serwisu FRED). Tekst maila niesie
+# te same frazy bez adresów.
+DATA_SOURCE_LINKS: tuple[tuple[str, str], ...] = (
+    ("Powered by CoinGecko", "https://www.coingecko.com"),
+    ("FRED", "https://fred.stlouisfed.org/"),
+)
 
 
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
