@@ -52,7 +52,7 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "trend_probabilities_enabled": 51,
         "model_scorecard_feature_stats_enabled": 52,
         "earnings_cache_enabled": 53,
-        "council_votes_upsert_enabled": 54,
+        "council_votes_upsert_enabled": 82,
         "stale_quote_enabled": 55,
         "fundamentals_market_cap_enabled": 56,
         "price_level_alerts_enabled": 57,
@@ -78,6 +78,7 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "telegram_bot_enabled": 79,
         "symbol_mutes_enabled": 80,
         "shock_escalation_enabled": 81,
+        "debate_mode_enabled": 82,
         "shadow_prompt_variant_enabled": 83,
     }
 )

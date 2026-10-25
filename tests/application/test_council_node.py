@@ -331,6 +331,35 @@ class TestCouncilVolatilityThreshold:
             "failed_personas",
         }
 
+    def test_debated_verdict_saves_both_rounds(self) -> None:
+        # ML-40: najpierw runda 1, potem rewizja — każda ze swoim numerem rundy.
+        verdict = _make_verdict()
+        first_round = (
+            dataclasses.replace(verdict.investor_opinions[0], recommendation="SELL"),
+        )
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = dataclasses.replace(
+            verdict, first_round_opinions=first_round
+        )
+        graph, repo = _make_graph_with_repo(council_port=council_port)
+
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
+
+        assert [call.kwargs for call in repo.save_council_votes.call_args_list] == [
+            {
+                "prediction_id": "pred-123",
+                "symbol": "AAPL",
+                "votes": list(first_round),
+                "debate_round": 1,
+            },
+            {
+                "prediction_id": "pred-123",
+                "symbol": "AAPL",
+                "votes": list(verdict.investor_opinions),
+                "debate_round": 2,
+            },
+        ]
+
     def test_council_votes_port_error_keeps_the_saved_prediction(self) -> None:
         # ARCH-33: awaria bazy przy głosach (taksonomia z repozytorium) nie cofa
         # zapisu predykcji — JSONB w prediction_logs zostaje.

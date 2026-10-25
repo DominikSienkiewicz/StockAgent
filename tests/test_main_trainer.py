@@ -710,6 +710,19 @@ def test_trainer_repository_passes_the_correction_category_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_trainer_repository_records_council_rounds_with_debate_mode(
+    settings: Settings, mocker: Any, enabled: bool
+) -> None:
+    # ML-40: recap tygodniowy liczy redundancję rady z rundy 1, gdy debata zapisuje rundy.
+    repo_cls = mocker.patch("main_trainer.SupabaseRepository")
+    settings.debate_mode_enabled = enabled
+
+    main_trainer.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_trainer_repository_follows_db_writes_flag(
     settings: Settings, mocker: Any, enabled: bool
 ) -> None:

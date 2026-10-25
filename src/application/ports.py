@@ -12,7 +12,12 @@ from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.corporate_events import CorporateEventSnapshot
-from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.council import (
+    FIRST_COUNCIL_ROUND,
+    CouncilInput,
+    CouncilVerdict,
+    InvestorOpinion,
+)
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.direction_variant import DirectionReport
@@ -898,6 +903,8 @@ class RepositoryPort(ABC):
         prediction_id: str,
         symbol: str,
         votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         """Strukturalny audit trail rady — jedna linia per inwestor.
 

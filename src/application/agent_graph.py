@@ -2975,11 +2975,15 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     verdict = state.get("council_verdict")
     if verdict is not None:
         try:
-            repository_port.save_council_votes(
-                prediction_id=prediction_id,
-                symbol=state["symbol"],
-                votes=list(verdict.investor_opinions),
-            )
+            # ML-40: po rundzie rewizji (debate mode) idą obie rundy, od rundy 1;
+            # rewizja bez rundy 1 nie ma sensu, więc błąd rundy 1 kończy zapis.
+            for debate_round, votes in verdict.votes_by_round():
+                repository_port.save_council_votes(
+                    prediction_id=prediction_id,
+                    symbol=state["symbol"],
+                    votes=list(votes),
+                    debate_round=debate_round,
+                )
         except PortError:
             logger.exception(
                 "save_council_votes failed for %s — JSONB blob in "

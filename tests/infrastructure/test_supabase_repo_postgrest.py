@@ -40,6 +40,7 @@ from testcontainers.core.network import Network
 from testcontainers.postgres import PostgresContainer
 
 from src.application.errors import NotFound, PortError
+from src.domain.council import InvestorOpinion, Recommendation
 from src.domain.watchlist import SymbolMute
 from src.infrastructure.adapters import supabase_repo
 from src.infrastructure.adapters.bot_store import SupabaseBotStore
@@ -520,6 +521,50 @@ class TestShockAlertLevels:
         )
         with pytest.raises(PortError):
             repository.save_shock_alert("T17SA", day, -0.12, "DOWN", level=2)
+
+
+class TestCouncilVoteRounds:
+    """ML-40 (migracja 082): runda 1 bez klucza `round`, rewizja z kluczem, upsert na
+    (prediction_id, investor_name, round) — przez prawdziwy PostgREST."""
+
+    @staticmethod
+    def _vote(recommendation: Recommendation) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name="Cathie Wood",
+            recommendation=recommendation,
+            confidence=0.7,
+            reasoning="Test.",
+            key_factors=("test",),
+        )
+
+    def test_rounds_upsert_side_by_side_and_reads_take_round_one(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+            rounds = SupabaseRepository(
+                url=postgrest_stack.base_url,
+                key=jwt_for("service_role"),
+                council_votes_upsert_enabled=True,
+                council_vote_rounds_enabled=True,
+            )
+        prediction_id = repository.save_prediction(prediction_record("T17CV"))
+
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("SELL")])
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("BUY")], debate_round=2)
+        # Re-run tej samej godziny: upsert nadpisuje rundę 1 zamiast dopisać trzeci wiersz.
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("HOLD")])
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT round, recommendation FROM council_votes "
+                "WHERE prediction_id = %s ORDER BY round",
+                (prediction_id,),
+            )
+            stored = cur.fetchall()
+        assert stored == [(1, "HOLD"), (2, "BUY")]
+        assert [vote.recommendation for vote in rounds.get_council_votes_for_prediction(
+            prediction_id
+        )] == ["HOLD"]
 
 
 class TestSchemaAndRoles:

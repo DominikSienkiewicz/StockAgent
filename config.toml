@@ -36,6 +36,10 @@ persona_brier_ranking_enabled = false
 # mówi w praktyce jednym głosem (N_eff < 1,5 z głosów ostatnich 30 dni). Sama treść
 # maili, bez migracji.
 council_redundancy_enabled = false
+# R-19 / ML-40: tryb debaty — jedna runda rewizji, gdy runda 1 rady jest podzielona
+# (do 7 dodatkowych wywołań rady na symbol). Głosy obu rund idą do `council_votes`
+# z numerem rundy; ranking i wagi person liczą rundę 1. Włączenie po EXP-02/03.
+# UWAGA: włącz DOPIERO po migracji 082 (wcześniej przebieg i tak wyłączy flagę).
 debate_mode_enabled = false
 # Model routing (R-20): tani model domyślnie, eskalacja do frontier gdy
 # confidence < routing_floor. Domyślnie off (główna analiza wg llm_provider).
@@ -422,8 +426,9 @@ cost_ledger_enabled = true
 # (run_id jak w `llm_calls` + numer próby runu, liczby cyklu, płatne wywołania per
 # źródło, czy mail wyszedł; bez symboli). UWAGA: włącz DOPIERO po migracji 041.
 cycle_runs_enabled = true
-# NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) zamiast insertu —
-# re-run w tej samej godzinie nie dubluje głosów. UWAGA: włącz DOPIERO po migracji 054.
+# NIEZ-14: głosy rady upsertem po (prediction_id, investor_name, round) zamiast insertu —
+# re-run w tej samej godzinie nie dubluje głosów. Klucz z rundą jest od ML-40.
+# UWAGA: włącz DOPIERO po migracji 082.
 council_votes_upsert_enabled = false
 # WIA-57: kategoria przyczyny błędu z diagnozy (MACRO, EARNINGS, …) w kolumnie
 # `correction_category` i histogram „3 z 5 błędów: makro” w panelu lessons.

@@ -1388,6 +1388,23 @@ class TestGetCouncilVoteSamples:
 
         assert [s.investor_name for s in repo.get_council_vote_samples()] == ["Lynch"]
 
+    def test_samples_read_only_the_first_round_when_rounds_are_recorded(
+        self, mock_client: MagicMock
+    ) -> None:
+        # ML-40: redundancja (kappa) liczona z niezależnych głosów rundy 1 — rewizja
+        # z definicji zbliża persony do siebie.
+        rounds_repo = SupabaseRepository(
+            url="https://test.supabase.co", key="k", council_vote_rounds_enabled=True
+        )
+        _set_chain_response(
+            mock_client, ["table", "select", "gte", "eq", "order", "order", "range"], []
+        )
+
+        rounds_repo.get_council_vote_samples()
+
+        gte = mock_client.table.return_value.select.return_value.gte
+        gte.return_value.eq.assert_called_once_with("round", 1)
+
     def test_database_error_degrades_to_no_samples(
         self, repo: SupabaseRepository, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -1743,6 +1760,21 @@ class TestGetCouncilVoteHistory:
         )
         assert repo.get_council_vote_history(["X"]) == []
 
+    def test_history_reads_only_the_first_round_when_rounds_are_recorded(
+        self, mock_client: MagicMock
+    ) -> None:
+        rounds_repo = SupabaseRepository(
+            url="https://test.supabase.co", key="k", council_vote_rounds_enabled=True
+        )
+        _set_chain_response(
+            mock_client, ["table", "select", "in_", "gte", "eq", "order", "order", "range"], []
+        )
+
+        rounds_repo.get_council_vote_history(["NVDA"])
+
+        gte = mock_client.table.return_value.select.return_value.in_.return_value.gte
+        gte.return_value.eq.assert_called_once_with("round", 1)
+
     def test_queries_council_votes_table(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
@@ -1845,6 +1877,21 @@ class TestGetCouncilVotesForPrediction:
         _set_chain_response(mock_client, ["table", "select", "eq"], [])
         assert repo.get_council_votes_for_prediction("pred-x") == []
 
+    def test_reads_only_the_first_round_when_rounds_are_recorded(
+        self, mock_client: MagicMock
+    ) -> None:
+        # ML-40: dissent-replay patrzy na niezależne głosy rundy 1, nie na rewizję.
+        rounds_repo = SupabaseRepository(
+            url="https://test.supabase.co", key="k", council_vote_rounds_enabled=True
+        )
+        _set_chain_response(mock_client, ["table", "select", "eq", "eq"], [])
+
+        rounds_repo.get_council_votes_for_prediction("pred-9")
+
+        eq = mock_client.table.return_value.select.return_value.eq
+        eq.assert_called_with("prediction_id", "pred-9")
+        eq.return_value.eq.assert_called_with("round", 1)
+
     def test_queries_council_votes_by_prediction_id(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
@@ -1895,9 +1942,10 @@ class TestSaveCouncilVotes:
             assert row["recommendation"] in {"BUY", "SELL", "HOLD"}
             assert 0.0 <= row["confidence"] <= 1.0
 
-    def test_upserts_on_prediction_and_investor_key(self, mock_client: MagicMock) -> None:
+    def test_upserts_on_prediction_investor_and_round_key(self, mock_client: MagicMock) -> None:
         # NIEZ-14 (migracja 054): re-run w tej samej godzinie trafia w ten sam wiersz
         # predykcji, więc głosy nadpisują się zamiast dublować wagę w rankingu person.
+        # ML-40 (migracja 082): klucz unikalny niesie rundę, więc cel upsertu też.
         from src.domain.council import InvestorOpinion
 
         repo = SupabaseRepository(
@@ -1920,8 +1968,44 @@ class TestSaveCouncilVotes:
         assert [(row["prediction_id"], row["investor_name"]) for row in rows] == [
             ("uuid-pred-1", "Warren Buffett")
         ]
-        assert upsert.call_args.kwargs == {"on_conflict": "prediction_id,investor_name"}
+        assert upsert.call_args.kwargs == {"on_conflict": "prediction_id,investor_name,round"}
+        assert "round" not in rows[0]
         mock_client.table.return_value.insert.assert_not_called()
+
+    @staticmethod
+    def _vote(name: str = "Warren Buffett") -> Any:
+        from src.domain.council import InvestorOpinion
+
+        return InvestorOpinion(
+            investor_name=name,
+            recommendation="BUY",
+            confidence=0.9,
+            reasoning="Silna fosa.",
+            key_factors=("moat",),
+        )
+
+    def test_first_round_rows_have_no_round_key(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        # ML-40: runda 1 to DEFAULT kolumny z 082 — bez debaty zapis jak przed migracją.
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_council_votes(prediction_id="p-1", symbol="AAPL", votes=[self._vote()])
+
+        rows = mock_client.table.return_value.insert.call_args.args[0]
+        assert ["round" in row for row in rows] == [False]
+
+    def test_revision_round_rows_carry_their_round(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_chain_response(mock_client, ["table", "insert"], [{"id": 1}])
+
+        repo.save_council_votes(
+            prediction_id="p-1", symbol="AAPL", votes=[self._vote()], debate_round=2
+        )
+
+        rows = mock_client.table.return_value.insert.call_args.args[0]
+        assert [row["round"] for row in rows] == [2]
 
     def test_noop_for_empty_votes(
         self, repo: SupabaseRepository, mock_client: MagicMock

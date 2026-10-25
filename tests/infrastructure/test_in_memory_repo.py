@@ -342,3 +342,23 @@ def test_shock_alert_levels_follow_the_ladder_rungs() -> None:
     }
     with pytest.raises(ValueError, match="already exists"):
         repo.save_shock_alert("NVDA", day, -0.12, "DOWN", level=2)
+
+
+def test_revision_votes_sit_next_to_the_first_round_and_reads_stay_on_round_one() -> None:
+    # ML-40: klucz jak UNIQUE(prediction_id, investor_name, round) z migracji 082;
+    # odczyty (dissent-replay, historia, redundancja) biorą niezależną rundę 1.
+    repo = _repo(_Clock())
+    prediction_id = repo.save_prediction(_record())
+    repo.save_council_votes(prediction_id, "NVDA", [_opinion("Cathie Wood", "SELL")])
+    repo.save_council_votes(
+        prediction_id, "NVDA", [_opinion("Cathie Wood", "BUY")], debate_round=2
+    )
+
+    votes = repo.get_council_votes_for_prediction(prediction_id)
+    history = repo.get_council_vote_history(["NVDA"], window_days=30)
+
+    assert [(vote.investor_name, vote.recommendation) for vote in votes] == [
+        ("Cathie Wood", "SELL")
+    ]
+    assert [h.recommendations for h in history] == [("SELL",)]
+    assert [s.recommendation for s in repo.get_council_vote_samples()] == ["SELL"]

@@ -5040,6 +5040,19 @@ def test_build_repository_passes_the_council_votes_upsert_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_records_council_rounds_with_debate_mode(
+    settings: Settings, mocker: Any, enabled: bool
+) -> None:
+    # ML-40: kolumna `council_votes.round` (migracja 082) jest w użyciu tylko z debatą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.debate_mode_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_build_repository_passes_the_persona_vote_outcomes_flag(
     settings: Settings, mocker: Any, enabled: bool
 ) -> None:

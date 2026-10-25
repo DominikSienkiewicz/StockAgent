@@ -33,6 +33,7 @@ from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import (
+    FIRST_COUNCIL_ROUND,
     CouncilVerdict,
     InvestorOpinion,
     Recommendation,
@@ -791,6 +792,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         scorecard_weights_sha256_enabled: bool = False,
         scorecard_provenance_enabled: bool = False,
         executable_entry_enabled: bool = False,
+        council_vote_rounds_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -832,7 +834,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self._scorecard_run_id_enabled = scorecard_run_id_enabled
         # NIEZ-14: upsert głosów potrzebuje UNIQUE z migracji 054 — bez niego
         # PostgREST odrzuca `on_conflict` (42P10), więc do tego czasu goły insert.
+        # ML-40: od migracji 082 klucz to (prediction_id, investor_name, round), więc
+        # flaga czeka na 082 (`FLAG_REQUIRED_MIGRATION`), a cel upsertu niesie rundę.
         self._council_votes_upsert_enabled = council_votes_upsert_enabled
+        # ML-40: z debatą `council_votes` ma też rundę rewizji (kolumna `round`,
+        # migracja 082); odczyty głosów biorą wtedy niezależną rundę 1. Bez flagi
+        # filtr by padł przed 082 (42703), a bez debaty i tak jest tylko runda 1.
+        self._council_vote_rounds_enabled = council_vote_rounds_enabled
         # ML-21: kolumna JSONB `feature_stats` istnieje od migracji 052 — ta sama zasada.
         self._scorecard_feature_stats_enabled = scorecard_feature_stats_enabled
         # WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny
@@ -2389,6 +2397,12 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             return []
         return list(_rows(response))
 
+    def _first_round_only(self, query: Any) -> Any:
+        """ML-40: odczyt głosów zawęża do rundy 1, gdy debata zapisuje też rewizję."""
+        if self._council_vote_rounds_enabled:
+            return query.eq("round", FIRST_COUNCIL_ROUND)
+        return query
+
     def get_council_vote_history(
         self,
         symbols: list[str],
@@ -2405,6 +2419,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             .in_("symbol", symbols)
             .gte("timestamp", cutoff.isoformat())
         )
+        query = self._first_round_only(query)
         if investors:
             query = query.in_("investor_name", investors)
         # NIEZ-15: paginacja z `id` jako drugim kluczem (jak w odczytach Slow Loopa).
@@ -2434,9 +2449,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # głosów). Graceful: baza niedostępna → [] z WARNING-iem, mail bez redundancji.
         cutoff = datetime.now(UTC) - timedelta(days=window_days)
         query = (
-            self._client.table(self._council_votes_table)
-            .select("prediction_id, investor_name, recommendation")
-            .gte("timestamp", cutoff.isoformat())
+            self._first_round_only(
+                self._client.table(self._council_votes_table)
+                .select("prediction_id, investor_name, recommendation")
+                .gte("timestamp", cutoff.isoformat())
+            )
             .order("timestamp", desc=True)
             .order("id", desc=True)
         )
@@ -2460,12 +2477,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     def get_council_votes_for_prediction(
         self, prediction_id: str
     ) -> list[InvestorOpinion]:
-        response = (
+        response = self._first_round_only(
             self._client.table(self._council_votes_table)
             .select("investor_name, recommendation, confidence, reasoning, key_factors")
             .eq("prediction_id", prediction_id)
-            .execute()
-        )
+        ).execute()
         out: list[InvestorOpinion] = []
         for row in _rows(response):
             rec = parse_recommendation(row.get("recommendation"))
@@ -2511,6 +2527,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         prediction_id: str,
         symbol: str,
         votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         if not votes:
             return
@@ -2528,10 +2546,14 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             )
             for vote in votes
         ]
+        # ML-40: runda 1 to DEFAULT kolumny z 082, więc bez debaty zapis jak przed
+        # migracją; klucz `round` niesie tylko rewizja (debata czeka na 082).
+        if debate_round != FIRST_COUNCIL_ROUND:
+            rows = [{**row, "round": debate_round} for row in rows]
         table = self._client.table(self._council_votes_table)
         if self._council_votes_upsert_enabled:
             # Re-run w tej samej godzinie nadpisuje głosy zamiast je dublować.
-            table.upsert(rows, on_conflict="prediction_id,investor_name").execute()
+            table.upsert(rows, on_conflict="prediction_id,investor_name,round").execute()
             return
         table.insert(rows).execute()
 

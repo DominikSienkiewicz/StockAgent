@@ -27,7 +27,7 @@ def _source(result: object) -> MagicMock:
 
 def test_a_flag_ahead_of_the_schema_is_disabled_with_a_warning_alert() -> None:
     outcome = evaluate_schema_gate(
-        _source(19), {"receipts_enabled": True, "debate_mode_enabled": True}, now=NOW
+        _source(19), {"receipts_enabled": True, "model_routing_enabled": True}, now=NOW
     )
 
     assert outcome.schema_version == 19

@@ -45,7 +45,7 @@ from src.application.ports import (
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
-from src.domain.council import InvestorOpinion
+from src.domain.council import FIRST_COUNCIL_ROUND, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import CachedEarningsDate
@@ -528,7 +528,12 @@ class ReadOnlyRepository(RepositoryPort):
         self._skipped.skip("save_model_scorecard")
 
     def save_council_votes(
-        self, prediction_id: str, symbol: str, votes: list[InvestorOpinion]
+        self,
+        prediction_id: str,
+        symbol: str,
+        votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         self._skipped.skip("save_council_votes")
 

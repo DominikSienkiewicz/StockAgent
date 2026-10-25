@@ -112,6 +112,7 @@ MIGRATION_PROBES="017 column prediction_logs regime
 079 table bot_state -
 080 table symbol_mutes -
 081 column shock_alerts level
+082 column council_votes round
 083 column shadow_predictions predicted_trend"
 
 # Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.

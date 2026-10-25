@@ -611,6 +611,8 @@ class Settings(BaseSettings):
     # a mail Fast Loopa nie nadaje „SILNY KONSENSUS”, gdy rada mówi jednym głosem
     # (N_eff < 1,5). Tylko treść maili — prognoza ta sama. Off: maile bez zmian.
     council_redundancy_enabled: bool = False
+    # R-19: jedna runda rewizji, gdy runda 1 rady jest podzielona. ML-40: głosy obu rund
+    # w `council_votes.round` (migracja 082), odczyty trafności person biorą rundę 1.
     debate_mode_enabled: bool = False
 
     # ----- Model routing (R-20 — tani model + eskalacja do frontier) -----
@@ -1032,9 +1034,10 @@ class Settings(BaseSettings):
     # (ten sam co w `llm_calls`), próba runu, liczby cyklu, płatne wywołania i stan
     # maila. Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
     cycle_runs_enabled: bool = False
-    # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name) — re-run w tej
-    # samej godzinie nie dubluje ich wagi. Wymaga UNIQUE z migracji 054; do tego
-    # czasu goły insert (upsert bez indeksu PostgREST odrzuca).
+    # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name, round) — re-run
+    # w tej samej godzinie nie dubluje ich wagi. Wymaga UNIQUE z rundą z migracji 082
+    # (ML-40; wcześniej 054 bez rundy); do tego czasu goły insert (upsert bez indeksu
+    # PostgREST odrzuca).
     council_votes_upsert_enabled: bool = False
     # DAT-14: kolumna `prediction_logs.stale_quote` (migracja 055) — zapis znacznika
     # nieaktualnego notowania i odsiew takich wierszy z trafności. Off w kodzie

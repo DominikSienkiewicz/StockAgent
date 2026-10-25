@@ -44,7 +44,7 @@ from src.application.ports import (
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
-from src.domain.council import InvestorOpinion, parse_recommendation
+from src.domain.council import FIRST_COUNCIL_ROUND, InvestorOpinion, parse_recommendation
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
@@ -156,7 +156,8 @@ class InMemoryRepository(RepositoryPort):
         self._snapshots: list[Row] = []
         self._feature_snapshots: dict[tuple[str, str], Row] = {}
         self._shadow: dict[tuple[str, str], Row] = {}
-        self._council_votes: dict[tuple[str, str], Row] = {}
+        # Klucz jak UNIQUE(prediction_id, investor_name, round) z migracji 082 (ML-40).
+        self._council_votes: dict[tuple[str, str, int], Row] = {}
         self._quota_alerts: list[QuotaAlert] = []
         self._fundamentals: dict[str, Fundamentals] = {}
         self._earnings: dict[str, CachedEarningsDate] = {}
@@ -826,14 +827,21 @@ class InMemoryRepository(RepositoryPort):
     # ------------------------------------------------------------------
 
     def save_council_votes(
-        self, prediction_id: str, symbol: str, votes: list[InvestorOpinion]
+        self,
+        prediction_id: str,
+        symbol: str,
+        votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         now = self._now().isoformat()
         with self._lock:
             for vote in votes:
-                self._council_votes[(prediction_id, vote.investor_name)] = _json_row(
+                key = (prediction_id, vote.investor_name, debate_round)
+                self._council_votes[key] = _json_row(
                     {
                         "id": self._next_id(),
+                        "round": debate_round,
                         "prediction_id": prediction_id,
                         "symbol": symbol,
                         "investor_name": vote.investor_name,
@@ -845,9 +853,14 @@ class InMemoryRepository(RepositoryPort):
                     }
                 )
 
+    def _first_round_votes(self) -> list[Row]:
+        # ML-40: odczyty głosów biorą niezależną rundę 1, jak SupabaseRepository z debatą.
+        rows = self._council_votes.values()
+        return [row for row in rows if row["round"] == FIRST_COUNCIL_ROUND]
+
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         opinions: list[InvestorOpinion] = []
-        for row in self._council_votes.values():
+        for row in self._first_round_votes():
             recommendation = parse_recommendation(row.get("recommendation"))
             if row["prediction_id"] != prediction_id or recommendation is None:
                 continue
@@ -865,7 +878,7 @@ class InMemoryRepository(RepositoryPort):
     def _recent_votes(self, window_days: int) -> list[Row]:
         start = self._now() - timedelta(days=window_days)
         return sorted(
-            _since(self._council_votes.values(), "timestamp", start),
+            _since(self._first_round_votes(), "timestamp", start),
             key=lambda row: (str(row["timestamp"]), int(row["id"])),
             reverse=True,
         )

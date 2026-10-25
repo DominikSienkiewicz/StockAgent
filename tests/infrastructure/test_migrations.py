@@ -115,6 +115,7 @@ MIGRATION_FILES = [
     "079_bot_state.sql",
     "080_symbol_mutes.sql",
     "081_shock_alert_levels.sql",
+    "082_council_vote_rounds.sql",
     "083_shadow_prediction_trend.sql",
 ]
 
@@ -3403,7 +3404,7 @@ class TestMigration054CouncilVotesUnique:
                 "INSERT INTO council_votes "
                 "(prediction_id, symbol, investor_name, recommendation, confidence) "
                 "VALUES (%s, 'CV', 'Warren Buffett', 'HOLD', 0.5) "
-                "ON CONFLICT (prediction_id, investor_name) DO UPDATE "
+                "ON CONFLICT (prediction_id, investor_name, round) DO UPDATE "
                 "SET recommendation = EXCLUDED.recommendation",
                 (prediction_id,),
             )
@@ -4715,6 +4716,140 @@ class TestMigration081ShockAlertLevels:
             unique = {row[0] for row in cur.fetchall()}
 
         assert unique == {"uq_shock_alerts_symbol_date_level"}
+
+
+@pytest.mark.containers
+class TestMigration082CouncilVoteRounds:
+    """ML-40: głosy rady z numerem rundy — runda rewizji debaty obok rundy 1, jeden
+    wiersz na (predykcja, persona, runda), a trafność person liczy tylko rundę 1."""
+
+    PERSONA = "R082 Persona"
+
+    @staticmethod
+    def _prediction(cur: psycopg2.extensions.cursor, symbol: str) -> str:
+        cur.execute(
+            "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, "
+            "actual_price_after_12h) VALUES (%s, NOW() - interval '2 days', 100.0, 102.0) "
+            "RETURNING id",
+            (symbol,),
+        )
+        return str(cur.fetchone()[0])
+
+    def _vote(
+        self, cur: psycopg2.extensions.cursor, prediction_id: str, rec: str, rnd: int | None
+    ) -> None:
+        if rnd is None:
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'R082', %s, %s, 0.8)",
+                (prediction_id, self.PERSONA, rec),
+            )
+            return
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence, round) "
+            "VALUES (%s, 'R082', %s, %s, 0.8, %s)",
+            (prediction_id, self.PERSONA, rec, rnd),
+        )
+
+    def test_revision_vote_sits_next_to_the_first_round(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "R082_OK")
+            self._vote(cur, prediction_id, "BUY", None)
+            self._vote(cur, prediction_id, "SELL", 2)
+            cur.execute(
+                "SELECT round, recommendation FROM council_votes "
+                "WHERE prediction_id = %s ORDER BY round",
+                (prediction_id,),
+            )
+            assert cur.fetchall() == [(1, "BUY"), (2, "SELL")]
+
+    def test_same_round_twice_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "R082_DUP")
+            self._vote(cur, prediction_id, "BUY", None)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                self._vote(cur, prediction_id, "HOLD", 1)
+
+    def test_third_round_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "R082_THIRD")
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                self._vote(cur, prediction_id, "BUY", 3)
+
+    def test_persona_accuracy_counts_only_the_first_round(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        # Runda 1: trafne BUY (100 → 102); rewizja: chybione SELL. Ranking, wagi,
+        # surowe głosy i Brier widzą jeden głos — niezależny, z rundy 1.
+        with _rolled_back(migrated_pg_conn) as cur:
+            # Testy idempotencji 058 / 065 powtarzają starsze migracje na tej bazie, co
+            # cofa ciała RPC; w transakcji 082 jest znów ostatnia, jak na produkcji.
+            cur.execute((MIGRATIONS_DIR / "082_council_vote_rounds.sql").read_text())
+            cur.execute("DELETE FROM council_votes")
+            prediction_id = self._prediction(cur, "R082_RPC")
+            self._vote(cur, prediction_id, "BUY", None)
+            self._vote(cur, prediction_id, "SELL", 2)
+
+            cur.execute(
+                "SELECT hit_rate, vote_count FROM persona_accuracy_stats(90) "
+                "WHERE investor_name = %s",
+                (self.PERSONA,),
+            )
+            stats = cur.fetchall()
+            cur.execute(
+                "SELECT weight FROM persona_accuracy_weights(90) WHERE investor_name = %s",
+                (self.PERSONA,),
+            )
+            weights = cur.fetchall()
+            cur.execute(
+                "SELECT recommendation FROM persona_vote_outcomes(90) "
+                "WHERE investor_name = %s",
+                (self.PERSONA,),
+            )
+            outcomes = cur.fetchall()
+            cur.execute(
+                "SELECT vote_count FROM persona_scoring_stats(90, '{}') "
+                "WHERE investor_name = %s",
+                (self.PERSONA,),
+            )
+            scoring = cur.fetchall()
+
+        assert stats == [(1.0, 1)]
+        assert weights == [(1.5,)]
+        assert outcomes == [("BUY",)]
+        assert scoring == [(1,)]
+
+    def test_082_is_idempotent_and_keeps_the_rpc_search_path(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "082_council_vote_rounds.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE indexname = 'idx_council_votes_prediction_investor_uniq'"
+            )
+            (indexdef,) = cur.fetchone()
+            cur.execute(
+                "SELECT proname, proconfig FROM pg_proc "
+                "WHERE proname IN ('persona_accuracy_weights', 'persona_accuracy_stats')"
+            )
+            configs = dict(cur.fetchall())
+
+        assert "(prediction_id, investor_name, round)" in indexdef
+        assert all(
+            any(item.startswith("search_path=") for item in config or [])
+            for config in configs.values()
+        ), configs
 
 
 @pytest.mark.containers
