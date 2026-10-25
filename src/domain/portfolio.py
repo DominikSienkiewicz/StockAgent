@@ -127,9 +127,9 @@ class Position:
 class PositionPnL:
     """P/L pojedynczej pozycji w danym momencie.
 
-    `return_pct` to zwrot względem kosztu jako UŁAMEK (`Ratio`: 0.5 == +50%),
-    mimo sufiksu `_pct` (ARCH-04); `None`, gdy koszt bazowy jest zerowy (np.
-    pozycja o cenie zakupu 0) — nie dzielimy przez 0.
+    `return_ratio` to zwrot względem kosztu jako UŁAMEK (`Ratio`: 0.5 == +50%,
+    ARCH-04); `None`, gdy koszt bazowy jest zerowy (np. pozycja o cenie
+    zakupu 0) — nie dzielimy przez 0.
     """
 
     symbol: str
@@ -139,7 +139,7 @@ class PositionPnL:
     cost_basis: Decimal
     market_value: Decimal
     unrealized_pnl: Decimal
-    return_pct: Ratio | None
+    return_ratio: Ratio | None
     # PORT-18: waluta, w której są ceny i kwoty tego wiersza.
     currency: str = DEFAULT_POSITION_CURRENCY
 
@@ -248,16 +248,16 @@ class PortfolioPnL:
     """Zagregowany P/L portfela — pozycje policzalne + sumy łączne.
 
     `positions` zawiera tylko pozycje, dla których była bieżąca cena;
-    reszta wypada (bez ceny nie ma P/L). `total_return_pct` to zwrot łączny
-    jako UŁAMEK (`Ratio`, mimo sufiksu `_pct`, ARCH-04) albo `None` dla
-    pustego/zerokosztowego portfela.
+    reszta wypada (bez ceny nie ma P/L). `total_return_ratio` to zwrot łączny
+    jako UŁAMEK (`Ratio`, ARCH-04) albo `None` dla pustego/zerokosztowego
+    portfela.
     """
 
     positions: tuple[PositionPnL, ...]
     total_cost_basis: Decimal
     total_market_value: Decimal
     total_unrealized_pnl: Decimal
-    total_return_pct: Ratio | None
+    total_return_ratio: Ratio | None
 
 
 @dataclass(frozen=True)
@@ -279,7 +279,7 @@ class SymbolChange:
 
     `change` — Δ wartości pozycji (ilość × (cena bieżąca − poprzednia), loty
     zsumowane). `contribution` — ten Δ jako ułamek wartości portfela PRZED
-    zmianą; wkłady wszystkich symboli sumują się do `PortfolioChange.change_pct`.
+    zmianą; wkłady wszystkich symboli sumują się do `PortfolioChange.change_ratio`.
     """
 
     symbol: str
@@ -295,14 +295,14 @@ class PortfolioChange:
     punktu odniesienia nie może udawać „bez zmian”. Te wypadnięte są wymienione
     w `unmeasured_symbols`. `top_contributors` — co najwyżej
     `TOP_CHANGE_CONTRIBUTORS` symboli o największym |Δ|, bez pozycji stojących.
-    `change_pct` to zmiana względem wartości poprzedniej jako UŁAMEK (`Ratio`,
-    mimo sufiksu `_pct`, ARCH-04).
+    `change_ratio` to zmiana względem wartości poprzedniej jako UŁAMEK
+    (`Ratio`, ARCH-04).
     """
 
     previous_value: Decimal
     current_value: Decimal
     change: Decimal
-    change_pct: Ratio
+    change_ratio: Ratio
     top_contributors: tuple[SymbolChange, ...]
     unmeasured_symbols: tuple[str, ...]
 
@@ -520,7 +520,7 @@ class Portfolio:
                     cost_basis=cost,
                     market_value=value,
                     unrealized_pnl=pnl,
-                    return_pct=Ratio(pnl / cost) if cost != 0 else None,
+                    return_ratio=Ratio(pnl / cost) if cost != 0 else None,
                     currency=pos.currency,
                 )
             )
@@ -532,7 +532,7 @@ class Portfolio:
             total_cost_basis=total_cost,
             total_market_value=total_value,
             total_unrealized_pnl=total_pnl,
-            total_return_pct=Ratio(total_pnl / total_cost) if total_cost != 0 else None,
+            total_return_ratio=Ratio(total_pnl / total_cost) if total_cost != 0 else None,
         )
 
     def market_value_pln(
@@ -623,7 +623,7 @@ class Portfolio:
             previous_value=previous_value,
             current_value=current_value,
             change=change,
-            change_pct=Ratio(change / previous_value),
+            change_ratio=Ratio(change / previous_value),
             top_contributors=tuple(moves[:TOP_CHANGE_CONTRIBUTORS]),
             unmeasured_symbols=tuple(sorted(set(quantities) - set(measured))),
         )

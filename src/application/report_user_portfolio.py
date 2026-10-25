@@ -175,11 +175,11 @@ def _format_pct(value: Decimal, *, signed: bool = False) -> str:
     return format_pct_pl(value * 100, signed, 1)
 
 
-def _format_return_pct(return_pct: Decimal | None) -> str:
+def _format_return_pct(return_ratio: Decimal | None) -> str:
     """Zwrot procentowy pozycji lub "—" gdy nie da się policzyć (koszt 0)."""
-    if return_pct is None:
+    if return_ratio is None:
         return "—"
-    return _format_pct(return_pct, signed=True)
+    return _format_pct(return_ratio, signed=True)
 
 
 def _row_weight(row: PositionPnL, total_market_value: Decimal) -> Decimal:
@@ -244,7 +244,7 @@ def portfolio_change_label(
 def _change_amount(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
     """„+$70,00 (+7,0%)” albo „+280,00 zł (+7,0%)” — kwota i procent zmiany."""
     amount = _format_money(change.change, currency, signed=True)
-    return f"{amount} ({_format_pct(change.change_pct, signed=True)})"
+    return f"{amount} ({_format_pct(change.change_ratio, signed=True)})"
 
 
 def _contributors(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
@@ -333,7 +333,7 @@ def render_portfolio_change_box_html(
         '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
         f"Twój portfel {_html.escape(label)}</div>"
         f'<div style="font-size: 24px; font-weight: 600; color: {color};">'
-        f"{_format_pct(change.change_pct, signed=True)}</div>"
+        f"{_format_pct(change.change_ratio, signed=True)}</div>"
         f'<div style="font-size: 12px; color: {color};">{" · ".join(amounts)}</div>'
         "</td>"
     )
@@ -350,7 +350,7 @@ def render_portfolio_change_text_line(
     „Twój portfel od ostatniego maila: +7,0% (+$70,00)”."""
     amounts = _change_amounts(change, usd_pln, currency)
     return (
-        f"Twój portfel {label}: {_format_pct(change.change_pct, signed=True)} "
+        f"Twój portfel {label}: {_format_pct(change.change_ratio, signed=True)} "
         f"({' · '.join(amounts)})"
     )
 
@@ -465,7 +465,7 @@ def _render_row_html(
     color = _pnl_color(row.unrealized_pnl)
     pnl_cell = (
         f"{_format_money(row.unrealized_pnl, row.currency, signed=True)} "
-        f"({_format_return_pct(row.return_pct)})"
+        f"({_format_return_pct(row.return_ratio)})"
     )
     if pln_row is not None:
         pln_cell = _render_pln_cells_html(pln_row)
@@ -552,7 +552,7 @@ def _render_totals_html(
             f"<strong>{_format_money(pnl.total_market_value, currency)}</strong> · "
             f"P/L <strong style='color: {color};'>"
             f"{_format_money(pnl.total_unrealized_pnl, currency, signed=True)} "
-            f"({_format_return_pct(pnl.total_return_pct)})</strong>"
+            f"({_format_return_pct(pnl.total_return_ratio)})</strong>"
         )
     pln_line = ""
     if pln is not None and pln_rates is not None:
@@ -648,7 +648,7 @@ def render_user_portfolio_text(
             f"waga {weight:>6s} "
             f"wart. {_format_money(row.market_value, row.currency):>14s} "
             f"P/L {_format_money(row.unrealized_pnl, row.currency, signed=True):>12s} "
-            f"({_format_return_pct(row.return_pct)})"
+            f"({_format_return_pct(row.return_ratio)})"
         )
         if pln_row is not None:
             line += f" | P/L zł {_pln_pnl_cell(pln_row)} ({_fx_text(pln_row)})"
@@ -699,7 +699,7 @@ def _totals_text(pnl: PortfolioPnL, *, partial: bool) -> str:
     return (
         f"  {_totals_label(partial)}: {_format_money(pnl.total_market_value, currency)} · "
         f"P/L {_format_money(pnl.total_unrealized_pnl, currency, signed=True)} "
-        f"({_format_return_pct(pnl.total_return_pct)})"
+        f"({_format_return_pct(pnl.total_return_ratio)})"
     )
 
 
