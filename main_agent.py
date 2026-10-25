@@ -73,6 +73,7 @@ from src.application.ports import (
     RepositoryPort,
     SentimentPort,
     SocialVelocityPort,
+    SymbolMutePort,
     ToolUseLLMPort,
     UsageSink,
     WebPublisherPort,
@@ -202,6 +203,7 @@ from src.domain.scenarios import Scenario
 from src.domain.shadow_prompt import variant_version
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
+from src.domain.watchlist import EffectiveWatchlist, effective
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
 from src.infrastructure.adapters._http import (
     RateLimiter,
@@ -1019,6 +1021,49 @@ def build_repository(settings: Settings) -> RepositoryPort:
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
+
+
+def build_symbol_mutes(settings: Settings) -> SymbolMutePort:
+    """MAIL-45: wyciszenia z bota (tabela `symbol_mutes`, migracja 080) — Fast Loop
+    tylko je czyta; zapisuje wyłącznie `main_bot.py`."""
+    from src.infrastructure.adapters.bot_store import SupabaseBotStore
+
+    return SupabaseBotStore.connect(settings.supabase_url, settings.supabase_key)
+
+
+def resolve_watchlist_mutes(settings: Settings, now: datetime) -> EffectiveWatchlist | None:
+    """MAIL-45: efektywna watchlista cyklu za `symbol_mutes_enabled`; None = flaga off
+    (zero odczytów tabeli). Nieczytelne wyciszenia = WARNING i cykl bez wyciszeń —
+    awaria tabeli nie może zabrać symboli z analizy."""
+    if not settings.symbol_mutes_enabled:
+        return None
+    try:
+        mutes = build_symbol_mutes(settings).get_symbol_mutes()
+    except PortError as exc:
+        logger.warning(
+            "symbol_mutes unreadable (%s) — the cycle analyses every config symbol",
+            type(exc).__name__,
+        )
+        mutes = []
+    return effective([*settings.symbols, *settings.crypto_symbols], mutes, now)
+
+
+def snapshot_muted_symbols(
+    settings: Settings, repository: RepositoryPort, symbols: Sequence[str]
+) -> None:
+    """MAIL-45: wyciszony symbol nie idzie do grafu, ale dostaje snapshot ceny z darmowego
+    `/quote` — bez niego pierwszy cykl po wyciszeniu liczyłby Δ od ceny sprzed tygodni.
+    Błąd ceny jednego symbolu to WARNING, nie przerwany cykl."""
+    if not symbols:
+        return
+    market = build_market_port(settings)
+    for symbol in symbols:
+        try:
+            repository.save_price_snapshot(symbol, market.get_current_price(symbol))
+        except (PortError, ValueError) as exc:
+            logger.warning(
+                "%s: muted — price snapshot skipped (%s)", symbol, type(exc).__name__
+            )
 
 
 def build_digest_archive(settings: Settings) -> DigestArchivePort | None:
@@ -2517,6 +2562,8 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
         portfolio_fx=None,
         # MAIL-24: podpisany URL otwiera mail właściciela z portfelem.
         archive_url=None,
+        # MAIL-45: wyciszenia to preferencje właściciela (np. właśnie sprzedana spółka).
+        watchlist_mutes=None,
     )
 
 
@@ -3404,6 +3451,18 @@ def _run_fast_loop(
     # FIN-34: symbole TEGO cyklu — w dzień zamknięcia NYSE samo krypto. Watchlista
     # (`all_symbols`) zostaje pełna dla kontekstu raportu (trafność, radar, portfel).
     cycle_symbols = [*stock_symbols, *settings.crypto_symbols]
+    # MAIL-45: wyciszone z bota wypadają z cyklu (bez płatnej analizy i sekcji), ale
+    # dostają snapshot ceny. Flaga off = watchlist_mutes None i lista bez zmian.
+    watchlist_mutes = resolve_watchlist_mutes(settings, started_at)
+    muted = {mute.symbol for mute in watchlist_mutes.muted} if watchlist_mutes else set()
+    if muted:
+        logger.info("Wyciszone z bota (bez analizy, ze snapshotem): %s", sorted(muted))
+        snapshot_muted_symbols(
+            settings,
+            repository,
+            [s for s in cycle_symbols if s in muted and s not in unsupported],
+        )
+        cycle_symbols = [s for s in cycle_symbols if s not in muted]
     # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
     # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
     eligible = [s for s in cycle_symbols if s not in unsupported]
@@ -3535,6 +3594,7 @@ def _run_fast_loop(
                 max_age_days=settings.insider_lead_max_age_days,
             ),
             source_health=source_health,
+            watchlist_mutes=watchlist_mutes,
         ),
     )
     report_delivery = _report_delivery(
