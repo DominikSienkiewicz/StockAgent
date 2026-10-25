@@ -76,7 +76,7 @@ from src.domain.equity_curve import EquityCurve
 from src.domain.finops import CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.invalidation import Invalidation
-from src.domain.isotonic_calibration import IsotonicMap
+from src.domain.isotonic_calibration import ClassIsotonicSelection, IsotonicMap
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import trend_forecast_label
@@ -347,6 +347,7 @@ def build_cycle_signals(
         hit_sample=hit_sample,
         calibration_buckets=context.signal_calibration_buckets,
         isotonic_calibration=context.signal_isotonic_calibration,
+        isotonic_class_calibration=context.signal_isotonic_class_calibration,
         portfolio_weights=portfolio.weights(weight_prices) if portfolio is not None else None,
         cluster_exposures=_cluster_exposure_per_symbol(
             portfolio, context.portfolio_clusters, weight_prices
@@ -472,6 +473,9 @@ class ReportContext:
     # ML-28: mapa izotoniczna, która wygrała poza próbą — zastępuje w rankingu
     # shrinkage kubełkowy (None = kubełki albo surowa pewność, jak dotąd).
     signal_isotonic_calibration: IsotonicMap | None = None
+    # ML-54: decyzje mapy per klasa aktywa (krypto vs reszta) — ranking bierze mapę
+    # klasy symbolu zamiast globalnej (None = sama mapa globalna, jak dotąd).
+    signal_isotonic_class_calibration: ClassIsotonicSelection | None = None
     cycle_maturity: CycleMaturity | None = None
     portfolio_sectors: Mapping[str, int] | None = None
     model_scorecard: ModelScorecardView | None = None

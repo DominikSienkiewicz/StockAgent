@@ -49,7 +49,8 @@ class CalibrationClass(Enum):
     NON_CRYPTO = "NON_CRYPTO"
 
 
-ClassedSample = tuple[datetime, float, bool, CalibrationClass]
+# Klasa None (wiersz bez symbolu) liczy się wyłącznie do mapy globalnej.
+ClassedSample = tuple[datetime, float, bool, CalibrationClass | None]
 
 
 @dataclass(frozen=True)

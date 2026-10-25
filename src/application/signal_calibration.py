@@ -16,13 +16,14 @@ niezależność.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from src.domain.calibration_curve import CalibrationBucket, reliability_curve
 from src.domain.equity_curve import signal_of
+from src.domain.isotonic_calibration import CalibrationClass, ClassedSample
 from src.domain.track_record import group_by_cycle
 
 Sample = tuple[float, bool]
@@ -93,15 +94,45 @@ def timed_directional_samples(
     """ML-28: próbki kierunkowe z chwilą predykcji `(timestamp, pewność, trafienie)`
     — okna oceny poza próbą tną po czasie. SIDEWAYS (WIA-39) i wiersze bez
     pewności, werdyktu albo poprawnego znacznika czasu odpadają."""
-    samples: list[tuple[datetime, float, bool]] = []
+    return [sample for row in rows if (sample := _timed_directional(row)) is not None]
+
+
+def timed_classed_directional_samples(
+    rows: Sequence[Mapping[str, Any]], crypto_symbols: Collection[str]
+) -> list[ClassedSample]:
+    """ML-54: próbki `timed_directional_samples` z klasą aktywa z `symbol` wiersza.
+
+    Krypto = symbol z `crypto_symbols` (reguła `run_cycle.classify_asset`, ta sama,
+    która nadaje `asset_class` wynikom cyklu), reszta = akcje i ETF-y. Wiersz bez
+    symbolu nie ma klasy — liczy się tylko do mapy globalnej."""
+    crypto = frozenset(crypto_symbols)
+    samples: list[ClassedSample] = []
     for row in rows:
-        confidence = row.get("confidence_score")
-        correct = row.get("is_trend_correct")
-        stamp = _moment_of(row)
-        if confidence is None or correct is None or stamp is None or _is_sideways(row):
+        sample = _timed_directional(row)
+        if sample is None:
             continue
-        samples.append((stamp, float(confidence), bool(correct)))
+        stamp, confidence, correct = sample
+        samples.append((stamp, confidence, correct, _calibration_class(row, crypto)))
     return samples
+
+
+def _timed_directional(row: Mapping[str, Any]) -> tuple[datetime, float, bool] | None:
+    """Próbka kierunkowa wiersza z chwilą predykcji; SIDEWAYS i braki → None."""
+    confidence = row.get("confidence_score")
+    correct = row.get("is_trend_correct")
+    stamp = _moment_of(row)
+    if confidence is None or correct is None or stamp is None or _is_sideways(row):
+        return None
+    return stamp, float(confidence), bool(correct)
+
+
+def _calibration_class(
+    row: Mapping[str, Any], crypto: frozenset[str]
+) -> CalibrationClass | None:
+    symbol = row.get("symbol")
+    if symbol is None:
+        return None
+    return CalibrationClass.CRYPTO if symbol in crypto else CalibrationClass.NON_CRYPTO
 
 
 def _moment_of(row: Mapping[str, Any]) -> datetime | None:
