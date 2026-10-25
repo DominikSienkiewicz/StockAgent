@@ -1,9 +1,10 @@
 import json
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from anthropic import APIStatusError
 
 from src.application.ports import LLMPort
 from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL, AnthropicAdapter
@@ -26,12 +27,12 @@ def _message_response(text: str | None) -> MagicMock:
 
 
 @pytest.fixture
-def mock_anthropic_class(mocker: Any):
-    return mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+def mock_anthropic_class(mocker: Any) -> MagicMock:
+    return cast(MagicMock, mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic"))
 
 
 @pytest.fixture
-def adapter_with_client(mock_anthropic_class) -> tuple[AnthropicAdapter, MagicMock]:
+def adapter_with_client(mock_anthropic_class: MagicMock) -> tuple[AnthropicAdapter, MagicMock]:
     mock_client = MagicMock()
     mock_anthropic_class.return_value = mock_client
     adapter = AnthropicAdapter(api_key="sk-ant-test", model="claude-sonnet-4-6")
@@ -213,7 +214,7 @@ class TestAnalyzeMistake:
 
 
 class TestConfiguration:
-    def test_custom_model_passed_to_api(self, mock_anthropic_class) -> None:
+    def test_custom_model_passed_to_api(self, mock_anthropic_class: MagicMock) -> None:
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
         mock_client.messages.create.return_value = _message_response("{}")
@@ -223,7 +224,7 @@ class TestConfiguration:
 
         assert mock_client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
 
-    def test_initializes_client_with_api_key(self, mock_anthropic_class) -> None:
+    def test_initializes_client_with_api_key(self, mock_anthropic_class: MagicMock) -> None:
         AnthropicAdapter(api_key="sk-ant-secret")
         call = mock_anthropic_class.call_args
         assert call.kwargs["api_key"] == "sk-ant-secret"
@@ -231,10 +232,10 @@ class TestConfiguration:
         assert call.kwargs["timeout"] > 0
 
 
-def _status_error(status: int, retry_after: str | None = None):
+def _status_error(status: int, retry_after: str | None = None) -> APIStatusError:
     """Buduje anthropic.APIStatusError (lub podklasę) z realnym httpx.Response."""
     import httpx
-    from anthropic import APIStatusError, InternalServerError, RateLimitError
+    from anthropic import InternalServerError, RateLimitError
 
     headers = {}
     if retry_after is not None:
@@ -253,7 +254,7 @@ class TestRetryAndQuota:
     retry na 429/5xx z backoffem + sygnalizacja do QuotaMonitor."""
 
     def test_retries_on_rate_limit_then_succeeds(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
@@ -269,7 +270,9 @@ class TestRetryAndQuota:
         assert result == {}
         assert client.messages.create.call_count == 2
 
-    def test_retries_on_server_error_5xx(self, mock_anthropic_class, mocker: Any) -> None:
+    def test_retries_on_server_error_5xx(
+        self, mock_anthropic_class: MagicMock, mocker: Any
+    ) -> None:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -284,7 +287,9 @@ class TestRetryAndQuota:
         assert result["trend_direction"] == "BULLISH"
         assert client.messages.create.call_count == 2
 
-    def test_does_not_retry_on_client_4xx(self, mock_anthropic_class, mocker: Any) -> None:
+    def test_does_not_retry_on_client_4xx(
+        self, mock_anthropic_class: MagicMock, mocker: Any
+    ) -> None:
         from anthropic import APIStatusError
 
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
@@ -299,7 +304,7 @@ class TestRetryAndQuota:
         assert client.messages.create.call_count == 1
 
     def test_warning_alert_emitted_after_successful_retry(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
@@ -324,7 +329,7 @@ class TestRetryAndQuota:
         assert "Anthropic" in alert.source
 
     def test_critical_alert_and_raise_when_retries_exhausted(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         from anthropic import APIStatusError
 
@@ -349,7 +354,7 @@ class TestRetryAndQuota:
         assert client.messages.create.call_count == 3  # 1 + 2 retries
         assert monitor.max_severity() is QuotaSeverity.CRITICAL
 
-    def test_honors_retry_after_header(self, mock_anthropic_class, mocker: Any) -> None:
+    def test_honors_retry_after_header(self, mock_anthropic_class: MagicMock, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -369,25 +374,29 @@ class TestModelIdValidation:
     config failuje dopiero przy 1. callu, per symbol, co cykl). Walidacja w
     __init__ łapie oczywiście-zły id natychmiast, z czytelnym komunikatem."""
 
-    def test_empty_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
+    def test_empty_model_id_raises_at_construction(self, mock_anthropic_class: MagicMock) -> None:
         with pytest.raises(ValueError, match="model"):
             AnthropicAdapter(api_key="sk-ant-test", model="")
 
-    def test_whitespace_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
+    def test_whitespace_model_id_raises_at_construction(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         with pytest.raises(ValueError, match="model"):
             AnthropicAdapter(api_key="sk-ant-test", model="   ")
 
-    def test_wrong_prefix_model_id_raises_at_construction(self, mock_anthropic_class) -> None:
+    def test_wrong_prefix_model_id_raises_at_construction(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         # id bez prefiksu "claude-" jest oczywiście błędny dla Anthropic.
         with pytest.raises(ValueError, match="claude-"):
             AnthropicAdapter(api_key="sk-ant-test", model="gpt-4o")
 
-    def test_valid_model_id_constructs_fine(self, mock_anthropic_class) -> None:
+    def test_valid_model_id_constructs_fine(self, mock_anthropic_class: MagicMock) -> None:
         adapter = AnthropicAdapter(api_key="sk-ant-test", model="claude-opus-4-7")
         # Poprawny model id jest przyjęty i zapamiętany.
         assert adapter._model == "claude-opus-4-7"
 
-    def test_default_model_id_constructs_fine(self, mock_anthropic_class) -> None:
+    def test_default_model_id_constructs_fine(self, mock_anthropic_class: MagicMock) -> None:
         # Domyślny model id musi przejść własną walidację.
         adapter = AnthropicAdapter(api_key="sk-ant-test")
         assert adapter._model == DEFAULT_MODEL
@@ -409,7 +418,7 @@ class TestMaxTokensCap:
         # Cap dopasowany do schematu JSON (kilkaset tokenów), nie 4096.
         assert client.messages.create.call_args.kwargs["max_tokens"] <= 1024
 
-    def test_max_tokens_overridable_via_constructor(self, mock_anthropic_class) -> None:
+    def test_max_tokens_overridable_via_constructor(self, mock_anthropic_class: MagicMock) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         client.messages.create.return_value = _message_response("{}")
@@ -480,11 +489,11 @@ class TestSingleRetryLayer:
     """NIEZ-07: retry żyje w jednym miejscu — w pętli adaptera. Piętrowe retry SDK
     mnożyło płatne próby, a nieograniczony retry-after blokował job."""
 
-    def test_sdk_level_retries_disabled(self, mock_anthropic_class) -> None:
+    def test_sdk_level_retries_disabled(self, mock_anthropic_class: MagicMock) -> None:
         AnthropicAdapter(api_key="sk-ant-test")
         assert mock_anthropic_class.call_args.kwargs["max_retries"] == 0
 
-    def test_retry_after_is_capped(self, mock_anthropic_class, mocker: Any) -> None:
+    def test_retry_after_is_capped(self, mock_anthropic_class: MagicMock, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -499,7 +508,7 @@ class TestSingleRetryLayer:
 
 
 def test_critical_alert_is_polish_and_logged_in_english(
-    mock_anthropic_class, mocker: Any, caplog: pytest.LogCaptureFixture
+    mock_anthropic_class: MagicMock, mocker: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
@@ -551,7 +560,7 @@ class TestUsageReporting:
         )
         return adapter, client, sink
 
-    def test_usage_is_reported_to_sink(self, mock_anthropic_class) -> None:
+    def test_usage_is_reported_to_sink(self, mock_anthropic_class: MagicMock) -> None:
         from src.domain.finops import LLMUsage
 
         adapter, client, sink = self._adapter(mock_anthropic_class)
@@ -577,7 +586,7 @@ class TestUsageReporting:
         )
 
     def test_usage_without_cache_fields_counts_zero_cache_tokens(
-        self, mock_anthropic_class
+        self, mock_anthropic_class: MagicMock
     ) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         client.messages.create.return_value = self._response_with_usage(
@@ -593,7 +602,7 @@ class TestUsageReporting:
             0,
         )
 
-    def test_missing_usage_records_nothing(self, mock_anthropic_class) -> None:
+    def test_missing_usage_records_nothing(self, mock_anthropic_class: MagicMock) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         response = _message_response("{}")
         response.usage = None
@@ -602,7 +611,9 @@ class TestUsageReporting:
         assert adapter.analyze("Predict.") == {}
         sink.record.assert_not_called()
 
-    def test_usage_of_a_billed_empty_answer_is_still_reported(self, mock_anthropic_class) -> None:
+    def test_usage_of_a_billed_empty_answer_is_still_reported(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         # Request poszedł i kosztował — pusta treść nie kasuje rachunku.
         adapter, client, sink = self._adapter(mock_anthropic_class)
         response = self._response_with_usage("", input_tokens=900, output_tokens=0)
@@ -614,7 +625,9 @@ class TestUsageReporting:
 
         sink.record.assert_called_once()
 
-    def test_failing_sink_does_not_fail_the_paid_call(self, mock_anthropic_class) -> None:
+    def test_failing_sink_does_not_fail_the_paid_call(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         adapter, client, sink = self._adapter(mock_anthropic_class)
         sink.record.side_effect = RuntimeError("ledger down")
         client.messages.create.return_value = self._response_with_usage(
@@ -676,7 +689,9 @@ class TestPortErrorTaxonomy:
     portów i nadal jako typy SDK (failover czyta `status_code`, testy łapią SDK)."""
 
     @staticmethod
-    def _adapter(mock_anthropic_class, mocker: Any, side_effect) -> AnthropicAdapter:
+    def _adapter(
+        mock_anthropic_class: MagicMock, mocker: Any, side_effect: object
+    ) -> AnthropicAdapter:
         mocker.patch("src.infrastructure.llm.anthropic_client.time.sleep")
         client = MagicMock()
         mock_anthropic_class.return_value = client
@@ -684,7 +699,7 @@ class TestPortErrorTaxonomy:
         return AnthropicAdapter(api_key="sk-ant-test", backoff_base=0.01, max_retries=1)
 
     def test_overloaded_after_retries_is_provider_unavailable(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         from anthropic import InternalServerError
 
@@ -699,7 +714,7 @@ class TestPortErrorTaxonomy:
         assert excinfo.value.status_code == 529
 
     def test_rate_limit_after_retries_is_quota_exhausted(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.errors import QuotaExhausted
 
@@ -709,7 +724,7 @@ class TestPortErrorTaxonomy:
             adapter.analyze_mistake("Diagnose.")
 
     def test_connection_error_after_retries_is_provider_unavailable(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         import httpx
         from anthropic import APIConnectionError
@@ -727,7 +742,7 @@ class TestPortErrorTaxonomy:
         assert isinstance(excinfo.value, APIConnectionError)
 
     def test_client_error_is_a_port_error_without_retry(
-        self, mock_anthropic_class, mocker: Any
+        self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
 

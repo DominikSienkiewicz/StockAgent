@@ -1,6 +1,7 @@
 import contextlib
 import json
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ def _final_message(content: str) -> MagicMock:
     return response
 
 
-def _tool_call(call_id: str, name: str, arguments: dict) -> MagicMock:
+def _tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> MagicMock:
     """Pojedyncze żądanie wywołania funkcji (jak w `message.tool_calls`)."""
     call = MagicMock()
     call.id = call_id
@@ -51,14 +52,14 @@ def _tool_request_message(tool_calls: list[MagicMock]) -> MagicMock:
 
 
 @pytest.fixture
-def mock_openai_class(mocker: Any):
+def mock_openai_class(mocker: Any) -> MagicMock:
     """Mockuje klasę OpenAI w module adaptera — konstruktor zwraca MagicMock."""
-    return mocker.patch("src.infrastructure.llm.tool_calling_openai.OpenAI")
+    return cast(MagicMock, mocker.patch("src.infrastructure.llm.tool_calling_openai.OpenAI"))
 
 
 @pytest.fixture
 def adapter_with_client(
-    mock_openai_class,
+    mock_openai_class: MagicMock,
 ) -> tuple[ToolCallingOpenAIAdapter, MagicMock]:
     mock_client = MagicMock()
     mock_openai_class.return_value = mock_client
@@ -66,7 +67,7 @@ def adapter_with_client(
     return adapter, mock_client
 
 
-def _make_tool(func) -> Tool:
+def _make_tool(func: Callable[[dict[str, Any]], dict[str, Any]]) -> Tool:
     return Tool(
         name="get_fundamentals",
         description="Zwraca P/E i EPS spółki.",
@@ -167,7 +168,7 @@ class TestSingleToolRound:
 class TestMaxRoundsCap:
     """(c) FinOps — model w kółko prosi o tool; pętla zatrzymuje się po max_rounds."""
 
-    def test_tool_calls_bounded_by_max_rounds(self, mock_openai_class) -> None:
+    def test_tool_calls_bounded_by_max_rounds(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         tool_func = MagicMock(return_value={"pe": 1.0})
@@ -188,7 +189,7 @@ class TestMaxRoundsCap:
         # Co najwyżej max_rounds wykonanych rund narzędzia (twardy cap FinOps).
         assert tool_func.call_count <= 2
 
-    def test_forces_final_answer_after_cap(self, mock_openai_class) -> None:
+    def test_forces_final_answer_after_cap(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
@@ -219,7 +220,7 @@ class TestToolErrorResilience:
     ) -> None:
         adapter, client = adapter_with_client
 
-        def boom(_args: dict) -> dict:
+        def boom(_args: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("network down")
 
         tool = _make_tool(boom)
@@ -268,17 +269,19 @@ class TestConfiguration:
     def test_is_tool_use_llm_port(self) -> None:
         assert issubclass(ToolCallingOpenAIAdapter, ToolUseLLMPort)
 
-    def test_initializes_client_with_api_key_and_timeout(self, mock_openai_class) -> None:
+    def test_initializes_client_with_api_key_and_timeout(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         ToolCallingOpenAIAdapter(api_key="sk-secret")
         call = mock_openai_class.call_args
         assert call.kwargs["api_key"] == "sk-secret"
         assert call.kwargs["timeout"] > 0
 
-    def test_default_model_constructs_fine(self, mock_openai_class) -> None:
+    def test_default_model_constructs_fine(self, mock_openai_class: MagicMock) -> None:
         adapter = ToolCallingOpenAIAdapter(api_key="sk-test")
         assert adapter._model == DEFAULT_MODEL
 
-    def test_empty_model_id_raises(self, mock_openai_class) -> None:
+    def test_empty_model_id_raises(self, mock_openai_class: MagicMock) -> None:
         with pytest.raises(ValueError, match="model"):
             ToolCallingOpenAIAdapter(api_key="sk-test", model="")
 
@@ -317,7 +320,7 @@ class TestConfiguration:
             adapter.analyze_with_tools("Predict.", [tool])
 
 
-def test_tool_error_returned_to_model_omits_secrets(mock_openai_class) -> None:
+def test_tool_error_returned_to_model_omits_secrets(mock_openai_class: MagicMock) -> None:
     # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc
     # URL z `?apikey=` i dosłowny klucz z Settings muszą z niego zniknąć wcześniej.
     client = MagicMock()
@@ -326,7 +329,7 @@ def test_tool_error_returned_to_model_omits_secrets(mock_openai_class) -> None:
         api_key="sk-test", model="gpt-4o", secret_values=("Lit3ral~odd#key",)
     )
 
-    def leaky(_args: dict) -> dict:
+    def leaky(_args: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(
             "fetch failed for url https://www.alphavantage.co/query?apikey=SECRET-URL-1 "
             "(provider echoed Lit3ral~odd#key)"
@@ -357,7 +360,7 @@ class TestUsageReporting:
         response.usage.completion_tokens = completion
         return response
 
-    def test_every_round_reports_its_usage(self, mock_openai_class) -> None:
+    def test_every_round_reports_its_usage(self, mock_openai_class: MagicMock) -> None:
         from src.application.ports import UsageSink
 
         client = MagicMock()
@@ -402,7 +405,10 @@ class TestPortErrorTaxonomy:
         [(503, "ProviderUnavailable"), (429, "QuotaExhausted"), (400, "PortError")],
     )
     def test_sdk_error_maps_to_its_kind(
-        self, adapter_with_client: tuple[ToolCallingOpenAIAdapter, MagicMock], status, kind_name
+        self,
+        adapter_with_client: tuple[ToolCallingOpenAIAdapter, MagicMock],
+        status: int,
+        kind_name: str,
     ) -> None:
         from openai import APIStatusError
 

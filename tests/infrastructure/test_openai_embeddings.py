@@ -1,16 +1,16 @@
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from openai import RateLimitError
 
 from src.application.ports import EmbeddingPort
 from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
 
-def _rate_limit_error(retry_after: str | None = None):
+def _rate_limit_error(retry_after: str | None = None) -> RateLimitError:
     """Buduje openai.RateLimitError z realnym httpx.Response."""
     import httpx
-    from openai import RateLimitError
 
     headers = {}
     if retry_after is not None:
@@ -21,12 +21,12 @@ def _rate_limit_error(retry_after: str | None = None):
 
 
 @pytest.fixture
-def mock_openai_class(mocker: Any):
-    return mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI")
+def mock_openai_class(mocker: Any) -> MagicMock:
+    return cast(MagicMock, mocker.patch("src.infrastructure.llm.openai_embeddings.OpenAI"))
 
 
 @pytest.fixture
-def adapter_with_client(mock_openai_class) -> tuple[OpenAIEmbeddingAdapter, MagicMock]:
+def adapter_with_client(mock_openai_class: MagicMock) -> tuple[OpenAIEmbeddingAdapter, MagicMock]:
     client = MagicMock()
     mock_openai_class.return_value = client
     adapter = OpenAIEmbeddingAdapter(api_key="sk-test")
@@ -86,7 +86,7 @@ class TestEmbed:
 
 
 class TestConfiguration:
-    def test_initializes_client_with_timeout(self, mock_openai_class) -> None:
+    def test_initializes_client_with_timeout(self, mock_openai_class: MagicMock) -> None:
         # GHA fast loop ma 15 min hard timeout — SDK domyślnie czeka 600s.
         # Embeddingi to płatny call na hot pathcie, więc muszą mieć krótszy timeout.
         OpenAIEmbeddingAdapter(api_key="sk-test")
@@ -94,7 +94,7 @@ class TestConfiguration:
         call = mock_openai_class.call_args
         assert call.kwargs["timeout"] > 0
 
-    def test_custom_timeout_forwarded_to_client(self, mock_openai_class) -> None:
+    def test_custom_timeout_forwarded_to_client(self, mock_openai_class: MagicMock) -> None:
         OpenAIEmbeddingAdapter(api_key="sk-test", timeout=12.0)
 
         assert mock_openai_class.call_args.kwargs["timeout"] == pytest.approx(12.0)
@@ -104,7 +104,9 @@ class TestRetryAndQuota:
     """Embeddingi to płatny call na hot pathcie — muszą mieć tę samą odporność
     co OpenAIAdapter: retry na 429 z backoffem + sygnalizacja do QuotaMonitor."""
 
-    def test_retries_on_rate_limit_then_succeeds(self, mock_openai_class, mocker: Any) -> None:
+    def test_retries_on_rate_limit_then_succeeds(
+        self, mock_openai_class: MagicMock, mocker: Any
+    ) -> None:
         mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -120,7 +122,7 @@ class TestRetryAndQuota:
         assert client.embeddings.create.call_count == 2
 
     def test_warning_alert_emitted_after_successful_retry(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
@@ -145,7 +147,7 @@ class TestRetryAndQuota:
         assert "embeddings" in alert.source.lower()
 
     def test_critical_alert_and_raise_when_retries_exhausted(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         from openai import RateLimitError
 
@@ -170,7 +172,7 @@ class TestRetryAndQuota:
         assert client.embeddings.create.call_count == 3  # 1 + 2 retries
         assert monitor.max_severity() is QuotaSeverity.CRITICAL
 
-    def test_honors_retry_after_header(self, mock_openai_class, mocker: Any) -> None:
+    def test_honors_retry_after_header(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -227,7 +229,9 @@ class TestContentHashCache:
         assert adapter.embed("   ") == []
         client.embeddings.create.assert_not_called()
 
-    def test_cache_is_bounded_oldest_evicted_past_capacity(self, mock_openai_class) -> None:
+    def test_cache_is_bounded_oldest_evicted_past_capacity(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.embeddings.create.side_effect = [
@@ -281,11 +285,11 @@ class TestOpenAIEmbeddingsLive:
 class TestSingleRetryLayer:
     """NIEZ-07: jak w OpenAIAdapter — SDK bez retry, adapter łapie 5xx, sufit czekania."""
 
-    def test_sdk_level_retries_disabled(self, mock_openai_class) -> None:
+    def test_sdk_level_retries_disabled(self, mock_openai_class: MagicMock) -> None:
         OpenAIEmbeddingAdapter(api_key="sk-test")
         assert mock_openai_class.call_args.kwargs["max_retries"] == 0
 
-    def test_retries_server_error(self, mock_openai_class, mocker: Any) -> None:
+    def test_retries_server_error(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         import httpx
         from openai import InternalServerError
 
@@ -302,7 +306,7 @@ class TestSingleRetryLayer:
 
         assert client.embeddings.create.call_count == 2
 
-    def test_retry_after_is_capped(self, mock_openai_class, mocker: Any) -> None:
+    def test_retry_after_is_capped(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -317,7 +321,7 @@ class TestSingleRetryLayer:
 
 
 def test_warning_alert_is_polish_and_logged_in_english(
-    mock_openai_class, mocker: Any, caplog: pytest.LogCaptureFixture
+    mock_openai_class: MagicMock, mocker: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
@@ -346,7 +350,9 @@ class TestUsageReporting:
     nie jest requestem, więc nie ma rekordu."""
 
     @staticmethod
-    def _adapter(mock_openai_class: MagicMock):
+    def _adapter(
+        mock_openai_class: MagicMock,
+    ) -> tuple[OpenAIEmbeddingAdapter, MagicMock, MagicMock]:
         from src.application.ports import UsageSink
 
         client = MagicMock()
@@ -362,7 +368,7 @@ class TestUsageReporting:
         response.usage.total_tokens = prompt_tokens
         return response
 
-    def test_usage_is_reported_to_sink(self, mock_openai_class) -> None:
+    def test_usage_is_reported_to_sink(self, mock_openai_class: MagicMock) -> None:
         from src.domain.finops import LLMUsage
 
         adapter, client, sink = self._adapter(mock_openai_class)
@@ -379,7 +385,7 @@ class TestUsageReporting:
             )
         )
 
-    def test_cache_hit_records_nothing(self, mock_openai_class) -> None:
+    def test_cache_hit_records_nothing(self, mock_openai_class: MagicMock) -> None:
         adapter, client, sink = self._adapter(mock_openai_class)
         client.embeddings.create.return_value = self._with_usage(321)
 
@@ -388,7 +394,7 @@ class TestUsageReporting:
 
         assert sink.record.call_count == 1
 
-    def test_non_integer_usage_records_nothing(self, mock_openai_class) -> None:
+    def test_non_integer_usage_records_nothing(self, mock_openai_class: MagicMock) -> None:
         adapter, client, sink = self._adapter(mock_openai_class)
         client.embeddings.create.return_value = self._with_usage("321")
 

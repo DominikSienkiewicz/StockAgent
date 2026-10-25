@@ -1,6 +1,7 @@
 import contextlib
 import json
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,7 +20,7 @@ def _text_block(text: str) -> MagicMock:
     return block
 
 
-def _tool_use_block(block_id: str, name: str, tool_input: dict) -> MagicMock:
+def _tool_use_block(block_id: str, name: str, tool_input: dict[str, Any]) -> MagicMock:
     block = MagicMock()
     block.type = "tool_use"
     block.id = block_id
@@ -46,15 +47,13 @@ def _tool_use_response(blocks: list[MagicMock]) -> MagicMock:
 
 
 @pytest.fixture
-def mock_anthropic_class(mocker: Any):
-    return mocker.patch(
-        "src.infrastructure.llm.tool_calling_anthropic.Anthropic"
-    )
+def mock_anthropic_class(mocker: Any) -> MagicMock:
+    return cast(MagicMock, mocker.patch("src.infrastructure.llm.tool_calling_anthropic.Anthropic"))
 
 
 @pytest.fixture
 def adapter_with_client(
-    mock_anthropic_class,
+    mock_anthropic_class: MagicMock,
 ) -> tuple[ToolCallingAnthropicAdapter, MagicMock]:
     mock_client = MagicMock()
     mock_anthropic_class.return_value = mock_client
@@ -64,7 +63,7 @@ def adapter_with_client(
     return adapter, mock_client
 
 
-def _make_tool(func) -> Tool:
+def _make_tool(func: Callable[[dict[str, Any]], dict[str, Any]]) -> Tool:
     return Tool(
         name="get_fundamentals",
         description="Zwraca P/E i EPS spółki.",
@@ -185,7 +184,7 @@ class TestSingleToolRound:
 class TestMaxRoundsCap:
     """(c) FinOps — model w kółko prosi o tool; pętla kończy po max_rounds."""
 
-    def test_tool_calls_bounded_by_max_rounds(self, mock_anthropic_class) -> None:
+    def test_tool_calls_bounded_by_max_rounds(self, mock_anthropic_class: MagicMock) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         tool_func = MagicMock(return_value={"pe": 1.0})
@@ -202,7 +201,7 @@ class TestMaxRoundsCap:
 
         assert tool_func.call_count <= 2
 
-    def test_forces_final_answer_after_cap(self, mock_anthropic_class) -> None:
+    def test_forces_final_answer_after_cap(self, mock_anthropic_class: MagicMock) -> None:
         client = MagicMock()
         mock_anthropic_class.return_value = client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
@@ -223,7 +222,9 @@ class TestMaxRoundsCap:
 
         assert result == {"trend_direction": "NEUTRAL"}
 
-    def test_last_forced_call_drops_tools_to_force_text(self, mock_anthropic_class) -> None:
+    def test_last_forced_call_drops_tools_to_force_text(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         # Po wyczerpaniu rund wymuszamy finalną odpowiedź — bez `tools`,
         # żeby model nie mógł znowu poprosić o narzędzie.
         client = MagicMock()
@@ -254,7 +255,7 @@ class TestToolErrorResilience:
     ) -> None:
         adapter, client = adapter_with_client
 
-        def boom(_args: dict) -> dict:
+        def boom(_args: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("network down")
 
         tool = _make_tool(boom)
@@ -351,17 +352,19 @@ class TestConfiguration:
     def test_is_tool_use_llm_port(self) -> None:
         assert issubclass(ToolCallingAnthropicAdapter, ToolUseLLMPort)
 
-    def test_initializes_client_with_api_key_and_timeout(self, mock_anthropic_class) -> None:
+    def test_initializes_client_with_api_key_and_timeout(
+        self, mock_anthropic_class: MagicMock
+    ) -> None:
         ToolCallingAnthropicAdapter(api_key="sk-ant-secret")
         call = mock_anthropic_class.call_args
         assert call.kwargs["api_key"] == "sk-ant-secret"
         assert call.kwargs["timeout"] > 0
 
-    def test_default_model_constructs_fine(self, mock_anthropic_class) -> None:
+    def test_default_model_constructs_fine(self, mock_anthropic_class: MagicMock) -> None:
         adapter = ToolCallingAnthropicAdapter(api_key="sk-ant-test")
         assert adapter._model == DEFAULT_MODEL
 
-    def test_wrong_prefix_model_raises(self, mock_anthropic_class) -> None:
+    def test_wrong_prefix_model_raises(self, mock_anthropic_class: MagicMock) -> None:
         with pytest.raises(ValueError, match="claude-"):
             ToolCallingAnthropicAdapter(api_key="sk-ant-test", model="gpt-4o")
 
@@ -379,7 +382,7 @@ class TestConfiguration:
         assert kwargs["messages"][0] == {"role": "user", "content": "Custom prompt"}
 
 
-def test_tool_error_returned_to_model_omits_secrets(mock_anthropic_class) -> None:
+def test_tool_error_returned_to_model_omits_secrets(mock_anthropic_class: MagicMock) -> None:
     # Runda 2 BEZ-07: błąd narzędzia wraca do modelu jako `{"error": ...}`, więc
     # URL z `?apikey=` i dosłowny klucz z Settings muszą z niego zniknąć wcześniej.
     client = MagicMock()
@@ -390,7 +393,7 @@ def test_tool_error_returned_to_model_omits_secrets(mock_anthropic_class) -> Non
         secret_values=("Lit3ral~odd#key",),
     )
 
-    def leaky(_args: dict) -> dict:
+    def leaky(_args: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(
             "fetch failed for url https://www.alphavantage.co/query?apikey=SECRET-URL-1 "
             "(provider echoed Lit3ral~odd#key)"
@@ -422,7 +425,7 @@ class TestUsageReporting:
         response.usage.output_tokens = output_tokens
         return response
 
-    def test_every_round_reports_its_usage(self, mock_anthropic_class) -> None:
+    def test_every_round_reports_its_usage(self, mock_anthropic_class: MagicMock) -> None:
         from src.application.ports import UsageSink
 
         client = MagicMock()
@@ -469,7 +472,10 @@ class TestPortErrorTaxonomy:
         [(529, "ProviderUnavailable"), (429, "QuotaExhausted"), (400, "PortError")],
     )
     def test_sdk_error_maps_to_its_kind(
-        self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock], status, kind_name
+        self,
+        adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock],
+        status: int,
+        kind_name: str,
     ) -> None:
         from anthropic import APIStatusError
 

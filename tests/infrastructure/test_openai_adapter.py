@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,13 +23,13 @@ def _completion(content: str | None, finish_reason: str = "stop") -> MagicMock:
 
 
 @pytest.fixture
-def mock_openai_class(mocker: Any):
+def mock_openai_class(mocker: Any) -> MagicMock:
     """Mockuje samą klasę OpenAI w module adaptera — konstruktor zwraca MagicMock."""
-    return mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+    return cast(MagicMock, mocker.patch("src.infrastructure.llm.openai_client.OpenAI"))
 
 
 @pytest.fixture
-def adapter_with_client(mock_openai_class) -> tuple[OpenAIAdapter, MagicMock]:
+def adapter_with_client(mock_openai_class: MagicMock) -> tuple[OpenAIAdapter, MagicMock]:
     """Zwraca (adapter, mock_client) — client to to, co realnie wywołują metody."""
     mock_client = MagicMock()
     mock_openai_class.return_value = mock_client
@@ -159,7 +159,7 @@ class TestAnalyzeMistake:
 
 
 class TestConfiguration:
-    def test_custom_model_is_passed_to_api(self, mock_openai_class) -> None:
+    def test_custom_model_is_passed_to_api(self, mock_openai_class: MagicMock) -> None:
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
         mock_client.chat.completions.create.return_value = _completion("{}")
@@ -169,7 +169,7 @@ class TestConfiguration:
 
         assert mock_client.chat.completions.create.call_args.kwargs["model"] == "gpt-4o-mini"
 
-    def test_initializes_openai_client_with_api_key(self, mock_openai_class) -> None:
+    def test_initializes_openai_client_with_api_key(self, mock_openai_class: MagicMock) -> None:
         OpenAIAdapter(api_key="sk-secret-123")
         # Sprawdzamy że api_key trafia (bez asercji na timeout — to detal),
         # ale timeout MUSI być ustawiony (GHA hard limit 15 min).
@@ -304,7 +304,7 @@ class TestOpenAILive:
 class TestQuotaAlertEmit:
     """429 → QuotaAlert. WARNING gdy retry zadziałał, CRITICAL gdy padło."""
 
-    def test_warning_when_retry_succeeds(self, mock_openai_class, mocker: Any) -> None:
+    def test_warning_when_retry_succeeds(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
 
@@ -327,7 +327,9 @@ class TestQuotaAlertEmit:
         assert alert.severity is QuotaSeverity.WARNING
         assert "gpt-4o" in alert.source
 
-    def test_critical_when_retries_exhausted(self, mock_openai_class, mocker: Any) -> None:
+    def test_critical_when_retries_exhausted(
+        self, mock_openai_class: MagicMock, mocker: Any
+    ) -> None:
         from openai import RateLimitError
 
         from src.application.quota_monitor import QuotaMonitor
@@ -355,7 +357,7 @@ class TestQuotaAlertEmit:
 
         monitor = QuotaMonitor()
         adapter, client = adapter_with_client
-        adapter._quota_monitor = monitor  # type: ignore[attr-defined]
+        adapter._quota_monitor = monitor
         client.chat.completions.create.return_value = _completion("{}")
 
         adapter.analyze("Predict.")
@@ -367,29 +369,31 @@ class TestModelIdValidation:
     """#30 — Hardcoded model id bez guardu = cichy total outage. Walidacja w
     __init__ łapie pusty/typo'd id natychmiast, z czytelnym komunikatem."""
 
-    def test_empty_model_id_raises_at_construction(self, mock_openai_class) -> None:
+    def test_empty_model_id_raises_at_construction(self, mock_openai_class: MagicMock) -> None:
         with pytest.raises(ValueError, match="model"):
             OpenAIAdapter(api_key="sk-test", model="")
 
-    def test_whitespace_model_id_raises_at_construction(self, mock_openai_class) -> None:
+    def test_whitespace_model_id_raises_at_construction(self, mock_openai_class: MagicMock) -> None:
         with pytest.raises(ValueError, match="model"):
             OpenAIAdapter(api_key="sk-test", model="   ")
 
-    def test_wrong_prefix_model_id_raises_at_construction(self, mock_openai_class) -> None:
+    def test_wrong_prefix_model_id_raises_at_construction(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         # id bez prefiksu "gpt-"/"o" jest oczywiście błędny dla OpenAI.
         with pytest.raises(ValueError, match="gpt-"):
             OpenAIAdapter(api_key="sk-test", model="claude-sonnet-4-6")
 
-    def test_valid_gpt_model_constructs_fine(self, mock_openai_class) -> None:
+    def test_valid_gpt_model_constructs_fine(self, mock_openai_class: MagicMock) -> None:
         adapter = OpenAIAdapter(api_key="sk-test", model="gpt-4o-mini")
         assert adapter._model == "gpt-4o-mini"
 
-    def test_valid_o_series_model_constructs_fine(self, mock_openai_class) -> None:
+    def test_valid_o_series_model_constructs_fine(self, mock_openai_class: MagicMock) -> None:
         # Reasoning models (o-series) nie mają prefiksu "gpt-" — muszą przejść.
         adapter = OpenAIAdapter(api_key="sk-test", model="o3-mini")
         assert adapter._model == "o3-mini"
 
-    def test_default_model_id_constructs_fine(self, mock_openai_class) -> None:
+    def test_default_model_id_constructs_fine(self, mock_openai_class: MagicMock) -> None:
         adapter = OpenAIAdapter(api_key="sk-test")
         assert adapter._model == DEFAULT_MODEL
 
@@ -400,13 +404,13 @@ class TestMaxTokensCap:
     tokenów — ustawiamy ciasny, nadpisywalny cap. Reasoning models (gpt-5,
     o-series) używają `max_completion_tokens`, reszta `max_tokens`."""
 
-    def _token_cap(self, kwargs: dict) -> int:
+    def _token_cap(self, kwargs: dict[str, Any]) -> int:
         # Akceptujemy obie nazwy parametru zależnie od rodziny modelu.
         if "max_completion_tokens" in kwargs:
-            return kwargs["max_completion_tokens"]
-        return kwargs["max_tokens"]
+            return cast(int, kwargs["max_completion_tokens"])
+        return cast(int, kwargs["max_tokens"])
 
-    def test_gpt4o_sets_max_tokens(self, mock_openai_class) -> None:
+    def test_gpt4o_sets_max_tokens(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("{}")
@@ -418,7 +422,7 @@ class TestMaxTokensCap:
         assert "max_tokens" in kwargs
         assert kwargs["max_tokens"] <= 1024
 
-    def test_gpt5_uses_max_completion_tokens(self, mock_openai_class) -> None:
+    def test_gpt5_uses_max_completion_tokens(self, mock_openai_class: MagicMock) -> None:
         # Reasoning model — param name to `max_completion_tokens`, nie `max_tokens`.
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -435,7 +439,7 @@ class TestMaxTokensCap:
         # NIE jest tak ciasny jak dla gpt-4o.
         assert kwargs["max_completion_tokens"] >= 2048
 
-    def test_o_series_uses_max_completion_tokens(self, mock_openai_class) -> None:
+    def test_o_series_uses_max_completion_tokens(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("{}")
@@ -447,7 +451,7 @@ class TestMaxTokensCap:
         assert "max_completion_tokens" in kwargs
         assert "max_tokens" not in kwargs
 
-    def test_max_tokens_overridable_via_constructor(self, mock_openai_class) -> None:
+    def test_max_tokens_overridable_via_constructor(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("{}")
@@ -457,7 +461,7 @@ class TestMaxTokensCap:
 
         assert client.chat.completions.create.call_args.kwargs["max_tokens"] == 2048
 
-    def test_analyze_mistake_also_capped(self, mock_openai_class) -> None:
+    def test_analyze_mistake_also_capped(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("insight")
@@ -480,7 +484,7 @@ class TestReasoningModelBudget:
     realne tokeny), więc zapas jest darmowy dla krótkich odpowiedzi."""
 
     def test_reasoning_model_gets_reasoning_safe_default_budget(
-        self, mock_openai_class
+        self, mock_openai_class: MagicMock
     ) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -494,7 +498,7 @@ class TestReasoningModelBudget:
         # zapasu na niewidoczne tokeny rozumowania PRZED widoczną treścią.
         assert kwargs["max_completion_tokens"] >= 2048
 
-    def test_non_reasoning_model_keeps_tight_default(self, mock_openai_class) -> None:
+    def test_non_reasoning_model_keeps_tight_default(self, mock_openai_class: MagicMock) -> None:
         # gpt-4o (nie-reasoning) nie marnuje budżetu na rozumowanie — zostaje
         # przy ciasnym, tanim capie.
         client = MagicMock()
@@ -506,7 +510,7 @@ class TestReasoningModelBudget:
 
         assert client.chat.completions.create.call_args.kwargs["max_tokens"] <= 1024
 
-    def test_explicit_override_wins_for_reasoning_model(self, mock_openai_class) -> None:
+    def test_explicit_override_wins_for_reasoning_model(self, mock_openai_class: MagicMock) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion("{}")
@@ -526,7 +530,9 @@ class TestEmptyContentDiagnostics:
     innych przyczyn — inaczej kolejny incydent jest tak samo nieczytelny jak
     2026-06-21 (cała rada 'empty content', zero wskazówki dlaczego)."""
 
-    def test_length_finish_reason_gives_actionable_error(self, mock_openai_class) -> None:
+    def test_length_finish_reason_gives_actionable_error(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
         client.chat.completions.create.return_value = _completion(
@@ -538,7 +544,9 @@ class TestEmptyContentDiagnostics:
             adapter.analyze("x")
 
     @pytest.mark.parametrize("content", [None, '{"trend_direction": "BULL'], ids=["empty", "cut"])
-    def test_length_finish_reason_raises_truncated(self, mock_openai_class, content) -> None:
+    def test_length_finish_reason_raises_truncated(
+        self, mock_openai_class: MagicMock, content: str | None
+    ) -> None:
         # NIEZ-26: lustro Anthropic `stop_reason = max_tokens` — graf flaguje oba
         # przypadki jako `llm_output_truncated`, niezależnie od dostawcy.
         from src.application.errors import LLMTruncatedError
@@ -561,30 +569,32 @@ class TestTemperatureCompatibility:
     może wysyłać `temperature` dla takich modeli — inaczej 400 BadRequest
     wywala radę w produkcji (regresja 2026-06-03, COUNCIL_LLM_MODEL=gpt-5-mini)."""
 
-    def _adapter(self, mock_openai_class, model: str) -> tuple[OpenAIAdapter, MagicMock]:
+    def _adapter(self, mock_openai_class: MagicMock, model: str) -> tuple[OpenAIAdapter, MagicMock]:
         client = MagicMock()
         mock_openai_class.return_value = client
         return OpenAIAdapter(api_key="sk-test", model=model), client
 
-    def test_gpt4o_still_sends_temperature(self, mock_openai_class) -> None:
+    def test_gpt4o_still_sends_temperature(self, mock_openai_class: MagicMock) -> None:
         adapter, client = self._adapter(mock_openai_class, "gpt-4o")
         client.chat.completions.create.return_value = _completion("{}")
         adapter.analyze("x")
         assert client.chat.completions.create.call_args.kwargs["temperature"] == pytest.approx(0.2)
 
-    def test_gpt5_mini_omits_temperature_in_analyze(self, mock_openai_class) -> None:
+    def test_gpt5_mini_omits_temperature_in_analyze(self, mock_openai_class: MagicMock) -> None:
         adapter, client = self._adapter(mock_openai_class, "gpt-5-mini")
         client.chat.completions.create.return_value = _completion("{}")
         adapter.analyze("x")
         assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
-    def test_gpt5_mini_omits_temperature_in_analyze_mistake(self, mock_openai_class) -> None:
+    def test_gpt5_mini_omits_temperature_in_analyze_mistake(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         adapter, client = self._adapter(mock_openai_class, "gpt-5-mini")
         client.chat.completions.create.return_value = _completion("insight")
         adapter.analyze_mistake("x")
         assert "temperature" not in client.chat.completions.create.call_args.kwargs
 
-    def test_o_series_omits_temperature(self, mock_openai_class) -> None:
+    def test_o_series_omits_temperature(self, mock_openai_class: MagicMock) -> None:
         adapter, client = self._adapter(mock_openai_class, "o3-mini")
         client.chat.completions.create.return_value = _completion("{}")
         adapter.analyze("x")
@@ -604,11 +614,11 @@ class TestSingleRetryLayer:
     """NIEZ-07: SDK nie retry'uje (max_retries=0), więc pętla adaptera musi sama
     łapać 5xx i błędy połączenia, a retry-after ma sufit."""
 
-    def test_sdk_level_retries_disabled(self, mock_openai_class) -> None:
+    def test_sdk_level_retries_disabled(self, mock_openai_class: MagicMock) -> None:
         OpenAIAdapter(api_key="sk-test")
         assert mock_openai_class.call_args.kwargs["max_retries"] == 0
 
-    def test_retries_server_error(self, mock_openai_class, mocker: Any) -> None:
+    def test_retries_server_error(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -617,7 +627,7 @@ class TestSingleRetryLayer:
         assert OpenAIAdapter(api_key="sk-test", backoff_base=0.01).analyze("p") == {}
         assert client.chat.completions.create.call_count == 2
 
-    def test_retry_after_is_capped(self, mock_openai_class, mocker: Any) -> None:
+    def test_retry_after_is_capped(self, mock_openai_class: MagicMock, mocker: Any) -> None:
         sleep = mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -632,7 +642,7 @@ class TestSingleRetryLayer:
 
 
 def test_critical_alert_is_polish_and_logged_in_english(
-    mock_openai_class, mocker: Any, caplog: pytest.LogCaptureFixture
+    mock_openai_class: MagicMock, mocker: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
@@ -663,7 +673,9 @@ class TestUsageReporting:
     zgłasza `input_tokens` = prompt − cached i `cache_read_tokens` = cached."""
 
     @staticmethod
-    def _adapter(mock_openai_class: MagicMock, model: str = "gpt-5-mini"):
+    def _adapter(
+        mock_openai_class: MagicMock, model: str = "gpt-5-mini"
+    ) -> tuple[OpenAIAdapter, MagicMock, MagicMock]:
         from src.application.ports import UsageSink
 
         client = MagicMock()
@@ -685,7 +697,7 @@ class TestUsageReporting:
             response.usage.prompt_tokens_details.cached_tokens = cached
         return response
 
-    def test_usage_is_reported_to_sink(self, mock_openai_class) -> None:
+    def test_usage_is_reported_to_sink(self, mock_openai_class: MagicMock) -> None:
         from src.domain.finops import LLMUsage
 
         adapter, client, sink = self._adapter(mock_openai_class)
@@ -706,7 +718,9 @@ class TestUsageReporting:
             )
         )
 
-    def test_usage_without_prompt_details_has_no_cached_tokens(self, mock_openai_class) -> None:
+    def test_usage_without_prompt_details_has_no_cached_tokens(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         adapter, client, sink = self._adapter(mock_openai_class, model="gpt-4o")
         client.chat.completions.create.return_value = self._with_usage(
             _completion("lekcja"), prompt=120, completion=30, cached=None
@@ -717,7 +731,7 @@ class TestUsageReporting:
         usage = sink.record.call_args.args[0]
         assert (usage.model, usage.input_tokens, usage.cache_read_tokens) == ("gpt-4o", 120, 0)
 
-    def test_missing_usage_records_nothing(self, mock_openai_class) -> None:
+    def test_missing_usage_records_nothing(self, mock_openai_class: MagicMock) -> None:
         adapter, client, sink = self._adapter(mock_openai_class)
         response = _completion("{}")
         response.usage = None
@@ -726,7 +740,9 @@ class TestUsageReporting:
         assert adapter.analyze("prompt") == {}
         sink.record.assert_not_called()
 
-    def test_usage_of_a_truncated_answer_is_still_reported(self, mock_openai_class) -> None:
+    def test_usage_of_a_truncated_answer_is_still_reported(
+        self, mock_openai_class: MagicMock
+    ) -> None:
         # finish_reason="length": rozumowanie zjadło budżet, ale tokeny są na rachunku.
         adapter, client, sink = self._adapter(mock_openai_class)
         client.chat.completions.create.return_value = self._with_usage(
@@ -753,7 +769,7 @@ class TestPortErrorTaxonomy:
     portów i nadal jako typy SDK (failover czyta `status_code`)."""
 
     @staticmethod
-    def _adapter(mock_openai_class, mocker: Any, side_effect) -> OpenAIAdapter:
+    def _adapter(mock_openai_class: MagicMock, mocker: Any, side_effect: object) -> OpenAIAdapter:
         mocker.patch("src.infrastructure.llm.openai_client.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
@@ -761,7 +777,7 @@ class TestPortErrorTaxonomy:
         return OpenAIAdapter(api_key="sk-test", backoff_base=0.01, max_retries=1)
 
     def test_server_error_after_retries_is_provider_unavailable(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         from openai import InternalServerError
 
@@ -776,7 +792,7 @@ class TestPortErrorTaxonomy:
         assert excinfo.value.status_code == 503
 
     def test_rate_limit_after_retries_is_quota_exhausted(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.errors import QuotaExhausted
 
@@ -786,7 +802,7 @@ class TestPortErrorTaxonomy:
             adapter.analyze_mistake("p")
 
     def test_connection_error_after_retries_is_provider_unavailable(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         import httpx
         from openai import APIConnectionError
@@ -802,7 +818,7 @@ class TestPortErrorTaxonomy:
         assert isinstance(excinfo.value, APIConnectionError)
 
     def test_client_error_is_a_port_error_without_retry(
-        self, mock_openai_class, mocker: Any
+        self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
         from src.application.errors import PortError, ProviderUnavailable, QuotaExhausted
 
@@ -815,7 +831,7 @@ class TestPortErrorTaxonomy:
 
     @pytest.mark.parametrize("content", [None, "no json here"], ids=["empty", "invalid-json"])
     def test_unparseable_answer_is_malformed_payload(
-        self, adapter_with_client: tuple[OpenAIAdapter, MagicMock], content
+        self, adapter_with_client: tuple[OpenAIAdapter, MagicMock], content: str | None
     ) -> None:
         from src.application.errors import MalformedPayload
 
