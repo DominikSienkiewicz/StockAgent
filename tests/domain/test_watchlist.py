@@ -59,13 +59,15 @@ def test_muted_symbols_keep_config_order_and_ignore_letter_case() -> None:
     assert watchlist.symbols == ("NVDA", "TSLA")
 
 
-def test_later_of_two_mutes_of_one_symbol_wins() -> None:
+def test_later_of_two_mutes_of_one_symbol_wins_in_any_order() -> None:
     mutes = [
         SymbolMute("NVDA", NOW - timedelta(days=1)),
         SymbolMute("NVDA", NOW + timedelta(days=4)),
     ]
+    expected = (SymbolMute("NVDA", NOW + timedelta(days=4)),)
 
-    assert effective(CONFIG, mutes, NOW).muted == (SymbolMute("NVDA", NOW + timedelta(days=4)),)
+    assert effective(CONFIG, mutes, NOW).muted == expected
+    assert effective(CONFIG, list(reversed(mutes)), NOW).muted == expected
 
 
 def test_naive_moment_is_rejected() -> None:
