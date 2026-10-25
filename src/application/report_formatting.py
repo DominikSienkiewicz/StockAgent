@@ -241,12 +241,25 @@ MESSENGER_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwest
 # MAIL-07: atrybucja źródeł danych w stopce maila (HTML i tekst). Lista zależy od
 # flag w config.toml, więc stopka mówi to wprost zamiast udawać, że każde źródło
 # zasila każdy cykl. Warunki dostawców: docs/how-it-works.md („Data sources and terms”).
+# „Powered by CoinGecko” to dosłowne brzmienie klauzuli atrybucji z warunków API
+# CoinGecko. Reddit nie figuruje, dopóki dostęp do jego Data API nie jest zatwierdzony.
 DATA_SOURCES_FOOTER_PL = (
-    "Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; "
-    "newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus "
-    "analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — "
-    "Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele "
-    "LLM (Anthropic, OpenAI)."
+    "Źródła danych (w zależności od konfiguracji): ceny akcji, konsensus analityków "
+    "i opcje — Finnhub; ceny kryptowalut — Powered by CoinGecko; newsy, sentyment, "
+    "fundamenty i kalendarz wyników — Alpha Vantage (nagłówki należą do ich "
+    "wydawców); transakcje insiderów — SEC EDGAR (dane publiczne SEC, bez powiązania "
+    "z SEC); stopy procentowe — FRED, Federal Reserve Bank of St. Louis (seria H.15: "
+    "Board of Governors of the Federal Reserve System); kursy walut — NBP; analiza "
+    "i rada — modele AI (Anthropic, OpenAI): treść generowana automatycznie, podane "
+    "w niej fakty mogą być błędne."
+)
+# MAIL-07: licencje Finnhub i Alpha Vantage są osobiste, więc mail prosi, żeby go nie
+# przekazywać. Nota FRED zostaje po angielsku — warunki API FRED wymagają dosłownie
+# tego tekstu (ten sam stoi w README, sekcja License).
+DATA_TERMS_NOTICE = (
+    "Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj "
+    "tego maila dalej. This product uses the FRED® API but is not endorsed or "
+    "certified by the Federal Reserve Bank of St. Louis."
 )
 
 

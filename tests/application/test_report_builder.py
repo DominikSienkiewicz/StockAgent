@@ -4034,6 +4034,34 @@ def test_footer_lists_data_sources() -> None:
     assert text.index("Źródła danych") < text.index("przebieg #77")
 
 
+_FRED_NOTICE = (
+    "This product uses the FRED® API but is not endorsed or certified by the "
+    "Federal Reserve Bank of St. Louis."
+)
+_DO_NOT_FORWARD = (
+    "Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj "
+    "tego maila dalej."
+)
+
+
+def test_footer_carries_provider_attribution_and_terms_notice() -> None:
+    # MAIL-07 (decyzje właściciela 2026-10-25): warunki API CoinGecko wymagają
+    # dosłownego „Powered by CoinGecko”, warunki API FRED dosłownej noty po angielsku,
+    # a licencje Finnhub i Alpha Vantage są osobiste, więc stopka prosi, żeby maila
+    # nie przekazywać. Reddit znika ze stopki, dopóki dostęp do jego API nie jest
+    # zatwierdzony (flaga social_velocity_enabled jest wyłączona).
+    html, text = build_html_report(
+        [_saved_result()], datetime(2026, 10, 19, 5, 30, tzinfo=UTC), 1.0
+    )
+
+    for body in (html, text):
+        footer = body[body.index("Źródła danych"):]
+        assert "Powered by CoinGecko" in footer
+        assert _FRED_NOTICE in footer
+        assert _DO_NOT_FORWARD in footer
+        assert "Reddit" not in footer
+
+
 class TestPlainTextSlots:
     """MAIL-09 (G47): wersja tekstowa niesie te same sekcje co HTML tam, gdzie
     istnieje renderer tekstu — klient bez HTML dostawał raport bez kosztu cyklu,

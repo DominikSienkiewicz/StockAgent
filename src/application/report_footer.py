@@ -2,7 +2,7 @@
 
 MAIL-08: zastrzeżenie stoi w stałej stopce, nie w sekcji warunkowej — sekcja,
 która się chowa, zabrałaby je ze sobą. MAIL-16: liczniki pracy pipeline'u (błąd
-nadal czerwony). MAIL-07: źródła danych. MAIL-42: który przebieg i commit
+nadal czerwony). MAIL-07: źródła danych i warunki dostawców. MAIL-42: który przebieg i commit
 wygenerował mail. Stopka zamyka ramkę maila otwartą przez nagłówek
 (`report_header.py`).
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from src.application.report_formatting import (
     DATA_SOURCES_FOOTER_PL,
+    DATA_TERMS_NOTICE,
     INVESTMENT_DISCLAIMER,
     PALETTE,
     safe_http_url,
@@ -116,6 +117,7 @@ def _section_html(data: SectionInput) -> str:
         <div style="margin-bottom: 8px; color: #6b7280;">{_html(INVESTMENT_DISCLAIMER)}</div>
         {counters}
         <div style="margin-bottom: 8px;">{_html(DATA_SOURCES_FOOTER_PL)}</div>
+        <div style="margin-bottom: 8px;">{_html(DATA_TERMS_NOTICE)}</div>
         StockAgent · Agentic RAG + Continual Learning · raport automatyczny
         {run_footer}
       </div>
@@ -133,6 +135,7 @@ def _section_text(data: SectionInput) -> list[str]:
             data.results, data.saved, data.ignored, data.errors, data.duration_seconds
         ),
         DATA_SOURCES_FOOTER_PL,
+        DATA_TERMS_NOTICE,
         *([run_footer] if run_footer else []),
     ]
 
