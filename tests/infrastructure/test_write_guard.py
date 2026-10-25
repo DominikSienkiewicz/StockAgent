@@ -22,20 +22,26 @@ import pytest
 
 from src.application.ports import (
     AttestationPublisherPort,
+    BotStatePort,
     PositionsImportPort,
     RepositoryPort,
+    SymbolMutePort,
 )
 from src.infrastructure.adapters.write_guard import (
     DRY_RUN_PREDICTION_PREFIX,
     ReadOnlyAttestationPublisher,
+    ReadOnlyBotState,
     ReadOnlyPositionsImport,
     ReadOnlyRepository,
+    ReadOnlySymbolMutes,
 )
 
 GUARDS: list[tuple[type[ABC], Any]] = [
     (RepositoryPort, ReadOnlyRepository),
     (PositionsImportPort, ReadOnlyPositionsImport),
     (AttestationPublisherPort, ReadOnlyAttestationPublisher),
+    (BotStatePort, ReadOnlyBotState),
+    (SymbolMutePort, ReadOnlySymbolMutes),
 ]
 GUARD_IDS = [guard.__name__ for _, guard in GUARDS]
 

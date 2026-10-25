@@ -40,7 +40,9 @@ from testcontainers.core.network import Network
 from testcontainers.postgres import PostgresContainer
 
 from src.application.errors import NotFound, PortError
+from src.domain.watchlist import SymbolMute
 from src.infrastructure.adapters import supabase_repo
+from src.infrastructure.adapters.bot_store import SupabaseBotStore
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from tests.infrastructure.test_migrations import (
     PGVECTOR_IMAGE,
@@ -519,3 +521,28 @@ class TestSchemaAndRoles:
             anonymous.save_prediction(prediction_record("T17AN"))
 
         assert _stored_target_prices(postgrest_stack.conn, "T17AN") == []
+
+
+class TestBotStoreContract:
+    """MAIL-48 / MAIL-45: `SupabaseBotStore` na prawdziwym PostgREST — upsert offsetu
+    po kanale, upsert i usunięcie wyciszenia po symbolu, odczyt jako `SymbolMute`."""
+
+    def test_offset_and_mutes_round_trip_through_postgrest(
+        self, postgrest_stack: PostgrestStack
+    ) -> None:
+        store = SupabaseBotStore(
+            _root_rest_client(postgrest_stack.base_url, jwt_for("service_role"))
+        )
+        until = datetime(2026, 11, 8, 8, 0, tzinfo=UTC)
+        muted_at = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
+
+        assert store.get_update_offset() is None
+        store.save_update_offset(870000002)
+        store.save_update_offset(870000004)
+        store.mute_symbol("t17mu", until - timedelta(days=7), muted_at=muted_at)
+        store.mute_symbol("T17MU", until, muted_at=muted_at)
+        store.mute_symbol("T17UN", until, muted_at=muted_at)
+        store.unmute_symbol("t17un")
+
+        assert store.get_update_offset() == 870000004
+        assert store.get_symbol_mutes() == [SymbolMute("T17MU", until)]

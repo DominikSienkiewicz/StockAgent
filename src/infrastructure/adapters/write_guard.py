@@ -28,6 +28,7 @@ from typing import Any, ClassVar
 
 from src.application.ports import (
     AttestationPublisherPort,
+    BotStatePort,
     CycleRun,
     DeferredDiagnosis,
     LatestPrediction,
@@ -38,6 +39,7 @@ from src.application.ports import (
     RepositoryPort,
     StoredReceipt,
     StoredShockAlert,
+    SymbolMutePort,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
@@ -65,6 +67,7 @@ from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.shadow_prompt import ShadowTrendForecast
 from src.domain.value_objects import AssetType, Fundamentals, Money
+from src.domain.watchlist import SymbolMute
 
 logger = logging.getLogger(__name__)
 
@@ -577,3 +580,42 @@ class ReadOnlyAttestationPublisher(AttestationPublisherPort):
     def publish_reveal(self, record: Mapping[str, Any]) -> str:
         self._skipped.skip("publish_reveal")
         return ""
+
+
+class ReadOnlyBotState(BotStatePort):
+    """MAIL-48 — offset bota tylko do odczytu: lokalny przebieg odpowiada na komendy,
+    ale nie przesuwa offsetu produkcji (kolejny przebieg GHA obsłuży je jeszcze raz)."""
+
+    READ_METHODS: ClassVar[frozenset[str]] = frozenset({"get_update_offset"})
+    WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({"save_update_offset"})
+
+    def __init__(self, delegate: BotStatePort) -> None:
+        self._delegate = delegate
+        self._skipped = _SkippedWrites(type(delegate).__name__)
+
+    def get_update_offset(self) -> int | None:
+        return self._delegate.get_update_offset()
+
+    def save_update_offset(self, offset: int) -> None:
+        self._skipped.skip("save_update_offset")
+
+
+class ReadOnlySymbolMutes(SymbolMutePort):
+    """MAIL-45 — wyciszenia tylko do odczytu: `/mute` i `/unmute` z lokalnego
+    przebiegu nie zmieniają watchlisty produkcji."""
+
+    READ_METHODS: ClassVar[frozenset[str]] = frozenset({"get_symbol_mutes"})
+    WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({"mute_symbol", "unmute_symbol"})
+
+    def __init__(self, delegate: SymbolMutePort) -> None:
+        self._delegate = delegate
+        self._skipped = _SkippedWrites(type(delegate).__name__)
+
+    def get_symbol_mutes(self) -> list[SymbolMute]:
+        return self._delegate.get_symbol_mutes()
+
+    def mute_symbol(self, symbol: str, muted_until: datetime, *, muted_at: datetime) -> None:
+        self._skipped.skip("mute_symbol")
+
+    def unmute_symbol(self, symbol: str) -> None:
+        self._skipped.skip("unmute_symbol")
