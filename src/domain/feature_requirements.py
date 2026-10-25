@@ -67,6 +67,9 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "rag_exact_search_enabled": 63,
         "model_scorecard_provenance_enabled": 64,
         "persona_brier_ranking_enabled": 65,
+        "executable_entry_enabled": 72,
+        "paper_ledger_enabled": 73,
+        "invalidation_level_enabled": 74,
         "shadow_predictions_enabled": 75,
     }
 )
