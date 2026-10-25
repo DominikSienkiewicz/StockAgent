@@ -360,6 +360,15 @@ max_paid_llm_calls_per_cycle = 100
 # radę albo cron — przelicz (`main_tools.py cost-envelope`, wiersz tygodniowy); start
 # Fast Loopa ostrzeże, gdy budżet przestanie wystarczać.
 fast_loop_weekly_budget_usd = 7.0
+# FIN-25: twardy limit USD doby i miesiąca kalendarzowego UTC liczony z ledgera
+# `llm_calls` (wymaga cost_ledger_enabled = true). Czytany raz przed cyklem; wyczerpany →
+# cykl bez płatnych wywołań (bramki i snapshoty pod progiem, ruchy ponad progiem czekają
+# bez snapshotu), banner w mailu. Odczyt nieudany → cykl płaci dalej + WARNING (fail-open).
+# Wyprowadzone z budżetu tygodniowego wyżej: miesiąc ≈ 7 USD × 52/12 ≈ 30 USD; doba
+# 2 USD przepuszcza zaplanowany cykl (najgorszy 1,21 USD) i jeden ręczny re-run, a tnie
+# pętlę dispatchy. Limit jest tak dokładny jak cennik `llm_pricing`.
+daily_llm_budget_usd = 2.0
+monthly_llm_budget_usd = 30.0
 # FIN-30: sufit płatnych wywołań LLM Slow Loopa na tydzień (recap, sędzia kalibracji,
 # przyszłe joby diagnoz). Wywołanie ponad budżet jest odrzucane przed dostawcą i job
 # idzie deterministycznym fallbackiem; recap ma pierwszeństwo.

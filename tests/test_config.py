@@ -1633,6 +1633,37 @@ class TestReferenceSignalFlag:
         assert "reference_signal_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestLlmLedgerBudget:
+    """FIN-25: dzienny i miesięczny limit USD z ledgera `llm_calls` — domyślnie
+    wyłączone (None), poza przepisem (decyduje, CZY cykl płaci, nie jak)."""
+
+    def _settings(self, **overrides: Any) -> Settings:
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_no_caps(self, env: pytest.MonkeyPatch) -> None:
+        settings = self._settings()
+        assert settings.daily_llm_budget_usd is None
+        assert settings.monthly_llm_budget_usd is None
+
+    @pytest.mark.parametrize("field", ["daily_llm_budget_usd", "monthly_llm_budget_usd"])
+    def test_negative_cap_is_rejected(self, env: pytest.MonkeyPatch, field: str) -> None:
+        with pytest.raises(ValueError, match=field):
+            self._settings(**{field: -0.01})
+
+    @pytest.mark.parametrize("field", ["daily_llm_budget_usd", "monthly_llm_budget_usd"])
+    def test_zero_cap_is_allowed(self, env: pytest.MonkeyPatch, field: str) -> None:
+        # 0 = okno bez płatnych wywołań LLM Fast Loopa (świadoma blokada).
+        assert getattr(self._settings(**{field: 0.0}), field) == 0.0
+
+    def test_stays_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {"daily_llm_budget_usd", "monthly_llm_budget_usd"} <= NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        capped = self._settings(daily_llm_budget_usd=2.0, monthly_llm_budget_usd=30.0)
+        assert capped.config_hash() == baseline
+
+
 class TestFastLoopWeeklyBudget:
     """WIA-11: jawny budżet tygodniowy Fast Loopa (`fast_loop_weekly_budget_usd`).
     Najgorszy przypadek tygodnia = koszt cyklu przy suficie FIN-12 (cała watchlista

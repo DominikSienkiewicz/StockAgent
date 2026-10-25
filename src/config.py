@@ -242,6 +242,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "fast_loop_weekly_budget_usd",
     # FIN-30: tygodniowy sufit LLM Slow Loopa (recap, sędzia) — inny job, nie Fast Loop.
     "slow_loop_max_paid_llm_calls_per_week",
+    # FIN-25: limit USD doby i miesiąca z ledgera decyduje, CZY cykl płaci, nie jak —
+    # przeanalizowany symbol dostaje tę samą prognozę z limitem i bez.
+    "daily_llm_budget_usd",
+    "monthly_llm_budget_usd",
     # WIA-53: job Slow Loopa diagnozujący błędne predykcje bez diagnozy — przepisuje
     # dane (wnioski w lessons i RAG), nie przepis predykcji, jak sędzia kalibracji.
     "diagnosis_backfill_enabled",
@@ -935,6 +939,14 @@ class Settings(BaseSettings):
     # liczy domena (`slow_loop_paid_budget`), recap ma pierwszeństwo. None = bez
     # limitu, 0 = tydzień bez LLM (deterministyczne fallbacki). config.toml: 15.
     slow_loop_max_paid_llm_calls_per_week: int | None = None
+    # FIN-25: limit USD doby i miesiąca kalendarzowego UTC z ledgera `llm_calls`
+    # (wymaga `cost_ledger_enabled`, bez zapisu ledgera suma stoi w miejscu). Czytany
+    # raz przed cyklem Fast Loopa; wyczerpany → cykl bez płatnych wywołań (same bramki
+    # i snapshoty pod progiem), symbole ponad progiem czekają bez snapshotu jak przy
+    # suficie FIN-12, mail dostaje banner. Nieudany odczyt → cykl płaci dalej
+    # i WARNING (fail-open, decyzja 2026-10-24). None = bez limitu, 0 = bez płatnych.
+    daily_llm_budget_usd: float | None = None
+    monthly_llm_budget_usd: float | None = None
     # FIN-34: w dzień zamknięcia NYSE (święto, weekend; `market_calendar`) Fast Loop
     # pomija akcje, krypto idzie normalnie; bez krypto przebieg kończy się bez maila.
     # Off w kodzie, żeby testy entry pointów nie zależały od daty; config.toml: true.
@@ -1399,6 +1411,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"fast_loop_weekly_budget_usd must be >= 0 or unset (got {value})"
             )
+        return value
+
+    @field_validator("daily_llm_budget_usd", "monthly_llm_budget_usd")
+    @classmethod
+    def _validate_llm_ledger_budget(
+        cls, value: float | None, info: ValidationInfo
+    ) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError(f"{info.field_name} must be >= 0 or unset (got {value})")
         return value
 
     @field_validator("slow_loop_max_paid_llm_calls_per_week")
