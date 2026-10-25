@@ -260,6 +260,12 @@ shock_alerts_enabled = true
 # migracji). Wymaga `portfolio_positions_enabled` i kanału push. Domyślnie wyłączone.
 portfolio_shock_enabled = false
 portfolio_shock_threshold = 0.03
+# ALR-16: drabina eskalacji szoku — symbol, który dziś już zaalarmował, dostaje jeszcze
+# JEDEN push („… (eskalacja)”), gdy ruch sięgnie 2× progu szoku w tym samym kierunku
+# (akcje 8% przy bramce 2%, krypto 12%) albo odwróci się ponad próg. Najwyżej dwa alerty
+# symbolu dziennie; szczebel w `shock_alerts.level`. Zero płatnych wywołań.
+# UWAGA: włącz DOPIERO po migracji 081 (wcześniej watch i tak wyłączy flagę na przebieg).
+shock_escalation_enabled = false
 # ALR-09: cisza nocna pushy watcha (czas `display_timezone`) — w oknie 22:00–07:00
 # szok dociera bez dźwięku zamiast budzić. Alerty CRITICAL ciszy nie znają. Włączone.
 quiet_hours_enabled = true

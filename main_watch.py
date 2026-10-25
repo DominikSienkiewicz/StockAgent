@@ -22,15 +22,21 @@ Dwa nienaruszalne kontrakty:
    wyłącznie do Fast Loopa. Nadpisywanie snapshotu co godzinę policzyłoby deltę
    Fast Loopa względem ceny sprzed godziny, a nie sprzed cyklu — bramka
    volatility przestałaby cokolwiek przepuszczać.
-2. **Debounce: jeden alert per symbol per dzień.** Spam przy chaotycznym rynku
-   uczy użytkownika ignorować kanał. Egzekwowany dwustopniowo: predykatem
-   domenowym `should_emit` i twardym `UNIQUE(symbol, alert_date)` z migracji 021.
+2. **Debounce: jeden alert per symbol per dzień, z drabiną najwyżej dwa.** Spam
+   przy chaotycznym rynku uczy użytkownika ignorować kanał. Egzekwowany
+   dwustopniowo: predykatem domenowym `should_emit` i twardym UNIQUE w bazie.
+   Za flagą `shock_escalation_enabled` (ALR-16, migracja 081, zmiana kontraktu
+   zatwierdzona przez właściciela 2026-10-24) symbol z alertem dnia dostaje
+   jeszcze JEDEN szczebel, gdy `should_escalate` uzna ruch za eskalację (2× progu
+   szoku w tym samym kierunku albo odwrócenie ponad próg); UNIQUE to wtedy
+   `(symbol, alert_date, level)` z CHECK 1–2. Flaga off: jeden alert dziennie.
    Kontrakt dostarczenia to at-least-once (ALR-14): push idzie PIERWSZY, wiersz
    `shock_alerts` powstaje po udanej wysyłce. Pad bazy nie połyka alertu; kosztem
    dwa nakładające się przebiegi (albo nieudany zapis) mogą wysłać ten sam alert
-   dwa razy — UNIQUE odrzuca drugi wiersz, nie drugi push. Komentarz migracji 021
-   („watch przed wysłaniem próbuje wstawić wiersz”) opisuje odwrotną kolejność;
-   migracja jest zaaplikowana i się jej nie edytuje, więc obowiązuje ten opis.
+   (ten sam szczebel) dwa razy — UNIQUE odrzuca drugi wiersz, nie drugi push.
+   Komentarz migracji 021 („watch przed wysłaniem próbuje wstawić wiersz”) opisuje
+   odwrotną kolejność; migracja jest zaaplikowana i się jej nie edytuje, więc
+   obowiązuje ten opis.
 
 ALR-07: za flagą `portfolio_shock_enabled` ten sam przebieg liczy też szok PORTFELA —
 Σ waga × Δ po pozycjach (tabela `positions`) wobec `portfolio_shock_threshold`. Łapie
@@ -96,11 +102,13 @@ from src.domain.portfolio import PlnRates, Portfolio
 from src.domain.price_levels import LevelDirection, PriceLevelAlert
 from src.domain.quiet_hours import is_quiet
 from src.domain.shock import (
+    MAX_SHOCK_ALERTS_PER_DAY,
     PORTFOLIO_ALERT_SYMBOL,
     ROLLING_CHANGE_WINDOW,
     SNAPSHOT_MAX_AGE_HOURS,
     DailyChange,
     PortfolioShock,
+    SentShockLevel,
     ShockAlert,
     classify_shock,
     detect_portfolio_shock,
@@ -108,7 +116,9 @@ from src.domain.shock import (
     is_daily_change_fresh,
     is_move_already_alerted,
     is_reference_stale,
+    next_shock_level,
     should_emit,
+    should_escalate,
 )
 from src.domain.value_objects import AssetType, Money, Threshold
 from src.infrastructure.logging_setup import configure_logging
@@ -120,6 +130,11 @@ SNAPSHOT_BASIS = "od ostatniego snapshotu ceny"
 PREVIOUS_CLOSE_BASIS = "od poprzedniego zamknięcia"
 ROLLING_24H_BASIS = "w ciągu ostatnich 24 h"
 
+# ALR-16: linia pusha drugiego szczebla drabiny eskalacji.
+ESCALATION_LINE = (
+    "Drugi alert dnia: ruch sięgnął 2× progu szoku albo odwrócił kierunek ponad próg."
+)
+
 
 def _render_alert(
     alert: ShockAlert,
@@ -128,17 +143,25 @@ def _render_alert(
     detected_at: datetime,
     display_timezone: str,
     context_lines: Sequence[str] = (),
+    level: int = 1,
 ) -> tuple[str, str]:
     """Treść pusha — krótka i jednoznaczna (temat, ciało). Po polsku, także liczby
     („-5,2%”, MAIL-58). Chwila wykrycia w strefie odbiorcy (MAIL-14) — logi watcha
     zostają w UTC. `basis` mówi, wobec czego liczony jest ruch. `context_lines`
-    (ALR-08: pozycja, rada, ostatnia predykcja) stoją między ruchem a stopką."""
+    (ALR-08: pozycja, rada, ostatnia predykcja) stoją między ruchem a stopką.
+    `level` > 1 (ALR-16) oznacza eskalację: temat i jedna linia mówią, że to drugi
+    alert dnia, a nie powtórka pierwszego."""
     arrow = "📉" if alert.direction.name == "DOWN" else "📈"
     move = format_pct_pl(alert.delta.percent, signed=True)
     subject = f"{arrow} Szok rynkowy: {alert.symbol} {move}"
+    escalation: list[str] = []
+    if level > 1:
+        subject += " (eskalacja)"
+        escalation.append(ESCALATION_LINE)
     lines = [
         f"{arrow} {alert.symbol} {move} {basis} "
         f"(stan na {format_local(detected_at, display_timezone)}).",
+        *escalation,
         *context_lines,
         "Alert poza cyklem — pełna analiza w najbliższym dziennym digeście.",
     ]
@@ -326,17 +349,46 @@ def _daily_change_basis(asset: Asset) -> str:
 
 
 def _persist_shock_alert(
-    repository: RepositoryPort, symbol: str, today: date, alert: ShockAlert
+    repository: RepositoryPort, symbol: str, today: date, alert: ShockAlert, level: int = 1
 ) -> None:
     """Persystencja PO wysyłce (at-least-once, ALR-14) — lepiej wysłać dwa razy niż
     zgubić alert przy padzie bazy. UNIQUE(symbol, alert_date) blokuje duplikat
-    WIERSZA, nie drugiego pusha: kolizja albo błąd zapisu kończą się logiem."""
+    WIERSZA, nie drugiego pusha: kolizja albo błąd zapisu kończą się logiem.
+    Szczebel 1 idzie bez `level` (DEFAULT 081), więc zapis bez drabiny jest jak dotąd."""
+    delta, direction = float(alert.delta.fraction), alert.direction.value
     try:
-        repository.save_shock_alert(
-            symbol, today, float(alert.delta.fraction), alert.direction.value
-        )
+        if level == 1:
+            repository.save_shock_alert(symbol, today, delta, direction)
+        else:
+            repository.save_shock_alert(symbol, today, delta, direction, level=level)
     except Exception:
         logger.exception("Failed to persist shock alert for %s", symbol)
+
+
+def _sent_levels(
+    repository: RepositoryPort, today: date, *, enabled: bool
+) -> dict[str, tuple[SentShockLevel, ...]] | None:
+    """ALR-16: szczeble drabiny wysłane dziś albo None, gdy drabina na ten przebieg
+    jest wyłączona (flaga off albo odczyt padł — wtedy „jeden alert dziennie”)."""
+    if not enabled:
+        return None
+    try:
+        return repository.get_shock_alert_levels(today)
+    except PortError as exc:
+        logger.warning(
+            "Shock watch: szczeble drabiny nieczytelne (%s) — dziś najwyżej jeden alert "
+            "na symbol",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _may_escalate(levels: dict[str, tuple[SentShockLevel, ...]] | None, symbol: str) -> bool:
+    """Czy symbol, który dziś już zaalarmował, może jeszcze dostać szczebel (ALR-16).
+    Brak zapisanego szczebla mimo alertu dnia = nie wiadomo, co poszło → nie."""
+    if levels is None:
+        return False
+    return 0 < len(levels.get(symbol, ())) < MAX_SHOCK_ALERTS_PER_DAY
 
 
 @dataclass(frozen=True)
@@ -509,6 +561,7 @@ def scan_watch(
         logger.exception("Failed to read shock alert history — debounce in-memory only")
         already_sent = set()
     crypto_alert_times = _crypto_alert_times(repository, daily_change, symbols, crypto, moment)
+    sent_levels = _sent_levels(repository, today, enabled=settings.shock_escalation_enabled)
     silent = _silent_delivery(settings, moment)
     context_reader = _AlertContextReader(
         repository,
@@ -549,11 +602,16 @@ def scan_watch(
                 )
                 continue
             measure_only = False
+            # ALR-16: symbol z alertem dnia mierzymy dalej, póki ma wolny szczebel.
+            escalating = False
             if not should_emit(symbol, today, already_sent):
-                if symbol not in held:
+                if _may_escalate(sent_levels, symbol):
+                    escalating = True
+                elif symbol not in held:
                     continue
-                # Symbol już zaalarmował, ale jego ruch należy do szoku portfela.
-                measure_only = True
+                else:
+                    # Symbol już zaalarmował, ale jego ruch należy do szoku portfela.
+                    measure_only = True
             reading = _fresh_daily_change(daily_change, symbol, moment)
             if reading is not None:
                 checked += 1
@@ -564,8 +622,11 @@ def scan_watch(
                 asset = _classify(symbol, crypto)
                 # Decyzja 2: zmiana 24 h krypto wciąż zawiera ruch zaalarmowany < 24 h
                 # temu — po północy UTC byłby to drugi alert za ten sam ruch.
-                if asset.asset_type is AssetType.CRYPTO and is_move_already_alerted(
-                    crypto_alert_times.get(symbol), moment
+                # Eskalacja to ruch 2× większy, nie ten sam — rozstrzyga ją drabina.
+                if (
+                    not escalating
+                    and asset.asset_type is AssetType.CRYPTO
+                    and is_move_already_alerted(crypto_alert_times.get(symbol), moment)
                 ):
                     logger.info("Shock watch: %s zaalarmowany < 24 h temu — pomijam", symbol)
                     continue
@@ -600,6 +661,12 @@ def scan_watch(
                 basis = SNAPSHOT_BASIS
             if alert is None:
                 continue
+            rungs = sent_levels.get(symbol, ()) if sent_levels is not None else ()
+            if escalating and not should_escalate(
+                _classify(symbol, crypto), alert, Threshold(settings.volatility_threshold), rungs
+            ):
+                continue
+            level = next_shock_level(rungs) if escalating else 1
             if push_notifier is None:
                 logger.error("Shock watch: szok %s wykryty, ale brak kanału push", symbol)
                 continue
@@ -614,11 +681,12 @@ def scan_watch(
                     now=moment,
                     display_timezone=settings.display_timezone,
                 ),
+                level=level,
             )
             push_notifier.send_report(
                 subject=subject, html_body=body, plain_text=body, silent=silent
             )
-            _persist_shock_alert(repository, symbol, today, alert)
+            _persist_shock_alert(repository, symbol, today, alert, level)
             already_sent.add((symbol, today))
             sent += 1
         except Exception:

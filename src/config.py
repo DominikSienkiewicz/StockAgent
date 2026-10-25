@@ -103,6 +103,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # ALR-07: szok portfela w watchu — push poza cyklem, nie prognoza.
     "portfolio_shock_enabled",
     "portfolio_shock_threshold",
+    # ALR-16: drabina eskalacji szoku w watchu — push poza cyklem, nie prognoza.
+    "shock_escalation_enabled",
     # WIA-45: linia redundancji w recapie i brak odznaki „silny konsensus” w mailu —
     # sama treść maili, ocena po predykcji.
     "council_redundancy_enabled",
@@ -845,6 +847,11 @@ class Settings(BaseSettings):
     # pod symbolem „__PORTFOLIO__” (nowy zapis, więc osobna flaga). Off: watch bez zmian.
     portfolio_shock_enabled: bool = False
     portfolio_shock_threshold: Decimal = Field(default=Decimal("0.03"))
+    # ALR-16: drabina eskalacji szoku w watchu — drugi alert symbolu dnia (szczebel 2),
+    # gdy ruch sięgnie 2× progu szoku w tym samym kierunku albo odwróci się ponad próg;
+    # najwyżej dwa dziennie. Szczebel w `shock_alerts.level` (migracja 081). Off: jeden
+    # alert dziennie jak dotąd.
+    shock_escalation_enabled: bool = False
     # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
     # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
     # Fast Loop: zapas od północy ET każdego dnia handlowego NYSE (weekend i święto

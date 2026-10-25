@@ -766,6 +766,137 @@ class TestCryptoRollingWindowCooldown:
         assert "AAPL" in push.send_report.call_args.kwargs["subject"]
 
 
+class TestShockEscalationLadder:
+    """ALR-16: za `shock_escalation_enabled` drugi alert dnia, gdy ruch sięgnie 2× progu
+    szoku (4% → 8%) w tym samym kierunku albo odwróci się ponad próg; najwyżej dwa."""
+
+    _NOW = datetime(2026, 10, 24, 18, 0, tzinfo=UTC)
+
+    def _repo(self, *rungs: object) -> MagicMock:
+        from src.domain.shock import SentShockLevel, ShockDirection
+
+        repo = _repo("100", age_hours=1.0, now=self._NOW)
+        levels = tuple(
+            SentShockLevel(level=index, direction=ShockDirection(str(direction)))
+            for index, direction in enumerate(rungs, start=1)
+        )
+        repo.get_sent_shock_alerts.return_value = {("AAPL", self._NOW.date())} if rungs else set()
+        repo.get_shock_alert_levels.return_value = {"AAPL": levels} if rungs else {}
+        return repo
+
+    def _run(self, settings: Settings, repo: MagicMock, price: str) -> tuple[int, MagicMock]:
+        settings.shock_escalation_enabled = True
+        push = MagicMock()
+        sent = main_watch.run_watch(
+            settings, repository=repo, market=_market(price), push_notifier=push, now=self._NOW
+        )
+        return sent, push
+
+    def test_move_doubling_the_threshold_sends_the_second_rung(self, settings: Settings) -> None:
+        repo = self._repo("DOWN")
+
+        sent, push = self._run(settings, repo, "90")
+
+        assert sent == 1
+        assert "eskalacja" in push.send_report.call_args.kwargs["subject"]
+        repo.save_shock_alert.assert_called_once_with(
+            "AAPL", self._NOW.date(), pytest.approx(-0.1), "DOWN", level=2
+        )
+
+    def test_same_shock_below_double_threshold_stays_silent(self, settings: Settings) -> None:
+        repo = self._repo("DOWN")
+
+        sent, push = self._run(settings, repo, "94")
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+        repo.save_shock_alert.assert_not_called()
+
+    def test_reversal_above_the_threshold_sends_the_second_rung(self, settings: Settings) -> None:
+        repo = self._repo("DOWN")
+
+        sent, _push = self._run(settings, repo, "105")
+
+        assert sent == 1
+        assert repo.save_shock_alert.call_args.kwargs == {"level": 2}
+
+    def test_two_rungs_end_the_day_without_reading_the_price(self, settings: Settings) -> None:
+        repo = self._repo("DOWN", "DOWN")
+
+        sent, push = self._run(settings, repo, "70")
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+        repo.get_last_price_snapshot.assert_not_called()
+
+    def test_first_alert_keeps_the_payload_without_a_level(self, settings: Settings) -> None:
+        repo = self._repo()
+
+        sent, push = self._run(settings, repo, "95")
+
+        assert sent == 1
+        assert "eskalacja" not in push.send_report.call_args.kwargs["subject"]
+        repo.save_shock_alert.assert_called_once_with(
+            "AAPL", self._NOW.date(), pytest.approx(-0.05), "DOWN"
+        )
+
+    def test_unreadable_levels_fall_back_to_one_alert_a_day(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        repo = self._repo("DOWN")
+        repo.get_shock_alert_levels.side_effect = ProviderUnavailable("no 081")
+
+        with caplog.at_level(logging.WARNING):
+            sent, push = self._run(settings, repo, "90")
+
+        assert sent == 0
+        push.send_report.assert_not_called()
+        assert "drabin" in caplog.text
+
+    def test_flag_off_never_reads_the_levels(self, settings: Settings) -> None:
+        repo = self._repo("DOWN")
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings, repository=repo, market=_market("90"), push_notifier=push, now=self._NOW
+        )
+
+        assert sent == 0
+        repo.get_shock_alert_levels.assert_not_called()
+
+    def test_crypto_escalation_is_not_held_back_by_the_24h_window(
+        self, settings: Settings
+    ) -> None:
+        # Okno 24 h chroni przed drugim alertem za TEN SAM ruch; eskalacja to ruch
+        # dwa razy większy, więc rozstrzyga ją drabina.
+        from src.domain.shock import SentShockLevel, ShockDirection
+
+        settings.symbols = []
+        settings.crypto_symbols = ["BTC"]
+        settings.shock_escalation_enabled = True
+        repo = _no_snapshot_repo()
+        repo.get_sent_shock_alerts.return_value = {("BTC", self._NOW.date())}
+        repo.get_shock_alert_times.return_value = {"BTC": self._NOW - timedelta(hours=3)}
+        repo.get_shock_alert_levels.return_value = {
+            "BTC": (SentShockLevel(level=1, direction=ShockDirection.DOWN),)
+        }
+        push = MagicMock()
+
+        sent = main_watch.run_watch(
+            settings,
+            repository=repo,
+            market=_market("90"),
+            push_notifier=push,
+            now=self._NOW,
+            daily_change=_daily("-0.13", self._NOW - timedelta(minutes=5)),
+        )
+
+        assert sent == 1
+        assert repo.save_shock_alert.call_args.kwargs == {"level": 2}
+
+
 class TestQuietHoursWatch:
     """ALR-09: szok w nocy (czas odbiorcy) dociera bez dźwięku — informacja zostaje,
     pobudka o 3:00 nie. Poza oknem ciszy i z flagą off push brzmi jak dotąd."""
