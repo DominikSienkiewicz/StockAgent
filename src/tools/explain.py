@@ -117,6 +117,8 @@ def _receipt_lines(receipt: DecisionReceipt) -> list[str]:
     if receipt.experiment_arms:
         arms = ", ".join(f"{name}={arm}" for name, arm in receipt.experiment_arms.items())
         lines.append(f"{_INDENT}Ramiona eksperymentów: {arms}")
+    if receipt.model_used:
+        lines.append(f"{_INDENT}Model, który odpowiedział: {receipt.model_used}")
     return lines
 
 

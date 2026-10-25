@@ -7,7 +7,8 @@ a JSONB nie ma migracji kolumn, więc wersję niesie pole `schema_version`:
 - v2 — v1 plus płaskie pola przepisu (`PredictionRecipe`) i `recipe_version`.
   WIA-66 dołoży w v2 opcjonalny klucz `provenance` bez kolejnego bumpu.
   EXP-05 dokłada opcjonalny klucz `experiment_arms` (`{id: ramię}`) — tylko gdy
-  w cyklu działał jakiś eksperyment.
+  w cyklu działał jakiś eksperyment. FIN-21 dokłada opcjonalny klucz `model_used`
+  (`dostawca:model`) — tylko gdy odpowiedź przyszła z kaskady routingu modeli.
 
 Każda wersja jest nadzbiorem poprzedniej, a czytnik toleruje brak każdego
 opcjonalnego klucza. Nieznanej wersji nie zgaduje — zwraca None.
@@ -45,6 +46,7 @@ class DecisionReceipt:
     feature_attribution: tuple[Mapping[str, Any], ...] = ()
     recipe: Mapping[str, str] = field(default_factory=dict)
     experiment_arms: Mapping[str, str] = field(default_factory=dict)
+    model_used: str | None = None
 
     @property
     def recipe_version(self) -> str | None:
@@ -70,6 +72,11 @@ def read_decision_receipt(payload: object) -> DecisionReceipt | None:
             _experiment_arms(payload.get("experiment_arms"))
             if schema_version >= RECEIPT_SCHEMA_V2
             else {}
+        ),
+        model_used=(
+            _model_used(payload.get("model_used"))
+            if schema_version >= RECEIPT_SCHEMA_V2
+            else None
         ),
     )
 
@@ -132,3 +139,8 @@ def _experiment_arms(value: object) -> dict[str, str]:
         for experiment_id, arm in value.items()
         if isinstance(arm, str)
     }
+
+
+def _model_used(value: object) -> str | None:
+    """Model z routingu (FIN-21); brak albo nietekstowa wartość → None."""
+    return value if isinstance(value, str) and value else None

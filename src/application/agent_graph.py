@@ -27,6 +27,7 @@ from src.application.ml_features import (
 from src.application.ports import (
     LLM_FAILOVER_MODEL_KEY,
     LLM_FAILOVER_PROVIDER_KEY,
+    LLM_ROUTED_MODEL_KEY,
     AdvisoryCouncilPort,
     AttestationPublisherPort,
     EmbeddingPort,
@@ -248,6 +249,9 @@ class AgentState(TypedDict, total=False):
     # NIEZ-44: (dostawca, model) zapasowego LLM, gdy analizę zrobił on, a nie główny.
     # Brak klucza = główny LLM. Zmienia przepis zapisany przy predykcji.
     llm_failover: tuple[str, str]
+    # FIN-21: model, który odpowiedział w kaskadzie routingu (`dostawca:model`), do
+    # kwitu v2. Brak klucza = analiza bez routingu modeli.
+    llm_model_used: str
     # ML-29: rozkład P(BULLISH/BEARISH/SIDEWAYS) z odpowiedzi LLM po normalizacji.
     # None = flaga off albo LLM nie podał poprawnego rozkładu (trend ze starych pól).
     trend_probabilities: dict[str, float] | None
@@ -568,6 +572,17 @@ def _split_failover_marker(
         return None, analysis
     model = raw.get(LLM_FAILOVER_MODEL_KEY)
     return (str(provider), str(model) if model else _UNKNOWN_FAILOVER_MODEL), analysis
+
+
+def _split_routed_model(raw: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """FIN-21: zdejmuje znacznik kaskady routingu z wyniku LLM, zanim ktokolwiek go
+    przeczyta. Zwraca model, który odpowiedział (None = bez routingu), i analizę bez
+    znacznika."""
+    if LLM_ROUTED_MODEL_KEY not in raw:
+        return None, raw
+    analysis = {key: value for key, value in raw.items() if key != LLM_ROUTED_MODEL_KEY}
+    model = raw[LLM_ROUTED_MODEL_KEY]
+    return (str(model) if model else None), analysis
 
 
 def _effective_recipe(deps: AgentGraphDeps, state: AgentState) -> PredictionRecipe | None:
@@ -1225,6 +1240,10 @@ def _build_decision_receipts(deps: AgentGraphDeps, state: AgentState) -> dict[st
         arms = state.get("experiment_arms")
         if arms:
             receipt["experiment_arms"] = dict(arms)
+        # FIN-21: opcjonalny klucz v2 — tylko gdy odpowiedź przyszła z routingu modeli.
+        model_used = state.get("llm_model_used")
+        if model_used:
+            receipt["model_used"] = model_used
     return receipt
 
 
@@ -2206,6 +2225,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     )
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
+    model_used, raw_analysis = _split_routed_model(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
     llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
@@ -2340,8 +2360,10 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     )
 
     failover_state: AgentState = {} if failover is None else {"llm_failover": failover}
+    routing_state: AgentState = {} if model_used is None else {"llm_model_used": model_used}
     return {
         **failover_state,
+        **routing_state,
         **shadow,
         **invalidation_state,
         "llm_analysis": llm_analysis,

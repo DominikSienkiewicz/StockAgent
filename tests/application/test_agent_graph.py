@@ -3286,6 +3286,68 @@ class TestDecisionReceipts:
         json.dumps(self._record(repository_port)["decision_receipts"])
 
 
+    def test_receipt_v2_carries_the_model_that_answered(
+        self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
+        repository_port: Mock, ml_port: Mock, llm_port: Mock,
+    ) -> None:
+        # FIN-21: kaskada routingu znakuje odpowiedź modelem, który ją dał; kwit v2
+        # niesie go jako `model_used`, żeby porównać trafność per model.
+        from src.application.ports import LLM_ROUTED_MODEL_KEY
+
+        llm_port.analyze.side_effect = lambda prompt: {
+            "trend_direction": "BEARISH",
+            "confidence_score": 0.85,
+            LLM_ROUTED_MODEL_KEY: "anthropic:claude-sonnet-4-6",
+        }
+
+        record = self._invoke_full_analysis(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, recipe=_recipe(llm_provider="routing"),
+        )
+
+        assert record["decision_receipts"].get("model_used") == "anthropic:claude-sonnet-4-6"
+
+    def test_routing_marker_never_reaches_the_saved_analysis(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        from src.application.ports import LLM_ROUTED_MODEL_KEY
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.return_value = {
+            **llm_port.analyze.return_value,
+            LLM_ROUTED_MODEL_KEY: "openai:gpt-5-mini",
+        }
+
+        final = self._make(graph_ports, enabled=False).compile().invoke(
+            _initial_state("100.0")
+        )
+
+        assert LLM_ROUTED_MODEL_KEY not in final["llm_analysis"]
+        assert "decision_receipts" not in self._record(repository_port)
+
+    def test_receipt_without_routing_has_no_model_used(
+        self, market_port: Mock, sentiment_port: Mock, news_port: Mock,
+        repository_port: Mock, ml_port: Mock, llm_port: Mock,
+    ) -> None:
+        # Bez routingu kwit bajt w bajt jak przed FIN-21 — model jest w przepisie.
+        record = self._invoke_full_analysis(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True, recipe=_recipe(),
+        )
+
+        assert "model_used" not in record["decision_receipts"]
+
+
 class TestRecipeVersionColumn:
     """WIA-20: kolumna `recipe_version` (migracja 030) za flagą
     `recipe_version_enabled` — nowy klucz przed migracją to PGRST204 i śmierć
