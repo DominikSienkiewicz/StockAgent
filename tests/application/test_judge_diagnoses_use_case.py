@@ -1,6 +1,7 @@
 """EXP-10 — sędzia diagnoz z rubryką: tygodniowa próbka najwyżej `MAX_JUDGED_PER_RUN`
-diagnoz, jedno wywołanie LLM na diagnozę, a diagnoza poniżej progu wypada z lessons
-i RAG (zapis odrzucenia)."""
+diagnoz, jedno wywołanie LLM na diagnozę. W trybie cienia (domyślnie) zapisuje tylko
+ocenę; z `rejects_enabled` diagnoza poniżej progu wypada z lessons i RAG (zapis
+odrzucenia)."""
 
 from __future__ import annotations
 
@@ -51,7 +52,11 @@ def _verdict(factor: bool, falsifiable: bool, specific: bool) -> str:
 
 
 def _use_case(
-    repo: Mock, llm: Mock, *, max_samples: int = MAX_JUDGED_PER_RUN
+    repo: Mock,
+    llm: Mock,
+    *,
+    max_samples: int = MAX_JUDGED_PER_RUN,
+    rejects_enabled: bool = False,
 ) -> JudgeDiagnosesUseCase:
     return JudgeDiagnosesUseCase(
         repository_port=repo,
@@ -59,6 +64,7 @@ def _use_case(
         clock=lambda: NOW,
         rng=random.Random(7),
         max_samples=max_samples,
+        rejects_enabled=rejects_enabled,
     )
 
 
@@ -102,7 +108,7 @@ def test_a_low_score_rejects_the_diagnosis_and_a_pass_keeps_it() -> None:
     llm = Mock(spec=LLMPort)
     llm.analyze_mistake.side_effect = [_verdict(True, False, False), _verdict(True, True, False)]
 
-    result = _use_case(repo, llm).run()
+    result = _use_case(repo, llm, rejects_enabled=True).run()
 
     saved = {
         call.args[0]: call.kwargs for call in repo.save_diagnosis_judgement.call_args_list
@@ -113,6 +119,26 @@ def test_a_low_score_rejects_the_diagnosis_and_a_pass_keeps_it() -> None:
     assert saved[rejected_id]["rejected_insight"] == f"Zignorowałem raport Fed nr {rejected_n}."
     assert saved[kept_id]["rejected_insight"] is None
     assert result["rejected"] == 1
+
+
+def test_shadow_mode_saves_a_low_score_without_rejecting_the_diagnosis() -> None:
+    """Domyślnie (tryb cienia) ocena poniżej progu trafia do `diagnosis_judge_score`,
+    ale diagnoza zostaje w lessons i RAG: bez `rejected_insight`, więc bez
+    przeniesienia do `rejected_diagnosis` i bez placeholdera. Zapisana ocena
+    wyklucza wiersz z kolejnych próbek."""
+    repo = _repo([_diagnosis(1)])
+    llm = Mock(spec=LLMPort)
+    llm.analyze_mistake.return_value = _verdict(False, False, False)
+
+    result = JudgeDiagnosesUseCase(
+        repository_port=repo, llm_port=llm, clock=lambda: NOW, rng=random.Random(7)
+    ).run()
+
+    repo.save_diagnosis_judgement.assert_called_once_with(
+        "id-1", score=0, rejected_insight=None
+    )
+    assert result["judged"] == 1
+    assert result["rejected"] == 0
 
 
 def test_prompt_carries_the_rubric_the_evidence_and_the_fenced_diagnosis() -> None:

@@ -4,13 +4,17 @@ Co tydzień losowa próbka najwyżej `MAX_JUDGED_PER_RUN` diagnoz błędnych pre
 z ostatnich `days` dni (jeszcze bez oceny) idzie do sędziego, jedno wywołanie LLM na
 diagnozę. Rubryka (`src/domain/diagnosis_rubric.py`): (1) wskazuje czynnik obecny
 w newsach lub cenach predykcji, (2) jest falsyfikowalna, (3) nie jest ogólnikiem.
-Wynik 0–3 trafia do `diagnosis_judge_score` (migracja 078); diagnoza poniżej progu
-przechodzi do `rejected_diagnosis`, a `correction_insights` dostaje placeholder
+Wynik 0–3 trafia do `diagnosis_judge_score` (migracja 078) zawsze. Odrzuca dopiero
+`rejects_enabled` (`diagnosis_judge_rejects_enabled`): diagnoza poniżej progu
+przechodzi wtedy do `rejected_diagnosis`, a `correction_insights` dostaje placeholder
 `DIAGNOSIS_REJECTED_INSIGHT`, który lessons, analogi RAG i recap odsiewają.
 
 Sędzia LLM ocenia LLM — to samo uprzedzenie, więc wynik znaczy coś dopiero po
-kalibracji na ocenach człowieka (krok właściciela). Odpowiedź bez trzech ocen tak/nie
-niczego nie zapisuje: wiersz wraca do kolejnej próbki.
+kalibracji na ocenach człowieka (krok właściciela). Dlatego domyślny jest tryb cienia
+(decyzja właściciela 2026-10-25): ocena bez odrzucenia, do porównania z 20 ocenami
+właściciela. Oceniona diagnoza nie wraca do próbki, więc późniejsze włączenie
+odrzucania dotyczy tylko diagnoz ocenianych od tej chwili. Odpowiedź bez trzech ocen
+tak/nie niczego nie zapisuje: wiersz wraca do kolejnej próbki.
 
 FinOps (FIN-30, wyjątek od bramki volatility): najwyżej `max_samples` wywołań na
 przebieg, przydział z `slow_loop_paid_budget`; `BudgetedLLMPort` odrzuca nadmiar.
@@ -75,7 +79,8 @@ Zwróć czysty JSON (bez bloków markdown):
 
 
 class JudgeDiagnosesUseCase:
-    """Ocenia losową próbkę diagnoz tygodnia i odrzuca te poniżej progu rubryki.
+    """Ocenia losową próbkę diagnoz tygodnia; z `rejects_enabled` odrzuca te poniżej
+    progu rubryki, bez niego (tryb cienia) zapisuje wyłącznie ocenę.
 
     `rng` (wstrzyknięty) losuje próbkę; `max_samples` = przydział wywołań joba.
     Wyczerpany przydział kończy job, błąd LLM albo zapisu pomija tylko swój wiersz."""
@@ -89,6 +94,7 @@ class JudgeDiagnosesUseCase:
         rng: random.Random,
         max_samples: int = MAX_JUDGED_PER_RUN,
         days: int = JUDGE_DAYS,
+        rejects_enabled: bool = False,
     ) -> None:
         self._repo = repository_port
         self._llm = llm_port
@@ -96,6 +102,7 @@ class JudgeDiagnosesUseCase:
         self._rng = rng
         self._max_samples = max(0, min(max_samples, MAX_JUDGED_PER_RUN))
         self._days = days
+        self._rejects_enabled = rejects_enabled
 
     def run(self) -> dict[str, Any]:
         if self._max_samples == 0:
@@ -136,21 +143,29 @@ class JudgeDiagnosesUseCase:
         }
 
     def _judge(self, row: JudgeableDiagnosis, answer: str) -> bool | None:
-        """True = odrzucona, False = przyjęta, None = brak oceny albo zapis nie wyszedł."""
+        """True = odrzucona, False = zostaje (przyjęta albo tryb cienia), None = brak
+        oceny albo zapis nie wyszedł."""
         verdict = parse_rubric_verdict(answer)
         prediction_id = row.prediction.id
         if verdict is None or prediction_id is None:
             logger.warning("Diagnosis judge — niepewna ocena dla %s, bez zapisu", prediction_id)
             return None
+        rejects = self._rejects_enabled and not verdict.passes
+        if not verdict.passes and not rejects:
+            logger.info(
+                "Diagnosis judge — tryb cienia: %s poniżej progu (%s/3), bez odrzucenia",
+                prediction_id,
+                verdict.score,
+            )
         try:
             self._repo.save_diagnosis_judgement(
                 prediction_id,
                 score=verdict.score,
-                rejected_insight=None if verdict.passes else row.insight,
+                rejected_insight=row.insight if rejects else None,
             )
         except PortError:
             logger.warning(
                 "Diagnosis judge — zapis nie wyszedł dla %s", prediction_id, exc_info=True
             )
             return None
-        return not verdict.passes
+        return rejects
