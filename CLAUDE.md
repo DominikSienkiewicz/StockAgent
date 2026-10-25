@@ -239,6 +239,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - Nowa decyzja architektoniczna = wpis `D-N` w `docs/decisions.md` (data, status, hashe
   commitów, strażnicy). Nowy incydent = wiersz w `docs/engineering-log.md` (incydent → reguła →
   test).
+- Uzasadnienie flagi (dlaczego, historia) = wpis w sekcji `Flag rationale` w
+  `docs/decisions.md` z kotwicą `<a id="flag-…"></a>`; `docs/configuration.md` trzyma tylko
+  zwięzły opis (co robi, kiedy włączyć, czego wymaga) i link `decisions.md#flag-…`
+  (`tests/test_flag_rationale.py`, DOC-19).
 
 ## Język
 
