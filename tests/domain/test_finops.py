@@ -266,6 +266,49 @@ def test_paid_budget_rejects_negative_spend() -> None:
         paid_budget_allows(-1, 10)
 
 
+class TestShadowCallAllowed:
+    """EXP-26: wywołanie wariantu w cieniu liczy się do sufitu cyklu (idzie tylko
+    w luzie pod `cap` liczonym ze wszystkich wywołań LLM), ale nie zabiera
+    przydziału produkcji — `PAID_LLM_SOURCES` go nie zawiera."""
+
+    def test_shadow_source_is_outside_the_production_ceiling(self) -> None:
+        from src.domain.finops import PAID_LLM_SOURCES, SHADOW_LLM_SOURCE
+
+        assert SHADOW_LLM_SOURCE not in PAID_LLM_SOURCES
+
+    def test_allowed_while_every_llm_call_of_the_cycle_stays_within_the_cap(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        calls = {"llm": 4, "council_llm": 4, "shadow_llm": 1, "sentiment": 9}
+
+        assert shadow_call_allowed(calls, cap=10, max_shadow_calls=3) is True
+        assert shadow_call_allowed({**calls, "llm": 5}, cap=10, max_shadow_calls=3) is False
+
+    def test_never_overshoots_the_cap_unlike_the_soft_production_ceiling(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({"llm": 12}, cap=10, max_shadow_calls=3) is False
+
+    def test_stops_at_the_configured_number_of_shadow_calls(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({"shadow_llm": 2}, cap=None, max_shadow_calls=3) is True
+        assert shadow_call_allowed({"shadow_llm": 3}, cap=None, max_shadow_calls=3) is False
+
+    def test_hard_cap_wins_over_a_larger_configured_number(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+        from src.domain.shadow_prompt import SHADOW_PROMPT_MAX_PER_CYCLE
+
+        spent = {"shadow_llm": SHADOW_PROMPT_MAX_PER_CYCLE}
+
+        assert shadow_call_allowed(spent, cap=None, max_shadow_calls=50) is False
+
+    def test_zero_shadow_calls_configured_allows_none(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({}, cap=None, max_shadow_calls=0) is False
+
+
 def test_paid_llm_calls_count_the_prediction_and_the_council_only() -> None:
     from src.domain.finops import PAID_LLM_SOURCES, paid_llm_calls
 

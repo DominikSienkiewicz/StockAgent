@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -105,6 +105,18 @@ class CycleTelemetry:
     def record_paid_call(self, source: str) -> None:
         with self._lock:
             self._paid_calls[source] += 1
+
+    def reserve_paid_call(
+        self, source: str, admits: Callable[[Mapping[str, int]], bool]
+    ) -> bool:
+        """EXP-26: liczy wywołanie `source` tylko, gdy `admits` (reguła domeny) wpuści
+        je przy bieżących licznikach. Decyzja i inkrement idą pod jednym lockiem, więc
+        równoległe symbole nie przebiją limitu sprawdzonego tuż przed wywołaniem."""
+        with self._lock:
+            if not admits(MappingProxyType(dict(self._paid_calls))):
+                return False
+            self._paid_calls[source] += 1
+            return True
 
     def record_node_timing(
         self, node: str, symbol: str, ms: float, *, failed: bool = False

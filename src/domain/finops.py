@@ -8,6 +8,8 @@ from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
 
+from src.domain.shadow_prompt import SHADOW_PROMPT_MAX_PER_CYCLE
+
 # FinOps — czysty model kosztu jednego cyklu agenta. "Agent, który raportuje
 # własny rachunek": bierze liczniki płatnych wywołań zewnętrznych (LLM, sentyment,
 # news, embeddingi) i przelicza je na SZACUNKOWY koszt w USD. Bez I/O, bez importów
@@ -551,6 +553,28 @@ def budget_window_start(window: BudgetWindow, now: datetime) -> datetime:
         raise ValueError("budget window needs a timezone-aware clock")
     day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return day if window is BudgetWindow.DAY else day.replace(day=1)
+
+
+# EXP-26: klucz cennika wywołań wariantu promptu albo modelu w cieniu. Poza
+# `PAID_LLM_SOURCES`, więc sufit produkcji (`paid_budget_allows`) go nie widzi.
+SHADOW_LLM_SOURCE = "shadow_llm"
+
+
+def shadow_call_allowed(
+    calls: Mapping[str, int], *, cap: int | None, max_shadow_calls: int
+) -> bool:
+    """EXP-26: czy wariant promptu albo modelu w cieniu dostanie kolejne wywołanie LLM.
+
+    Wywołanie cienia liczy się do sufitu cyklu, i to twardo: idzie tylko wtedy, gdy
+    WSZYSTKIE wywołania LLM cyklu (produkcja i cień) razem z nim mieszczą się w `cap`.
+    Produkcja liczy swój miękki sufit bez cienia (`PAID_LLM_SOURCES`), więc cień nie
+    zabiera jej przydziału — dostaje wyłącznie luz, który został w chwili wywołania.
+    Liczbę wywołań cienia ogranicza `max_shadow_calls`, ale nigdy ponad
+    `SHADOW_PROMPT_MAX_PER_CYCLE`. `cap` None = bez sufitu cyklu."""
+    shadow_spent = calls.get(SHADOW_LLM_SOURCE, 0)
+    if shadow_spent >= min(max_shadow_calls, SHADOW_PROMPT_MAX_PER_CYCLE):
+        return False
+    return cap is None or paid_llm_calls(calls) + shadow_spent + 1 <= cap
 
 
 def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:

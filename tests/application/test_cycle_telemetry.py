@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections import Counter
+from collections.abc import Mapping
 
 import pytest
 
@@ -153,3 +154,44 @@ def test_paid_calls_of_sums_only_the_requested_sources() -> None:
 
     assert telemetry.paid_calls_of(frozenset({"llm", "council_llm"})) == 3
     assert telemetry.paid_calls_of(frozenset({"news"})) == 0
+
+
+class TestReservePaidCall:
+    """EXP-26: rezerwacja wywołania pod jednym lockiem z decyzją — równoległe
+    symbole nie przebiją limitu cienia, a odmowa niczego nie liczy."""
+
+    def test_admitted_call_is_recorded_under_its_source(self) -> None:
+        telemetry = CycleTelemetry()
+        telemetry.record_paid_call("llm")
+        seen: list[dict[str, int]] = []
+
+        def admits(calls: Mapping[str, int]) -> bool:
+            seen.append(dict(calls))
+            return True
+
+        assert telemetry.reserve_paid_call("shadow_llm", admits) is True
+        assert seen == [{"llm": 1}]
+        assert dict(telemetry.snapshot().paid_calls) == {"llm": 1, "shadow_llm": 1}
+
+    def test_refused_call_is_not_recorded(self) -> None:
+        telemetry = CycleTelemetry()
+
+        assert telemetry.reserve_paid_call("shadow_llm", lambda calls: False) is False
+        assert dict(telemetry.snapshot().paid_calls) == {}
+
+    def test_parallel_reservations_never_exceed_the_admitted_number(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        telemetry = CycleTelemetry()
+
+        def below_three(calls: Mapping[str, int]) -> bool:
+            return calls.get("shadow_llm", 0) < 3
+
+        def reserve(_: int) -> bool:
+            return telemetry.reserve_paid_call("shadow_llm", below_three)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            granted = list(pool.map(reserve, range(40)))
+
+        assert sum(granted) == 3
+        assert telemetry.snapshot().paid_calls["shadow_llm"] == 3
