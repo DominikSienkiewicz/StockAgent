@@ -10,9 +10,12 @@ import pytest
 from src.domain.isotonic_calibration import (
     ISOTONIC_EVAL_WINDOW,
     ISOTONIC_FIT_WINDOW,
+    MIN_CLASS_ISOTONIC_SAMPLES,
     MIN_ISOTONIC_SAMPLES,
+    CalibrationClass,
     IsotonicMap,
     fit_isotonic,
+    select_class_isotonic_calibrators,
     select_isotonic_calibrator,
 )
 
@@ -144,3 +147,97 @@ class TestSelectIsotonicCalibrator:
         selection = select_isotonic_calibrator(history, now=NOW)
 
         assert selection.n_fit == 40
+
+
+def _classed(
+    rows: list[tuple[datetime, float, bool]], calibration_class: CalibrationClass
+) -> list[tuple[datetime, float, bool, CalibrationClass]]:
+    return [(stamp, confidence, hit, calibration_class) for stamp, confidence, hit in rows]
+
+
+def _class_history(
+    calibration_class: CalibrationClass, hits_at_06: int, hits_at_09: int, per_level: int = 20
+) -> list[tuple[datetime, float, bool, CalibrationClass]]:
+    """Ten sam wzór w obu oknach: `per_level` predykcji na poziom pewności 0.6 i 0.9."""
+    rows: list[tuple[datetime, float, bool]] = []
+    for age in (timedelta(days=45), timedelta(days=10)):
+        rows += _timed(age, 0.6, hits_at_06, per_level - hits_at_06)
+        rows += _timed(age, 0.9, hits_at_09, per_level - hits_at_09)
+    return _classed(rows, calibration_class)
+
+
+def _older(
+    history: list[tuple[datetime, float, bool, CalibrationClass]],
+) -> list[tuple[float, bool]]:
+    return [(c, hit) for stamp, c, hit, _ in history if NOW - stamp > timedelta(days=30)]
+
+
+class TestSelectClassIsotonicCalibrators:
+    """ML-54: osobna mapa dla krypto i dla reszty, gdy klasa ma dość próbek."""
+
+    def test_class_threshold_is_the_per_window_minimum_of_the_global_map(self) -> None:
+        assert MIN_CLASS_ISOTONIC_SAMPLES == MIN_ISOTONIC_SAMPLES
+
+    def test_selects_per_class_map_when_class_has_enough_samples(self) -> None:
+        # 40 próbek na okno w każdej klasie, krzywe na różnych poziomach: krypto
+        # trafia rzadziej przy każdej pewności niż akcje i ETF-y.
+        crypto = _class_history(CalibrationClass.CRYPTO, hits_at_06=8, hits_at_09=7)
+        rest = _class_history(CalibrationClass.NON_CRYPTO, hits_at_06=12, hits_at_09=11)
+
+        selection = select_class_isotonic_calibrators([*crypto, *rest], now=NOW)
+
+        crypto_map = selection.calibrator_for(CalibrationClass.CRYPTO)
+        rest_map = selection.calibrator_for(CalibrationClass.NON_CRYPTO)
+        assert crypto_map == fit_isotonic(_older(crypto))
+        assert rest_map == fit_isotonic(_older(rest))
+        assert crypto_map != rest_map
+        assert crypto_map != selection.global_selection.calibrator
+
+    def test_class_below_threshold_falls_back_to_the_global_map(self) -> None:
+        # 5 próbek krypto na okno — za mało na własną mapę i jej ocenę poza próbą.
+        crypto = _class_history(CalibrationClass.CRYPTO, hits_at_06=3, hits_at_09=2, per_level=5)
+        rest = _class_history(CalibrationClass.NON_CRYPTO, hits_at_06=12, hits_at_09=11)
+
+        selection = select_class_isotonic_calibrators([*crypto, *rest], now=NOW)
+
+        global_map = selection.global_selection.calibrator
+        assert global_map is not None
+        assert selection.calibrator_for(CalibrationClass.CRYPTO) == global_map
+        assert CalibrationClass.CRYPTO not in selection.class_selections
+        assert selection.calibrator_for(CalibrationClass.NON_CRYPTO) == fit_isotonic(_older(rest))
+
+    def test_class_map_losing_out_of_sample_keeps_the_buckets_for_that_class(self) -> None:
+        # Krypto ma dość próbek, ale starsze okno uczy odwrotnego porządku niż ostatni
+        # miesiąc — w tej klasie mapa przegrywa, więc nie wchodzi ani ona, ani globalna.
+        crypto = _classed(
+            [
+                *_timed(timedelta(days=45), 0.6, 18, 2),
+                *_timed(timedelta(days=45), 0.9, 2, 18),
+                *_timed(timedelta(days=10), 0.6, 2, 18),
+                *_timed(timedelta(days=10), 0.9, 18, 2),
+            ],
+            CalibrationClass.CRYPTO,
+        )
+        rest = _class_history(CalibrationClass.NON_CRYPTO, hits_at_06=12, hits_at_09=11)
+
+        selection = select_class_isotonic_calibrators([*crypto, *rest], now=NOW)
+
+        assert selection.calibrator_for(CalibrationClass.CRYPTO) is None
+        assert selection.global_selection.calibrator is not None
+        assert selection.class_selections[CalibrationClass.CRYPTO].use_isotonic is False
+
+    def test_unknown_class_uses_the_global_map(self) -> None:
+        rest = _class_history(CalibrationClass.NON_CRYPTO, hits_at_06=12, hits_at_09=11)
+
+        selection = select_class_isotonic_calibrators(rest, now=NOW)
+
+        assert selection.calibrator_for(None) == selection.global_selection.calibrator
+
+    def test_global_map_is_the_ml28_selection_over_all_classes(self) -> None:
+        crypto = _class_history(CalibrationClass.CRYPTO, hits_at_06=8, hits_at_09=7)
+        rest = _class_history(CalibrationClass.NON_CRYPTO, hits_at_06=12, hits_at_09=11)
+        unclassed = [(stamp, c, hit) for stamp, c, hit, _ in [*crypto, *rest]]
+
+        selection = select_class_isotonic_calibrators([*crypto, *rest], now=NOW)
+
+        assert selection.global_selection == select_isotonic_calibrator(unclassed, now=NOW)
