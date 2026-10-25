@@ -26,7 +26,7 @@ def _critical(source: str) -> QuotaAlert:
     )
 
 
-class _SlowContainsSet(set):  # type: ignore[type-arg]
+class _SlowContainsSet(set[str]):
     """`__contains__` blokuje się na `_release` Event, a `add` śpi przed
     dodaniem elementu. Razem deterministycznie poszerzają okno check→add
     w _maybe_push_realtime.
@@ -56,12 +56,12 @@ class _SlowContainsSet(set):  # type: ignore[type-arg]
         self._release.wait()  # czekaj aż main zwolni wszystkie wątki naraz
         return super().__contains__(item)
 
-    def add(self, item: object) -> None:  # type: ignore[override]
+    def add(self, item: str) -> None:
         # Śpij dłużej niż czas od zwolnienia _release do zakończenia __contains__
         # we wszystkich wątkach — gwarantuje, że wszystkie N wątków zdążą
         # zobaczyć False zanim pierwszy wątek doda element do seta.
         time.sleep(0.05)
-        super().add(item)  # type: ignore[arg-type]
+        super().add(item)
 
 
 def test_concurrent_record_same_source_pushes_once() -> None:
@@ -72,7 +72,7 @@ def test_concurrent_record_same_source_pushes_once() -> None:
     monitor = QuotaMonitor(alert_notifier=notifier)
     n = 8
     slow_set: _SlowContainsSet = _SlowContainsSet()
-    monitor._alerted_sources = slow_set  # type: ignore[assignment]
+    monitor._alerted_sources = slow_set
 
     start_barrier = threading.Barrier(n)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import tomllib
 from datetime import date
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -30,6 +30,16 @@ _REQUIRED_SECRETS = {
     "supabase_url": "https://t.supabase.co",
     "supabase_key": "anon",
 }
+
+
+def make_settings(**overrides: Any) -> Settings:
+    """`Settings` bez czytania `.env` (`_env_file=None`).
+
+    Typowany wrapper: mypy syntetyzuje `Settings.__init__` wyłącznie z pól modelu,
+    więc nie zna `_env_file` i odrzuca wartości z `**dict` oraz zagnieżdżone dicty
+    (`llm_pricing`, `ml_challengers`), które pydantic waliduje dopiero w runtime —
+    a to ten runtime testy sprawdzają."""
+    return Settings(**{"_env_file": None, **overrides})
 
 
 def _model_provider(model: str) -> str:
@@ -69,6 +79,17 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
+def test_throttle_is_set_only_where_the_loop_is_sequential() -> None:
+    """ARCH-24: `symbol_throttle_seconds` śpi między symbolami wyłącznie w ścieżce
+    sekwencyjnej (`RunFastLoopCycle._run_sequential`). Przy `symbol_concurrency` > 1
+    bez contagion idzie pula wątków i throttle nie robi nic — wartość > 0 byłaby
+    konfiguracją deklarującą zachowanie, którego nie ma."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    sequential = data["symbol_concurrency"] == 1 or data.get("contagion_enabled", False)
+
+    assert float(data["symbol_throttle_seconds"]) == 0.0 or sequential
+
+
 def test_toml_cross_list_invariants() -> None:
     """DAT-27: listy klasyfikujące symbole (ETF, brak ceny) opisują watchlistę.
     Ticker spoza `symbols` to martwa konfiguracja — tak zniknęła historia VOO."""
@@ -97,7 +118,7 @@ def test_settings_reads_non_secret_from_toml(
     )
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
     # Sekrety wstrzykujemy jako kwargs (wygrywają nad TOML); env odcięte.
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     assert s.symbol_throttle_seconds == pytest.approx(7.5)
     assert s.llm_provider == "anthropic"
 
@@ -111,7 +132,7 @@ def test_config_toml_found_regardless_of_cwd(
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
     monkeypatch.chdir(tmp_path)  # CWD != root repo
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert s.symbols == data["symbols"], "config.toml nie został znaleziony spoza roota"
     assert s.notifications_enabled is data["notifications_enabled"]
@@ -128,7 +149,7 @@ def test_unknown_toml_key_is_rejected(
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
 
     with pytest.raises(ValueError, match="weekly_recap_enable"):
-        Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+        make_settings(**_REQUIRED_SECRETS)
 
 
 def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,7 +157,7 @@ def test_unknown_env_variable_is_still_ignored(monkeypatch: pytest.MonkeyPatch) 
     narzędzi (SONAR_TOKEN, GH_TOKEN), więc `extra = "ignore"` dla nich zostaje."""
     monkeypatch.setenv("SONAR_TOKEN", "not-a-setting")
 
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
 
     assert not hasattr(settings, "sonar_token")
 
@@ -156,7 +177,7 @@ def test_env_overrides_toml(
     toml.write_text("symbol_throttle_seconds = 7.5\n", encoding="utf-8")
     monkeypatch.setenv("STOCKAGENT_TOML_FILE", str(toml))
     monkeypatch.setenv("SYMBOL_THROTTLE_SECONDS", "3.0")
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
     # env > toml
     assert s.symbol_throttle_seconds == pytest.approx(3.0)
 
@@ -240,7 +261,7 @@ def test_settings_derive_peer_groups_from_config_sectors(
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
 
-    s = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    s = make_settings(**_REQUIRED_SECRETS)
 
     assert s.sectors == data["sectors"]
     assert s.peer_groups == data["sectors"]
@@ -415,7 +436,7 @@ def test_settings_read_the_price_list_from_config_toml(monkeypatch: pytest.Monke
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
 
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
 
     table = settings.llm_price_table()
     assert table["claude-sonnet-4-6"].cache_write_usd_per_mtok == pytest.approx(3.75)
@@ -447,16 +468,74 @@ def test_real_config_toml_ships_the_scorecard_feature_stats_off_until_migration(
     assert data["model_scorecard_feature_stats_enabled"] is False
 
 
+def test_real_config_toml_ships_the_scorecard_weights_sha256_off_until_migration() -> None:
+    """CI-13: kolumna `model_scorecards.weights_sha256` dopiero po migracji 060."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["model_scorecard_weights_sha256_enabled"] is False
+
+
+def test_real_config_toml_ships_the_scorecard_provenance_off_until_migration() -> None:
+    """ML-22: kolumny proweniencji treningu w `model_scorecards` dopiero po migracji 064."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["model_scorecard_provenance_enabled"] is False
+
+
+def test_real_config_toml_ships_the_settled_purge_off() -> None:
+    """ML-26: purge po `settled_at` zmienia werdykt bramki i serwowane wagi."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["ml_settled_purge_enabled"] is False
+
+
+def test_real_config_toml_ships_the_direction_classifier_off() -> None:
+    """ML-30: wariant binarny modelu — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["ml_direction_classifier_enabled"] is False
+
+
+def test_real_config_toml_ships_the_shadow_predictions_off_until_migration() -> None:
+    # ML-33: nowa tabela `shadow_predictions` (migracja 075) — zapis off do DB Migrate;
+    # pierwszym challengerem jest klasyfikator kierunku ML-30 z jego pliku wag.
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert data["shadow_predictions_enabled"] is False
+    assert data["ml_challengers"] == [
+        {
+            "name": "direction",
+            "path": "data/models/price_predictor_direction.ubj",
+            "kind": "direction",
+        }
+    ]
+
+
+def test_real_config_toml_ships_the_isotonic_calibration_off() -> None:
+    """ML-28: mapa izotoniczna w rankingu sygnałów — świadome włączenie właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["isotonic_calibration_enabled"] is False
+
+
 def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
     """ML-29: kolumna `prediction_logs.trend_probabilities` dopiero po migracji 051."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["trend_probabilities_enabled"] is False
 
 
-def test_real_config_toml_ships_the_market_features_off() -> None:
-    """ML-31: cechy rynkowe i wersja zestawu cech 4 — świadome włączenie właściciela."""
+def test_real_config_toml_ships_the_market_features_on() -> None:
+    """ML-31: cechy rynkowe i wersja zestawu cech 4 — włączone świadomie przez
+    właściciela 2026-10-25 (wektory v4 dla treningu ML-52)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["market_features_enabled"] is False
+    assert data["market_features_enabled"] is True
+
+
+def test_real_config_toml_ships_the_snapshot_training_off() -> None:
+    """ML-52: wagi z `feature_snapshots` dopiero po zebraniu wektorów wersji 4."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["snapshot_training_enabled"] is False
+
+
+def test_real_config_toml_ships_the_sigma_target_off() -> None:
+    """ML-11: target zwrot / σ zmienia serwowaną prognozę — świadome włączenie."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["ml_sigma_target_enabled"] is False
 
 
 def test_real_config_toml_ships_the_macro_series_off() -> None:
@@ -491,7 +570,7 @@ def test_real_config_toml_weekly_budget_covers_its_worst_case(
 
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     monkeypatch.delenv("STOCKAGENT_TOML_FILE", raising=False)
-    settings = Settings(_env_file=None, **_REQUIRED_SECRETS)  # type: ignore[arg-type]
+    settings = make_settings(**_REQUIRED_SECRETS)
     personas = load_council_personas(CONFIG_TOML.parent / settings.council_personas_dir)
 
     weekly = settings.fast_loop_weekly_budget(personas=len(personas))
@@ -519,6 +598,18 @@ def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() 
     """WIA-51: RPC `persona_vote_outcomes` powstaje dopiero w migracji 045 (DB Migrate)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["persona_vote_outcomes_enabled"] is False
+
+
+def test_real_config_toml_ships_the_persona_brier_ranking_off_until_migration() -> None:
+    """WIA-44: RPC `persona_scoring_stats` powstaje dopiero w migracji 065 (DB Migrate)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["persona_brier_ranking_enabled"] is False
+
+
+def test_real_config_toml_ships_the_council_redundancy_off() -> None:
+    """WIA-45: maile (recap, odznaka konsensusu) zmieniają się dopiero po decyzji właściciela."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["council_redundancy_enabled"] is False
 
 
 def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
@@ -551,3 +642,54 @@ def test_real_config_toml_ships_the_price_level_alerts_off_until_migration() -> 
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["price_level_alerts_enabled"] is False
     assert data["price_alerts"] == []
+
+
+def test_real_config_toml_keeps_crypto_on_the_shared_tool_use_threshold() -> None:
+    """FIN-08: bez własnego progu krypto bierze `tool_use_volatility_threshold`."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert "crypto_tool_use_volatility_threshold" not in data
+
+
+def test_real_config_toml_ships_the_calendar_edge_horizon_off() -> None:
+    """WIA-28: horyzont edge z kalendarza NYSE czeka do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["edge_calendar_horizon_enabled"] is False
+
+
+def test_real_config_toml_ships_the_split_detection_off_until_migration() -> None:
+    """DAT-23: tabela `corporate_actions` powstaje w migracji 062, a korekta zmienia
+    rozliczenie, więc czeka też do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["split_detection_enabled"] is False
+
+
+def test_real_config_toml_ships_the_price_outlier_guard_off() -> None:
+    """DAT-15: strażnik zmienia bramkę i rozliczenie, więc czeka do końca EXP-02/03."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["price_outlier_guard_enabled"] is False
+
+
+def test_real_config_toml_ships_the_exact_rag_search_off_until_migration() -> None:
+    """ML-23: funkcja `match_news_embeddings_exact` powstaje w migracji 063, a analogi
+    w prompcie to wejście EXP-03 — czeka do końca eksperymentu."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["rag_exact_search_enabled"] is False
+
+
+def test_real_config_toml_ships_the_prompt_taint_fence_off() -> None:
+    """BEZ-14: fence zmienia tekst promptów predykcji i przewodniczącego (EXP-02/03)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["prompt_taint_fence_enabled"] is False
+
+
+def test_real_config_toml_ships_the_point_in_time_rag_off_until_migration() -> None:
+    """ML-41: `match_news_embeddings_pit` powstaje w migracji 076, a analogi w prompcie
+    to wejście EXP-03 — czeka do końca eksperymentu."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["rag_point_in_time_enabled"] is False
+
+
+def test_real_config_toml_ships_the_corporate_events_off() -> None:
+    """DAT-17: 8-K w prompcie to zmiana przepisu, a EDGAR odpowiada 403 — off."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["corporate_events_enabled"] is False

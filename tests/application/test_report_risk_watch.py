@@ -21,7 +21,7 @@ from src.domain.macro_risk import (
     MacroRiskSignal,
 )
 from src.domain.polish_macro import PolishMacroSnapshot
-from src.domain.value_objects import Money
+from src.domain.value_objects import Money, Ratio
 
 
 def _drawdown(symbol: str, peak: str, current: str) -> DrawdownSignal:
@@ -107,6 +107,26 @@ class TestHedgeRendering:
         assert "SH" in text
         assert "skuteczny" in text
 
+    def test_hedge_effectiveness_is_measured_against_the_watchlist(self) -> None:
+        # MAIL-31: książka hedge'a to równoważona watchlista, nie pozycje właściciela.
+        from src.domain.hedge import HedgeAssessment
+
+        report = MacroRiskReport(
+            hedges=[
+                HedgeAssessment(
+                    hedge_symbol="SH", correlation=-0.92, effectiveness=0.92, label="skuteczny"
+                )
+            ],
+        )
+
+        html = render_risk_watch_html(report)
+        text = render_risk_watch_text(report)
+
+        assert "realized corr vs watchlista" in html
+        assert "corr vs watchlista" in text
+        assert "portfel" not in html.lower()
+        assert "portfel" not in text.lower()
+
     def test_empty_hedges_render_nothing_extra(self) -> None:
         report = MacroRiskReport(hedges=[])
         assert render_risk_watch_html(report) == ""
@@ -148,8 +168,8 @@ class TestHtmlRendering:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.45"),
             usd_pln=Decimal("4.10"),
-            eur_pln_30d_change_pct=Decimal("0.035"),
-            usd_pln_30d_change_pct=Decimal("0.02"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.035")),
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.02")),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)
@@ -186,8 +206,8 @@ class TestPlainTextRendering:
         snap = PolishMacroSnapshot(
             eur_pln=Decimal("4.45"),
             usd_pln=Decimal("4.10"),
-            eur_pln_30d_change_pct=Decimal("0.035"),
-            usd_pln_30d_change_pct=Decimal("0.02"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.035")),
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.02")),
             fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
         )
         report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)

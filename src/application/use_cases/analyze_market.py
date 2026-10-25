@@ -22,9 +22,15 @@ from src.application.agent_graph import (
 )
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.market_features import CycleQuoteCache, collect_market_features
-from src.application.ports import LatestPrediction, NewsPort, SentimentPort
+from src.application.ports import (
+    AttestationPublisherPort,
+    LatestPrediction,
+    NewsPort,
+    SentimentPort,
+)
 from src.domain.alpha_fusion import AlphaFusionScore
 from src.domain.asset import DRIFT_WINDOW_DAYS, Asset, drift_reference, is_reference_stale
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.experiment import active_arms
 from src.domain.value_objects import AssetType, Money
 
@@ -104,6 +110,12 @@ class AnalyzeMarketUseCase:
         zamiast zgadywać go z porównania ceny docelowej z bieżącą."""
         return self._ml_port.is_trained
 
+    @property
+    def attestation_publisher(self) -> AttestationPublisherPort | None:
+        """WIA-60: publisher commitmentów grafu (None = atestacja off) — DI domyka nim
+        cykl jedną linią rootu Merkle'a po przebiegu symboli."""
+        return self._deps.attestation_publisher
+
     def required_prediction_columns(self) -> frozenset[str]:
         """FIN-05: kolumny `prediction_logs`, które zapis predykcji tego cyklu może
         dotknąć — DI sprawdza je w bazie raz, przed pierwszym symbolem."""
@@ -156,6 +168,7 @@ class AnalyzeMarketUseCase:
         alpha_fusion: AlphaFusionScore | None = None,
         peer_context: tuple[tuple[str, str], ...] = (),
         now: datetime | None = None,
+        corporate_events: CorporateEventSnapshot | None = None,
     ) -> dict[str, Any]:
         """`now` to zegar cyklu (orkiestrator podaje `started_at`); od niego liczy
         się wiek referencji ceny (FIN-14) i dzień przydziału ramion eksperymentów
@@ -169,6 +182,7 @@ class AnalyzeMarketUseCase:
             alpha_fusion=alpha_fusion,
             peer_context=peer_context,
             now=now,
+            corporate_events=corporate_events,
         )
         result: dict[str, Any] = self._app.invoke(initial_state)
         return result
@@ -183,6 +197,7 @@ class AnalyzeMarketUseCase:
         earnings_multiplier: float = 1.0,
         alpha_fusion: AlphaFusionScore | None = None,
         now: datetime | None = None,
+        corporate_events: CorporateEventSnapshot | None = None,
     ) -> GateOutcome:
         """EXP-27 faza 1: cena, reflect, fundamenty z cache i bramka domenowa —
         ten sam stan wejściowy co `run`, bez peerów (liczy je faza 2)."""
@@ -195,6 +210,7 @@ class AnalyzeMarketUseCase:
             alpha_fusion=alpha_fusion,
             peer_context=(),
             now=now,
+            corporate_events=corporate_events,
         )
         # Stan końcowy grafu to AgentState (ten sam schemat); stuby typują go szerzej.
         final = cast(AgentState, self._compiled_gate_graph().invoke(initial_state))
@@ -225,6 +241,7 @@ class AnalyzeMarketUseCase:
         alpha_fusion: AlphaFusionScore | None,
         peer_context: tuple[tuple[str, str], ...],
         now: datetime | None,
+        corporate_events: CorporateEventSnapshot | None = None,
     ) -> AgentState:
         clock = now if now is not None else datetime.now(UTC)
         previous = self._repository.get_last_price(symbol)
@@ -260,6 +277,12 @@ class AnalyzeMarketUseCase:
         market_features = self._market_features.get(symbol)
         if market_features is not None:
             initial_state["market_features"] = dict(market_features)
+        # DAT-17: tylko świeże 8-K (domena liczy wiek od dnia cyklu); brak snapshotu
+        # (flaga off, ETF, EDGAR niedostępny) = brak klucza, czyli cecha „nie wiem”.
+        if corporate_events is not None:
+            initial_state["fresh_corporate_events"] = corporate_events.fresh_events(
+                clock.date()
+            )
         # EXP-05: ramiona aktywnych eksperymentów per symbol-dzień UTC cyklu.
         arms = active_arms(self._experiments, symbol, _utc_day(clock))
         if arms:

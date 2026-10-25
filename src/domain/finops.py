@@ -465,8 +465,12 @@ def av_daily_budget(
     requests_per_symbol: int,
     cycles_per_day: int,
     n_keys: int,
+    *,
+    requests_per_cycle: int = 0,
 ) -> AvBudget:
-    """Niezmiennik: symbole × zapytania na symbol × cykle doby ≤ 25 × klucze.
+    """Niezmiennik: (symbole × zapytania na symbol + zapytania na cykl) × cykle doby
+    ≤ 25 × klucze. `requests_per_cycle` (FIN-09) to zapytania niezależne od liczby
+    symboli — kalendarz wyników pobierany raz na cykl.
 
     Bez niego przekroczenie wychodzi dopiero jako `av_keys_exhausted` w środku
     cyklu, gdy część symboli dostała już pusty feed — a za bramką i tak płaci
@@ -477,11 +481,12 @@ def av_daily_budget(
         ("requests_per_symbol", requests_per_symbol),
         ("cycles_per_day", cycles_per_day),
         ("n_keys", n_keys),
+        ("requests_per_cycle", requests_per_cycle),
     ):
         if value < 0:
             raise ValueError(f"{name} must be non-negative (got {value})")
     return AvBudget(
-        worst_case=n_av_symbols * requests_per_symbol * cycles_per_day,
+        worst_case=(n_av_symbols * requests_per_symbol + requests_per_cycle) * cycles_per_day,
         capacity=AV_DAILY_REQUESTS_PER_KEY * n_keys,
     )
 

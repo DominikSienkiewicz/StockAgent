@@ -12,7 +12,7 @@ from src.domain.council import (
     parse_recommendation,
     vindicated_dissenters,
 )
-from src.domain.value_objects import AssetType
+from src.domain.value_objects import AssetType, Percent
 
 _Recommendation = Literal["BUY", "SELL", "HOLD"]
 
@@ -489,7 +489,7 @@ class TestCouncilInput:
         data = CouncilInput(
             symbol="AAPL",
             current_price=Decimal("180.00"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
             news_articles=("Apple beats earnings", "iPhone sales surge"),
             llm_trend="BULLISH",
@@ -504,7 +504,7 @@ class TestCouncilInput:
         data = CouncilInput(
             symbol="AAPL",
             current_price=Decimal("180.00"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
             news_articles=("x",),
             llm_trend="BULLISH",
@@ -519,7 +519,7 @@ class TestCouncilInput:
         data = CouncilInput(
             symbol="AAPL",
             current_price=Decimal("180.00"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
             news_articles=("x",),
             llm_trend="BULLISH",
@@ -532,7 +532,7 @@ class TestCouncilInput:
         data = CouncilInput(
             symbol="BTC",
             current_price=Decimal("60000.00"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
             news_articles=("x",),
             llm_trend="BULLISH",
@@ -547,7 +547,7 @@ class TestCouncilInput:
         data = CouncilInput(
             symbol="AAPL",
             current_price=Decimal("180.00"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
             news_articles=cast(tuple[str, ...], ["a", "b"]),
             llm_trend="BULLISH",

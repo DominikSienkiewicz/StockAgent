@@ -10,6 +10,8 @@ from src.domain.backtest import (
     LabelOverlap,
     beats_baseline,
     count_label_overlaps,
+    label_end_times,
+    purge_training_indices,
     purged_train_end,
     summarize_folds,
 )
@@ -193,6 +195,69 @@ def test_purge_keeps_everything_when_labels_settle_before_validation() -> None:
     stamps = [start + timedelta(days=i) for i in range(10)]
 
     assert purged_train_end(stamps, valid_start=6) == 6
+
+
+# -- ML-26: purge po chwili końca etykiety + embargo (czysta funkcja domeny) -------
+
+_T = datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def _hours(*values: int) -> list[datetime]:
+    return [_T + timedelta(hours=value) for value in values]
+
+
+def test_purge_drops_training_rows_whose_label_ends_after_validation_start() -> None:
+    # Etykieta wiersza 3 (piątek) rozlicza się dopiero w poniedziałek — po starcie
+    # walidacji — choć wiersz 4 jest późniejszy i jego etykieta już dojrzała.
+    prediction_ts = _hours(0, 1, 2, 3, 4, 20, 21)
+    label_end_ts = _hours(12, 13, 14, 30, 16, 32, 33)
+
+    kept = purge_training_indices(prediction_ts, label_end_ts, valid_start=5)
+
+    assert kept == (0, 1, 2, 4)
+
+
+def test_label_ending_exactly_at_validation_start_stays() -> None:
+    kept = purge_training_indices(_hours(0, 1, 8), _hours(8, 9, 20), valid_start=2)
+
+    assert kept == (0,)
+
+
+def test_embargo_widens_the_gap_before_validation() -> None:
+    prediction_ts = _hours(0, 1, 2, 3, 20)
+    label_end_ts = _hours(12, 13, 14, 15, 32)
+
+    assert purge_training_indices(prediction_ts, label_end_ts, 4) == (0, 1, 2, 3)
+    # Start walidacji 20:00, embargo 6 h → etykieta musi skończyć się do 14:00.
+    assert purge_training_indices(
+        prediction_ts, label_end_ts, 4, embargo=timedelta(hours=6)
+    ) == (0, 1, 2)
+
+
+def test_fixed_horizon_label_ends_reproduce_purged_train_end() -> None:
+    # Bez chwil rozliczenia (etykieta = chwila + 12 h, embargo 0) purge jest dokładnie
+    # tym, co walk-forward robił dotąd — prefiks `purged_train_end`.
+    stamps = [_T + timedelta(minutes=37 * i) for i in range(80)]
+    ends = label_end_times(stamps, [None] * len(stamps))
+
+    for valid_start in (1, 20, 50, 79):
+        assert purge_training_indices(stamps, ends, valid_start) == tuple(
+            range(purged_train_end(stamps, valid_start))
+        )
+
+
+def test_label_end_is_the_settlement_but_never_before_the_horizon() -> None:
+    # 029 wpisała historii dolną granicę `settled_at = timestamp` — taki koniec
+    # etykiety podważałby purge horyzontu, więc liczy się co najmniej chwila + 12 h.
+    stamps = _hours(0, 0, 0)
+    settled = [_T + timedelta(hours=72), _T, None]
+
+    assert label_end_times(stamps, settled) == _hours(72, 12, 12)
+
+
+def test_label_end_times_need_aligned_rows() -> None:
+    with pytest.raises(ValueError, match="align"):
+        label_end_times(_hours(0, 1), [None])
 
 
 def _ic_folds(ics: list[float]) -> list[dict[str, float]]:

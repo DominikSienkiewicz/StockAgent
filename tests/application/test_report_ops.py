@@ -13,6 +13,7 @@ from decimal import Decimal
 from src.application.report_models import SymbolResult
 from src.application.report_ops import (
     render_cycle_summary_markdown,
+    render_direction_variant_markdown,
     render_trainer_summary_markdown,
     render_watch_summary_markdown,
 )
@@ -210,6 +211,76 @@ def test_trainer_summary_names_a_failed_feature_store_refresh() -> None:
     assert "| Feature store refresh | failed |" in markdown
 
 
+def test_trainer_summary_shows_the_label_overlap_of_the_pooled_sample() -> None:
+    # ML-25: pomiar nakładania etykiet w summary przebiegu, nie tylko w logu.
+    markdown = render_trainer_summary_markdown(
+        symbol_statuses={},
+        pooled_status="trained_successfully",
+        pooled_samples=812,
+        failures=0,
+        total=1,
+        pooled_label_overlap=(10, 49),
+    )
+
+    assert "| Label overlaps (settle after the next row) | 10 / 49 |" in markdown
+
+
+def test_trainer_summary_without_a_label_overlap_has_no_row() -> None:
+    markdown = render_trainer_summary_markdown(
+        symbol_statuses={}, pooled_status=None, pooled_samples=None, failures=1, total=1
+    )
+
+    assert "Label overlaps" not in markdown
+
+
+def test_direction_variant_summary_compares_the_classifier_with_the_base_rate() -> None:
+    from src.domain.direction_variant import DirectionReport, DirectionSummary
+    from src.domain.model_scorecard import TrainingOutcome
+
+    report = DirectionReport(
+        TrainingOutcome.REJECTED,
+        n_samples=236,
+        n_in_dead_band=64,
+        dead_band=0.001,
+        summary=DirectionSummary(
+            n_folds=4,
+            n_oos_points=189,
+            brier=0.2461,
+            base_rate_brier=0.2499,
+            log_loss=0.6851,
+            base_rate_log_loss=0.6930,
+            beats_base_rate=False,
+            verdict="klasyfikator nie bije stopy bazowej o 2%",
+        ),
+        reason="klasyfikator nie bije stopy bazowej o 2%",
+    )
+
+    markdown = render_direction_variant_markdown(report)
+
+    assert "### Direction classifier (ML-30)" in markdown
+    assert "| Status | rejected |" in markdown
+    assert "| Rows outside the dead band (±0.001) | 236 |" in markdown
+    assert "| Rows inside the dead band | 64 |" in markdown
+    assert "| Brier (classifier / base rate) | 0.2461 / 0.2499 |" in markdown
+    assert "| Log loss (classifier / base rate) | 0.6851 / 0.6930 |" in markdown
+    assert "served regression model" in markdown
+
+
+def test_skipped_direction_variant_summary_has_no_scores() -> None:
+    from src.domain.direction_variant import DirectionReport
+    from src.domain.model_scorecard import TrainingOutcome
+
+    markdown = render_direction_variant_markdown(
+        DirectionReport(
+            TrainingOutcome.SKIPPED, n_samples=12, n_in_dead_band=3, dead_band=0.0, reason="few"
+        )
+    )
+
+    assert "| Status | skipped |" in markdown
+    assert "| Brier (classifier / base rate) | n/a / n/a |" in markdown
+    assert "| Verdict | few |" in markdown
+
+
 def test_cycle_summary_lists_http_requests_per_host() -> None:
     # NIEZ-24: żądania per host i klasy statusów — sam host, bez ścieżki i query.
     markdown = _render(
@@ -227,3 +298,48 @@ def test_cycle_summary_lists_http_requests_per_host() -> None:
 
 def test_cycle_summary_without_http_meter_has_no_http_section() -> None:
     assert "HTTP requests by host" not in _render()
+
+
+def test_challenger_summary_shows_the_paired_verdict_of_each_challenger() -> None:
+    # ML-33: werdykt promocji w summary Slow Loopa — liczby par, straty, z i werdykt;
+    # sam raport, podmiana wag zostaje decyzją właściciela.
+    from src.application.report_ops import render_challenger_verdicts_markdown
+    from src.domain.promotion import (
+        ChallengerVerdict,
+        ForecastKind,
+        PromotionStatus,
+        PromotionVerdict,
+    )
+
+    markdown = render_challenger_verdicts_markdown(
+        (
+            ChallengerVerdict(
+                "alt",
+                ForecastKind.RETURN,
+                2,
+                PromotionVerdict(PromotionStatus.INSUFFICIENT_DATA, 12, 0.0004, 0.0003, 1.2),
+            ),
+            ChallengerVerdict(
+                "direction",
+                ForecastKind.DIRECTION,
+                1,
+                PromotionVerdict(PromotionStatus.PROMOTE, 80, 0.5, 0.2, 6.25),
+            ),
+        )
+    )
+
+    assert "### Champion/challenger (ML-33)" in markdown
+    assert "| alt | squared return error | 2 | 12 | 0.0004 / 0.0003 | 25.0% | 1.20 |" in markdown
+    assert "insufficient_data |" in markdown
+    assert "| direction | direction Brier | 1 | 80 | 0.5000 / 0.2000 | 60.0% | 6.25 |" in markdown
+    assert "promote |" in markdown
+    assert "owner" in markdown
+
+
+def test_challenger_summary_without_pairs_says_so() -> None:
+    from src.application.report_ops import render_challenger_verdicts_markdown
+
+    markdown = render_challenger_verdicts_markdown(())
+
+    assert "### Champion/challenger (ML-33)" in markdown
+    assert "No challenger forecast" in markdown

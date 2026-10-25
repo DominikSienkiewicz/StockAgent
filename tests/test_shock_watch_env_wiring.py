@@ -15,8 +15,11 @@ zbudowania `Settings`, żeby regres nie wrócił.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
+
+from tests.settings_kwargs import NO_ENV_FILE
 
 ROOT = Path(__file__).parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "shock_watch_hourly.yml"
@@ -39,7 +42,8 @@ def _run_watch_env() -> dict[str, object]:
     run_step = next(
         s for s in steps if str(s.get("run", "")).endswith("main_watch.py")
     )
-    return run_step.get("env", {})
+    env: dict[str, object] = run_step.get("env", {})
+    return env
 
 
 def test_all_settings_required_secrets_are_mapped() -> None:
@@ -75,14 +79,14 @@ def _schedule(workflow: str) -> object:
     return triggers.get("schedule")
 
 
-def _wired_daily_change_source(mocker) -> object:
+def _wired_daily_change_source(mocker: Any) -> object:
     """Źródło dziennej zmiany, które `main_watch.main()` składa z PRAWDZIWEJ fabryki
     ceny (`main_agent.build_market_port`); baza, push i sam skan są atrapami."""
     import main_watch
     from src.config import Settings
 
     settings = Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -105,7 +109,7 @@ def _wired_daily_change_source(mocker) -> object:
     return scan_watch.call_args.kwargs.get("daily_change")
 
 
-def test_watch_cron_without_the_fast_loop_cron_needs_its_daily_change_source(mocker) -> None:
+def test_watch_cron_without_the_fast_loop_cron_needs_its_daily_change_source(mocker: Any) -> None:
     # ALR-02: watch ma własne źródło ruchu — dzienną zmianę z darmowego /quote —
     # więc cron watcha może chodzić bez Fast Loopa. Bez tego źródła jedynymi
     # referencjami są snapshoty Fast Loopa i cron dawałby co godzinę „0 alertów".
@@ -118,7 +122,7 @@ def test_watch_cron_without_the_fast_loop_cron_needs_its_daily_change_source(moc
         )
 
 
-def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker) -> None:
+def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker: Any) -> None:
     # Strażnik wyżej sprawdza okablowanie tylko przy aktywnym cronie — ten test pilnuje,
     # że to okablowanie istnieje już teraz, zanim właściciel odkomentuje cron.
     from src.application.ports import DailyChangePort
@@ -130,14 +134,14 @@ def test_watch_wires_the_free_price_router_as_its_daily_change_source(mocker) ->
     assert isinstance(source, RoutingMarketDataPort)
 
 
-def test_watch_starts_without_paid_provider_keys(mocker) -> None:
+def test_watch_starts_without_paid_provider_keys(mocker: Any) -> None:
     # ARCH-05: Settings nie żąda kluczy płatnych dostawców, więc watch startuje bez
     # OPENAI_API_KEY i ALPHA_VANTAGE_API_KEYS — atrapy w workflow są zbędne.
     import main_watch
     from src.config import Settings
 
     settings = Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         finnhub_api_key="fh",
         supabase_url="https://test.supabase.co",
         supabase_key="anon",

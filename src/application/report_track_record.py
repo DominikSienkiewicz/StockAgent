@@ -17,9 +17,10 @@ werdykt istotności), pod T2 Brier / BSS / log loss i rozkład Murphy'ego. Same
 statystyki nie wskrzeszają schowanej podsekcji. Pokrycie przedziałów 80% (ML-34)
 to osobna podsekcja: pokazuje się, gdy jest choć jeden rozliczony przedział.
 
-WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy cykl
-oznaczył jakąkolwiek predykcję jako wygasłą — cichy brak oceny wyglądałby jak
-brak predykcji. Sama wystarcza, żeby sekcja się pokazała."""
+WIA-49: linia „N predykcji wygasło bez oceny” stoi pod nagłówkiem, gdy w oknie
+track recordu jest jakakolwiek predykcja oznaczona jako wygasła (także w
+wcześniejszych przebiegach) — cichy brak oceny wyglądałby jak brak predykcji.
+Sama wystarcza, żeby sekcja się pokazała."""
 
 from __future__ import annotations
 
@@ -44,8 +45,9 @@ from src.application.report_evidence import (
     probability_label,
     uncertainty_note,
 )
-from src.application.report_formatting import number, pct, pct_range, plural_pl
+from src.application.report_formatting import PALETTE, number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
+from src.application.reporting.section import ReportSection, SectionInput, no_text
 from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import (
     CalibrationBucket,
@@ -123,7 +125,7 @@ def render_track_record_html(
     `compact` (budżet MAIL-06, duży dzień) zostawia same kluczowe liczby:
     paper-PnL z kosztem, linię agent · koszyk · IVV i trafność z przedziałem
     i n — bez sparklinii, kalibracji, pokrycia i lekcji. `expired_count`
-    (WIA-49) — predykcje, które ten cykl oznaczył jako wygasłe bez oceny."""
+    (WIA-49) — predykcje wygasłe bez oceny w oknie track recordu."""
     stats = stats or TrackRecordStats()
     expired = _render_expired_html(expired_count)
     if compact:
@@ -188,9 +190,9 @@ def _equity_title(costs: PaperCosts | None) -> str:
 
 def _render_equity_summary_html(curve: EquityCurve, costs: PaperCosts | None) -> str:
     """Ramka z wynikiem łącznym, trafnością, obsunięciem i liczbą transakcji."""
-    total_color = "#059669" if curve.total_return >= 0 else "#dc2626"
+    total_color = PALETTE.positive if curve.total_return >= 0 else PALETTE.negative
     return (
-        "<div style='padding: 10px 14px; background: #eff6ff; "
+        f"<div style='padding: 10px 14px; background: {PALETTE.tint_info}; "
         "border-left: 3px solid #2563eb; border-radius: 4px; "
         "margin-bottom: 10px; font-size: 13px;'>"
         f"<strong>{_html.escape(_equity_title(costs))}:</strong> wynik łączny "
@@ -325,10 +327,10 @@ def _render_sparkline_html(curve: EquityCurve, basket: EquityCurve | None = None
 def _severity_color(value: float) -> str:
     """Próg rozjazdu → kolor: ≥0.15 czerwony, ≥0.07 żółty, inaczej zielony."""
     if value >= 0.15:
-        return "#dc2626"
+        return PALETTE.negative
     if value >= 0.07:
-        return "#ca8a04"
-    return "#16a34a"
+        return PALETTE.caution
+    return PALETTE.positive
 
 
 def _sideways_html(scores: ProbabilityScores | None) -> str:
@@ -453,8 +455,8 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
     items: list[str] = []
     for item in lessons.items:
         change = (
-            f" ({pct(item.actual_change_pct, signed=True, decimals=1)})"
-            if item.actual_change_pct is not None
+            f" ({pct(item.actual_change_ratio, signed=True, decimals=1)})"
+            if item.actual_change_ratio is not None
             else ""
         )
         items.append(
@@ -472,3 +474,34 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
         + "</ul>"
     )
     return "".join(parts)
+
+
+def _section_html(data: SectionInput) -> str:
+    """T1/T2/T4 + WIA: krzywa kapitału, kalibracja, lekcje i dowód trafności.
+    Duży dzień (próg MAIL-06) dostaje wersję zwartą — zastrzeżenie musi
+    zmieścić się w 100 KB."""
+    context = data.context
+    return render_track_record_html(
+        context.equity_curve,
+        context.calibration_buckets,
+        context.lessons,
+        context.track_record_stats,
+        compact=data.large_day,
+        expired_count=context.expired_unverified,
+    )
+
+
+TRACK_RECORD_SECTION = ReportSection(
+    key="track_record",
+    render_html=_section_html,
+    render_text=no_text,
+    context_fields=frozenset(
+        {
+            "equity_curve",
+            "calibration_buckets",
+            "lessons",
+            "track_record_stats",
+            "expired_unverified",
+        }
+    ),
+)

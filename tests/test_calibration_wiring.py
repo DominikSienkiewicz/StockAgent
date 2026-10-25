@@ -1,6 +1,6 @@
 """Wiring statystyki i kalibracji track recordu (W2-1) w entry pointach.
 
-Osobny plik zamiast dopisywania do `test_main_entrypoints.py`: te same
+Osobny plik zamiast dopisywania do `test_main_agent.py`: te same
 mocki I/O, ale bez dotykania wspólnego, długiego modułu testów.
 """
 
@@ -15,12 +15,13 @@ import main_agent
 import main_trainer
 from src.application.ports import LLMPort, RepositoryPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1", "av2"],
@@ -47,7 +48,7 @@ class TestCalibrationJudgeScoreVersion:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
         mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
-        judge_cls = mocker.patch(
+        judge_cls: MagicMock = mocker.patch(
             "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
         )
         judge_cls.return_value.run.return_value = {"status": "calibrated"}
@@ -147,7 +148,10 @@ class TestScorecardCalibrationCycles:
                 strict=True,
             )
         ]
-        render = mocker.patch("main_agent.render_public_scorecard_html", return_value="")
+        render = mocker.patch(
+            "src.application.use_cases.publish_public_scorecard.render_public_scorecard_html",
+            return_value="",
+        )
 
         main_agent._publish_public_scorecard(settings, repo, MagicMock())
 
@@ -258,3 +262,13 @@ class TestPersonaLeaderboardWiring:
         records = rank_personas({"Buffett": (0.9, 60)})
 
         assert main_agent._assess_personas(records, None) == records
+
+
+class TestIsotonicCalibrationFlag:
+    """ML-28: flaga `isotonic_calibration_enabled` dociera do flag raportu."""
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_report_flags(self, settings: Settings, enabled: bool) -> None:
+        settings = settings.model_copy(update={"isotonic_calibration_enabled": enabled})
+
+        assert main_agent._report_flags(settings).isotonic_calibration_enabled is enabled

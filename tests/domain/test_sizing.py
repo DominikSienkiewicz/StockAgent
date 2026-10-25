@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from src.domain.sizing import (
@@ -86,6 +88,36 @@ class TestSuggestBand:
         a = suggest_band(0.9, 0.0, 0.7)
         b = suggest_band(0.9, 0.0, 0.7)
         assert a == b
+
+
+class TestNonFiniteInputsFailClosed:
+    """PORT-12: NaN i nieskończoność w konsensusie albo dissencie to brak odczytu,
+    nie sygnał. `_clamp` zamieniał NaN i +inf konsensusu na 1.0 (mocny konsensus),
+    a -inf dissentu na 0.0 (brak rozłamu) — czyli wpuszczał wyższą bandę."""
+
+    @pytest.mark.parametrize("consensus", [math.nan, math.inf, -math.inf])
+    def test_non_finite_consensus_gives_starter(self, consensus: float) -> None:
+        band = suggest_band(consensus_strength=consensus, dissent_ratio=0.0, hit_rate=0.7)
+
+        assert band.tier == "starter"
+
+    @pytest.mark.parametrize("dissent", [math.nan, math.inf, -math.inf])
+    def test_non_finite_dissent_gives_starter(self, dissent: float) -> None:
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=dissent, hit_rate=0.7)
+
+        assert band.tier == "starter"
+
+    def test_nan_hit_rate_is_treated_as_unknown(self) -> None:
+        # Nie `full` (NaN = brak track recordu), ale też nie `starter`: mocny
+        # konsensus bez znanego hit-rate to dalej `standard`.
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=math.nan)
+
+        assert band.tier == "standard"
+
+    def test_infinite_hit_rate_is_treated_as_unknown(self) -> None:
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=math.inf)
+
+        assert band.tier == "standard"
 
 
 class TestSizeBand:

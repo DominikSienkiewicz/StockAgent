@@ -1,6 +1,6 @@
 """Wykresy raportu e-mail — email-safe, inline HTML (koniec z QuickChart).
 
-Roadmap #2: wcześniej trzy wykresy były `<img>` z QuickChart.io. To dwa
+R-2: wcześniej trzy wykresy były `<img>` z QuickChart.io. To dwa
 problemy naraz: Gmail/Outlook z blokadą zdalnych obrazków pokazywały dziury
 w sercu maila, a **dane portfela wyciekały w URL-u** do zewnętrznego serwisu.
 
@@ -27,6 +27,8 @@ from src.application.report_signals import (
     DIVERGENCE_SENTIMENT_THRESHOLD,
 )
 from src.application.report_styles import delta_tone, fill_tone
+from src.application.reporting.section import ReportSection, SectionInput, no_text
+from src.domain.cycle_maturity import SkipReason
 
 # Minimalna i maksymalna szerokość słupka w px. Minimum > 0, by najmniejszy
 # ruch pozostał widoczny; jednocześnie na tyle małe względem maksimum, żeby
@@ -77,8 +79,16 @@ def build_delta_chart_html(results: list[SymbolResult]) -> str:
 
     Etykieta mówi „(cykl)", bo pętla chodzi raz na dobę handlową (nazwy `*_12h`
     są przeżytkiem). Brak ważnych danych (pusto / same błędy / brak Δ) → "".
+    Cold-start (`SkipReason.COLD_START`) nie ma punktu odniesienia — jego Δ = 0
+    to brak danych, nie „bez zmian”, więc nie dostaje słupka (mail Dzień 1).
     """
-    valid = [r for r in results if r.delta is not None and r.status != "error"]
+    valid = [
+        r
+        for r in results
+        if r.delta is not None
+        and r.status != "error"
+        and r.skip_reason is not SkipReason.COLD_START
+    ]
     if not valid:
         return ""
     valid_sorted = sorted(valid, key=lambda r: abs(r.delta or Decimal("0")), reverse=True)
@@ -180,3 +190,27 @@ def build_correlation_chart_html(results: list[SymbolResult]) -> str:
         + "</tr>"
         "</tbody></table></div>"
     )
+
+
+def _delta_chart_html(data: SectionInput) -> str:
+    return build_delta_chart_html(data.results)
+
+
+def _correlation_chart_html(data: SectionInput) -> str:
+    chart = build_correlation_chart_html(data.results)
+    if not chart:
+        return ""
+    return (
+        '<h3 style="font-size: 14px; margin: 20px 0 8px 0;">'
+        "📈 Korelacja sentymentu z ruchem ceny</h3>"
+    ) + chart
+
+
+# #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
+DELTA_CHART_SECTION = ReportSection(
+    key="delta_chart", render_html=_delta_chart_html, render_text=no_text
+)
+# #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
+CORRELATION_CHART_SECTION = ReportSection(
+    key="correlation_chart", render_html=_correlation_chart_html, render_text=no_text
+)

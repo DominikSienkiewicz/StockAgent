@@ -28,7 +28,9 @@ from src.domain.digest_lead import (
     lead_headline,
     lead_preview,
 )
+from src.domain.earnings import EarningsEvent, EarningsTiming
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.value_objects import Percent
 
 
 def _opinion(
@@ -109,7 +111,7 @@ class TestPriorityOrdering:
         """
         big_move = LeadSignal(
             symbol="NVDA",
-            price_delta_pct=Decimal("-9.9"),
+            price_delta_pct=Percent(Decimal("-9.9")),
             council_verdict=_consensus_verdict("SELL"),
         )
         items = build_lead([big_move], [_critical_alert()])
@@ -125,12 +127,12 @@ class TestPriorityOrdering:
         """
         split_sig = LeadSignal(
             symbol="AAA",
-            price_delta_pct=Decimal("2.0"),
+            price_delta_pct=Percent(Decimal("2.0")),
             council_verdict=_split_verdict(),
         )
         consensus_sig = LeadSignal(
             symbol="BBB",
-            price_delta_pct=Decimal("8.0"),
+            price_delta_pct=Percent(Decimal("8.0")),
             council_verdict=_consensus_verdict(),
         )
         # Konsensus podany PIERWSZY w wejściu — dowód, że wygrywa ranking,
@@ -145,12 +147,12 @@ class TestPriorityOrdering:
         """Priorytet 3 > 4: silny konsensus bije werdykt zamkniętej predykcji."""
         consensus_sig = LeadSignal(
             symbol="AAA",
-            price_delta_pct=Decimal("1.0"),
+            price_delta_pct=Percent(Decimal("1.0")),
             council_verdict=_consensus_verdict(),
         )
         closed_sig = LeadSignal(
             symbol="BBB",
-            price_delta_pct=Decimal("7.0"),
+            price_delta_pct=Percent(Decimal("7.0")),
             resolved_label="trafiona predykcja BUY",
         )
         items = build_lead([closed_sig, consensus_sig])
@@ -160,8 +162,8 @@ class TestPriorityOrdering:
 
     def test_largest_delta_wins_within_strong_consensus(self) -> None:
         """W obrębie tego samego priorytetu decyduje |Δ| — większy ruch wyżej."""
-        small = LeadSignal("AAA", Decimal("2.0"), _consensus_verdict())
-        large = LeadSignal("BBB", Decimal("-6.0"), _consensus_verdict("SELL"))
+        small = LeadSignal("AAA", Percent(Decimal("2.0")), _consensus_verdict())
+        large = LeadSignal("BBB", Percent(Decimal("-6.0")), _consensus_verdict("SELL"))
         items = build_lead([small, large])
 
         assert "BBB" in items[0].headline
@@ -173,7 +175,7 @@ class TestAntiSensation:
         """Sam wielki ruch — bez rady i bez zamkniętej predykcji — NIE jest
         leadem. Ranking nie promuje gołej sensacji.
         """
-        noise = LeadSignal(symbol="MEME", price_delta_pct=Decimal("42.0"))
+        noise = LeadSignal(symbol="MEME", price_delta_pct=Percent(Decimal("42.0")))
         assert build_lead([noise]) == []
 
     def test_warning_quota_does_not_lead(self) -> None:
@@ -191,7 +193,7 @@ class TestAdditiveScoring:
         """
         sig = LeadSignal(
             symbol="AAA",
-            price_delta_pct=Decimal("3.0"),
+            price_delta_pct=Percent(Decimal("3.0")),
             council_verdict=None,
             resolved_label="trafiona predykcja SELL",
         )
@@ -207,7 +209,7 @@ class TestCapAndLimits:
     def test_max_three_items(self) -> None:
         """Max 3 pozycje, nawet przy nadmiarze sygnałów."""
         signals = [
-            LeadSignal(f"S{i}", Decimal("1.0"), _consensus_verdict())
+            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict())
             for i in range(6)
         ]
         items = build_lead(signals, [_critical_alert(), _critical_alert("OpenAI")])
@@ -216,7 +218,7 @@ class TestCapAndLimits:
 
     def test_custom_max_items(self) -> None:
         signals = [
-            LeadSignal(f"S{i}", Decimal("1.0"), _consensus_verdict())
+            LeadSignal(f"S{i}", Percent(Decimal("1.0")), _consensus_verdict())
             for i in range(4)
         ]
         assert len(build_lead(signals, max_items=2)) == 2
@@ -251,7 +253,7 @@ class TestPortfolioAwareLead:
     ) -> LeadSignal:
         return LeadSignal(
             symbol=symbol,
-            price_delta_pct=Decimal(delta),
+            price_delta_pct=Percent(Decimal(delta)),
             council_verdict=verdict,
             position_weight=Decimal(weight),
             crossed_volatility_gate=crossed,
@@ -259,7 +261,7 @@ class TestPortfolioAwareLead:
 
     def test_signal_against_large_position_outranks_strong_consensus(self) -> None:
         against = self._held(verdict=_consensus_verdict("SELL"))
-        consensus = LeadSignal("AAA", Decimal("8.0"), _consensus_verdict("BUY"))
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
 
         items = build_lead([consensus, against])
 
@@ -288,7 +290,7 @@ class TestPortfolioAwareLead:
 
     def test_position_move_outranks_a_split_council(self) -> None:
         move = self._held()
-        split = LeadSignal("AAA", Decimal("6.0"), _split_verdict())
+        split = LeadSignal("AAA", Percent(Decimal("6.0")), _split_verdict())
 
         items = build_lead([split, move])
 
@@ -324,7 +326,10 @@ class TestPortfolioAwareLead:
 
     def test_without_a_portfolio_the_lead_is_unchanged(self) -> None:
         signal = LeadSignal(
-            "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), crossed_volatility_gate=True
+            "NVDA",
+            Percent(Decimal("-4.2")),
+            _consensus_verdict("SELL"),
+            crossed_volatility_gate=True,
         )
 
         assert build_lead([signal])[0].headline == "NVDA -4,2%, rada zgodna: SPRZEDAJ"
@@ -353,7 +358,7 @@ class TestLeadPreview:
 
 def test_strong_consensus_headline_uses_polish_label() -> None:
     # MAIL-15: temat maila powstaje z leadu — „rada zgodna: BUY” mieszało języki.
-    signal = LeadSignal("NVDA", Decimal("4.2"), _consensus_verdict("BUY", strength=0.8))
+    signal = LeadSignal("NVDA", Percent(Decimal("4.2")), _consensus_verdict("BUY", strength=0.8))
 
     headline = build_lead([signal])[0].headline
 
@@ -368,7 +373,7 @@ def test_strong_consensus_headline_uses_polish_label() -> None:
 def test_strong_consensus_headline_labels_every_verdict_in_polish(
     recommendation: Literal["BUY", "SELL", "HOLD"], label: str
 ) -> None:
-    signal = LeadSignal("AMD", Decimal("-3.0"), _consensus_verdict(recommendation))
+    signal = LeadSignal("AMD", Percent(Decimal("-3.0")), _consensus_verdict(recommendation))
 
     assert build_lead([signal])[0].headline == f"AMD -3,0%, rada zgodna: {label}"
 
@@ -378,19 +383,19 @@ class TestPolishNumbers:
     polsku: przecinek dziesiętny, minus ASCII, zaokrąglenie ROUND_HALF_UP."""
 
     def test_headline_uses_a_decimal_comma(self) -> None:
-        signal = LeadSignal("NVDA", Decimal("-4.2"), _split_verdict())
+        signal = LeadSignal("NVDA", Percent(Decimal("-4.2")), _split_verdict())
 
         assert build_lead([signal])[0].headline == "NVDA -4,2%, rada PODZIELONA"
 
     def test_delta_rounds_half_up(self) -> None:
-        signal = LeadSignal("NVDA", Decimal("4.25"), _split_verdict())
+        signal = LeadSignal("NVDA", Percent(Decimal("4.25")), _split_verdict())
 
         assert build_lead([signal])[0].headline == "NVDA +4,3%, rada PODZIELONA"
 
     def test_position_weight_rounds_half_up(self) -> None:
         signal = LeadSignal(
             "NVDA",
-            Decimal("-4.2"),
+            Percent(Decimal("-4.2")),
             position_weight=Decimal("0.245"),
             crossed_volatility_gate=True,
         )
@@ -398,7 +403,9 @@ class TestPolishNumbers:
         assert build_lead([signal])[0].headline == "NVDA (25% portfela) -4,2%"
 
     def test_tiny_drop_reads_as_zero_without_a_minus(self) -> None:
-        signal = LeadSignal("NVDA", Decimal("-0.04"), resolved_label="trafiona prognoza spadku")
+        signal = LeadSignal(
+            "NVDA", Percent(Decimal("-0.04")), resolved_label="trafiona prognoza spadku"
+        )
 
         assert build_lead([signal])[0].headline == "NVDA +0,0%: trafiona prognoza spadku"
 
@@ -409,7 +416,7 @@ class TestLeadItemSymbol:
 
     def test_signal_item_carries_its_symbol(self) -> None:
         signal = LeadSignal(
-            symbol="AAA", price_delta_pct=Decimal("2.0"), council_verdict=_split_verdict()
+            symbol="AAA", price_delta_pct=Percent(Decimal("2.0")), council_verdict=_split_verdict()
         )
 
         assert [item.symbol for item in build_lead([signal])] == ["AAA"]
@@ -440,13 +447,13 @@ class TestConsensusFlip:
 
     def test_flip_outranks_strong_consensus_but_not_split(self) -> None:
         flip = LeadSignal(
-            "NVDA", Decimal("1.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+            "NVDA", Percent(Decimal("1.0")), _consensus_verdict("SELL"), consensus_shift=_shift()
         )
-        consensus = LeadSignal("AAA", Decimal("8.0"), _consensus_verdict("BUY"))
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
         big_flip = LeadSignal(
-            "NVDA", Decimal("9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+            "NVDA", Percent(Decimal("9.0")), _consensus_verdict("SELL"), consensus_shift=_shift()
         )
-        split = LeadSignal("BBB", Decimal("1.0"), _split_verdict())
+        split = LeadSignal("BBB", Percent(Decimal("1.0")), _split_verdict())
 
         assert "NVDA" in build_lead([consensus, flip])[0].headline
         over_flip = build_lead([big_flip, split])
@@ -455,7 +462,7 @@ class TestConsensusFlip:
 
     def test_flip_headline_names_both_recommendations_in_polish(self) -> None:
         signal = LeadSignal(
-            "NVDA", Decimal("-4.2"), _consensus_verdict("SELL"), consensus_shift=_shift()
+            "NVDA", Percent(Decimal("-4.2")), _consensus_verdict("SELL"), consensus_shift=_shift()
         )
 
         item = build_lead([signal])[0]
@@ -468,7 +475,7 @@ class TestConsensusFlip:
     def test_stale_comparison_never_leads_as_a_flip(self) -> None:
         signal = LeadSignal(
             "NVDA",
-            Decimal("-4.2"),
+            Percent(Decimal("-4.2")),
             _consensus_verdict("SELL"),
             consensus_shift=_shift(ShiftKind.STALE_COMPARISON),
         )
@@ -478,7 +485,7 @@ class TestConsensusFlip:
     def test_softening_is_not_a_flip(self) -> None:
         signal = LeadSignal(
             "NVDA",
-            Decimal("-4.2"),
+            Percent(Decimal("-4.2")),
             _consensus_verdict("HOLD", 0.5),
             consensus_shift=_shift(ShiftKind.SOFTENING, current="HOLD"),
         )
@@ -487,12 +494,12 @@ class TestConsensusFlip:
 
     def test_flip_stays_below_a_signal_against_your_position(self) -> None:
         flip = LeadSignal(
-            "AMD", Decimal("-9.0"), _consensus_verdict("SELL"), consensus_shift=_shift()
+            "AMD", Percent(Decimal("-9.0")), _consensus_verdict("SELL"), consensus_shift=_shift()
         )
-        split = LeadSignal("BBB", Decimal("0.5"), _split_verdict())
+        split = LeadSignal("BBB", Percent(Decimal("0.5")), _split_verdict())
         against = LeadSignal(
             "NVDA",
-            Decimal("-1.0"),
+            Percent(Decimal("-1.0")),
             _consensus_verdict("SELL"),
             position_weight=Decimal("0.24"),
             crossed_volatility_gate=True,
@@ -510,14 +517,14 @@ class TestSignificantInsiderBuyTier:
 
     def _insider(self, symbol: str, delta: str = "1.0") -> LeadSignal:
         return LeadSignal(
-            symbol=symbol, price_delta_pct=Decimal(delta), insider_buy_label=self._LABEL
+            symbol=symbol, price_delta_pct=Percent(Decimal(delta)), insider_buy_label=self._LABEL
         )
 
     def test_insider_buy_sits_between_a_split_council_and_a_strong_consensus(self) -> None:
-        split = LeadSignal("AAA", Decimal("0.5"), _split_verdict())
+        split = LeadSignal("AAA", Percent(Decimal("0.5")), _split_verdict())
         insider = self._insider("BBB", "0.5")
         # Większy ruch konsensusu nie przeskakuje tieru (anti-sensacja).
-        consensus = LeadSignal("CCC", Decimal("9.0"), _consensus_verdict())
+        consensus = LeadSignal("CCC", Percent(Decimal("9.0")), _consensus_verdict())
 
         items = build_lead([consensus, insider, split])
 
@@ -528,7 +535,7 @@ class TestSignificantInsiderBuyTier:
     def test_insider_buy_takes_the_place_of_the_symbols_strong_consensus(self) -> None:
         signal = LeadSignal(
             "NVDA",
-            Decimal("2.0"),
+            Percent(Decimal("2.0")),
             _consensus_verdict(),
             insider_buy_label=self._LABEL,
         )
@@ -544,7 +551,7 @@ class TestSignificantInsiderBuyTier:
         assert "Form 4" in item.detail
 
     def test_critical_quota_and_split_council_stay_above_it(self) -> None:
-        split = LeadSignal("AAA", Decimal("0.1"), _split_verdict())
+        split = LeadSignal("AAA", Percent(Decimal("0.1")), _split_verdict())
         insider = self._insider("BBB", "9.9")
 
         items = build_lead([insider, split], [_critical_alert()])
@@ -561,7 +568,7 @@ class TestRegimeChangeTier:
     def _against_position() -> LeadSignal:
         return LeadSignal(
             symbol="NVDA",
-            price_delta_pct=Decimal("-9.9"),
+            price_delta_pct=Percent(Decimal("-9.9")),
             council_verdict=_consensus_verdict("SELL"),
             position_weight=Decimal("0.60"),
             crossed_volatility_gate=True,
@@ -597,3 +604,175 @@ class TestRegimeChangeTier:
         assert build_lead(signals, [_critical_alert()], regime_change=None) == build_lead(
             signals, [_critical_alert()]
         )
+
+
+class TestShockBetweenMailsOnPosition:
+    """ALR-06: szok z watcha na pozycji z portfela (≥ 10%) jest kandydatem leadu,
+    nawet gdy ruch tego cyklu był już pod bramką — push mógł nie dotrzeć."""
+
+    @staticmethod
+    def _shocked(weight: str = "0.24", shock: str = "-6.2") -> LeadSignal:
+        return LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Percent(Decimal("-0.4")),
+            position_weight=Decimal(weight),
+            crossed_volatility_gate=False,
+            shock_pct=Percent(Decimal(shock)),
+        )
+
+    def test_shock_on_a_large_position_leads_the_mail(self) -> None:
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
+
+        items = build_lead([consensus, self._shocked()])
+
+        assert items[0].icon == "⚡"
+        assert items[0].headline == "NVDA (24% portfela) -6,2% między mailami"
+        assert items[0].symbol == "NVDA"
+
+    def test_shock_on_a_small_position_is_not_a_lead(self) -> None:
+        assert build_lead([self._shocked(weight="0.05")]) == []
+
+    def test_shock_without_a_position_is_not_a_lead(self) -> None:
+        signal = LeadSignal(
+            symbol="NVDA",
+            price_delta_pct=Percent(Decimal("-0.4")),
+            shock_pct=Percent(Decimal("-6.2")),
+        )
+
+        assert build_lead([signal]) == []
+
+
+class TestAnalystRevisionTier:
+    """DAT-13: rewizja konsensusu analityków m/m to najniższy tier leadu — sygnał
+    kontekstowy (okresy miesięczne), więc nie wypycha żadnego wcześniejszego."""
+
+    _LABEL = "analitycy podnieśli rekomendacje m/m (+3 Strong Buy)"
+
+    def _revision(self, symbol: str, delta: str = "1.0") -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol,
+            price_delta_pct=Percent(Decimal(delta)),
+            analyst_revision_label=self._LABEL,
+        )
+
+    def test_revision_alone_is_a_lead_item(self) -> None:
+        items = build_lead([self._revision("AAPL", "0.4")])
+
+        assert [(item.headline, item.symbol) for item in items] == [
+            (f"AAPL +0,4%: {self._LABEL}", "AAPL")
+        ]
+
+    def test_closed_verdict_stays_above_a_bigger_revision_move(self) -> None:
+        closed = LeadSignal(
+            "BBB", Percent(Decimal("0.1")), resolved_label="trafiona prognoza wzrostu"
+        )
+
+        items = build_lead([self._revision("AAA", "9.0"), closed])
+
+        assert [item.symbol for item in items] == ["BBB", "AAA"]
+
+    def test_insider_buy_of_the_same_symbol_wins(self) -> None:
+        signal = LeadSignal(
+            "NVDA",
+            Percent(Decimal("1.0")),
+            insider_buy_label="CEO kupił akcje za 1,2 mln USD",
+            analyst_revision_label=self._LABEL,
+        )
+
+        (item,) = build_lead([signal])
+
+        assert "CEO kupił" in item.headline
+
+
+class TestHeldEarningsTier:
+    """DAT-20 (decyzja 2026-10-25): wyniki spółki z portfela (≥ 10%) dziś albo jutro
+    to kandydat leadu — tuż pod ruchem pozycji, nad radą podzieloną. Prezentacja,
+    nie przepis: sygnał niesie zdarzenie z kalendarza tylko za flagą sekcji
+    „📅 Ten tydzień”."""
+
+    @staticmethod
+    def _held(
+        symbol: str = "MSFT",
+        days_until: int = 1,
+        weight: str | None = "0.24",
+        timing: EarningsTiming | None = EarningsTiming.AFTER_CLOSE,
+        eps: float | None = None,
+    ) -> LeadSignal:
+        return LeadSignal(
+            symbol=symbol,
+            price_delta_pct=Percent(Decimal("0.4")),
+            position_weight=Decimal(weight) if weight is not None else None,
+            earnings_event=EarningsEvent(
+                symbol, days_until, "2026-10-28", timing=timing, eps_estimate=eps
+            ),
+        )
+
+    def test_earnings_tomorrow_on_a_large_position_leads(self) -> None:
+        consensus = LeadSignal("AAA", Percent(Decimal("8.0")), _consensus_verdict("BUY"))
+
+        items = build_lead([consensus, self._held()])
+
+        assert items[0].icon == "📅"
+        assert items[0].headline == "MSFT (24% portfela): wyniki jutro po sesji"
+        assert items[0].symbol == "MSFT"
+        assert "AAA" in items[1].headline
+
+    def test_earnings_today_before_the_open(self) -> None:
+        (item,) = build_lead(
+            [self._held(days_until=0, timing=EarningsTiming.BEFORE_OPEN)]
+        )
+
+        assert item.headline == "MSFT (24% portfela): wyniki dziś przed sesją"
+
+    def test_unknown_timing_is_left_out_and_the_eps_estimate_goes_to_the_detail(
+        self,
+    ) -> None:
+        (item,) = build_lead([self._held(timing=None, eps=3.1)])
+
+        assert item.headline == "MSFT (24% portfela): wyniki jutro"
+        assert item.detail == (
+            "Raport kwartalny spółki z Twojego portfela (kalendarz Finnhub), szac. EPS 3,10."
+        )
+
+    def test_sits_between_a_position_move_and_a_split_council(self) -> None:
+        move = LeadSignal(
+            "NVDA",
+            Percent(Decimal("-4.2")),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+        )
+        split = LeadSignal("AAA", Percent(Decimal("9.0")), _split_verdict())
+
+        items = build_lead([split, self._held(), move])
+
+        assert [item.icon for item in items] == ["💼", "📅", "⚖️"]
+
+    def test_today_ranks_above_tomorrow_and_then_the_larger_position(self) -> None:
+        tomorrow_large = self._held(symbol="AAPL", weight="0.40")
+        tomorrow_small = self._held(symbol="AMD", weight="0.12")
+        today_small = self._held(symbol="MSFT", days_until=0, weight="0.10")
+
+        items = build_lead([tomorrow_small, tomorrow_large, today_small])
+
+        assert [item.symbol for item in items] == ["MSFT", "AAPL", "AMD"]
+
+    def test_a_move_of_the_same_position_wins(self) -> None:
+        signal = LeadSignal(
+            "MSFT",
+            Percent(Decimal("-4.2")),
+            position_weight=Decimal("0.24"),
+            crossed_volatility_gate=True,
+            earnings_event=EarningsEvent("MSFT", 1, "2026-10-28"),
+        )
+
+        (item,) = build_lead([signal])
+
+        assert item.icon == "💼"
+
+    @pytest.mark.parametrize(
+        ("weight", "days_until"),
+        [("0.05", 1), (None, 1), ("0.24", 2), ("0.24", -1)],
+        ids=["small-position", "not-held", "after-tomorrow", "past"],
+    )
+    def test_other_earnings_are_not_a_lead(self, weight: str | None, days_until: int) -> None:
+        assert build_lead([self._held(weight=weight, days_until=days_until)]) == []

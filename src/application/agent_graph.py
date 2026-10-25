@@ -9,13 +9,15 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
 
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
+from src.application.errors import LLMOutputIncomplete, PortError
 from src.application.ml_features import (
+    CORPORATE_EVENT_SNAPSHOT_FEATURES,
     FREE_SNAPSHOT_FEATURES,
     GATED_SNAPSHOT_EXTRAS,
     MARKET_SNAPSHOT_FEATURES,
@@ -36,12 +38,16 @@ from src.application.ports import (
     OptionsFlowPort,
     QuotePort,
     RepositoryPort,
+    ReturnScaleUnavailableError,
     SentimentPort,
+    ShadowModelPort,
     Tool,
     ToolUseLLMPort,
 )
 from src.application.prompts import (
     format_analog_line,
+    format_corporate_events,
+    format_prompt_delta,
     get_mistake_diagnosis_prompt,
     get_prediction_prompt,
 )
@@ -54,11 +60,14 @@ from src.domain.attestation import (
     StoredCommitment,
     canonicalize,
     commit_canonical,
+    commitment_ledger_record,
     new_salt,
     prediction_commitment_payload,
 )
 from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
+from src.domain.corporate_actions import SplitSuspicion, detect_split, to_pre_split_price
+from src.domain.corporate_events import CorporateEvent
 from src.domain.council import (
     CouncilInput,
     CouncilVerdict,
@@ -79,7 +88,16 @@ from src.domain.implied_edge import (
     evaluate_edge,
     model_move_from_prices,
 )
+from src.domain.invalidation import Invalidation, is_valid_invalidation
+from src.domain.market_calendar import hours_to_next_trading_day
 from src.domain.mistake_taxonomy import parse_mistake_diagnosis
+from src.domain.paper_ledger import (
+    ExitReason,
+    LedgerCosts,
+    PaperTradeEntry,
+    close_trade,
+    side_of,
+)
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
@@ -90,6 +108,9 @@ from src.domain.prediction import (
     normalize_trend,
     sideways_tolerance_for,
 )
+from src.domain.price_features import SIGMA_LOOKBACK, return_sigma
+from src.domain.price_validation import OUTLIER_HISTORY_DAYS, is_unconfirmed_outlier
+from src.domain.promotion import CHAMPION_MODEL_NAME, ShadowForecast
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
@@ -97,11 +118,14 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+    Quote,
+    Ratio,
     Threshold,
     ValuationVerdict,
     clamp_unit,
     is_stale,
     settles_on_stale_quote,
+    to_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,6 +176,24 @@ def _log_paid_call(
     deps.telemetry.record_paid_call(source)
 
 
+class SentimentPayload(TypedDict, total=False):
+    """Wynik `SentimentPort.get_social_score` w stanie grafu (ARCH-10).
+
+    Kontrakt adaptera Alpha Vantage NEWS_SENTIMENT (i jego atrapy): sentyment
+    ważony relevance i liczniki artykułów. Pola są opcjonalne, bo graf czyta je
+    przez `.get` z wartością domyślną, a brak pola flaguje jako `_missing`.
+    """
+
+    av_sentiment_score: float
+    av_sentiment_label: str
+    av_relevance_avg: float
+    news_volume_24h: int
+    high_relevance_count: int
+    # Feed zdegradowany (np. wyczerpane klucze AV, atrapa lokalnego runu) — graf
+    # dopisuje powód do `data_quality_flags`, bo zera nie znaczą spokojnego dnia.
+    degraded_reason: str
+
+
 class AgentState(TypedDict, total=False):
     symbol: str
     previous_price: Decimal
@@ -168,16 +210,24 @@ class AgentState(TypedDict, total=False):
     # WIA-61: zamknięcie ostatniej zakończonej sesji z tego samego notowania (za
     # `session_close_settlement_enabled`); None = notowanie go nie wyznacza.
     session_close: SessionClose | None
-    delta: Decimal
+    # WIA-54: notowanie cyklu z otwarciem sesji (`o`) — reflect bierze z niego cenę
+    # wykonalną rozliczanej predykcji (za `executable_entry_enabled`).
+    session_quote: Quote
+    # ARCH-04: ruch ceny od referencji jako UŁAMEK (`PriceDelta.fraction`), nie
+    # procent. Prompt i rada dostają procent przez `to_percent`.
+    delta: Ratio
     # ALR-10: cena odniesienia dryfu (ostatnia predykcja z okna albo początek okna,
     # podaje use case za `drift_gate_enabled`) i dryf od niej (ułamek, z check_price).
     # Brak klucza = bramka jak przed ALR-10.
     drift_reference: Decimal
-    drift: Decimal
+    drift: Ratio
     status: str
     # FIN-12: ruch przeszedł bramkę volatility, ale cykl wyczerpał sufit płatnych
     # wywołań LLM — symbol kończy jako 'ignored' bez analizy i bez snapshotu ceny.
     budget_exhausted: bool
+    # MAIL-18: próg EFEKTYWNY bramki (ułamek, po mnożnikach reżimu i earnings) —
+    # wynik 'ignored' niesie go do sekcji ⏸ Pominięte maila. Tylko prezentacja.
+    effective_threshold: Ratio
 
     # Opcjonalny obiekt Asset (przekazywany z zewnątrz, gdy dostępny asset_type)
     asset: Asset
@@ -186,7 +236,7 @@ class AgentState(TypedDict, total=False):
     reflection_context: str
 
     # Zewnętrzne dane
-    sentiment: dict[str, Any] | None
+    sentiment: SentimentPayload | None
     news: list[dict[str, Any]]
 
     # Fundamenty i wycena
@@ -201,6 +251,9 @@ class AgentState(TypedDict, total=False):
     # ML-29: rozkład P(BULLISH/BEARISH/SIDEWAYS) z odpowiedzi LLM po normalizacji.
     # None = flaga off albo LLM nie podał poprawnego rozkładu (trend ze starych pól).
     trend_probabilities: dict[str, float] | None
+    # ML-27: poziom unieważnienia tezy po walidacji domeny. None = flaga on, ale LLM
+    # nie podał poprawnego poziomu; brak klucza = flaga off.
+    invalidation: Invalidation | None
     ml_target_price: Decimal
     # ML-14: wektor cech dokładnie w postaci podanej modelowi (`ML_FEATURE_COLUMNS`)
     # — trafia do `feature_snapshots`, żeby trening nie odtwarzał go widokiem SQL.
@@ -208,6 +261,9 @@ class AgentState(TypedDict, total=False):
     # G03: True = XGBoost nie ma wag, a `ml_target_price` to baseline "cena bez
     # zmian", nie prognoza modelu. Rada i raport nie mogą go podawać jako sygnału.
     ml_cold_start: bool
+    # ML-33: prognozy cienia nogi ML (champion i challengerzy) do `shadow_predictions`.
+    # Brak klucza = bez `ShadowSetup` w deps; wynik cyklu ich nie czyta.
+    shadow_forecasts: tuple[ShadowForecast, ...]
     # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI) z okna klasy
     # aktywa. Mail pokazuje go od razu; kolumny `interval_*` idą za flagą.
     move_interval: MoveInterval | None
@@ -229,6 +285,13 @@ class AgentState(TypedDict, total=False):
     # alfa off → prompt i cechy identyczne jak przed #14.
     alpha_fusion: AlphaFusionScore | None
 
+    # DAT-23: mnożnik ceny po podejrzanym splicie względem ceny przed nim (10:1 → 0,1),
+    # z `check_price` za `split_detection_enabled`. Brak klucza = bez splitu.
+    split_ratio: Decimal
+    # DAT-15: odczyt ceny anomalny bez potwierdzenia — bramka zamknięta, bez
+    # rozliczenia i bez snapshotu. Brak klucza = odczyt wiarygodny.
+    price_outlier: bool
+
     # #18: dywergencja predykcji modelu od implied move rynku opcji.
     # None = brak IV / options_flow_enabled=false → sygnał nie powstaje.
     implied_edge: ImpliedEdge | None
@@ -245,6 +308,10 @@ class AgentState(TypedDict, total=False):
     # ML-31: cechy rynkowe cyklu policzone przed grafem (use case, flaga
     # `market_features_enabled`). Brak klucza = symbol bez cech rynkowych (None).
     market_features: dict[str, Any]
+    # DAT-17: świeże raporty 8-K symbolu, wybrane przez use case przed grafem (flaga
+    # `corporate_events_enabled`). Pusta krotka = wiadomo, że świeżego 8-K nie ma;
+    # brak klucza = nie wiadomo (flaga off, ETF/krypto, EDGAR niedostępny).
+    fresh_corporate_events: tuple[CorporateEvent, ...]
 
     # EXP-05: ramiona AKTYWNYCH eksperymentów tego symbolu-dnia `{id: ramię}`,
     # przydzielone przez use case. Brak klucza = cykl jak bez eksperymentów.
@@ -285,6 +352,13 @@ def _summarize_news(news: list[dict[str, Any]]) -> str:
 # Q5: ile analogów wystawiamy jako "precedent receipts" w raporcie. Trzymamy
 # zwięźle (top-3), żeby blok "Na podstawie analogów" był czytelny i mailowalny.
 _PRECEDENT_RECEIPT_LIMIT = 3
+
+
+# Ile analogów RAG trafia do promptu (top-N z RPC po reranku).
+_ANALOG_LIMIT = 3
+# ML-41: po odsianiu nierozliczonych zostaje mniej kandydatów, więc retrieval
+# punktu w czasie bierze ich tyle razy więcej (ta sama jedna darmowa RPC).
+_POINT_IN_TIME_OVERFETCH = 4
 
 
 def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -329,6 +403,9 @@ def _build_similar_context(
     symbol: str,
     outcome_weight: float = 0.0,
     regime: str | None = None,
+    *,
+    point_in_time: bool = False,
+    before: datetime | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Buduje blok 'podobne historyczne sytuacje' do promptu (RAG) ORAZ zwraca
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
@@ -342,13 +419,34 @@ def _build_similar_context(
     W pełni graceful: brak RPC / pgvector / błąd → `("", [])` (predykcja działa
     bez RAG i bez receipts). Jeden retrieval + jeden rerank — zero dodatkowych
     płatnych wywołań ponad to, co RAG już robił. `outcome_weight` (#9): rerank
-    analogów po realnym wyniku; 0.0 = sama kolejność RPC.
+    analogów po realnym wyniku; 0.0 = sama kolejność RPC. `point_in_time` (ML-41,
+    `rag_point_in_time_enabled`): tylko analogi rozliczone, z większej puli kandydatów;
+    repozytorium dostaje symbol i `before` (chwila predykcji) — RPC 076 bierze analogi
+    rozliczone przed nią i pomija ten sam symbol w oknie horyzontu.
     """
     try:
-        similar = repository_port.find_similar_predictions(
-            embedding, limit=3, regime=regime
+        if point_in_time:
+            similar = repository_port.find_similar_predictions(
+                embedding,
+                limit=_ANALOG_LIMIT * _POINT_IN_TIME_OVERFETCH,
+                regime=regime,
+                symbol=symbol,
+                before=before,
+            )
+        else:
+            similar = repository_port.find_similar_predictions(
+                embedding, limit=_ANALOG_LIMIT, regime=regime
+            )
+        candidates = list(similar or [])
+        if point_in_time:
+            # ML-41: tylko analogi z wynikiem — nierozliczony (także zapisany w TYM
+            # cyklu, echo bieżących newsów) nie zajmuje miejsca w top-N ani w reranku.
+            candidates = [item for item in candidates if item.get("is_trend_correct") is not None]
+        similar = rerank_analogs(
+            candidates,
+            outcome_weight=outcome_weight,
+            top_k=_ANALOG_LIMIT if point_in_time else None,
         )
-        similar = rerank_analogs(list(similar or []), outcome_weight=outcome_weight)
         lines: list[str] = []
         precedents: list[dict[str, Any]] = []
         for item in similar or []:
@@ -368,12 +466,10 @@ def _build_similar_context(
 
 
 def _float_or_default(value: Any, default: float) -> float:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+    """Liczba albo `default` — także dla NaN/Inf (ML-35), tą samą polityką co
+    `_validate_float`, tylko bez flagi; zapis predykcji flaguje przez `_saved_float`."""
+    parsed, _flag = _validate_float(value, "", default)
+    return parsed
 
 
 def _validate_float(value: Any, field_name: str, default: float) -> tuple[float, str | None]:
@@ -393,6 +489,13 @@ def _validate_float(value: Any, field_name: str, default: float) -> tuple[float,
     if math.isnan(parsed) or math.isinf(parsed):
         return default, f"{field_name}_invalid"
     return parsed, None
+
+
+def _saved_float(value: Any, field_name: str, default: float) -> tuple[float, str | None]:
+    """ML-35: pole liczbowe zapisu predykcji — wartość jak `_validate_float`, ale flaga
+    tylko dla wartości obecnej i skażonej (`_invalid`); brak pola to cichy default."""
+    parsed, flag = _validate_float(value, field_name, default)
+    return parsed, None if value is None else flag
 
 
 # Dozwolone kierunki trendu z LLM → sygnał liczbowy dla cechy ML. Mapowanie
@@ -436,9 +539,15 @@ _LLM_UNIT_FIELDS: tuple[tuple[str, str], ...] = (
 
 # NIEZ-44: flaga jakości predykcji od zapasowego dostawcy LLM (track record ją odsiewa).
 LLM_FAILOVER_FLAG = "llm_failover"
+# ML-11: model w jednostkach σ bez σ symbolu (za krótka historia snapshotów albo błąd
+# odczytu) — cykl idzie na baseline'ie „cena bez zmian”, jak przy cold-starcie.
+ML_SIGMA_UNAVAILABLE_FLAG = "ml_sigma_unavailable"
 # MAIL-12: rada miała zagłosować, ale nie dała werdyktu (żadna persona nie
 # odpowiedziała albo adapter rzucił). Predykcja zostaje w track recordzie.
 COUNCIL_UNAVAILABLE_FLAG = "council_unavailable"
+# NIEZ-26: odpowiedź LLM ucięta limitem tokenów albo odrzucona przez model — obok
+# `llm_analysis_failed` (atrapa dalej poza track recordem), odróżnia to od awarii dostawcy.
+LLM_OUTPUT_TRUNCATED_FLAG = "llm_output_truncated"
 # Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
 _UNKNOWN_FAILOVER_MODEL = "unknown"
 
@@ -535,6 +644,37 @@ def _apply_probability_forecast(
     return derived, distribution
 
 
+# ML-27: flagi jakości poziomu unieważnienia — poziom obecny, ale nieczytelny (nie
+# liczba, brak ceny) albo po złej stronie ceny / dalej niż `INVALIDATION_BAND`.
+INVALIDATION_INVALID_FLAG = "invalidation_invalid"
+INVALIDATION_OUT_OF_BAND_FLAG = "invalidation_out_of_band"
+# Powód trafia do maila — jedno zdanie, nie esej.
+_INVALIDATION_REASON_MAX_LEN = 200
+
+
+def _parse_invalidation(
+    analysis: dict[str, Any], current_price: Decimal
+) -> tuple[Invalidation | None, str | None]:
+    """ML-27: poziom unieważnienia tezy z odpowiedzi LLM, po walidacji domeny.
+
+    Zwraca `(poziom_albo_None, flaga_albo_None)`. Brak pola to nie skażone wejście
+    (bez flagi); pole nieczytelne → `invalidation_invalid`, poziom po złej stronie
+    ceny albo dalej niż 15% → `invalidation_out_of_band` (`is_valid_invalidation`).
+    Trend z analizy jest już kanoniczny (ML-07, ML-29)."""
+    raw = analysis.get("invalidation")
+    if raw is None:
+        return None, None
+    price = _parse_number(raw.get("price")) if isinstance(raw, dict) else None
+    if price is None or math.isinf(price):
+        return None, INVALIDATION_INVALID_FLAG
+    level = Decimal(str(price))
+    trend = TrendDirection(analysis["trend_direction"])
+    if not is_valid_invalidation(trend, current_price, level):
+        return None, INVALIDATION_OUT_OF_BAND_FLAG
+    reason = " ".join(str(raw.get("reason") or "").split())[:_INVALIDATION_REASON_MAX_LEN]
+    return Invalidation(price=level, reason=reason), None
+
+
 _TREND_TO_REC: dict[str, Recommendation] = {
     "BULLISH": "BUY",
     "BEARISH": "SELL",
@@ -581,7 +721,7 @@ def _utc_now() -> datetime:
 
 def _build_fetch_fundamentals_node(
     port: FundamentalsPort,
-) -> Callable[[AgentState], dict[str, Any]]:
+) -> Callable[[AgentState], AgentState]:
     """Buduje węzeł grafu z domknięciem nad portem (DI-friendly i testowalny).
 
     Pozycja w grafie: po reflect_node, PRZED bramką volatility.
@@ -589,7 +729,7 @@ def _build_fetch_fundamentals_node(
     w slow loop (fast loop dostaje NullFundamentalsAdapter jako delegate).
     """
 
-    def fetch_fundamentals_node(state: AgentState) -> dict[str, Any]:
+    def fetch_fundamentals_node(state: AgentState) -> AgentState:
         # Asset zawsze obecny w state gdy fundamentals_port != None
         # (main_agent.py klasyfikuje i przekazuje asset przed wywołaniem grafu).
         asset: Asset = state["asset"]
@@ -611,6 +751,20 @@ def _build_fetch_fundamentals_node(
         return {"fundamentals": fundamentals, "valuation_verdict": verdict}
 
     return fetch_fundamentals_node
+
+
+@dataclasses.dataclass(frozen=True)
+class ShadowSetup:
+    """ML-33: champion/challenger nogi ML w Fast Loopie, składany przez DI za flagą
+    `shadow_predictions_enabled`.
+
+    `champion_version` — sha256 pliku wag championa (jak `model_version` przepisu);
+    `challengers` — do dwóch modeli z własnymi wagami. Ich prognozy cienia idą
+    wyłącznie do `shadow_predictions` (migracja 075): wynik cyklu, prompt, mail
+    i rekord predykcji są te same co bez nich."""
+
+    champion_version: str
+    challengers: tuple[ShadowModelPort, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -647,6 +801,9 @@ class AgentGraphDeps:
     tool_use_port: ToolUseLLMPort | None = None
     research_tools: Sequence[Tool] = ()
     tool_use_threshold: Threshold | None = None
+    # FIN-08: osobny próg tool-use dla krypto (`crypto_tool_use_volatility_threshold`).
+    # None = krypto bierze `tool_use_threshold`, jak przed FIN-08.
+    crypto_tool_use_threshold: Threshold | None = None
     vector_memory_enabled: bool = False
     # ML-38: tag reżimu w `prediction_logs.regime` (migracja 017) przy KAŻDEJ
     # predykcji, niezależnie od filtra RAG. DI ustawia go jak `regime_aware_enabled`;
@@ -669,6 +826,10 @@ class AgentGraphDeps:
     # i wersja zestawu cech 4 w obu stemplach. Use case owija wtedy port rynku
     # w `CycleQuoteCache`. Off = zestaw i wersja 3 bez zmian.
     market_features_enabled: bool = False
+    # ML-11: predict liczy σ symbolu (`return_sigma`, historia snapshotów ceny) i podaje
+    # ją modelowi; model w jednostkach σ mnoży przez nią prognozę. Off = bez odczytu
+    # historii i bez σ w wywołaniu predict, jak przed ML-11.
+    ml_sigma_target_enabled: bool = False
     # ML-34: okna kalibracyjne przedziału ruchu per klasa aktywa (rozliczone
     # predykcje, rosnąco po czasie), czytane RAZ na cykl w DI. None = bez przedziału.
     move_calibration: Mapping[AssetType, Sequence[CalibrationPoint]] | None = None
@@ -691,7 +852,13 @@ class AgentGraphDeps:
     # a rozkład idzie do kolumny `trend_probabilities` (migracja 051). Off = prompt,
     # analiza i rekord jak przed ML-29 — przed migracją klucz dałby PGRST204.
     trend_probabilities_enabled: bool = False
+    # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u DATA-ONLY. Off = prompt
+    # bajt w bajt jak przed BEZ-14.
+    prompt_taint_fence_enabled: bool = False
     options_port: OptionsFlowPort | None = None
+    # WIA-28: horyzont edge z kalendarza NYSE (godziny do następnego dnia handlowego)
+    # dla akcji i ETF zamiast stałych 24 h. Off = stałe 24 h, jak przed WIA-28.
+    edge_calendar_horizon_enabled: bool = False
     # DAT-14: notowanie z czasem (Finnhub /quote) dla akcji i ETF zamiast gołej ceny
     # z `market_port` — ten sam jeden request. None = cena bez czasu, jak przed DAT-14.
     quote_port: QuotePort | None = None
@@ -701,7 +868,39 @@ class AgentGraphDeps:
     # WIA-61: rozliczenie zapisuje obok ceny /quote oficjalne zamknięcie sesji
     # (kolumny z migracji 059). Off = klucze nie idą do repozytorium (PGRST204).
     session_close_settlement_enabled: bool = False
+    # WIA-54: rozliczenie zapisuje obok ceny /quote cenę wykonalną — otwarcie pierwszej
+    # sesji po predykcji z tego samego notowania (kolumna `entry_price`, migracja 072).
+    # Off = klucz nie idzie do repozytorium (PGRST204).
+    executable_entry_enabled: bool = False
+    # WIA-59: append-only paper ledger (`paper_trades`, migracja 073) — save otwiera
+    # pozycję, reflect ją zamyka; koszty obrotu jak w paper-PnL (WIA-50). None = graf
+    # nie dotyka tabeli, której przed migracją nie ma.
+    paper_ledger_costs: LedgerCosts | None = None
+    # ML-27: prompt prosi o poziom unieważnienia tezy, normalizacja go waliduje
+    # (strona ceny, ±15%), a zapis niesie `invalidation_price` (migracja 074). Off =
+    # prompt, analiza i rekord jak przed ML-27 — przed migracją klucz dałby PGRST204.
+    invalidation_level_enabled: bool = False
+    # ML-36: ruch ceny w prompcie predykcji z dwoma miejscami i znakiem („+3.46”) zamiast
+    # pełnej precyzji `Decimal`. Off = tekst promptu jak przed ML-36.
+    prompt_delta_rounding_enabled: bool = False
+    # ML-41: analogi RAG tylko rozliczone (z wynikiem), z większej puli kandydatów.
+    # Off = retrieval i analogi w prompcie jak przed ML-41.
+    rag_point_in_time_enabled: bool = False
+    # DAT-17: świeży 8-K ze stanu (`fresh_corporate_events`) w prompcie predykcji
+    # i cecha `fresh_8k` w `feature_snapshots`. Off = prompt i wektor jak przed DAT-17.
+    corporate_events_enabled: bool = False
+    # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
+    # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
+    # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
+    split_detection_enabled: bool = False
+    # DAT-15: odczyt anomalny (MAD względem historii snapshotów, bez potwierdzenia
+    # w `pc`) nie otwiera bramki, nie rozlicza i nie nadpisuje referencji. Off = bez
+    # odczytu historii, jak przed DAT-15.
+    price_outlier_guard_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
+    # ML-33: prognozy cienia championa i challengerów do `shadow_predictions`
+    # (migracja 075). None = flaga off: graf nie liczy cieni i nie dotyka tabeli.
+    shadow: ShadowSetup | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
     # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
@@ -718,6 +917,19 @@ class AgentGraphDeps:
     clock: Callable[[], datetime] = _utc_now
 
     def __post_init__(self) -> None:
+        missing_tool_use = [
+            name
+            for name, present in (
+                ("research_tools", bool(self.research_tools)),
+                ("tool_use_threshold", self.tool_use_threshold is not None),
+            )
+            if not present
+        ]
+        if self.tool_use_port is not None and missing_tool_use:
+            # ARCH-18: niepełna trójka cicho spadała do zwykłego `llm_port.analyze`.
+            raise ValueError(
+                f"tool-use: tool_use_port requires {' and '.join(missing_tool_use)}"
+            )
         if self.paid_call_meter is None:
             object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
         else:
@@ -737,22 +949,109 @@ def _session_quote_port(deps: AgentGraphDeps, state: AgentState) -> QuotePort | 
     return deps.quote_port if asset.asset_type in _SESSION_QUOTED_ASSETS else None
 
 
-def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _detect_split(
+    deps: AgentGraphDeps, state: AgentState, quote: Quote | None
+) -> SplitSuspicion | None:
+    """DAT-23: podejrzenie splitu z `pc` notowania vs ostatni snapshot. Tylko za flagą,
+    z notowaniem niosącym `pc` i ze świeżą referencją — stęchły snapshot (FIN-14)
+    nie jest ceną sprzed jednej sesji, więc stosunek nic by nie mówił. Zdarzenie
+    idzie do `corporate_actions`; błąd zapisu nie zatrzymuje korekty cyklu."""
+    if not deps.split_detection_enabled or quote is None or quote.prev_close is None:
+        return None
+    if _reference_is_stale(state):
+        return None
+    suspicion = detect_split(
+        state["symbol"], quote.prev_close.amount, state["previous_price"], at=deps.clock()
+    )
+    if suspicion is None:
+        return None
+    logger.warning(
+        "Suspected split for %s: previous close %s vs last snapshot %s → ratio %s; "
+        "the gate, the settlement and price_delta use split-adjusted prices",
+        suspicion.symbol,
+        suspicion.prev_close,
+        suspicion.reference_price,
+        suspicion.ratio,
+    )
+    try:
+        deps.repository_port.save_corporate_action(suspicion)
+    except PortError:
+        logger.warning(
+            "save_corporate_action failed for %s — split adjusted without a record",
+            suspicion.symbol,
+            exc_info=True,
+        )
+    return suspicion
+
+
+def _is_outlier_reading(
+    deps: AgentGraphDeps,
+    state: AgentState,
+    quote: Quote | None,
+    current: Money,
+    split: SplitSuspicion | None,
+) -> bool:
+    """DAT-15: odczyt anomalny bez potwierdzenia w `pc` (domena `price_validation`).
+
+    Tylko za flagą i ze świeżą referencją: po pauzie (FIN-14) cykl i tak tylko
+    zapisuje nowy punkt odniesienia, a strażnik nie może go blokować — inaczej trwały
+    ruch nie dostałby nigdy referencji. Historia snapshotów jest w cenach sprzed
+    splitu (DAT-23), więc odczyt i `pc` cofamy o jego stosunek. Błąd odczytu
+    historii przepuszcza odczyt (fail-open, jak przed DAT-15)."""
+    if not deps.price_outlier_guard_enabled or _reference_is_stale(state):
+        return False
+    symbol = state["symbol"]
+    try:
+        history = deps.repository_port.get_price_history(symbol, OUTLIER_HISTORY_DAYS)
+    except PortError:
+        logger.warning(
+            "DAT-15: price history of %s unavailable — reading not validated",
+            symbol,
+            exc_info=True,
+        )
+        return False
+    ratio = split.ratio if split is not None else Decimal(1)
+    prev_close = quote.prev_close if quote is not None else None
+    outlier = is_unconfirmed_outlier(
+        to_pre_split_price(current.amount, ratio),
+        [price.amount for _, price in history],
+        prev_close=None if prev_close is None else to_pre_split_price(prev_close.amount, ratio),
+    )
+    if outlier:
+        logger.warning(
+            "Price reading %s for %s is an unconfirmed outlier against %d snapshots — "
+            "gate closed, no settlement, reference kept for the next reading",
+            current.amount,
+            symbol,
+            len(history),
+        )
+    return outlier
+
+
+def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     symbol = state["symbol"]
     quote_port = _session_quote_port(deps, state)
     quote = quote_port.get_quote(symbol) if quote_port is not None else None
     current = quote.price if quote is not None else deps.market_port.get_current_price(symbol)
-    previous = Money(state["previous_price"])
+    split = _detect_split(deps, state, quote)
+    # DAT-23: po splicie referencja (snapshot sprzed niego) w cenach po splicie.
+    ratio = split.ratio if split is not None else Decimal(1)
+    previous = Money(state["previous_price"] * ratio)
     delta = PriceDelta.calculate(previous, current)
     # #6: snapshot ceny NIE jest już zapisywany tutaj. Zapis przeniesiony do
     # węzłów TERMINALNYCH (save_node / ignore_node), żeby cykl był idempotentny:
     # cykl, który padł w połowie, nie zostawia snapshotu, więc retry reużyje
     # referencji z poprzedniego UKOŃCZONEGO cyklu (zamiast porównywać się do
     # świeżego snapshotu padłej próby → delta≈0 → cichy "ignore").
-    update: dict[str, Any] = {
+    update: AgentState = {
         "current_price": current.amount,
-        "delta": delta.percentage,
+        "delta": Ratio(delta.fraction),
     }
+    if split is not None:
+        update["previous_price"] = previous.amount
+        update["split_ratio"] = split.ratio
+    if _is_outlier_reading(deps, state, quote, current, split):
+        update["price_outlier"] = True
     if quote is not None:
         now = deps.clock()
         stale = is_stale(quote.quoted_at, now)
@@ -766,9 +1065,13 @@ def _check_price_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]
         update["stale_quote"] = stale
         if deps.session_close_settlement_enabled:
             update["session_close"] = session_close_of(quote, now)
+        if deps.executable_entry_enabled:
+            update["session_quote"] = quote
     reference = state.get("drift_reference")
     if reference is not None and reference > 0:
-        update["drift"] = PriceDelta.calculate(Money(reference), current).fraction
+        update["drift"] = Ratio(
+            PriceDelta.calculate(Money(reference * ratio), current).fraction
+        )
     return update
 
 
@@ -823,7 +1126,17 @@ def _free_snapshot_features(deps: AgentGraphDeps, state: AgentState) -> dict[str
     if deps.market_features_enabled:
         market = state.get("market_features") or {}
         free.update({name: market.get(name) for name in MARKET_SNAPSHOT_FEATURES})
+    if deps.corporate_events_enabled:
+        free.update(_corporate_event_features(state))
     return free
+
+
+def _corporate_event_features(state: AgentState) -> dict[str, Any]:
+    """DAT-17: `fresh_8k` = 1.0 przy świeżym 8-K, 0.0 gdy wiadomo, że go nie ma, None,
+    gdy nie wiadomo (brak klucza w stanie) — cisza nie udaje braku zdarzenia."""
+    events = state.get("fresh_corporate_events")
+    fresh = None if events is None else float(bool(events))
+    return dict.fromkeys(CORPORATE_EVENT_SNAPSHOT_FEATURES, fresh)
 
 
 def _gated_snapshot_features(state: AgentState) -> dict[str, Any]:
@@ -1033,7 +1346,23 @@ def _log_gate_decision(state: AgentState, verdict: _GateVerdict, decision: str) 
     )
 
 
+# DAT-15: powód bramki dla odczytu anomalnego (telemetria cyklu).
+PRICE_OUTLIER_REASON = "price_outlier"
+
+
+def _closed_by_outlier(deps: AgentGraphDeps, state: AgentState) -> bool:
+    """DAT-15: odczyt anomalny zamyka bramkę niezależnie od ruchu — delta od złego
+    ticka nie może płacić za analizę."""
+    if not state.get("price_outlier"):
+        return False
+    deps.telemetry.record_gate(state["symbol"], False, PRICE_OUTLIER_REASON)
+    logger.info("volatility gate for %s: price outlier → ignore", state["symbol"])
+    return True
+
+
 def _should_analyze(deps: AgentGraphDeps, state: AgentState) -> str:
+    if _closed_by_outlier(deps, state):
+        return "ignore"
     verdict = _volatility_verdict(deps, state)
     passes = verdict.passes
     over_budget = passes and _budget_exhausted(deps, state["symbol"])
@@ -1062,6 +1391,8 @@ def _gate_phase_route(deps: AgentGraphDeps, state: AgentState) -> str:
     kończy w `ignore` jak dziś; symbol za bramką kończy fazę 1 bez terminala
     (bez snapshotu) — o analizie albo cięciu budżetem decyduje faza 2, więc
     dopiero ona zapisuje decyzję w telemetrii (jedna decyzja na symbol)."""
+    if _closed_by_outlier(deps, state):
+        return "ignore"
     verdict = _volatility_verdict(deps, state)
     if not verdict.passes:
         deps.telemetry.record_gate(state["symbol"], False, _gate_reason(False, verdict.stale))
@@ -1100,7 +1431,7 @@ def _settle_on_stale_quote(
     current_price: Decimal,
     accuracy: float,
     trend_correct: bool,
-) -> dict[str, Any]:
+) -> AgentState:
     """DAT-14: rozliczenie ceną równą cenie wejścia nie mówi nic o trafności —
     za flagą wiersz dostaje `stale_quote` i wypada z trafności, a płatna diagnoza
     LLM nie leci (nie ma prawdziwego błędu do wyjaśnienia)."""
@@ -1126,9 +1457,10 @@ def _settle_on_stale_quote(
 
 
 class _SettlementExtras(TypedDict, total=False):
-    """WIA-61: opcjonalne pola rozliczenia — klucz tylko, gdy jest wartość."""
+    """WIA-61, WIA-54: opcjonalne pola rozliczenia — klucz tylko, gdy jest wartość."""
 
     session_close: SessionCloseSettlement
+    entry_price: Decimal
 
 
 def _session_close_extras(
@@ -1136,24 +1468,78 @@ def _session_close_extras(
 ) -> _SettlementExtras:
     """WIA-61 (okres przejściowy): zamknięcie sesji z trafnością na nim, gdy
     pochodzi z pierwszej sesji po predykcji albo późniejszej. Cena /quote zostaje
-    rozliczeniem — trafność raportu, diagnoza i trening bez zmian."""
+    rozliczeniem — trafność raportu, diagnoza i trening bez zmian. DAT-23: po
+    splicie zamknięcie też w jednostkach predykcji."""
     close = state.get("session_close")
     if not deps.session_close_settlement_enabled or close is None or last.created_at is None:
         return {}
     if not close.settles(last.created_at):
         return {}
+    close = dataclasses.replace(close, price=Money(_settlement_price(state, close.price.amount)))
     correct = last.is_trend_correct(close.price.amount, tolerance=tolerance)
     return {"session_close": SessionCloseSettlement(close, is_trend_correct=correct)}
 
 
-def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _executable_entry_extras(
+    deps: AgentGraphDeps, state: AgentState, last: Prediction
+) -> _SettlementExtras:
+    """WIA-54: cena wykonalna rozliczanej predykcji z notowania cyklu — otwarcie
+    pierwszej sesji po niej (domena `Prediction.executable_entry`). Brak (zaległe
+    rozliczenie, przed sesją, bez `o`) = bez klucza, nigdy zero. DAT-23: otwarcie
+    po splicie cofnięte do jednostek predykcji, jak cena rozliczenia."""
+    quote = state.get("session_quote")
+    if not deps.executable_entry_enabled or quote is None:
+        return {}
+    if quote.open_price is not None:
+        open_price = Money(_settlement_price(state, quote.open_price.amount))
+        quote = dataclasses.replace(quote, open_price=open_price)
+    entry = last.executable_entry(quote, now=deps.clock())
+    return {} if entry is None else {"entry_price": entry}
+
+
+def _settlement_price(state: AgentState, price: Decimal) -> Decimal:
+    """DAT-23: cena rozliczenia w jednostkach predykcji. Po podejrzanym splicie
+    predykcja sprzed niego rozlicza się ceną cofniętą o stosunek splitu — to samo,
+    co przeskalowanie `price_at_prediction` i celu, a zapisana cena zostaje
+    w jednostkach `price_at_prediction`. Bez splitu cena bez zmian."""
+    ratio = state.get("split_ratio")
+    return price if ratio is None else to_pre_split_price(price, ratio)
+
+
+def _close_paper_trade(
+    deps: AgentGraphDeps, last: Prediction, exit_price: Decimal, reason: ExitReason
+) -> None:
+    """WIA-59: zamyka pozycję papierową rozliczonej predykcji (za `paper_ledger_costs`).
+
+    Po rozliczeniu, więc ledger nigdy nie wyprzedza `prediction_logs`. Błąd zapisu
+    tylko loguje — rozliczenie już jest, a pozycja zostaje otwarta w ledgerze."""
+    if deps.paper_ledger_costs is None:
+        return
+    assert last.id is not None, "Prediction from repository must have id"
+    side = side_of(str(last.predicted_trend))
+    close = close_trade(side, last.price_at_prediction, exit_price, deps.clock(), reason)
+    try:
+        deps.repository_port.close_paper_trade(last.id, close)
+    except PortError:
+        logger.warning(
+            "close_paper_trade failed for %s %s — settlement kept, the paper trade stays open",
+            last.symbol,
+            last.id,
+            exc_info=True,
+        )
+
+
+def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     reflection_min_age_hours = deps.reflection_min_age_hours
     threshold = deps.threshold
     crypto_threshold = deps.crypto_threshold
     llm_port = deps.llm_port
     symbol = state["symbol"]
-    current_price = state["current_price"]
+    if state.get("price_outlier"):
+        # DAT-15: anomalny odczyt nie rozlicza — predykcja czeka na następny odczyt.
+        return {"reflection_context": "Odczyt ceny anomalny — rozliczenie odłożone."}
+    current_price = _settlement_price(state, state["current_price"])
     # min_age_hours odsiewa predykcje zbyt świeże, by je rzetelnie ocenić
     # (nakładające się cykle: manualny dispatch + scheduled). 0 = bez filtra.
     # max_age_hours (WIA-04) odsiewa predykcje zbyt stare — idzie tylko, gdy ustawione.
@@ -1174,9 +1560,10 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # Predykcje odczytane z repozytorium muszą mieć id (kontrakt RepositoryPort).
     assert last.id is not None, "Prediction from repository must have id"
 
-    # Domena liczy accuracy_score (0.0-1.0) — bliskość ceny do celu,
-    # to napędza trening XGBoost. is_trend_correct (zgodność kierunku)
-    # jest niezależną miarą i napędza trafność raportu.
+    # Domena liczy accuracy_score (0.0-1.0) — bliskość ceny do celu; czyta go
+    # recap tygodnia, a trening XGBoost uczy się na `target_return` z
+    # ml_feature_store. is_trend_correct (zgodność kierunku) jest niezależną
+    # miarą i liczy trafność raportu.
     accuracy = float(last.accuracy_score(current_price))
     # Pasmo SIDEWAYS zależy od klasy aktywa: ±0.5% to sensowny "brak ruchu" dla
     # akcji, ale przy dziennej zmienności BTC 3–5% uznawałoby niemal każdy dzień
@@ -1186,8 +1573,13 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     trend_correct = last.is_trend_correct(current_price, tolerance=tolerance)
 
     if _settles_on_stale_quote(state, last):
-        return _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
-    extras = _session_close_extras(deps, state, last, tolerance)
+        settled = _settle_on_stale_quote(deps, last, current_price, accuracy, trend_correct)
+        _close_paper_trade(deps, last, current_price, ExitReason.STALE_QUOTE)
+        return settled
+    extras: _SettlementExtras = {
+        **_session_close_extras(deps, state, last, tolerance),
+        **_executable_entry_extras(deps, state, last),
+    }
 
     if trend_correct:
         repository_port.update_prediction_accuracy(
@@ -1198,6 +1590,7 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
             insight=CORRECT_PREDICTION_INSIGHT,
             **extras,
         )
+        _close_paper_trade(deps, last, current_price, ExitReason.SETTLED)
         return {
             "reflection_context": "Ostatnie prognozy były trafne. Kontynuuj strategię."
         }
@@ -1265,11 +1658,12 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         correction_category=category,
         **extras,
     )
+    _close_paper_trade(deps, last, current_price, ExitReason.SETTLED)
     return {"reflection_context": f"Ostatni błąd: {insight}"}
 
 
 
-def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     sentiment_port = deps.sentiment_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS_SENTIMENT) — instrumentujemy czas
@@ -1278,11 +1672,13 @@ def _analyze_sentiment_node(deps: AgentGraphDeps, state: AgentState) -> dict[str
         deps, "analyze_sentiment", symbol, "sentiment", "sentiment_port.get_social_score"
     )
     with _timed_node("analyze_sentiment", symbol, deps.telemetry):
-        return {"sentiment": sentiment_port.get_social_score(symbol)}
+        # Port zwraca luźny dict; jego kształt opisuje `SentimentPayload`.
+        payload = cast(SentimentPayload, sentiment_port.get_social_score(symbol))
+        return {"sentiment": payload}
 
 
 
-def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _fetch_news_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     news_port = deps.news_port
     symbol = state["symbol"]
     # #14: węzeł płatny (Alpha Vantage NEWS feed) — instrumentacja jak wyżej.
@@ -1328,31 +1724,46 @@ def _compute_rag_context(
                 state["symbol"],
                 deps.rag_outcome_weight,
                 regime=regime_filter,
+                point_in_time=deps.rag_point_in_time_enabled,
+                before=deps.clock() if deps.rag_point_in_time_enabled else None,
             )
     return news_embedding, similar_context, similar_precedents
 
 
 def _run_llm_analysis(
     deps: AgentGraphDeps, state: AgentState, prompt: str, symbol: str
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], list[str]]:
     """Płatna analiza jakościowa LLM. #6: dla NAJWIĘKSZYCH ruchów (osobny próg
     ``tool_use_threshold``) idzie kosztowna pętla tool-use; inaczej zwykły
     ``llm_port.analyze``. #12-guard: błąd parsowania/API degradujemy do
-    neutralnego fallbacku. Zwraca ``(llm_analysis, llm_failed)``."""
+    neutralnego fallbacku. Zwraca ``(llm_analysis, flagi_jakości)``."""
     try:
         with usage_scope(source="llm", node="predict", symbol=symbol):
-            return _call_prediction_llm(deps, state, prompt, symbol), False
+            return _call_prediction_llm(deps, state, prompt, symbol), []
+    except LLMOutputIncomplete as exc:
+        logger.warning(
+            "llm_port.analyze returned an incomplete answer for %s (%s: %s) — "
+            "degraduję do neutralnej analizy",
+            state["symbol"],
+            type(exc).__name__,
+            exc,
+        )
+        return _neutral_llm_analysis(), ["llm_analysis_failed", LLM_OUTPUT_TRUNCATED_FLAG]
     except Exception:
         logger.exception(
             "llm_port.analyze failed for %s — degraduję do neutralnej analizy",
             state["symbol"],
         )
-        return {
-            "trend_direction": "SIDEWAYS",
-            "confidence_score": 0.5,
-            "av_agreement": 0.5,
-            "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
-        }, True
+        return _neutral_llm_analysis(), ["llm_analysis_failed"]
+
+
+def _neutral_llm_analysis() -> dict[str, Any]:
+    return {
+        "trend_direction": "SIDEWAYS",
+        "confidence_score": 0.5,
+        "av_agreement": 0.5,
+        "reasoning": "Analiza LLM niedostępna — neutralny fallback.",
+    }
 
 
 def _call_prediction_llm(
@@ -1360,12 +1771,15 @@ def _call_prediction_llm(
 ) -> dict[str, Any]:
     """Jedno płatne wywołanie predykcji: pętla tool-use albo `llm_port.analyze`."""
     # FIN-08: próg tool-use mnożą reżim i earnings jak każdą bramkę — w RISK-OFF
-    # mniej symboli odpala pętlę. Krypto nie ma osobnego progu tool-use (None).
+    # mniej symboli odpala pętlę. Krypto bierze własny próg tool-use, gdy jest
+    # (None = wspólny `tool_use_threshold`).
     if (
         deps.tool_use_port is not None
         and deps.research_tools
         and deps.tool_use_threshold is not None
-        and _gate_verdict(state, deps.tool_use_threshold, None).passes
+        and _gate_verdict(
+            state, deps.tool_use_threshold, deps.crypto_tool_use_threshold
+        ).passes
     ):
         _log_paid_call(
             deps, "predict", symbol, "llm", "tool_use_port.analyze_with_tools"
@@ -1381,25 +1795,102 @@ def _run_ml_prediction(
     features: dict[str, float],
     symbol: str,
     current_price: Decimal,
-) -> tuple[Decimal, tuple[FeatureContribution, ...]]:
+    *,
+    return_scale: float | None = None,
+) -> tuple[Decimal, tuple[FeatureContribution, ...]] | None:
     """Twarda predykcja liczbowa ML + atrybucja cech (SHAP-lite, lokalny CPU).
     Cold-start (model nietrenowany) → baseline 'cena bez zmian', brak atrybucji.
     Atrybucja jest graceful (błąd explain → sama predykcja). Zwraca
-    ``(ml_target, feature_attribution)``."""
+    ``(ml_target, feature_attribution)``.
+
+    ML-11: `return_scale` (σ symbolu) idzie do modelu tylko, gdy jest; model
+    w jednostkach σ bez niej → None (wołający idzie na baseline z flagą)."""
     if not ml_port.is_trained:
         return current_price, ()
+    scale: dict[str, float] = {} if return_scale is None else {"return_scale": return_scale}
     # Model przewiduje zwrot do następnego cyklu; predict() rekonstruuje cenę bezwzględną
     # z bieżącej ceny (cena*(1+zwrot)).
-    ml_target = ml_port.predict(features, current_price=current_price).amount
+    try:
+        ml_target = ml_port.predict(features, current_price=current_price, **scale).amount
+    except ReturnScaleUnavailableError:
+        logger.warning("ML-11: brak σ dla %s — model w jednostkach σ pominięty", symbol)
+        return None
     feature_attribution: tuple[FeatureContribution, ...] = ()
     try:
         contribs = {
-            k: v for k, v in ml_port.explain(features).items() if k != "_bias"
+            k: v for k, v in ml_port.explain(features, **scale).items() if k != "_bias"
         }
         feature_attribution = top_contributions(contribs)
     except Exception:
         logger.exception("explain() failed for %s — bez atrybucji", symbol)
     return ml_target, feature_attribution
+
+
+def _ml_return_scale(deps: AgentGraphDeps, symbol: str) -> float | None:
+    """ML-11: σ zwrotów symbolu z poprzednich cykli w chwili cyklu — ta sama funkcja
+    domenowa co w treningu (`return_sigma`). Darmowy odczyt `price_snapshots`; błąd
+    odczytu albo za krótka historia → None."""
+    try:
+        history = deps.repository_port.get_price_history(symbol, SIGMA_LOOKBACK.days)
+    except PortError:
+        logger.warning("ML-11: brak historii snapshotów %s — bez σ", symbol, exc_info=True)
+        return None
+    points = [(moment, float(price.amount)) for moment, price in history]
+    return return_sigma(points, deps.clock())
+
+
+def _shadow_forecasts(
+    setup: ShadowSetup,
+    features: dict[str, float],
+    symbol: str,
+    current_price: Decimal,
+    ml_target: Decimal,
+    *,
+    ml_cold_start: bool,
+    return_scale: float | None,
+) -> tuple[ShadowForecast, ...]:
+    """ML-33: prognoza championa (zwrot, który poszedł do maila; bez niej przy cold
+    starcie) i prognozy cienia challengerów z TEGO SAMEGO wektora cech i σ.
+    Challenger, który nie umie prognozować (cechy spoza wektora, model w σ bez σ),
+    wypada z WARNING-iem — reszta cyklu go nie widzi."""
+    forecasts: list[ShadowForecast] = []
+    if not ml_cold_start and current_price > 0:
+        forecasts.append(
+            ShadowForecast(
+                CHAMPION_MODEL_NAME,
+                setup.champion_version,
+                predicted_return=float((ml_target - current_price) / current_price),
+            )
+        )
+    for challenger in setup.challengers:
+        try:
+            forecasts.append(challenger.forecast(features, return_scale=return_scale))
+        except (PortError, ReturnScaleUnavailableError):
+            logger.warning(
+                "ML-33: challenger %s bez prognozy cienia dla %s",
+                challenger.name,
+                symbol,
+                exc_info=True,
+            )
+    return tuple(forecasts)
+
+
+def _persist_shadow_predictions(
+    deps: AgentGraphDeps, state: AgentState, prediction_id: str
+) -> None:
+    """ML-33: prognozy cienia pod id zapisanej predykcji. Błąd zapisu (np. brak
+    tabeli przed migracją 075) zostawia predykcję zapisaną, bez cieni."""
+    forecasts = state.get("shadow_forecasts") or ()
+    if deps.shadow is None or not forecasts:
+        return
+    try:
+        deps.repository_port.save_shadow_predictions(prediction_id, state["symbol"], forecasts)
+    except PortError:
+        logger.warning(
+            "save_shadow_predictions failed for %s — predykcja zapisana bez prognoz cienia",
+            state["symbol"],
+            exc_info=True,
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1500,11 +1991,13 @@ def _superseded_reveal_record(symbol: str, stored: StoredCommitment) -> dict[str
     return record
 
 
-def _publish_commitment(deps: AgentGraphDeps, symbol: str, sealed: _SealedCommitment) -> None:
-    """#16 — publikuje sam hash (bez soli). WIA-01: wołane DOPIERO po udanym
-    `save_prediction` — hash bez zapisanej soli nigdy nie zostałby ujawniony,
-    a nieudany zapis zostawia nadpisywany wiersz nietknięty (ujawni go sweep).
-    Awaria publikacji nigdy nie wywala cyklu."""
+def _publish_commitment(
+    deps: AgentGraphDeps, symbol: str, sealed: _SealedCommitment, prediction_id: str
+) -> None:
+    """#16 — publikuje sam hash (bez soli), z id predykcji, czasem i wersją schematu
+    (WIA-25). WIA-01: wołane DOPIERO po udanym `save_prediction` — hash bez zapisanej
+    soli nigdy nie zostałby ujawniony, a nieudany zapis zostawia nadpisywany wiersz
+    nietknięty (ujawni go sweep). Awaria publikacji nigdy nie wywala cyklu."""
     if deps.attestation_publisher is None:
         return
     if sealed.superseded is not None:
@@ -1517,7 +2010,13 @@ def _publish_commitment(deps: AgentGraphDeps, symbol: str, sealed: _SealedCommit
     try:
         # Publikujemy WYŁĄCZNIE hash — sól zostaje w bazie do czasu revealu.
         deps.attestation_publisher.publish_commitment(
-            {"symbol": symbol, "commitment": sealed.commitment}
+            commitment_ledger_record(
+                symbol=symbol,
+                commitment=sealed.commitment,
+                prediction_id=str(prediction_id),
+                committed_at=deps.clock(),
+                schema_version=ATTESTATION_SCHEMA_VERSION,
+            )
         )
     except Exception:
         logger.exception("Attestation commitment publish failed for %s", symbol)
@@ -1557,8 +2056,21 @@ def _alpha_fusion_value(fusion: AlphaFusionScore | None) -> float:
 # #18, WIA-28: horyzont predykcji to zwrot do następnego cyklu — pętla chodzi
 # raz na dobę handlową, więc ~24 h w dni robocze i ~72 h przez weekend. Nazwy
 # `*_12h` (`target_price_12h`, `actual_price_after_12h`) są historyczne i zostają
-# jako kontrakt parsera i kolumn. Stałe 24 h ZANIŻA horyzont predykcji z piątku.
+# jako kontrakt parsera i kolumn. Stałe 24 h ZANIŻA horyzont predykcji z piątku,
+# więc za `edge_calendar_horizon_enabled` akcje i ETF biorą go z kalendarza NYSE.
 _EDGE_HORIZON_HOURS = 24.0
+
+
+def _edge_horizon_hours(deps: AgentGraphDeps, state: AgentState) -> float:
+    """WIA-28: godziny do cyklu, który rozliczy predykcję. Z flagą akcje i ETF liczą
+    je z kalendarza NYSE (do następnego dnia handlowego); krypto handluje 24/7
+    i ma cykl codziennie, więc zostaje przy stałych 24 h, jak wszystko bez flagi."""
+    if not deps.edge_calendar_horizon_enabled:
+        return _EDGE_HORIZON_HOURS
+    asset = state.get("asset") or Asset(symbol=state["symbol"])
+    if asset.asset_type not in _SESSION_QUOTED_ASSETS:
+        return _EDGE_HORIZON_HOURS
+    return hours_to_next_trading_day(deps.clock())
 
 
 def _resolve_implied_edge(
@@ -1568,6 +2080,7 @@ def _resolve_implied_edge(
     ml_target: Decimal,
     *,
     ml_cold_start: bool,
+    horizon_hours: float,
 ) -> ImpliedEdge | None:
     """#18 — dywergencja ruchu modelu od implied move rynku opcji.
 
@@ -1586,7 +2099,7 @@ def _resolve_implied_edge(
         return None
     iv = snapshot.implied_vol if snapshot is not None else None
     move = model_move_from_prices(float(current_price), float(ml_target))
-    return evaluate_edge(move, iv, _EDGE_HORIZON_HOURS)
+    return evaluate_edge(move, iv, horizon_hours)
 
 
 def _resolve_move_interval(
@@ -1619,7 +2132,7 @@ def _interval_price(price: Decimal, move_return: float) -> Decimal:
     return Money(price * (Decimal(1) + Decimal(str(move_return)))).for_storage().amount
 
 
-def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
     symbol = state["symbol"]
@@ -1646,7 +2159,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         symbol=state["symbol"],
         current_data={
             "price": str(state["current_price"]),
-            "delta_percentage": str(state["delta"] * Decimal("100")),
+            "delta_percentage": format_prompt_delta(
+                to_percent(state["delta"]), rounded=deps.prompt_delta_rounding_enabled
+            ),
             "av_sentiment_score": sentiment.get("av_sentiment_score"),
             "av_sentiment_label": sentiment.get("av_sentiment_label"),
             "news_volume_24h": sentiment.get("news_volume_24h"),
@@ -1665,8 +2180,16 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
         include_memory=memory,
         include_probabilities=deps.trend_probabilities_enabled,
+        fence_lessons=deps.prompt_taint_fence_enabled,
+        include_invalidation=deps.invalidation_level_enabled,
+        # DAT-17: świeże 8-K tylko z flagą; "" = prompt bez bloku, jak przed DAT-17.
+        corporate_events_context=(
+            format_corporate_events(state.get("fresh_corporate_events", ()))
+            if deps.corporate_events_enabled
+            else ""
+        ),
     )
-    raw_analysis, llm_failed = _run_llm_analysis(deps, state, prompt, symbol)
+    raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
@@ -1674,6 +2197,14 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     trend_probabilities: dict[str, float] | None = None
     if deps.trend_probabilities_enabled:
         llm_analysis, trend_probabilities = _apply_probability_forecast(llm_analysis, symbol)
+    invalidation_state: AgentState = {}
+    if deps.invalidation_level_enabled:
+        invalidation, invalidation_flag = _parse_invalidation(
+            llm_analysis, state["current_price"]
+        )
+        invalidation_state["invalidation"] = invalidation
+        if invalidation_flag is not None:
+            analysis_flags.append(invalidation_flag)
 
     # 2. ML — twarda predykcja liczbowa (multi-feature)
     # #21: trend_direction walidowany jak pola liczbowe — present-but-invalid
@@ -1684,9 +2215,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # Walidacja pól liczbowych — każdy padły input zostawia ślad w
     # data_quality_flags (None → _missing, nie-numeryczne/NaN → _invalid,
     # poza skalą [0, 1] → _out_of_range).
-    flags: list[str] = []
-    if llm_failed:
-        flags.append("llm_analysis_failed")
+    flags: list[str] = list(llm_flags)
     if failover is not None:
         flags.append(LLM_FAILOVER_FLAG)
     flags.extend(analysis_flags)
@@ -1714,9 +2243,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         state["symbol"], before=deps.clock()
     )
     if last_pred_price is not None and last_pred_price.amount != 0:
-        ml_price_delta = float(
-            (current_price - last_pred_price.amount) / last_pred_price.amount
-        )
+        # DAT-23: po podejrzanym splicie ostatnia predykcja (sprzed niego) w cenach po nim.
+        reference = last_pred_price.amount * state.get("split_ratio", Decimal(1))
+        ml_price_delta = float((current_price - reference) / reference)
     else:
         # Pierwsza predykcja dla symbolu — widok i tak odsiewa takie wiersze
         # (price_prev_12h NULL → price_delta NULL), więc neutralne 0.0 + flaga.
@@ -1748,8 +2277,34 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # Cold-start guard: dopóki XGBoost nie ma wytrenowanych wag, baseline
     # "cena bez zmian" (helper); gdy model się wytrenuje, przejmuje predykcję.
     ml_cold_start = not ml_port.is_trained
-    ml_target, feature_attribution = _run_ml_prediction(
-        ml_port, features, symbol, current_price
+    return_scale = (
+        _ml_return_scale(deps, symbol)
+        if deps.ml_sigma_target_enabled and ml_port.is_trained
+        else None
+    )
+    prediction = _run_ml_prediction(
+        ml_port, features, symbol, current_price, return_scale=return_scale
+    )
+    if prediction is None:
+        # ML-11: model w jednostkach σ bez σ — baseline, nie liczba w złych jednostkach.
+        flags.append(ML_SIGMA_UNAVAILABLE_FLAG)
+        ml_cold_start = True
+        prediction = (current_price, ())
+    ml_target, feature_attribution = prediction
+    shadow: AgentState = (
+        {}
+        if deps.shadow is None
+        else {
+            "shadow_forecasts": _shadow_forecasts(
+                deps.shadow,
+                features,
+                symbol,
+                current_price,
+                ml_target,
+                ml_cold_start=ml_cold_start,
+                return_scale=return_scale,
+            )
+        }
     )
 
     # #14: pojedyncze wyjście węzła — logujemy całkowity czas predict.
@@ -1758,15 +2313,22 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     deps.telemetry.record_node_timing("predict", symbol, elapsed_ms)
 
     implied_edge = _resolve_implied_edge(
-        deps, symbol, current_price, ml_target, ml_cold_start=ml_cold_start
+        deps,
+        symbol,
+        current_price,
+        ml_target,
+        ml_cold_start=ml_cold_start,
+        horizon_hours=_edge_horizon_hours(deps, state),
     )
     interval = _resolve_move_interval(
         deps, state, current_price, ml_target, ml_cold_start=ml_cold_start
     )
 
-    failover_state: dict[str, Any] = {} if failover is None else {"llm_failover": failover}
+    failover_state: AgentState = {} if failover is None else {"llm_failover": failover}
     return {
         **failover_state,
+        **shadow,
+        **invalidation_state,
         "llm_analysis": llm_analysis,
         "trend_probabilities": trend_probabilities,
         "ml_target_price": ml_target,
@@ -1787,7 +2349,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _council_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     council_port = deps.council_port
     council_threshold = deps.council_threshold
     crypto_council_threshold = deps.crypto_council_threshold
@@ -1817,7 +2379,7 @@ def _council_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     data = CouncilInput(
         symbol=state["symbol"],
         current_price=state["current_price"],
-        price_delta_pct=state["delta"] * Decimal("100"),
+        price_delta_pct=to_percent(state["delta"]),
         sentiment_score=_float_or_default(sentiment.get("av_sentiment_score"), 0.0),
         news_articles=tuple(_news_titles(news, _NEWS_TITLES_LIMIT)),
         llm_trend=str(llm_analysis.get("trend_direction", "SIDEWAYS")),
@@ -1946,10 +2508,14 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
             SESSION_CLOSE_SETTLEMENT_COLUMNS,
             deps.session_close_settlement_enabled and deps.quote_port is not None,
         ),
+        # WIA-54 (migracja 072): cena wykonalna z notowania `quote_port`, za flagą.
+        "entry_price": deps.executable_entry_enabled and deps.quote_port is not None,
         "commitment_hash": deps.attestation_publisher is not None,
         "commitment_salt": deps.attestation_publisher is not None,
         # WIA-70 (migracja 043): dosłowny plaintext commitmentu, ta sama zasada.
         "commitment_payload": deps.attestation_publisher is not None,
+        # ML-27 (migracja 074): poziom unieważnienia tezy, tylko z flagą.
+        "invalidation_price": deps.invalidation_level_enabled,
         # ML-29 (migracja 051): rozkład trzech klas, tylko z flagą.
         "trend_probabilities": deps.trend_probabilities_enabled,
         "embedding": deps.embedding_port is not None,
@@ -1959,7 +2525,43 @@ def required_prediction_columns(deps: AgentGraphDeps) -> frozenset[str]:
     }
 
 
-def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+# WIA-09: atrapa po awarii głównego LLM nie jest predykcją (poza track recordem).
+_LLM_FALLBACK_FLAG = "llm_analysis_failed"
+
+
+def _open_paper_trade(
+    deps: AgentGraphDeps, state: AgentState, prediction_id: str, record: Mapping[str, Any]
+) -> None:
+    """WIA-59: pozycja papierowa zapisanej predykcji (za `paper_ledger_costs`).
+
+    Wejście po cenie z rekordu (skala DECIMAL(14,4)), strona z kierunku. Atrapa LLM
+    i predykcja na nieaktualnym notowaniu (DAT-14) nie liczą się do trafności, więc
+    nie otwierają pozycji. Błąd zapisu tylko loguje — predykcja już jest w bazie."""
+    costs = deps.paper_ledger_costs
+    if costs is None:
+        return
+    if _LLM_FALLBACK_FLAG in (state.get("data_quality_flags") or []) or state.get("stale_quote"):
+        return
+    asset = state.get("asset")
+    entry = PaperTradeEntry(
+        prediction_id=prediction_id,
+        symbol=state["symbol"],
+        side=side_of(str(record["predicted_trend"])),
+        entry_price=record["price_at_prediction"],
+        entry_ts=deps.clock(),
+        cost_bps=costs.for_asset(asset.asset_type if asset is not None else None),
+    )
+    try:
+        deps.repository_port.append_paper_trade(entry)
+    except PortError:
+        logger.warning(
+            "append_paper_trade failed for %s — prediction saved without a paper trade",
+            state["symbol"],
+            exc_info=True,
+        )
+
+
+def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     vector_memory_enabled = deps.vector_memory_enabled
     repository_port = deps.repository_port
     llm_analysis = state.get("llm_analysis", {})
@@ -1977,6 +2579,14 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # #17: zawężenie do zmiennej lokalnej WEWNĄTRZ gałęzi `is not None`, żeby
     # mypy widział `CouncilVerdict` (nie `CouncilVerdict | None`) w asdict().
     # Wcześniej maskował to szeroki override `disable_error_code=["arg-type"]`.
+    # ML-35: pewność z LLM po polityce `_validate_float` — NaN/Inf/nie-liczba to
+    # default z flagą `_invalid` (brak pola zostaje cichym defaultem, jak dotąd).
+    confidence, confidence_flag = _saved_float(
+        llm_analysis.get("confidence_score"), "confidence_score", 0.5
+    )
+    if confidence_flag is not None:
+        data_quality_flags = [*data_quality_flags, confidence_flag]
+
     council_verdict = state.get("council_verdict")
     council_verdict_dict = (
         dataclasses.asdict(council_verdict) if council_verdict is not None else None
@@ -2001,9 +2611,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         "predicted_target_price": _storage_price(state.get("ml_target_price")),
         # #4: persystujemy deklarowaną pewność — bez niej Slow-Loopowy sędzia
         # nie oceni kalibracji (migracja 016).
-        "confidence_score": _float_or_default(
-            llm_analysis.get("confidence_score"), 0.5
-        ),
+        "confidence_score": confidence,
         "reasoning_text": llm_analysis.get("reasoning"),
         "council_verdict": council_verdict_dict,
         "data_quality_flags": data_quality_flags,
@@ -2073,6 +2681,12 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     if deps.trend_probabilities_enabled and trend_probabilities is not None:
         record["trend_probabilities"] = dict(trend_probabilities)
 
+    # ML-27: poziom unieważnienia tezy (migracja 074) — watch alarmuje po jego
+    # przekroczeniu. Bez poprawnego poziomu od LLM klucza nie ma, kolumna zostaje NULL.
+    invalidation = state.get("invalidation")
+    if deps.invalidation_level_enabled and invalidation is not None:
+        record["invalidation_price"] = _storage_price(invalidation.price)
+
     # DAT-14: predykcja na notowaniu sprzed ostatniej sesji wypada z trafności po
     # rozliczeniu. Bez notowania z czasem (krypto) kolumna zostaje NULL.
     stale_quote = state.get("stale_quote")
@@ -2089,9 +2703,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
         record["embedding"] = vector
 
     prediction_id = repository_port.save_prediction(record)
+    _open_paper_trade(deps, state, prediction_id, record)
     # WIA-01: hash trafia do publicznego logu dopiero, gdy sól jest w bazie.
     if sealed is not None:
-        _publish_commitment(deps, state["symbol"], sealed)
+        _publish_commitment(deps, state["symbol"], sealed, prediction_id)
+    _persist_shadow_predictions(deps, state, prediction_id)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się
@@ -2105,7 +2721,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
                 symbol=state["symbol"],
                 votes=list(verdict.investor_opinions),
             )
-        except Exception:
+        except PortError:
             logger.exception(
                 "save_council_votes failed for %s — JSONB blob in "
                 "prediction_logs is still saved",
@@ -2120,7 +2736,11 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
 
 
 
-def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
+    # DAT-15: anomalny odczyt nie nadpisuje referencji ani nie trafia do wektora cech —
+    # następny cykl liczy ruch od ostatniego wiarygodnego snapshotu.
+    if state.get("price_outlier"):
+        return {"status": "ignored"}
     # #6: węzeł terminalny — zapisujemy snapshot ceny dla następnego cyklu.
     _persist_price_snapshot(deps, state)
     # FIN-14 (decyzja 2026-10-19): cykl re-baseline nie jest obserwacją cyklu —
@@ -2128,10 +2748,11 @@ def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
     # ML-14 nie powstaje. Zapisujemy tylko nowy punkt odniesienia.
     if not _reference_is_stale(state):
         _persist_feature_snapshot(deps, state, gated=False)
-    return {"status": "ignored"}
+    threshold = _pick_threshold(state, deps.threshold, deps.crypto_threshold)
+    return {"status": "ignored", "effective_threshold": Ratio(threshold.value)}
 
 
-def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> dict[str, Any]:
+def _budget_exhausted_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     """FIN-12: węzeł terminalny symbolu odciętego budżetem cyklu — jedyny wyjątek
     od zapisu snapshotu w każdym cyklu. Snapshot z bieżącą ceną zjadłby ruch ponad
     progiem: następny cykl liczyłby Δ od nowej ceny i ruch zniknąłby bez analizy.

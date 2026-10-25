@@ -1,6 +1,6 @@
 # Resume checklist: Fast Loop and Shock Watch crons
 
-**Status (2026-10-23): both crons are resumed.** The resume moved to a new, empty Supabase project, so DB Migrate applied every migration from `001` to `042`, not only `026`–`042`. Steps 1–4, 6, 7 and 10 are done: every flag of step 4 is on, both experiments run from 2026-10-26 (the first scheduled cycle) to 2027-01-29, and the deadman alerts after 26 h. Still open: step 5 (no `HEARTBEAT_URL` secret yet), step 8's check of the number of Alpha Vantage keys, step 9 (the attestation flags stay off), a push channel for Shock Watch (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`; without one it logs an error and sends nothing), and step 11 after the first scheduled run.
+**Status (2026-10-23): both crons are resumed.** The resume moved to a new, empty Supabase project, so DB Migrate applied every migration from `001` to `042`, not only `026`–`042`. Steps 1–4, 6, 7 and 10 are done: every flag of step 4 is on, both experiments run from 2026-10-26 (the first scheduled cycle) to 2027-01-29, and the deadman alerts after 26 h. Still open: step 5 (no `HEARTBEAT_URL` secret yet), step 8's check of the number of Alpha Vantage keys, step 9 (the `attestation-log` branch, its protection and the attestation flags, which stay off), a push channel for Shock Watch (`TELEGRAM_*` or `SLACK_WEBHOOK_URL`; without one it logs an error and sends nothing), and step 11 after the first scheduled run.
 
 The daily Fast Loop cron has been commented out since 2026-08-17 (commit `02fc397`, decision 2): the loop cost money and its failures were silent, and nothing raised an alarm during the quiet weeks from 2026-08-17 to 2026-10-15. The hourly Shock Watch cron was paused on 2026-10-16 to match (`f886da0`). Waves A to R added what a resume needs: a cost ceiling per cycle, a daily Alpha Vantage budget, a daily deadman, an external heartbeat, explicit write and paid-call switches in the workflows, a cost ledger, a run history and a free reference signal. This page is the owner's list of steps, in order. Switching the `schedule` back on is the last step, and it is the owner's call.
 
@@ -29,9 +29,11 @@ Put the project's secret key (`sb_secret_…`, Supabase dashboard → Project Se
 
 Merge the pending branches into `main` and push. The workflows run the code of the branch they start on, so the crons only pick up waves A to R once they are on `main`.
 
-### 3. Run DB Migrate for `043`–`059`
+### 3. Run DB Migrate for `043`–`076`
 
-Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `043_attestation_payload.sql` to `059_settlement_session_close.sql` (production has `001`–`042` since the resume on 2026-10-23), then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), and `050` adds `settled_at` and `label_horizon_hours` to it (ML-25); neither has a flag. `048` (ML-19) upper-cases and trims `prediction_logs.predicted_trend`, then adds the `prediction_logs_predicted_trend_known` CHECK (`BULLISH`, `BEARISH`, `SIDEWAYS` or `NULL`) as `NOT VALID`, so history is not scanned; its `NOTICE` in the log counts the rows still outside the list. Such a row rejects every later `UPDATE` (settlement, calibration) until its trend is fixed by hand; when the count is `0`, `ALTER TABLE prediction_logs VALIDATE CONSTRAINT prediction_logs_predicted_trend_known` finishes the job. `051` adds `prediction_logs.trend_probabilities` (ML-29) and `052` adds `model_scorecards.feature_stats` (ML-21); both columns are written only behind their flags in step 4. `055` adds `prediction_logs.stale_quote` (DAT-14), `056` adds `fundamentals_cache.market_cap` (DAT-21) and `057` creates the `price_level_alerts` table (ALR-11), each written only behind its flag. `058` rebuilds the `ml_feature_store` view and the persona RPCs of `015`, `018` and `045` without settlements on a stale quote (`stale_quote IS NOT TRUE`, DAT-14); it has no flag, and rows stay in until `stale_quote_enabled` marks them. `059` adds the session-close settlement columns of `prediction_logs` (WIA-61), written only behind its flag.
+Run **🗄️ DB Migrate (manual)** from the Actions tab with `dry_run` on, check that the log lists `043_attestation_payload.sql` to `076_rag_point_in_time.sql` (production has `001`–`042` since the resume on 2026-10-23; numbers `066`–`069` are unused), then run it again with `dry_run` off. `026` and `039` rebuild the `ml_feature_store` view and `038` enables RLS; none of the three has a flag. `047` rebuilds the view again with `LAG` over every logged prediction (ML-17), and `050` adds `settled_at` and `label_horizon_hours` to it (ML-25); neither has a flag. `048` (ML-19) upper-cases and trims `prediction_logs.predicted_trend`, then adds the `prediction_logs_predicted_trend_known` CHECK (`BULLISH`, `BEARISH`, `SIDEWAYS` or `NULL`) as `NOT VALID`, so history is not scanned; its `NOTICE` in the log counts the rows still outside the list. Such a row rejects every later `UPDATE` (settlement, calibration) until its trend is fixed by hand; when the count is `0`, `ALTER TABLE prediction_logs VALIDATE CONSTRAINT prediction_logs_predicted_trend_known` finishes the job. `051` adds `prediction_logs.trend_probabilities` (ML-29) and `052` adds `model_scorecards.feature_stats` (ML-21); both columns are written only behind their flags in step 4. `055` adds `prediction_logs.stale_quote` (DAT-14), `056` adds `fundamentals_cache.market_cap` (DAT-21) and `057` creates the `price_level_alerts` table (ALR-11), each written only behind its flag. `058` rebuilds the `ml_feature_store` view and the persona RPCs of `015`, `018` and `045` without settlements on a stale quote (`stale_quote IS NOT TRUE`, DAT-14); it has no flag, and rows stay in until `stale_quote_enabled` marks them. `059` adds the session-close settlement columns of `prediction_logs` (WIA-61), written only behind its flag. `060` adds `model_scorecards.weights_sha256` (CI-13), written only behind its flag. `064` adds the training provenance columns of `model_scorecards` (ML-22), written only behind its flag. `075` creates the `shadow_predictions` table (ML-33), written only behind its flag.
+
+Migrations `070` and `071` have no flag and belong to the same DB Migrate run. `070` (BEZ-18) pins `search_path` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`. `071` (NIEZ-30) adds `public.schema_version()`, which the Fast Loop and the Slow Loop call at start to switch off a flag whose migration the database lacks (see [configuration](configuration.md#feature-flags)). Until `071` is applied the call fails, every flag stays on and the run logs a `WARNING` — nothing breaks. Check it after the run with `select public.schema_version();` in the SQL Editor: it must return `76`, the last migration of the run; `NULL` means the migrations were not applied through `supabase db push`.
 
 ### 4. Turn on the flags the migrations unlock
 
@@ -47,7 +49,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `032` | `interval_coverage_enabled` | |
 | `033` | `regime_hysteresis_enabled` | Part of the prediction recipe: `config_hash` changes and a new recipe segment starts. |
 | `034` | `gate_delta_enabled` | |
-| `035` | `positions_currency_enabled` | |
+| `035` | — | No flag since PORT-23: the positions adapter and the CSV import always use `currency` and `purchase_date`. |
 | `036` | `fx_rates_cache_enabled` | |
 | `037` | `experiment_arms_enabled` | |
 | `040` | `cost_ledger_enabled` | |
@@ -59,12 +61,23 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `049` | `model_scorecard_run_id_enabled` | One `run_id` per Slow Loop run on every scorecard row (ML-24); a same-day re-run no longer merges with the cron run. |
 | `051` | `trend_probabilities_enabled` | Also a product decision, not only the migration: it changes the prediction prompt (the three-trend distribution, ML-29) and is part of the recipe, so `config_hash` changes and a new recipe segment starts. |
 | `052` | `model_scorecard_feature_stats_enabled` | The training feature distribution and the 30-day PSI on every scorecard row (ML-21); the model card warns above `0.25`. |
-| `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is part of `config_hash`, so turning it on starts a new `recipe_version` segment. |
+| `053` | `earnings_cache_enabled` | The Fast Loop reads the earnings date only from `earnings_cache`, which the Slow Loop refreshes (FIN-11); it is outside `config_hash` (the same date from a cache, not a new recipe), so turning it on does not start a new `recipe_version` segment. |
 | `054` | `council_votes_upsert_enabled` | Council votes are upserted on the unique `(prediction_id, investor_name)` key (NIEZ-14), so a retried save no longer duplicates them. |
 | `055` | `stale_quote_enabled` | Predictions and settlements made on a stale quote get `prediction_logs.stale_quote = true` and drop out of the hit rate (DAT-14). |
 | `056` | `fundamentals_market_cap_enabled` | The Slow Loop stores the market capitalisation from the same `OVERVIEW` response; the significant insider purchase threshold scales with it (DAT-21). |
 | `057` | `price_level_alerts_enabled` | The watch alerts on user-set price levels from `price_alerts` (ALR-11); the list ships empty, add levels first. |
 | `059` | `session_close_settlement_enabled` | Settlements also record the official NYSE session close with its date and source, and the email shows its hit rate next to the `/quote` one (WIA-61, transition period). |
+| `060` | `model_scorecard_weights_sha256_enabled` | The sha256 of the weights file of the run on the scorecard row (CI-13), the same file the `model-latest` Release holds and the predictions hash as `model_version`. |
+| `061` | `digest_archive_enabled` | The full email goes to the private Supabase Storage bucket `digests` and the owner's email and push carry an `Otwórz w przeglądarce` link valid for 7 days (MAIL-24); `061` creates the `digests` index table and, where the migration role may write `storage.buckets`, the private bucket. Check under Dashboard → Storage that `digests` exists and **Public bucket** is off; if it is missing, create it there with Public off. |
+| `062` | `split_detection_enabled` | A suspected split (the quote's `pc` against the last snapshot) adjusts the gate, the settlement and `price_delta` and is recorded in `corporate_actions` (DAT-23); part of `config_hash` and it changes settlements, so turn it on after EXP-02/03 end (2027-01-29). |
+| `063` | `rag_exact_search_enabled` | RAG analogs come from an exact nearest-neighbour scan instead of the ivfflat index at `probes = 1` (ML-23); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
+| `064` | `model_scorecard_provenance_enabled` | The training provenance on every scorecard row (ML-22): dataset fingerprint, date range, rows per symbol, parameters with the seed, XGBoost version, feature set version and commit. |
+| `065` | `persona_brier_ranking_enabled` | The persona leaderboard of the email sorts by the Brier skill of the personas' confidence and shows `Brier` / `BSS` under the hit rate (WIA-44); presentation only, so it does not start a new `recipe_version` segment. |
+| `072` | `executable_entry_enabled` | Settlements also record the executable entry — the open of the first NYSE session after the prediction from the same `/quote` — and the email adds a second equity curve "from the open" (WIA-54). A measurement, not part of `config_hash`. |
+| `073` | `paper_ledger_enabled` | Every real prediction opens a paper position in the append-only, hash-chained `paper_trades` and its settlement closes it (WIA-59); the email's equity curve reads the ledger, and with `attestation_enabled` the chain head is published once a day. A record and a measurement, not part of `config_hash`. |
+| `074` | `invalidation_level_enabled` | Each prediction carries the price level that breaks its thesis, validated by the domain (right side of the price, at most 15% away); the email shows it under the reasoning and the Shock Watch alerts once when it is crossed (ML-27). It changes the prediction prompt and is part of `config_hash`, so turn it on after EXP-02/03 end (2027-01-29). |
+| `075` | `shadow_predictions_enabled` | The Fast Loop stores the champion's and the challengers' forecasts of the ML leg and the Slow Loop reports the promotion verdict in its step summary (ML-33). |
+| `076` | `rag_point_in_time_enabled` | RAG analogs come only from predictions settled before the moment of the prediction, without the same symbol's last 72 hours (`match_news_embeddings_pit`, ML-41); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 
@@ -86,7 +99,51 @@ Both experiments are defined in `config.toml` and inactive until the Fast Loop r
 
 ### 9. Pages and the `attestation-log` branch before the attestation flags
 
-`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home (attestation also needs migration `043` from step 3, or each cycle runs without it): deploy GitHub Pages (Settings → Pages → Source: GitHub Actions) and protect the `attestation-log` branch, then turn both flags on (WIA-62). `tests/test_workflow_env_wiring.py` fails either flag while no workflow that runs `main_agent.py` has an `actions/deploy-pages` or `git push` step in that job, and the attestation has no publish step yet, so the publish step lands first. The attestation has no publish step yet, and the Fast Loop deploys the scorecard from its separate `deploy-scorecard` job (WIA-16), which that guard does not look at, so it still fails `public_scorecard_enabled` today. `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` checks each flag against its own mechanism, in the job that runs `main_agent.py` or in any job that waits for it through `needs` (directly or transitively): `public_scorecard_enabled` needs an `actions/upload-pages-artifact` of the scorecard's directory and an `actions/deploy-pages` step, which the Fast Loop has since WIA-16, so that flag can go on once Pages is set up; `attestation_enabled` needs a `git add` of both ledger files (`attestation_commitments_path`, `attestation_reveals_path`) and a `git push`, because a Pages deploy replaces the whole site and cannot keep an append-only ledger. The attestation has no such step yet, so its push lands first. The public scorecard has its own deploy: [`scorecard_pages.yml`](../.github/workflows/scorecard_pages.yml) runs the free `main_scorecard.py` and deploys only `dirname(public_scorecard_path)` to Pages (WIA-52), and every Fast Loop run that wrote the page deploys it the same way (WIA-16). Once Pages is set up and `public_scorecard_enabled` is on, run **🏅 Public Scorecard** from the Actions tab with a `days` input that reaches back to the last settled predictions (the Fast Loop has been paused since 2026-08-17, so the default 30 days are empty and write no page), then check the page URL on the run summary.
+`attestation_enabled` and `public_scorecard_enabled` stay off until their artefacts have a durable home. The workflows are ready (WIA-14, WIA-16); what is left is repository settings, which only the owner can change.
+
+**9a. Create the `attestation-log` branch** (an orphan branch holding only the two ledger files, created from a throwaway clone so your checkout is untouched). The Fast Loop checks this branch out into `public/attestation/` before the agent runs, and the separate `publish-attestation-ledger` job (the only one with `contents: write`, no API key) appends the new lines in a `[skip ci]` commit and pushes to this branch only, never to `main`:
+
+```bash
+ledger=$(mktemp -d) \
+  && git clone --quiet --no-checkout "$(git remote get-url origin)" "$ledger" \
+  && git -C "$ledger" switch --orphan attestation-log \
+  && : > "$ledger/commitments.jsonl" && : > "$ledger/reveals.jsonl" \
+  && git -C "$ledger" add commitments.jsonl reveals.jsonl \
+  && git -C "$ledger" commit -m "ledger: init [skip ci]" \
+  && git -C "$ledger" push origin attestation-log \
+  && rm -rf "$ledger"
+```
+
+**9b. Protect it** (no force-push, no deletion, admins included; pushes stay open, because the workflow pushes with the job token):
+
+```bash
+gh api -X PUT "repos/DominikSienkiewicz/StockAgent/branches/attestation-log/protection" --input - <<'JSON'
+{
+  "required_status_checks": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
+```
+
+**9c. Check the pinned `actions/download-artifact`** in `fast_loop_12h.yml` (`publish-attestation-ledger` job) still points at the commit of its tag: `gh api repos/actions/download-artifact/git/ref/tags/v4.3.0 --jq .object.sha` must print the SHA in the `uses:` line. The job runs only when the agent appended to the ledger, so a wrong SHA would surface on the first run with the flag on.
+
+**9d. Turn the flag on** (attestation also needs migration `043` from step 3, or each cycle runs without it): set `attestation_enabled = true` in `config.toml`. A flag on without the branch fails the Fast Loop in its first step, before any paid call, with an `::error` annotation. Then run the Fast Loop once by hand and check that `attestation-log` has a `ledger: run <id> [skip ci]` commit whose `commitments.jsonl` gained **one** cycle root line (`cycle_id`, `root`, `n_leaves`, `leaves`, WIA-60), even when the cycle saved no prediction. Reveals follow in later runs: the sweep after the report appends them to `reveals.jsonl` without stamping, and the next run stamps `revealed_at` only for the reveals it finds in its checkout of `attestation-log` (WIA-15), so a cancelled run or a failed push costs nothing but a repeat. The first push is also the start of the verifiable track record (WIA-27). Anyone can then check the log with the three commands of [Verify it yourself](configuration.md#verify-it-yourself).
+
+**9e. Pages for the public scorecard:** switch GitHub Pages on with GitHub Actions as its source (the same as Settings → Pages → Source: GitHub Actions); the first command creates the site, the second one switches an existing site to Actions, the third shows the result:
+
+```bash
+gh api -X POST "repos/DominikSienkiewicz/StockAgent/pages" -f build_type=workflow
+gh api -X PUT "repos/DominikSienkiewicz/StockAgent/pages" -f build_type=workflow
+gh api "repos/DominikSienkiewicz/StockAgent/pages" --jq '.build_type, .html_url'
+```
+
+Then turn `public_scorecard_enabled` on. `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` checks each flag against its own mechanism, in the job that runs `main_agent.py` or in any job that waits for it through `needs` (directly or transitively): `public_scorecard_enabled` needs an `actions/upload-pages-artifact` of the scorecard's directory and an `actions/deploy-pages` step, which the Fast Loop has since WIA-16; `attestation_enabled` needs a `git add` of both ledger files (`attestation_commitments_path`, `attestation_reveals_path`) and a `git push`, which the `publish-attestation-ledger` job has since WIA-14, because a Pages deploy replaces the whole site and cannot keep an append-only ledger. The public scorecard has its own deploy: [`scorecard_pages.yml`](../.github/workflows/scorecard_pages.yml) runs the free `main_scorecard.py` and deploys only `dirname(public_scorecard_path)` to Pages (WIA-52), and every Fast Loop run that wrote the page deploys it the same way (WIA-16). Once Pages is set up and `public_scorecard_enabled` is on, run **🏅 Public Scorecard** from the Actions tab with a `days` input that reaches back to the last settled predictions, then check the page URL on the run summary and `<page URL>/scorecard.json` next to it (WIA-81; its contract is [`docs/schemas/scorecard.schema.json`](schemas/scorecard.schema.json)).
+
+**9f. Both public flags on, in one commit (WIA-62).** The code for both artefacts is ready and `config.toml` keeps `attestation_enabled` and `public_scorecard_enabled` off until 9a–9e are done and migration `043` is applied. Then set both to `true` in one commit; `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` passes each flag only next to its durable publish step, and `test_workflows_publish_only_the_public_artifact_dirs` fails any workflow that would publish a path outside the scorecard's directory and the ledger's. After the first two runs, check from a clone that `uv run python main_tools.py verify-attestation` against `attestation-log` prints `OK` (see [Verify it yourself](configuration.md#verify-it-yourself)). The public status page (NIEZ-33) is a third flag, `public_status_page_enabled`: it needs migration `041` with `cycle_runs_enabled` (on since 2026-10-23) and the scorecard flag, because it rides on the scorecard's Pages deploy; turn it on with them or later, then check `<Pages URL>/status/` and `<Pages URL>/status/badge.json`.
 
 ### 10. Uncomment the crons
 
@@ -97,3 +154,11 @@ Both experiments are defined in `config.toml` and inactive until the Fast Loop r
 ### 11. After the first scheduled run
 
 Check that the email arrived with its cycle-cost section, that the run page shows the run summary, that the heartbeat check received its ping, that a `cycle_runs` row exists (with `cycle_runs_enabled`), and that the next deadman run passes.
+
+### 12. After EXP-02 and EXP-03 end: the earnings gate
+
+Owner decision (DAT-40): `earnings_calendar_enabled` stays `false` while EXP-02 and EXP-03 run, because the earnings multiplier changes the volatility gate, which is part of the recipe both experiments compare. After their `end` dates (2027-01-29 at the latest), set `earnings_calendar_enabled = true` in `config.toml` (this commit changes `config_hash`). Since FIN-09 the Fast Loop asks Alpha Vantage for the earnings calendar once per run — one `EARNINGS_CALENDAR` request without a symbol covers the whole watchlist, with key rotation over `ALPHA_VANTAGE_API_KEYS` — so it no longer needs four keys; with `earnings_cache_enabled` (migration `053`) the Fast Loop asks nothing and the Slow Loop refreshes the cache. Check the next email: no `Alpha Vantage earnings` quota warning, and a symbol a few days before its report shows the earnings proximity in the Alpha Signals table.
+
+### 13. After SEC lifts the EDGAR block and EXP-02/03 end: 8-K filings in the prompt
+
+Owner decision (2026-10-25, DAT-17): `corporate_events_enabled` puts a fresh SEC 8-K current report into the prediction prompt and `fresh_8k` into `feature_snapshots`, so it changes the recipe both experiments compare and stays `false` until their `end` dates (2027-01-29 at the latest). It also needs EDGAR to answer: SEC blocks this client with a 403 (see [configuration](configuration.md), insider flow). Once SEC lifts the block and the experiments have ended, set `corporate_events_enabled = true` in `config.toml` (this commit changes `config_hash`; no migration) and start one manual Fast Loop run. Check the log for no `SEC EDGAR answered 403` warning; on the next email with a stock that filed an 8-K in the last 3 days, the prompt of its prediction carries the `<corporate_events>` block, and `feature_snapshots.features` carries `fresh_8k`.

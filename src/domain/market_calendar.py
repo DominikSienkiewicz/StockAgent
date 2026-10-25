@@ -185,3 +185,19 @@ def to_nyse_time(moment: datetime) -> datetime:
     """`moment` w strefie NYSE; naiwny `datetime` to UTC."""
     aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
     return aware.astimezone(NYSE_TZ)
+
+
+def hours_to_next_trading_day(moment: datetime) -> float:
+    """WIA-28: godziny kalendarzowe od `moment` do tej samej godziny ET najbliższego
+    dnia handlowego po dniu `moment` — horyzont predykcji do cyklu, który ją rozliczy
+    (~24 h w dzień roboczy, ~72 h przez weekend, dłużej przed świętem).
+
+    Godziny rzeczywiste, więc zmiana czasu w weekend daje 71 albo 73 h. Poza znanymi
+    latami (`COVERED_YEARS`) kalendarz zna tylko weekendy."""
+    nyc = to_nyse_time(moment)
+    day = nyc.date() + timedelta(days=1)
+    while not is_trading_day(day):
+        day += timedelta(days=1)
+    target = datetime.combine(day, nyc.time(), tzinfo=NYSE_TZ)
+    # Odejmowanie dwóch czasów z tym samym tzinfo liczy czas ścienny — stąd UTC.
+    return (target.astimezone(UTC) - nyc.astimezone(UTC)).total_seconds() / 3600.0

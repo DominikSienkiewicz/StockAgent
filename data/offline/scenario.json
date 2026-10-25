@@ -1,0 +1,21 @@
+{
+  "description": "DX-04: dwa cykle Fast Loopa offline. Cykl 1: NVDA +3% i MSFT -2,5% przechodzą bramkę (rada tylko dla NVDA, próg rady 3%), AAPL i BTC zostają pod progiem. Cykl 2 (12 h później): NVDA +3,1% rozlicza trafną prognozę, MSFT +3,1% rozlicza chybioną (diagnoza ze skryptu), BTC +5,2% przechodzi próg krypto.",
+  "started_at": "2026-10-15T10:30:00+00:00",
+  "cycle_interval_hours": 12,
+  "symbols": ["NVDA", "MSFT", "AAPL"],
+  "etf_symbols": [],
+  "crypto_symbols": ["BTC"],
+  "volatility_threshold": "0.02",
+  "crypto_volatility_threshold": "0.05",
+  "council_volatility_threshold": "0.03",
+  "reflection_min_age_hours": 6,
+  "track_record_days": 30,
+  "display_timezone": "Europe/Warsaw",
+  "paper_cost_bps": 10,
+  "crypto_paper_cost_bps": 25,
+  "seed_prices": {"NVDA": "100.00", "MSFT": "400.00", "AAPL": "200.00", "BTC": "60000"},
+  "cycles": [
+    {"NVDA": "103.00", "MSFT": "390.00", "AAPL": "200.40", "BTC": "61200"},
+    {"NVDA": "106.20", "MSFT": "402.00", "AAPL": "199.80", "BTC": "64400"}
+  ]
+}

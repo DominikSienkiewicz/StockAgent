@@ -407,3 +407,53 @@ class TestWeeklyRecapSettledWindow:
         _use_case(repo, Mock(spec=LLMPort)).run()
 
         repo.get_resolved_predictions_detailed.assert_called_once_with(7, since=None)
+
+
+class TestCouncilRedundancy:
+    """WIA-45: recap pokazuje, ile niezależnych głosów daje rada — za flagą."""
+
+    _CYCLE = ("BUY", "SELL", "HOLD", "BUY", "SELL", "HOLD", "BUY")
+
+    def _redundant_rows(self, count: int = 12) -> list[dict[str, Any]]:
+        rows = []
+        for index in range(count):
+            rec = self._CYCLE[index % len(self._CYCLE)]
+            opinions = tuple(
+                (name, rec, 0.8, "zgodnie z resztą") for name in ("Graham", "Buffett", "Marks")
+            )
+            rows.append(
+                _row(f"S{index}", target=str(105 + index), verdict=_verdict(rec, opinions))
+            )
+        return rows
+
+    def _run(self, *, enabled: bool) -> WeeklyRecap:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = self._redundant_rows()
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "ok"}
+        use_case = WeeklyRecapUseCase(
+            repository_port=repo, llm_port=llm, council_redundancy_enabled=enabled
+        )
+
+        recap = use_case.run()["recap"]
+
+        assert isinstance(recap, WeeklyRecap)
+        return recap
+
+    def test_identical_personas_collapse_to_one_effective_voter(self) -> None:
+        recap = self._run(enabled=True)
+
+        assert recap.redundancy is not None
+        assert recap.redundancy.n_eff == pytest.approx(1.0)
+        assert recap.redundancy.personas == 3
+
+    def test_persona_agreement_with_the_llm_trend_is_measured_on_the_same_rows(self) -> None:
+        recap = self._run(enabled=True)
+
+        assert recap.redundancy is not None
+        assert {pair.first for pair in recap.redundancy.llm_pairs} == {
+            "Graham", "Buffett", "Marks"
+        }
+
+    def test_flag_off_leaves_the_recap_untouched(self) -> None:
+        assert self._run(enabled=False).redundancy is None

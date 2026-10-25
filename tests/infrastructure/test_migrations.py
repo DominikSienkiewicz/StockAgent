@@ -10,11 +10,12 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import math
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,11 +24,14 @@ import pytest
 from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
 
+from src.domain.calibration_curve import brier_score, log_loss
 from src.domain.persona_track_record import (
     PersonaVoteOutcome,
     persona_accuracy_weights_as_of,
     persona_hit_stats,
+    persona_vote_correct,
 )
+from src.domain.value_objects import AssetType
 
 # `supabase db push` czyta WYŁĄCZNIE `supabase/migrations/` — trzymamy je tam,
 # żeby CLI i testy kontenerowe widziały dokładnie ten sam zbiór plików.
@@ -92,6 +96,19 @@ MIGRATION_FILES = [
     "057_price_level_alerts.sql",
     "058_settled_reads_without_stale_quote.sql",
     "059_settlement_session_close.sql",
+    "060_model_scorecards_weights_sha256.sql",
+    "061_digests.sql",
+    "062_corporate_actions.sql",
+    "063_rag_exact_search.sql",
+    "064_model_scorecards_provenance.sql",
+    "065_persona_scoring.sql",
+    "070_rpc_search_path.sql",
+    "071_schema_version.sql",
+    "072_prediction_entry_price.sql",
+    "073_paper_trades.sql",
+    "074_invalidation_price.sql",
+    "075_shadow_predictions.sql",
+    "076_rag_point_in_time.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -132,7 +149,7 @@ def _pgvector_connection() -> Iterator[psycopg2.extensions.connection]:
 
 
 @pytest.fixture(scope="module")
-def pg_conn():
+def pg_conn() -> Iterator[psycopg2.extensions.connection]:
     """Kontener Postgres z pgvector — żyje przez cały moduł testów.
 
     Skipuje cały moduł gdy Docker nie jest dostępny (CI bez demona, lokalnie
@@ -233,10 +250,12 @@ _PUBLIC_TABLES_SQL = """
 
 @pytest.mark.containers
 class TestMigrations:
-    def test_migrations_apply_without_errors(self, pg_conn):
+    def test_migrations_apply_without_errors(self, pg_conn: psycopg2.extensions.connection) -> None:
         _apply_migrations(pg_conn)
 
-    def test_prediction_logs_has_required_columns(self, pg_conn):
+    def test_prediction_logs_has_required_columns(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         required = {
             "id", "symbol", "timestamp",
@@ -250,11 +269,13 @@ class TestMigrations:
         }
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
-    def test_price_snapshots_table_exists(self, pg_conn):
+    def test_price_snapshots_table_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "price_snapshots")
         assert {"id", "symbol", "price", "timestamp"} <= cols
 
-    def test_ml_feature_store_exposes_fast_loop_feature_contract(self, pg_conn):
+    def test_ml_feature_store_exposes_fast_loop_feature_contract(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "ml_feature_store")
         required = {
             "price_delta",
@@ -269,7 +290,9 @@ class TestMigrations:
         }
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
-    def test_embedding_column_accepts_1536_dim_vector(self, pg_conn):
+    def test_embedding_column_accepts_1536_dim_vector(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             vector = "[" + ",".join(["0.1"] * 1536) + "]"
             cur.execute(
@@ -283,7 +306,7 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    def test_embedding_column_is_nullable(self, pg_conn):
+    def test_embedding_column_is_nullable(self, pg_conn: psycopg2.extensions.connection) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO prediction_logs (symbol) VALUES (%s) RETURNING id",
@@ -292,11 +315,15 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    def test_ivfflat_index_created_on_embedding(self, pg_conn):
+    def test_ivfflat_index_created_on_embedding(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         indexes = _indexes(pg_conn, "prediction_logs")
         assert "idx_prediction_logs_embedding" in indexes
 
-    def test_match_news_embeddings_rpc_returns_similar_rows(self, pg_conn):
+    def test_match_news_embeddings_rpc_returns_similar_rows(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """RPC RAG (migracja 011) zwraca historyczne predykcje wg podobieństwa
         embeddingu, z polem similarity.
 
@@ -351,7 +378,9 @@ class TestMigrations:
         assert len(rows) == 1
         assert rows[0][0] == "NEAR"
 
-    def test_persona_accuracy_stats_rpc_returns_hit_rate_and_vote_count(self, pg_conn):
+    def test_persona_accuracy_stats_rpc_returns_hit_rate_and_vote_count(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """RPC leaderboardu person (#3, migracja 018) zwraca surowy hit-rate
         ORAZ liczbę rozliczonych głosów.
 
@@ -367,7 +396,9 @@ class TestMigrations:
             # współdzielony przez moduł — czyścimy głosy innych testów.
             cur.execute("DELETE FROM council_votes")
 
-            def add_vote(symbol, price_before, price_after, recommendation):
+            def add_vote(
+                symbol: str, price_before: float, price_after: float, recommendation: str
+            ) -> None:
                 cur.execute(
                     "INSERT INTO prediction_logs "
                     "(symbol, price_at_prediction, actual_price_after_12h) "
@@ -411,11 +442,13 @@ class TestMigrations:
         assert float(hit_rate) == pytest.approx(0.5)
         assert vote_count == 2
 
-    def test_council_verdict_column_exists(self, pg_conn):
+    def test_council_verdict_column_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         assert "council_verdict" in cols, "Brak kolumny council_verdict w prediction_logs"
 
-    def test_council_verdict_column_is_nullable(self, pg_conn):
+    def test_council_verdict_column_is_nullable(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO prediction_logs (symbol) VALUES (%s) RETURNING id",
@@ -424,7 +457,7 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    def test_council_verdict_accepts_json(self, pg_conn):
+    def test_council_verdict_accepts_json(self, pg_conn: psycopg2.extensions.connection) -> None:
         import json
 
         verdict = json.dumps(
@@ -444,11 +477,13 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    def test_is_trend_correct_column_exists(self, pg_conn):
+    def test_is_trend_correct_column_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         assert "is_trend_correct" in cols, "Brak kolumny is_trend_correct"
 
-    def test_is_trend_correct_accepts_boolean_and_null(self, pg_conn):
+    def test_is_trend_correct_accepts_boolean_and_null(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO prediction_logs (symbol, is_trend_correct)"
@@ -458,11 +493,13 @@ class TestMigrations:
             rows = cur.fetchall()
         assert len(rows) == 3
 
-    def test_migrations_are_idempotent(self, pg_conn):
+    def test_migrations_are_idempotent(self, pg_conn: psycopg2.extensions.connection) -> None:
         # Drugie uruchomienie tych samych migracji nie może rzucić błędu
         _apply_migrations(pg_conn)
 
-    def test_fundamentals_cache_table_has_required_columns(self, pg_conn) -> None:
+    def test_fundamentals_cache_table_has_required_columns(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "fundamentals_cache")
         required = {
             "symbol",
@@ -474,7 +511,9 @@ class TestMigrations:
         }
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
-    def test_fundamentals_cache_has_primary_key_on_symbol(self, pg_conn) -> None:
+    def test_fundamentals_cache_has_primary_key_on_symbol(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 """
@@ -485,33 +524,47 @@ class TestMigrations:
             constraints = [row[0] for row in cur.fetchall()]
         assert len(constraints) > 0, "Brak primary key na fundamentals_cache"
 
-    def test_fundamentals_cache_fetched_at_index_exists(self, pg_conn) -> None:
+    def test_fundamentals_cache_fetched_at_index_exists(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         indexes = _indexes(pg_conn, "fundamentals_cache")
         assert "idx_fundamentals_cache_fetched_at" in indexes
 
-    def test_subscribers_table_has_required_columns(self, pg_conn) -> None:
+    def test_subscribers_table_has_required_columns(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "subscribers")
         assert {"id", "email", "symbols"} <= cols, f"Brakujące kolumny: {cols}"
 
     # -- Migracja 013: idempotency (timestamp_hour + UNIQUE) -----------------
 
-    def test_price_snapshots_has_timestamp_hour_column(self, pg_conn) -> None:
+    def test_price_snapshots_has_timestamp_hour_column(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "price_snapshots")
         assert "timestamp_hour" in cols, "Brak kolumny timestamp_hour (migracja 013)"
 
-    def test_prediction_logs_has_timestamp_hour_column(self, pg_conn) -> None:
+    def test_prediction_logs_has_timestamp_hour_column(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         assert "timestamp_hour" in cols, "Brak kolumny timestamp_hour (migracja 013)"
 
-    def test_price_snapshots_has_unique_index_on_symbol_hour(self, pg_conn) -> None:
+    def test_price_snapshots_has_unique_index_on_symbol_hour(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         indexes = _indexes(pg_conn, "price_snapshots")
         assert "idx_price_snapshots_symbol_hour_uniq" in indexes
 
-    def test_prediction_logs_has_unique_index_on_symbol_hour(self, pg_conn) -> None:
+    def test_prediction_logs_has_unique_index_on_symbol_hour(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         indexes = _indexes(pg_conn, "prediction_logs")
         assert "idx_prediction_logs_symbol_hour_uniq" in indexes
 
-    def test_timestamp_hour_truncates_to_hour(self, pg_conn) -> None:
+    def test_timestamp_hour_truncates_to_hour(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """timestamp_hour to date_trunc('hour', timestamp) — dwa snapshoty w tej
         samej godzinie kolidują (UNIQUE), więc upsert aktualizuje, nie duplikuje."""
         with pg_conn.cursor() as cur:
@@ -525,7 +578,7 @@ class TestMigrations:
         assert str(row[0]).startswith("2026-06-01 14:00:00")
 
     def test_price_snapshots_unique_constraint_rejects_same_hour_duplicate(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """UNIQUE(symbol, timestamp_hour): drugi INSERT w tej samej godzinie bez
         ON CONFLICT musi rzucić — to twardy fundament idempotentnego upsertu."""
@@ -543,7 +596,7 @@ class TestMigrations:
                 )
 
     def test_prediction_logs_upsert_on_conflict_updates_not_duplicates(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Upsert ON CONFLICT (symbol, timestamp_hour): same-hour re-run
         aktualizuje istniejący wiersz zamiast duplikować (regresja #7)."""
@@ -575,7 +628,9 @@ class TestMigrations:
 
     # -- Migracja 019: model_scorecards (karta kondycji modelu, #12) ----------
 
-    def test_model_scorecards_has_symbol_column(self, pg_conn) -> None:
+    def test_model_scorecards_has_symbol_column(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Korekta krytyczna weryfikatora: trening jest PER-SYMBOL (~43 przebiegi
         nadpisują jeden plik .ubj), więc bez kolumny `symbol` scorecardy są
         nierozróżnialne — nie wiadomo, który symbol zaakceptowano, a który
@@ -585,7 +640,9 @@ class TestMigrations:
 
     # -- Migracja 020: decision_receipts (kwity decyzyjne, #13) ---------------
 
-    def test_decision_receipts_column_is_nullable(self, pg_conn) -> None:
+    def test_decision_receipts_column_is_nullable(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Kolumna JSONB `decision_receipts` MUSI być nullable — stare wiersze
         (sprzed migracji) i predykcje bez kwitów renderują się jak dziś. INSERT
         do prediction_logs bez tej kolumny musi nadal działać."""
@@ -603,7 +660,9 @@ class TestMigrations:
 
     # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, #11) -----------
 
-    def test_shock_alerts_dedups_per_symbol_per_day(self, pg_conn) -> None:
+    def test_shock_alerts_dedups_per_symbol_per_day(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """UNIQUE(symbol, alert_date): twardy debounce "jeden alert per symbol
         per dzień". Drugi INSERT dla tej samej pary (symbol, alert_date) MUSI
         rzucić UniqueViolation — bez tego spam przy chaotycznym rynku uczy
@@ -627,7 +686,9 @@ class TestMigrations:
 
     # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, #14) ----------
 
-    def test_ml_feature_store_exposes_alpha_fusion_score(self, pg_conn) -> None:
+    def test_ml_feature_store_exposes_alpha_fusion_score(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Ósma cecha ML: `alpha_fusion_score` musi być widoczna w widoku
         (migracja 022 przebudowuje MATERIALIZED VIEW dokładając kolumnę)."""
         cols = _columns(pg_conn, "ml_feature_store")
@@ -636,7 +697,7 @@ class TestMigrations:
         )
 
     def test_alpha_fusion_score_defaults_to_zero_not_null_in_view(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Ochrona przed train/serve-skew: w widoku NULL musi wchodzić jako 0.0.
 
@@ -670,14 +731,16 @@ class TestMigrations:
 
     # -- Migracja 023: positions (realny portfel użytkownika, #15) ------------
 
-    def test_positions_table_exists(self, pg_conn) -> None:
+    def test_positions_table_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "positions")
         required = {"id", "symbol", "quantity", "avg_cost", "as_of", "created_at"}
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
     # -- Migracja 024: attestation (commit-reveal track record, #16) ----------
 
-    def test_attestation_columns_are_nullable(self, pg_conn) -> None:
+    def test_attestation_columns_are_nullable(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """`commitment_hash` i `commitment_salt` MUSZĄ być nullable — stare
         wiersze i predykcje bez attestacji renderują się jak dziś. INSERT do
         prediction_logs bez tych kolumn musi nadal działać."""
@@ -695,14 +758,16 @@ class TestMigrations:
 
     # -- Migracja 025: implied_edge (edge vs rynek opcji, #18) ----------------
 
-    def test_revealed_at_column_supports_the_reveal_sweep(self, pg_conn) -> None:
+    def test_revealed_at_column_supports_the_reveal_sweep(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """#16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
         symboli usuniętych z configu nigdy nie zostałyby odsłonięte. Dla sceptyka
         wygląda to jak ukrywanie nietrafień."""
         cols = _columns(pg_conn, "prediction_logs")
         assert {"commitment_hash", "commitment_salt", "revealed_at"} <= cols
 
-    def test_edge_sigma_column_exists(self, pg_conn) -> None:
+    def test_edge_sigma_column_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "prediction_logs")
         assert "edge_sigma" in cols, (
             "Brak kolumny edge_sigma w prediction_logs (migracja 025)"
@@ -739,7 +804,7 @@ class TestMigrations:
         return ids
 
     def test_feature_store_excludes_llm_failed_and_av_exhausted_rows(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Atrapa po awarii LLM i wyczerpane klucze AV nie trenują modelu, a
         `price_delta_no_prior_prediction`, wiersz czysty i wiersz z flagami NULL
@@ -765,7 +830,9 @@ class TestMigrations:
         assert in_view == {clean, no_prior, null_flags}
         assert not in_view & {llm_failed, av_exhausted}
 
-    def test_feature_store_lag_runs_over_the_full_sequence(self, pg_conn) -> None:
+    def test_feature_store_lag_runs_over_the_full_sequence(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Filtr jest PO LAG: wiersz po atrapie liczy `price_prev_12h` od ceny
         atrapy — tak jak inference (`get_last_prediction_price`), która flag
         nie czyta. Filtr w CTE dałby train/serve skew."""
@@ -787,7 +854,7 @@ class TestMigrations:
         assert float(row[1]) == pytest.approx(101.0)
 
     def test_feature_store_rebuild_keeps_indexes_for_concurrent_refresh(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """DROP MATERIALIZED VIEW kasuje indeksy; bez unikalnego po `id`
         `refresh_ml_feature_store` (REFRESH ... CONCURRENTLY) pada w Slow Loopie."""
@@ -800,7 +867,9 @@ class TestMigrations:
 
     # -- Migracja 027: feature_set_version (wersja zestawu cech, DAT-09) ------
 
-    def test_feature_set_version_reaches_the_feature_store(self, pg_conn) -> None:
+    def test_feature_set_version_reaches_the_feature_store(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Trening filtruje po `feature_set_version` z widoku — kolumna musi być
         w obu miejscach, a NULL („wersja nieznana") nie może udawać wersji 1."""
         assert "feature_set_version" in _columns(pg_conn, "prediction_logs")
@@ -825,7 +894,9 @@ class TestMigrations:
 
     # -- Migracja 028: baseline'y dryfu i „sam LLM" w karcie modelu (ML-10) ---
 
-    def test_model_scorecards_store_the_drift_and_llm_baselines(self, pg_conn) -> None:
+    def test_model_scorecards_store_the_drift_and_llm_baselines(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Karta pokazuje wszystkie trzy baseline'y bramki; nowe kolumny są
         nullable, bo przebieg bez metryk (skipped) i stare wiersze ich nie mają."""
         assert {"drift_baseline_rmse", "llm_baseline_rmse"} <= _columns(
@@ -842,7 +913,9 @@ class TestMigrations:
 
     # -- Migracja 029: moment rozliczenia predykcji (WIA-19) ------------------
 
-    def test_settling_a_prediction_stamps_settled_at(self, pg_conn) -> None:
+    def test_settling_a_prediction_stamps_settled_at(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Okna „rozliczone w oknie” potrzebują chwili rozliczenia, nie utworzenia:
         piątkowa predykcja rozliczona w poniedziałek ma wpaść do poniedziałku."""
         assert "settled_at" in _columns(pg_conn, "prediction_logs")
@@ -865,7 +938,9 @@ class TestMigrations:
         assert settled_at is not None
         assert is_fresh is True
 
-    def test_resettling_does_not_restamp_settled_at(self, pg_conn) -> None:
+    def test_resettling_does_not_restamp_settled_at(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Druga ocena już rozliczonego wiersza nie przesuwa chwili rozliczenia —
         inaczej predykcja wracałaby do okna „rozliczone w tym cyklu” co cykl."""
         with pg_conn.cursor() as cur:
@@ -894,7 +969,9 @@ class TestMigrations:
 
     # -- Migracja 030: wersja przepisu predykcji (WIA-20) ---------------------
 
-    def test_recipe_version_column_is_nullable_and_indexed(self, pg_conn) -> None:
+    def test_recipe_version_column_is_nullable_and_indexed(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Track record segmentuje się po przepisie; stare wiersze i zapis bez
         flagi `recipe_version_enabled` zostają NULL („przepis nieznany”)."""
         assert "recipe_version" in _columns(pg_conn, "prediction_logs")
@@ -917,7 +994,9 @@ class TestMigrations:
 
     # -- Migracja 031: wektor cech point-in-time w każdym cyklu (ML-14) -------
 
-    def test_feature_snapshots_unique_per_symbol_hour(self, pg_conn) -> None:
+    def test_feature_snapshots_unique_per_symbol_hour(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Re-run cyklu w tej samej godzinie aktualizuje wektor (upsert na
         `symbol,as_of_hour`), a goły INSERT drugiego wiersza tej godziny rzuca."""
         assert {
@@ -954,7 +1033,9 @@ class TestMigrations:
         assert (count, price, gated) == (1, 2, True)
         assert hour == datetime(2026, 10, 19, 5, 0, tzinfo=UTC)
 
-    def test_feature_snapshots_require_version_vector_and_gate(self, pg_conn) -> None:
+    def test_feature_snapshots_require_version_vector_and_gate(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Wiersz bez wersji zestawu cech, wektora albo decyzji bramki jest
         bezużyteczny dla treningu i raportu selekcji — baza go odrzuca."""
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.NotNullViolation):
@@ -963,9 +1044,74 @@ class TestMigrations:
                 "VALUES ('FS_NULL', '{}'::jsonb, false)"
             )
 
+    def test_training_reads_back_the_saved_feature_vector(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        """ML-52: trening bierze wektor z JSONB bez przeliczania — po zapisie (JSON
+        jak z PostgREST) i odczycie kolumnami adaptera wektor modelu jest IDENTYCZNY
+        z tym, który dostał serving, a etykieta to zwrot do pierwszego snapshotu
+        ceny ≥ 12 h później."""
+        import json
+
+        from src.application.ml_features import llm_model_vector
+        from src.domain.training_labels import FeatureSnapshot, label_snapshots
+
+        served = {
+            "price_delta": 0.1 + 0.2,
+            "av_sentiment_score": -0.123456789012345,
+            "av_relevance_avg": 1e-7,
+            "news_volume_24h": 12.0,
+            "high_relevance_count": 3.0,
+            "llm_trend_signal": -1.0,
+            "av_llm_agreement": 0.5,
+        }
+        vector = {
+            **served,
+            "price": 187.1234,
+            "alpha_fusion_score": None,
+            "regime": "RISK_ON",
+            "data_quality_flags": ["price_delta_no_prior_prediction"],
+        }
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO feature_snapshots "
+                "(symbol, as_of, feature_set_version, features, gated) "
+                "VALUES ('FS_ML52', '2026-10-20T07:30:00+00:00', 4, %s::jsonb, true)",
+                (json.dumps(vector),),
+            )
+            for stamp, price in (
+                ("2026-10-20T07:29:59+00:00", 187.1234),
+                ("2026-10-20T15:00:00+00:00", 150.0),
+                ("2026-10-21T07:30:00+00:00", 190.0),
+            ):
+                cur.execute(
+                    "INSERT INTO price_snapshots (symbol, timestamp, price) "
+                    "VALUES ('FS_ML52', %s, %s)",
+                    (stamp, price),
+                )
+            cur.execute(
+                "SELECT symbol, as_of, gated, features, feature_set_version "
+                "FROM feature_snapshots WHERE symbol = 'FS_ML52' AND feature_set_version = 4 "
+                "ORDER BY as_of, id"
+            )
+            [(symbol, as_of, gated, features, version)] = cur.fetchall()
+            cur.execute(
+                "SELECT timestamp, price FROM price_snapshots "
+                "WHERE symbol = 'FS_ML52' ORDER BY timestamp, id"
+            )
+            series = [(stamp, float(price)) for stamp, price in cur.fetchall()]
+
+        assert features == vector
+        snapshot = FeatureSnapshot(symbol, as_of, gated, features, version)
+        assert llm_model_vector(snapshot.features) == served
+        [labeled] = label_snapshots([snapshot], {"FS_ML52": series})
+        assert labeled.target_return == pytest.approx(190.0 / 187.1234 - 1)
+
     # -- Migracja 032: przedział ruchu z conformal prediction (ML-34) ---------
 
-    def test_move_interval_columns_are_nullable_prices(self, pg_conn) -> None:
+    def test_move_interval_columns_are_nullable_prices(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Stare wiersze i zapis bez flagi `interval_coverage_enabled` zostają NULL;
         przedział ląduje w tej samej skali co `predicted_target_price`."""
         assert {"interval_low", "interval_high"} <= _columns(pg_conn, "prediction_logs")
@@ -988,7 +1134,9 @@ class TestMigrations:
 
     # -- Migracja 033: stan histerezy reżimu (ALR-03) -------------------------
 
-    def test_regime_history_reads_newest_cycle_first(self, pg_conn) -> None:
+    def test_regime_history_reads_newest_cycle_first(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Fast Loop czyta najnowszy wiersz po `cycle_at` (indeks malejący);
         reżimy spoza `MarketRegime` i ujemna seria są odrzucane."""
         assert {"id", "cycle_at", "raw_regime", "regime", "streak"} <= _columns(
@@ -1014,7 +1162,9 @@ class TestMigrations:
 
     # -- Migracja 034: delta bramki volatility (EXP-01) ------------------------
 
-    def test_gate_delta_column_is_a_nullable_fraction(self, pg_conn) -> None:
+    def test_gate_delta_column_is_a_nullable_fraction(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Zapis bez flagi `gate_delta_enabled` zostawia NULL; delta to ułamek."""
         assert "gate_delta" in _columns(pg_conn, "prediction_logs")
         with pg_conn.cursor() as cur:
@@ -1034,7 +1184,7 @@ class TestMigrations:
     # -- Migracja 035: waluta i data zakupu pozycji (PORT-18) ------------------
 
     def test_positions_have_an_iso_currency_and_an_optional_purchase_date(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Wiersz bez waluty to USD, bez daty zakupu — NULL; waluta spoza ISO odpada."""
         assert {"currency", "purchase_date"} <= _columns(pg_conn, "positions")
@@ -1058,7 +1208,9 @@ class TestMigrations:
 
     # -- Migracja 036: cache kursów NBP z dnia (PORT-11) -----------------------
 
-    def test_fx_rates_cache_one_rate_per_currency_and_day(self, pg_conn) -> None:
+    def test_fx_rates_cache_one_rate_per_currency_and_day(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Klucz (currency, on_date); kurs dodatni, z tabeli nie późniejszej niż dzień."""
         assert {"currency", "on_date", "effective_date", "rate", "source", "fetched_at"} <= (
             _columns(pg_conn, "fx_rates")
@@ -1087,7 +1239,9 @@ class TestMigrations:
 
     # -- Migracja 037: ramiona eksperymentów (EXP-05) --------------------------
 
-    def test_experiment_arms_column_is_a_nullable_json_object(self, pg_conn) -> None:
+    def test_experiment_arms_column_is_a_nullable_json_object(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Zapis bez flagi `experiment_arms_enabled` zostawia NULL; ramiona to obiekt JSON."""
         assert "experiment_arms" in _columns(pg_conn, "prediction_logs")
         with pg_conn.cursor() as cur:
@@ -1108,7 +1262,9 @@ class TestMigrations:
 
     # -- Migracja 039: ml_feature_store bez niepełnego feedu AV (DAT-07, DAT-08) -
 
-    def test_feature_store_excludes_av_degraded_rows(self, pg_conn) -> None:
+    def test_feature_store_excludes_av_degraded_rows(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Payload bez feedu i błąd sieci w środku fetchu dają zera „bez danych",
         tak jak wyczerpane klucze — nie trenują modelu. Filtry 026 zostają."""
         with pg_conn.cursor() as cur:
@@ -1130,7 +1286,9 @@ class TestMigrations:
         assert in_view == {clean, no_prior}
         assert not in_view & {unexpected, fetch_error, exhausted}
 
-    def test_feature_store_lag_runs_over_av_degraded_rows(self, pg_conn) -> None:
+    def test_feature_store_lag_runs_over_av_degraded_rows(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Filtr 039 też jest PO LAG: wiersz po `av_fetch_error` liczy
         `price_prev_12h` od ceny tego wiersza, jak inference."""
         with pg_conn.cursor() as cur:
@@ -1148,7 +1306,9 @@ class TestMigrations:
         assert float(row[0]) == pytest.approx(102.0)
         assert float(row[1]) == pytest.approx(101.0)
 
-    def test_feature_store_after_039_keeps_the_feature_contract(self, pg_conn) -> None:
+    def test_feature_store_after_039_keeps_the_feature_contract(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """039 odtwarza widok 1:1 z 027 — te same kolumny i oba indeksy."""
         assert {
             "price_delta",
@@ -1165,7 +1325,9 @@ class TestMigrations:
 
     # -- Migracja 040: ledger kosztów LLM per wywołanie (FIN-13) ---------------
 
-    def test_llm_calls_holds_tokens_and_cost_but_no_prompt(self, pg_conn) -> None:
+    def test_llm_calls_holds_tokens_and_cost_but_no_prompt(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Wiersz to liczby i identyfikatory przebiegu; żadnej kolumny na treść
         promptu ani odpowiedzi (kontekst portfela)."""
         assert _columns(pg_conn, "llm_calls") == {
@@ -1184,10 +1346,14 @@ class TestMigrations:
             "created_at",
         }
 
-    def test_llm_calls_is_indexed_by_created_at(self, pg_conn) -> None:
+    def test_llm_calls_is_indexed_by_created_at(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         assert "idx_llm_calls_created_at" in _indexes(pg_conn, "llm_calls")
 
-    def test_llm_calls_accepts_a_call_without_symbol_cost_or_price(self, pg_conn) -> None:
+    def test_llm_calls_accepts_a_call_without_symbol_cost_or_price(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Slow Loop nie ma symbolu, a model spoza cennika nie ma kosztu."""
         with pg_conn.cursor() as cur:
             cur.execute(
@@ -1198,7 +1364,9 @@ class TestMigrations:
             )
             assert cur.fetchone() == (None, None, None, 0, 0, True)
 
-    def test_llm_calls_rejects_negative_token_counts(self, pg_conn) -> None:
+    def test_llm_calls_rejects_negative_token_counts(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
@@ -1207,7 +1375,9 @@ class TestMigrations:
 
     # -- Migracja 041: historia przebiegów pętli (NIEZ-29) ---------------------
 
-    def test_cycle_runs_holds_the_run_identity_and_counts(self, pg_conn) -> None:
+    def test_cycle_runs_holds_the_run_identity_and_counts(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Jeden wiersz na przebieg: tożsamość runu (łączy się z `llm_calls` po
         `run_id`), liczby cyklu i stan maila — bez symboli i treści raportu."""
         assert _columns(pg_conn, "cycle_runs") == {
@@ -1225,10 +1395,14 @@ class TestMigrations:
             "created_at",
         }
 
-    def test_cycle_runs_is_indexed_by_started_at(self, pg_conn) -> None:
+    def test_cycle_runs_is_indexed_by_started_at(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         assert "idx_cycle_runs_started_at" in _indexes(pg_conn, "cycle_runs")
 
-    def test_cycle_runs_accepts_a_local_run_without_attempt_or_email(self, pg_conn) -> None:
+    def test_cycle_runs_accepts_a_local_run_without_attempt_or_email(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
@@ -1237,7 +1411,9 @@ class TestMigrations:
             )
             assert cur.fetchone() == (None, None, {}, True)
 
-    def test_cycle_runs_rejects_an_unknown_loop_and_negative_counts(self, pg_conn) -> None:
+    def test_cycle_runs_rejects_an_unknown_loop_and_negative_counts(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO cycle_runs (loop, run_id, started_at, duration_s, eligible, "
@@ -1252,7 +1428,7 @@ class TestMigrations:
     # -- Migracja 042: sygnał referencyjny WIA-24 ------------------------------
 
     def test_reference_predictions_hold_read_call_and_settlement_in_one_row(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Osobna tabela, nie `prediction_logs`: żaden odczyt ścieżek LLM (reflect,
         RAG, widok cech, track record) jej nie widzi."""
@@ -1269,14 +1445,16 @@ class TestMigrations:
             "created_at",
         }
 
-    def test_reference_predictions_are_indexed_for_the_weekly_reads(self, pg_conn) -> None:
+    def test_reference_predictions_are_indexed_for_the_weekly_reads(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         assert {
             "idx_reference_predictions_read_at",
             "idx_reference_predictions_open_calls",
         } <= _indexes(pg_conn, "reference_predictions")
 
     def test_reference_read_defaults_to_reference_v1_once_per_symbol_and_time(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
@@ -1291,7 +1469,9 @@ class TestMigrations:
                 "VALUES ('REF_A', '2026-10-25T03:00:00Z', 101)"
             )
 
-    def test_reference_settlement_round_trips(self, pg_conn) -> None:
+    def test_reference_settlement_round_trips(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend) "
@@ -1328,7 +1508,9 @@ class TestMigrations:
             "not_a_reference_label",
         ],
     )
-    def test_reference_predictions_reject_inconsistent_rows(self, pg_conn, values) -> None:
+    def test_reference_predictions_reject_inconsistent_rows(
+        self, pg_conn: psycopg2.extensions.connection, values: str
+    ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
@@ -1337,7 +1519,9 @@ class TestMigrations:
 
     # -- Migracja 043: dosłowny plaintext commitmentu (WIA-70) ------------------
 
-    def test_commitment_payload_column_is_nullable_text(self, pg_conn) -> None:
+    def test_commitment_payload_column_is_nullable_text(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Reveal publikuje zapisany plaintext bajt w bajt: TEXT, nie JSONB (JSONB
         przestawia klucze i białe znaki). NULL dla wierszy sprzed 043 i predykcji
         bez atestacji — tych sweep ujawnia z kolumn, jak dotąd."""
@@ -1351,7 +1535,9 @@ class TestMigrations:
             )
             assert cur.fetchone() == ("text", "YES")
 
-    def test_commitment_payload_keeps_the_plaintext_byte_for_byte(self, pg_conn) -> None:
+    def test_commitment_payload_keeps_the_plaintext_byte_for_byte(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         plaintext = '{"price_at_prediction":"90.1112","schema_version":2,"symbol":"Zażółć"}'
         with pg_conn.cursor() as cur:
             cur.execute(
@@ -1364,7 +1550,7 @@ class TestMigrations:
     # -- Migracja 044: wersja reguły confidence_calibration (WIA-37) -----------
 
     def test_calibration_score_version_backfills_scored_rows_as_linear(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Ocena bez wersji to reguła liniowa (v1); wiersz bez oceny zostaje NULL,
         a wiersz z v2 nie wraca do v1 przy ponownym przebiegu migracji."""
@@ -1390,7 +1576,9 @@ class TestMigrations:
             )
             assert cur.fetchall() == [("CSV_NONE", None), ("CSV_V1", 1), ("CSV_V2", 2)]
 
-    def test_calibration_score_version_rejects_an_unknown_rule(self, pg_conn) -> None:
+    def test_calibration_score_version_rejects_an_unknown_rule(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO prediction_logs "
@@ -1401,7 +1589,7 @@ class TestMigrations:
     # -- Migracja 047: LAG po wszystkich zalogowanych predykcjach (ML-17) -------
 
     def test_price_delta_lags_over_all_logged_predictions_not_only_settled(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Inference bierze cenę ostatniej ZALOGOWANEJ predykcji, rozliczonej czy
         nie. Ceny 100 (rozliczona), 110 (otwarta), 121 (rozliczona): delta trzeciej
@@ -1428,7 +1616,9 @@ class TestMigrations:
         assert rows[1][2] == pytest.approx(100.0)
         assert rows[1][3] == pytest.approx(0.10)
 
-    def test_feature_store_after_047_keeps_the_feature_contract(self, pg_conn) -> None:
+    def test_feature_store_after_047_keeps_the_feature_contract(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """047 odtwarza widok 1:1 z 039 (kolumny, oba indeksy, REFRESH CONCURRENTLY)
         i opisuje prawdziwą semantykę `price_prev_12h` / `price_prev_24h`."""
         assert {
@@ -1457,7 +1647,9 @@ class TestMigrations:
     # -- Migracja 048: kanoniczny predicted_trend + CHECK NOT VALID (ML-19) ---
 
     @pytest.mark.parametrize("trend", ["UP", " bullish ", "Bearish"])
-    def test_predicted_trend_check_rejects_unknown_value(self, pg_conn, trend) -> None:
+    def test_predicted_trend_check_rejects_unknown_value(
+        self, pg_conn: psycopg2.extensions.connection, trend: str
+    ) -> None:
         """Schemat sam blokuje kolejne zatrucia: tylko kanoniczne wartości."""
         with _rolled_back(pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
@@ -1465,7 +1657,9 @@ class TestMigrations:
                 (trend,),
             )
 
-    def test_predicted_trend_check_accepts_canonical_values_and_null(self, pg_conn) -> None:
+    def test_predicted_trend_check_accepts_canonical_values_and_null(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with _rolled_back(pg_conn) as cur:
             cur.execute(
                 "INSERT INTO prediction_logs (symbol, timestamp, predicted_trend) VALUES "
@@ -1479,7 +1673,9 @@ class TestMigrations:
 
     # -- Migracja 049: run_id przebiegu w karcie modelu (ML-24) ----------------
 
-    def test_model_scorecards_run_id_is_a_nullable_indexed_uuid(self, pg_conn) -> None:
+    def test_model_scorecards_run_id_is_a_nullable_indexed_uuid(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Wiersze jednego przebiegu dzieli `run_id`; wiersz bez niego (historia,
         flaga off) dalej się zapisuje."""
         assert "run_id" in _columns(pg_conn, "model_scorecards")
@@ -1507,7 +1703,9 @@ class TestMigrations:
 
     # -- Migracja 050: settled_at i horyzont etykiety w widoku (ML-25) ---------
 
-    def test_ml_feature_store_exposes_settled_at_and_label_horizon(self, pg_conn) -> None:
+    def test_ml_feature_store_exposes_settled_at_and_label_horizon(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Wiersz rozliczony po 26 h ma `label_horizon_hours = 26`; dolna granica
         backfillu 029 (`settled_at = timestamp`) to brak pomiaru, nie 0 h."""
         assert {"settled_at", "label_horizon_hours"} <= _columns(pg_conn, "ml_feature_store")
@@ -1533,7 +1731,9 @@ class TestMigrations:
         assert rows["LH050_LATE"] == (True, pytest.approx(26.0))
         assert rows["LH050_FLOOR"] == (True, None)
 
-    def test_feature_store_after_050_keeps_the_lag_and_the_indexes(self, pg_conn) -> None:
+    def test_feature_store_after_050_keeps_the_lag_and_the_indexes(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """050 odtwarza widok z 047: LAG po wszystkich predykcjach, oba indeksy,
         komentarze kolumn i zamknięte role API (sprawdza je test emulacji ról)."""
         assert {
@@ -1553,7 +1753,9 @@ class TestMigrations:
 
     # -- Migracja 051: rozkład trendu predykcji (ML-29) ------------------------
 
-    def test_prediction_logs_trend_probabilities_is_a_nullable_jsonb(self, pg_conn) -> None:
+    def test_prediction_logs_trend_probabilities_is_a_nullable_jsonb(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Predykcja z rozkładem i bez niego (flaga off, fallback) zapisują się
         obok siebie; p klasy czyta się zapytaniem JSONB."""
         assert "trend_probabilities" in _columns(pg_conn, "prediction_logs")
@@ -1579,7 +1781,9 @@ class TestMigrations:
 
     # -- Migracja 052: rozkład cech treningu w karcie modelu (ML-21) -----------
 
-    def test_model_scorecards_feature_stats_is_a_nullable_jsonb(self, pg_conn) -> None:
+    def test_model_scorecards_feature_stats_is_a_nullable_jsonb(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Wiersz z `feature_stats` (biny + PSI) i wiersz bez niego (historia,
         flaga off) zapisują się obok siebie; PSI czyta się zapytaniem JSONB."""
         assert "feature_stats" in _columns(pg_conn, "model_scorecards")
@@ -1605,7 +1809,9 @@ class TestMigrations:
         assert data_type == ("jsonb",)
     # -- Migracja 055: znacznik nieaktualnego notowania (DAT-14) ---------------
 
-    def test_stale_quote_column_is_a_nullable_boolean(self, pg_conn) -> None:
+    def test_stale_quote_column_is_a_nullable_boolean(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Zapis bez flagi `stale_quote_enabled` zostawia NULL (nieznane); reflect
         stawia true przy rozliczeniu z notowania sprzed sesji po predykcji."""
         assert "stale_quote" in _columns(pg_conn, "prediction_logs")
@@ -1629,7 +1835,9 @@ class TestMigrations:
 
     # -- Migracja 056: kapitalizacja w cache fundamentów (DAT-21) --------------
 
-    def test_fundamentals_cache_market_cap_is_a_nullable_number(self, pg_conn) -> None:
+    def test_fundamentals_cache_market_cap_is_a_nullable_number(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Upsert bez flagi zostawia NULL (próg 100k USD); z flagą trzyma pełne USD."""
         assert "market_cap" in _columns(pg_conn, "fundamentals_cache")
         with pg_conn.cursor() as cur:
@@ -1646,7 +1854,9 @@ class TestMigrations:
 
     # -- Migracja 057: alerty poziomów cenowych (ALR-11) ------------------------
 
-    def test_price_level_alerts_keep_one_row_per_level_and_direction(self, pg_conn) -> None:
+    def test_price_level_alerts_keep_one_row_per_level_and_direction(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Lista startowa z config.toml dopisuje się upsertem ON CONFLICT DO NOTHING —
         poziom wyłączony po trafieniu zostaje wyłączony."""
         assert {
@@ -1680,7 +1890,7 @@ class TestMigrations:
         ("level", "direction"), [("0", "ABOVE"), ("-5", "BELOW"), ("150", "SIDEWAYS")]
     )
     def test_price_level_alerts_reject_a_bad_level_or_direction(
-        self, pg_conn, level: str, direction: str
+        self, pg_conn: psycopg2.extensions.connection, level: str, direction: str
     ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
@@ -1691,7 +1901,9 @@ class TestMigrations:
 
     # -- Migracja 038: RLS na każdej tabeli public (BEZ-05) ---------------------
 
-    def test_every_public_table_has_row_level_security(self, pg_conn) -> None:
+    def test_every_public_table_has_row_level_security(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         """Przy domyślnych grantach Supabase tabela `public` bez RLS jest czytelna
         i zapisywalna kluczem publicznym (anon). 038 włącza RLS na wszystkich, a
         tabela dodana w kolejnej migracji musi włączyć je sama — inaczej ten test
@@ -1763,7 +1975,9 @@ _APP_FUNCTIONS_SQL = f"""
 
 
 @pytest.fixture(scope="module")
-def supabase_like_conn(pg_conn):
+def supabase_like_conn(
+    pg_conn: psycopg2.extensions.connection,
+) -> Iterator[psycopg2.extensions.connection]:
     """Osobna baza w TYM SAMYM kontenerze co `pg_conn` (drugi kontener to kolejne
     setki MB przy pełnym swapie): najpierw role i domyślne granty jak w Supabase,
     potem komplet migracji — w tej samej kolejności co na produkcji.
@@ -1836,7 +2050,9 @@ class TestSupabaseRoleEmulation:
     po 038 klucz publiczny (anon) nic nie widzi, a klucz secret (service_role)
     dalej czyta, pisze i woła RPC aplikacji."""
 
-    def test_anon_cannot_read_subscribers(self, supabase_like_conn) -> None:
+    def test_anon_cannot_read_subscribers(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """Bez 038 domyślne granty Supabase i wyłączony RLS oddają anon e-mail."""
         with _rolled_back(supabase_like_conn) as cur:
             cur.execute("INSERT INTO subscribers (email) VALUES ('reader@example.com')")
@@ -1844,7 +2060,9 @@ class TestSupabaseRoleEmulation:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT email FROM subscribers")
 
-    def test_anon_cannot_read_positions(self, supabase_like_conn) -> None:
+    def test_anon_cannot_read_positions(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         with _rolled_back(supabase_like_conn) as cur:
             cur.execute(
                 "INSERT INTO positions (symbol, quantity, avg_cost) VALUES ('NVDA', 10, 120.5)"
@@ -1853,7 +2071,9 @@ class TestSupabaseRoleEmulation:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT symbol, quantity, avg_cost FROM positions")
 
-    def test_anon_select_is_denied_on_every_relation(self, supabase_like_conn) -> None:
+    def test_anon_select_is_denied_on_every_relation(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """Każda tabela, widok i `ml_feature_store` — prawdziwy SELECT, nie katalog."""
         with supabase_like_conn.cursor() as cur:
             cur.execute(_APP_RELATIONS_SQL)
@@ -1875,7 +2095,7 @@ class TestSupabaseRoleEmulation:
 
     @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
     def test_public_roles_hold_no_privilege_on_any_relation(
-        self, supabase_like_conn, role: str
+        self, supabase_like_conn: psycopg2.extensions.connection, role: str
     ) -> None:
         """Tabele, widoki, widok zmaterializowany i sekwencje — także INSERT,
         UPDATE, DELETE i TRUNCATE, nie tylko odczyt."""
@@ -1900,7 +2120,7 @@ class TestSupabaseRoleEmulation:
 
     @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
     def test_public_roles_cannot_execute_app_functions(
-        self, supabase_like_conn, role: str
+        self, supabase_like_conn: psycopg2.extensions.connection, role: str
     ) -> None:
         """EXECUTE z domyślnego grantu roli PUBLIC też się liczy — `anon` jest jej
         członkiem. Nowa funkcja w kolejnej migracji musi odebrać go sama."""
@@ -1919,7 +2139,9 @@ class TestSupabaseRoleEmulation:
         assert any(name.startswith("match_news_embeddings(") for name in functions)
         assert executable == []
 
-    def test_rls_hides_every_row_even_if_a_grant_comes_back(self, supabase_like_conn) -> None:
+    def test_rls_hides_every_row_even_if_a_grant_comes_back(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """Druga warstwa: gdy grant wróci (przyszła migracja, ręczny GRANT w
         dashboardzie), RLS bez polityk dalej zwraca anon zero wierszy."""
         with _rolled_back(supabase_like_conn) as cur:
@@ -1930,7 +2152,7 @@ class TestSupabaseRoleEmulation:
             assert cur.fetchone() == (0,)
 
     def test_objects_created_after_the_migration_are_not_granted_to_public_roles(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """ALTER DEFAULT PRIVILEGES z 038: nowa tabela albo DROP + CREATE widoku
         (wzorzec 026/027) nie przywracają grantów anon / authenticated, a
@@ -1958,7 +2180,9 @@ class TestSupabaseRoleEmulation:
         assert anon_sequence is False
         assert service_role == [True, True, True]
 
-    def test_service_role_reads_and_writes_through_rls(self, supabase_like_conn) -> None:
+    def test_service_role_reads_and_writes_through_rls(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """Klucz secret / service_role po 038: PII i portfel, predykcja z
         rozliczeniem (trigger 029), głos rady (BIGSERIAL → USAGE sekwencji),
         upsert snapshotu ceny i odczyt `ml_feature_store`."""
@@ -2010,7 +2234,7 @@ class TestSupabaseRoleEmulation:
             assert cur.fetchone() == (0,)
 
     def test_feature_store_rebuilt_by_039_stays_closed_to_public_roles(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """039 robi DROP + CREATE widoku PO 038: anon / authenticated bez żadnego
         prawa, service_role dalej czyta (Slow Loop trenuje z tego widoku)."""
@@ -2027,7 +2251,7 @@ class TestSupabaseRoleEmulation:
         assert service_role is True
 
     def test_llm_calls_is_closed_to_public_roles_and_open_to_service_role(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """FIN-13: nowa tabela po 038 — RLS włączony w 040, anon i authenticated bez
         prawa, a service_role (Fast i Slow Loop) zapisuje batch i czyta."""
@@ -2056,7 +2280,7 @@ class TestSupabaseRoleEmulation:
                 cur.execute("SELECT 1 FROM llm_calls LIMIT 1")
 
     def test_cycle_runs_is_closed_to_public_roles_and_open_to_service_role(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """NIEZ-29: nowa tabela po 038 — RLS włączony w 041, anon i authenticated bez
         prawa, a service_role (Fast Loop) zapisuje przebieg i czyta historię."""
@@ -2084,7 +2308,7 @@ class TestSupabaseRoleEmulation:
                 cur.execute("SELECT 1 FROM cycle_runs LIMIT 1")
 
     def test_reference_predictions_are_closed_to_public_roles_and_open_to_service_role(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """WIA-24: nowa tabela po 038 — RLS włączony w 042, anon i authenticated bez
         prawa, a service_role (Slow Loop) zapisuje odczyt i rozlicza wywołanie."""
@@ -2118,7 +2342,7 @@ class TestSupabaseRoleEmulation:
                 cur.execute("SELECT 1 FROM reference_predictions LIMIT 1")
 
     def test_price_level_alerts_are_closed_to_public_roles_and_open_to_service_role(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         """ALR-11: nowa tabela po 038 — RLS włączony w 057, anon i authenticated bez
         prawa, a service_role (watch) dopisuje poziom, czyta aktywne i wyłącza trafiony."""
@@ -2151,7 +2375,44 @@ class TestSupabaseRoleEmulation:
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("SELECT 1 FROM price_level_alerts LIMIT 1")
 
-    def test_service_role_executes_the_rpc_functions(self, supabase_like_conn) -> None:
+    def test_shadow_predictions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        """ML-33: nowa tabela po 038 — RLS włączony w 075, anon i authenticated bez
+        prawa, a service_role (Fast Loop) dopisuje prognozę cienia i (Slow Loop) czyta."""
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'shadow_predictions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "shadow_predictions") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('SP_SR', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO shadow_predictions "
+                "(prediction_id, symbol, model_name, model_version, proba) "
+                "VALUES (%s, 'SP_SR', 'direction', %s, 0.7)",
+                (prediction_id, "c" * 64),
+            )
+            cur.execute("SELECT count(*) FROM shadow_predictions WHERE symbol = 'SP_SR'")
+            assert cur.fetchone() == (1,)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM shadow_predictions LIMIT 1")
+
+    def test_service_role_executes_the_rpc_functions(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """RPC, które aplikacja woła przez PostgREST. `refresh_ml_feature_store`
         poza zakresem: REFRESH wymaga właściciela widoku, a prawo MAINTAIN dla
         grantu ALL przynosi dopiero Postgres 17."""
@@ -2166,16 +2427,184 @@ class TestSupabaseRoleEmulation:
             cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
             assert cur.fetchone() == (0,)
 
-    def test_service_role_executes_persona_vote_outcomes(self, supabase_like_conn) -> None:
+    def test_service_role_executes_persona_vote_outcomes(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
         """WIA-51: RPC 045 woła aplikacja — EXECUTE tylko dla service_role."""
         with _rolled_back(supabase_like_conn) as cur:
             _set_role(cur, "service_role")
             cur.execute("SELECT count(*) FROM persona_vote_outcomes(90)")
             assert cur.fetchone() == (0,)
 
+    def test_service_role_executes_persona_scoring_stats(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        """WIA-44: RPC 065 woła aplikacja — EXECUTE tylko dla service_role."""
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            cur.execute("SELECT count(*) FROM persona_scoring_stats(90, ARRAY['BTC'])")
+            assert cur.fetchone() == (0,)
+
+
+# BEZ-18: RPC aplikacji miały zmienny search_path (Supabase advisor
+# `function_search_path_mutable`). Wywołanie z innej roli i innym search_path mogłoby
+# podstawić obiekt o tej samej nazwie. EXECUTE odebrane PUBLIC i rolom API już w 038.
+RPC_FUNCTIONS = (
+    "match_news_embeddings(vector,integer,text)",
+    "persona_accuracy_weights(integer)",
+    "persona_accuracy_stats(integer)",
+)
+_PUBLIC_GRANTEE = 0
+
+
+@pytest.mark.containers
+class TestRpcFunctionHardening:
+    @pytest.mark.parametrize("function", RPC_FUNCTIONS)
+    def test_rpc_function_pins_its_search_path(
+        self, supabase_like_conn: psycopg2.extensions.connection, function: str
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute("SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (function,))
+            (config,) = cur.fetchone()
+
+        assert any(item.startswith("search_path=") for item in config or []), config
+
+    @pytest.mark.parametrize("function", RPC_FUNCTIONS)
+    def test_rpc_functions_not_executable_by_arbitrary_role(
+        self, supabase_like_conn: psycopg2.extensions.connection, function: str
+    ) -> None:
+        """PUBLIC (`acldefault`, gdy `proacl` jest NULL) i role API nie wykonują RPC;
+        klucz secret (service_role) tak."""
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_proc p,
+                         aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+                    WHERE p.oid = %s::regprocedure
+                      AND acl.grantee = %s
+                      AND acl.privilege_type = 'EXECUTE'
+                )
+                """,
+                (function, _PUBLIC_GRANTEE),
+            )
+            public_can_execute = cur.fetchone()[0]
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, function),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert public_can_execute is False
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
+
+def _schema_version_function_count(cur: psycopg2.extensions.cursor) -> int:
+    cur.execute(
+        """
+        SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'schema_version'
+        """
+    )
+    return int(cur.fetchone()[0])
+
+
+def _create_migration_registry(cur: psycopg2.extensions.cursor, versions: Sequence[str]) -> None:
+    """Rejestr, który tworzy Supabase CLI (`supabase db push`); w emulacji go nie ma."""
+    cur.execute("CREATE SCHEMA supabase_migrations")
+    cur.execute("CREATE TABLE supabase_migrations.schema_migrations (version text PRIMARY KEY)")
+    for version in versions:
+        cur.execute(
+            "INSERT INTO supabase_migrations.schema_migrations (version) VALUES (%s)", (version,)
+        )
+
+
+@pytest.mark.containers
+class TestSchemaVersionFunction:
+    """NIEZ-30: `public.schema_version()` mówi aplikacji, do której migracji sięga baza,
+    żeby flaga bez swojej migracji wyłączyła się sama zamiast kończyć się PGRST204."""
+
+    def test_is_a_security_definer_with_a_fixed_search_path(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute(
+                """
+                SELECT p.prosecdef, p.proconfig, p.prorettype::regtype::text
+                FROM pg_proc p WHERE p.oid = 'public.schema_version()'::regprocedure
+                """
+            )
+            security_definer, config, return_type = cur.fetchone()
+
+        assert security_definer is True
+        assert any(item.startswith("search_path=") for item in config or []), config
+        assert return_type == "integer"
+
+    def test_is_null_without_the_registry_or_with_an_empty_one(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute("SELECT public.schema_version()")
+            without_registry = cur.fetchone()
+            _create_migration_registry(cur, [])
+            cur.execute("SELECT public.schema_version()")
+            empty_registry = cur.fetchone()
+
+        assert without_registry == (None,)
+        assert empty_registry == (None,)
+
+    def test_reads_the_highest_numeric_version_and_ignores_timestamp_versions(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            _create_migration_registry(cur, ["001", "059", "070", "20240101000000"])
+            cur.execute("SELECT public.schema_version()")
+            version = cur.fetchone()
+
+        assert version == (70,)
+
+    def test_service_role_reads_it_without_access_to_the_registry(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        """SECURITY DEFINER: klucz secret nie ma USAGE na schemacie supabase_migrations."""
+        with _rolled_back(supabase_like_conn) as cur:
+            assert _schema_version_function_count(cur) == 1
+            _create_migration_registry(cur, ["001", "059"])
+            _set_role(cur, "service_role")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT version FROM supabase_migrations.schema_migrations")
+        with _rolled_back(supabase_like_conn) as cur:
+            _create_migration_registry(cur, ["001", "059"])
+            _set_role(cur, "service_role")
+            cur.execute("SELECT public.schema_version()")
+            version = cur.fetchone()
+
+        assert version == (59,)
+
+    @pytest.mark.parametrize("role", PUBLIC_API_ROLES)
+    def test_public_api_roles_cannot_execute_it(
+        self, supabase_like_conn: psycopg2.extensions.connection, role: str
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            assert _schema_version_function_count(cur) == 1
+            cur.execute(
+                "SELECT has_function_privilege(%s::name, 'public.schema_version()'::regprocedure, "
+                "'EXECUTE')",
+                (role,),
+            )
+            executable = cur.fetchone()[0]
+
+        assert executable is False
+
 
 @pytest.fixture
-def fresh_pg():
+def fresh_pg() -> Iterator[psycopg2.extensions.connection]:
     """Świeży, IZOLOWANY kontener Postgres (function scope) — dla testów, które
     muszą zacząć od stanu PRZED konkretną migracją (nie da się tego uzyskać w
     module-scoped kontenerze, gdzie wszystkie migracje są już zaaplikowane)."""
@@ -2196,7 +2625,9 @@ class TestMigration013DedupesPreexistingDuplicates:
             for filename in MIGRATION_FILES[:idx]:
                 cur.execute((MIGRATIONS_DIR / filename).read_text())
 
-    def test_013_dedupes_then_builds_unique_index(self, fresh_pg) -> None:
+    def test_013_dedupes_then_builds_unique_index(
+        self, fresh_pg: psycopg2.extensions.connection
+    ) -> None:
         conn = fresh_pg
         self._apply_up_to_012(conn)
         with conn.cursor() as cur:
@@ -2262,7 +2693,7 @@ class TestMigration027BackfillsFeatureSetVersion:
                 cur.execute((MIGRATIONS_DIR / filename).read_text())
 
     def test_027_backfills_only_rows_before_the_news_window_change(
-        self, fresh_pg
+        self, fresh_pg: psycopg2.extensions.connection
     ) -> None:
         conn = fresh_pg
         self._apply_up_to_026(conn)
@@ -2300,7 +2731,7 @@ class TestMigration029BackfillsSettledAt:
                 cur.execute((MIGRATIONS_DIR / filename).read_text())
 
     def test_029_backfills_settled_at_from_the_settling_cycle_snapshot(
-        self, fresh_pg
+        self, fresh_pg: psycopg2.extensions.connection
     ) -> None:
         conn = fresh_pg
         self._apply_up_to_028(conn)
@@ -2364,7 +2795,7 @@ class TestMigration034BackfillsGateDelta:
         return dict(cur.fetchall())
 
     def test_034_backfills_the_delta_against_the_previous_cycle_snapshot(
-        self, fresh_pg
+        self, fresh_pg: psycopg2.extensions.connection
     ) -> None:
         conn = fresh_pg
         self._apply_up_to_033(conn)
@@ -2416,7 +2847,9 @@ class TestMigration035BackfillsPositionCurrency:
         cur.execute("SELECT symbol, currency FROM positions")
         return dict(cur.fetchall())
 
-    def test_035_derives_the_currency_from_the_ticker_suffix(self, fresh_pg) -> None:
+    def test_035_derives_the_currency_from_the_ticker_suffix(
+        self, fresh_pg: psycopg2.extensions.connection
+    ) -> None:
         conn = fresh_pg
         self._apply_up_to_034(conn)
         migration = (MIGRATIONS_DIR / "035_positions_currency.sql").read_text()
@@ -2461,7 +2894,9 @@ class TestMigration037BackfillsExperimentArms:
             for filename in MIGRATION_FILES[:idx]:
                 cur.execute((MIGRATIONS_DIR / filename).read_text())
 
-    def test_037_copies_the_arms_from_the_v2_receipt(self, fresh_pg) -> None:
+    def test_037_copies_the_arms_from_the_v2_receipt(
+        self, fresh_pg: psycopg2.extensions.connection
+    ) -> None:
         conn = fresh_pg
         self._apply_up_to_036(conn)
         migration = (MIGRATIONS_DIR / "037_experiment_arms.sql").read_text()
@@ -2554,7 +2989,9 @@ class TestMigration045PersonaVoteOutcomes:
             in cur.fetchall()
         ]
 
-    def test_persona_vote_outcomes_return_raw_settled_votes(self, pg_conn) -> None:
+    def test_persona_vote_outcomes_return_raw_settled_votes(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         _apply_migrations(pg_conn)
         with pg_conn.cursor() as cur:
             # Izolacja: RPC czyta całą tabelę, a kontener dzielą testy modułu.
@@ -2585,7 +3022,9 @@ class TestMigration045PersonaVoteOutcomes:
         # Ta sama liczba, dwie oceny: domena z pasmem krypto, SQL 018 bez niego.
         assert persona_hit_stats(outcomes, crypto_symbols={"PVO_BTC"}) == {"Buffett": (1.0, 1)}
 
-    def test_persona_weights_as_of_ignore_votes_settled_after_cutoff(self, pg_conn) -> None:
+    def test_persona_weights_as_of_ignore_votes_settled_after_cutoff(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         _apply_migrations(pg_conn)
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM council_votes")
@@ -2603,7 +3042,9 @@ class TestMigration045PersonaVoteOutcomes:
 
         assert weights == {"Wood": pytest.approx(1.5)}
 
-    def test_045_is_idempotent_and_keeps_the_old_rpcs(self, pg_conn) -> None:
+    def test_045_is_idempotent_and_keeps_the_old_rpcs(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         migration = (MIGRATIONS_DIR / "045_persona_vote_outcomes.sql").read_text()
         with pg_conn.cursor() as cur:
             cur.execute(migration)
@@ -2617,12 +3058,160 @@ class TestMigration045PersonaVoteOutcomes:
 
 
 @pytest.mark.containers
+class TestMigration065PersonaScoring:
+    """WIA-44: RPC `persona_scoring_stats` — hit-rate, liczba głosów, średni Brier
+    (confidence − trafienie)² i log loss deklarowanej pewności głosu, tą samą regułą
+    trafności co domena (pasmo HOLD krypto z parametru, bez rozliczeń `stale_quote`)."""
+
+    @staticmethod
+    def _settled_vote(
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        investor: str,
+        recommendation: str,
+        confidence: float,
+        actual: float,
+        *,
+        stale: bool | None = None,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO prediction_logs "
+            "(symbol, timestamp, price_at_prediction, actual_price_after_12h, stale_quote) "
+            "VALUES (%s, NOW() - interval '3 days', 100.0, %s, %s) RETURNING id",
+            (symbol, actual, stale),
+        )
+        prediction_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO council_votes "
+            "(prediction_id, symbol, investor_name, recommendation, confidence) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (prediction_id, symbol, investor, recommendation, confidence),
+        )
+
+    @staticmethod
+    def _scoring(
+        cur: psycopg2.extensions.cursor, crypto: list[str]
+    ) -> dict[str, tuple[float, int, float, float]]:
+        cur.execute(
+            "SELECT investor_name, hit_rate, vote_count, brier, log_loss "
+            "FROM persona_scoring_stats(90, %s)",
+            (crypto,),
+        )
+        return {name: (hit, count, brier, loss) for name, hit, count, brier, loss in cur.fetchall()}
+
+    def test_persona_scoring_rpc_returns_expected_brier(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            # Przepewna: BUY 0.9 trafia, BUY 0.9 pudłuje → hit-rate 0.5, Brier (0.01 + 0.81) / 2.
+            self._settled_vote(cur, "PS65_A", "Over", "BUY", 0.9, 110.0)
+            self._settled_vote(cur, "PS65_B", "Over", "BUY", 0.9, 90.0)
+            # Skalibrowana: BUY 0.5 trafia, BUY 0.5 pudłuje → Brier 0.25.
+            self._settled_vote(cur, "PS65_C", "Calibrated", "BUY", 0.5, 110.0)
+            self._settled_vote(cur, "PS65_D", "Calibrated", "BUY", 0.5, 90.0)
+            scoring = self._scoring(cur, [])
+
+        assert scoring["Over"][:2] == (0.5, 2)
+        assert scoring["Over"][2] == pytest.approx((0.01 + 0.81) / 2)
+        assert scoring["Over"][3] == pytest.approx(-(math.log(0.9) + math.log(0.1)) / 2)
+        assert scoring["Calibrated"][2] == pytest.approx(0.25)
+        assert scoring["Calibrated"][3] == pytest.approx(math.log(2))
+
+    def test_scoring_matches_the_domain_rule_including_the_crypto_hold_band(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            # HOLD +2% mieści się w paśmie krypto ±2.5%, a nie w paśmie akcji ±0.5%.
+            self._settled_vote(cur, "PS65_BTC", "Hold", "HOLD", 0.8, 102.0)
+            self._settled_vote(cur, "PS65_AAPL", "Hold", "HOLD", 0.8, 102.0)
+            self._settled_vote(cur, "PS65_SELL", "Hold", "SELL", 0.7, 95.0)
+            cur.execute(
+                "SELECT prediction_id, investor_name, recommendation, confidence, symbol, "
+                "price_at_prediction, actual_price_after_12h, predicted_at, settled_at "
+                "FROM persona_vote_outcomes(90)"
+            )
+            outcomes = [
+                PersonaVoteOutcome(
+                    prediction_id=str(pid), investor_name=name, recommendation=rec,
+                    confidence=conf, symbol=symbol,
+                    price_at_prediction=Decimal(str(price)), actual_price=Decimal(str(actual)),
+                    predicted_at=predicted_at, settled_at=settled_at,
+                )
+                for pid, name, rec, conf, symbol, price, actual, predicted_at, settled_at
+                in cur.fetchall()
+            ]
+            scoring = self._scoring(cur, ["PS65_BTC"])
+
+        crypto = {"PS65_BTC"}
+        samples = [
+            (o.confidence, persona_vote_correct(
+                o.recommendation, o.price_at_prediction, o.actual_price,
+                AssetType.CRYPTO if o.symbol in crypto else None,
+            ))
+            for o in outcomes
+        ]
+        hit_rate, votes = persona_hit_stats(outcomes, crypto_symbols=crypto)["Hold"]
+        assert scoring["Hold"][0] == pytest.approx(hit_rate)
+        assert scoring["Hold"][1] == votes == 3
+        assert scoring["Hold"][2] == pytest.approx(brier_score(samples))
+        assert scoring["Hold"][3] == pytest.approx(log_loss(samples))
+
+    def test_settlements_on_a_stale_quote_are_not_scored(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            self._settled_vote(cur, "PS65_FRESH", "Wood", "BUY", 0.6, 110.0, stale=False)
+            self._settled_vote(cur, "PS65_UNKNOWN", "Wood", "BUY", 0.6, 110.0, stale=None)
+            self._settled_vote(cur, "PS65_STALE", "Wood", "BUY", 0.6, 100.0, stale=True)
+            scoring = self._scoring(cur, [])
+
+        assert scoring["Wood"][1] == 2
+
+    def test_open_predictions_are_not_scored(self, pg_conn: psycopg2.extensions.connection) -> None:
+        _apply_migrations(pg_conn)
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM council_votes")
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction) "
+                "VALUES ('PS65_OPEN', 100.0) RETURNING id"
+            )
+            open_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO council_votes "
+                "(prediction_id, symbol, investor_name, recommendation, confidence) "
+                "VALUES (%s, 'PS65_OPEN', 'Wood', 'BUY', 0.6)",
+                (open_id,),
+            )
+            assert self._scoring(cur, []) == {}
+
+    def test_065_is_idempotent_and_keeps_the_old_rpcs(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "065_persona_scoring.sql").read_text()
+        with pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT count(*) FROM persona_accuracy_stats(90)")
+            cur.execute("SELECT count(*) FROM persona_vote_outcomes(90)")
+            cur.execute(
+                "SELECT obj_description('persona_scoring_stats(integer, text[])'::regprocedure)"
+            )
+            assert "WIA-44" in cur.fetchone()[0]
+
+
+@pytest.mark.containers
 class TestMigration046CorrectionCategory:
     """WIA-57: kategoria przyczyny błędu z diagnozy — kolumna z CHECK zbioru
     `MistakeCategory`; NULL dla wierszy bez kategorii."""
 
     def test_correction_category_accepts_every_domain_category_and_null(
-        self, pg_conn
+        self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         from src.domain.mistake_taxonomy import MistakeCategory
 
@@ -2641,14 +3230,16 @@ class TestMigration046CorrectionCategory:
             )
             assert cur.fetchone() == (len(MistakeCategory) + 1,)
 
-    def test_correction_category_rejects_a_value_outside_the_taxonomy(self, pg_conn) -> None:
+    def test_correction_category_rejects_a_value_outside_the_taxonomy(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         with pg_conn.cursor() as cur, pytest.raises(psycopg2.errors.CheckViolation):
             cur.execute(
                 "INSERT INTO prediction_logs (symbol, correction_category) "
                 "VALUES ('CC046_BAD', 'ASTROLOGY')"
             )
 
-    def test_046_is_idempotent(self, pg_conn) -> None:
+    def test_046_is_idempotent(self, pg_conn: psycopg2.extensions.connection) -> None:
         migration = (MIGRATIONS_DIR / "046_correction_category.sql").read_text()
         with pg_conn.cursor() as cur:
             cur.execute(migration)
@@ -2666,7 +3257,9 @@ class TestMigration048NormalizesPredictedTrend:
     """ML-19: UPDATE do UPPER(TRIM) idzie PRZED CHECK, a CHECK jest NOT VALID —
     inaczej migracja padłaby na pierwszym historycznym wierszu spoza listy."""
 
-    def test_048_normalizes_existing_trends_before_the_check(self, fresh_pg) -> None:
+    def test_048_normalizes_existing_trends_before_the_check(
+        self, fresh_pg: psycopg2.extensions.connection
+    ) -> None:
         conn = fresh_pg
         migration = (MIGRATIONS_DIR / "048_normalize_predicted_trend.sql").read_text()
         idx = MIGRATION_FILES.index("048_normalize_predicted_trend.sql")
@@ -2714,7 +3307,9 @@ class TestMigration053EarningsCache:
     """FIN-11: `earnings_cache` — jedna data raportu na spółkę, odświeżana upsertem
     w Slow Loopie, zamknięta dla ról publicznych jak każda tabela po 038."""
 
-    def test_earnings_cache_holds_one_report_date_per_symbol(self, pg_conn) -> None:
+    def test_earnings_cache_holds_one_report_date_per_symbol(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         _apply_migrations(pg_conn)
 
         assert _columns(pg_conn, "earnings_cache") == {"symbol", "report_date", "fetched_at"}
@@ -2738,7 +3333,7 @@ class TestMigration053EarningsCache:
                 cur.execute("INSERT INTO earnings_cache (symbol) VALUES ('EC_NONE')")
 
     def test_earnings_cache_is_closed_to_public_roles_and_open_to_service_role(
-        self, supabase_like_conn
+        self, supabase_like_conn: psycopg2.extensions.connection
     ) -> None:
         with _rolled_back(supabase_like_conn) as cur:
             cur.execute(
@@ -2787,7 +3382,9 @@ class TestMigration054CouncilVotesUnique:
             (prediction_id, name, rec),
         )
 
-    def test_council_votes_rejects_duplicate_vote(self, pg_conn) -> None:
+    def test_council_votes_rejects_duplicate_vote(
+        self, pg_conn: psycopg2.extensions.connection
+    ) -> None:
         _apply_migrations(pg_conn)
 
         with pg_conn.cursor() as cur:
@@ -2810,7 +3407,9 @@ class TestMigration054CouncilVotesUnique:
             )
             assert cur.fetchone() == (1, "HOLD")
 
-    def test_054_dedupes_then_builds_the_unique_index(self, fresh_pg) -> None:
+    def test_054_dedupes_then_builds_the_unique_index(
+        self, fresh_pg: psycopg2.extensions.connection
+    ) -> None:
         conn = fresh_pg
         idx = MIGRATION_FILES.index("054_council_votes_unique.sql")
         with conn.cursor() as cur:
@@ -2988,6 +3587,863 @@ class TestMigration059SettlementSessionClose:
 
 
 @pytest.mark.containers
+class TestMigration062CorporateActions:
+    """DAT-23: podejrzenia splitów — jeden wiersz na symbol, rodzaj i dzień UTC,
+    zamknięte dla ról publicznych jak każda tabela po 038."""
+
+    _INSERT = (
+        "INSERT INTO corporate_actions "
+        "(symbol, kind, ratio, prev_close, reference_price, detected_at, detected_on) "
+        "VALUES (%s, 'split_suspected', %s, 120.6, 1200, '2026-10-27T05:30:00+00:00', "
+        "'2026-10-27') ON CONFLICT (symbol, kind, detected_on) DO NOTHING"
+    )
+
+    def test_split_suspicion_is_stored_once_per_symbol_kind_and_day(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert _columns(migrated_pg_conn, "corporate_actions") == {
+            "id", "symbol", "kind", "ratio", "prev_close", "reference_price",
+            "detected_at", "detected_on",
+        }
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(self._INSERT, ("CA_NVDA", Decimal("0.1")))
+            cur.execute(self._INSERT, ("CA_NVDA", Decimal("0.1")))
+            cur.execute(
+                "SELECT count(*), max(ratio) FROM corporate_actions WHERE symbol = 'CA_NVDA'"
+            )
+            assert cur.fetchone() == (1, Decimal("0.1"))
+
+    @pytest.mark.parametrize(
+        ("kind", "ratio"), [("dividend", Decimal("0.1")), ("split_suspected", Decimal("0"))]
+    )
+    def test_unknown_kind_and_non_positive_ratio_are_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection, kind: str, ratio: Decimal
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO corporate_actions "
+                "(symbol, kind, ratio, prev_close, reference_price, detected_at, detected_on) "
+                "VALUES ('CA_BAD', %s, %s, 1, 1, now(), current_date)",
+                (kind, ratio),
+            )
+
+    def test_corporate_actions_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute(
+                "SELECT relrowsecurity FROM pg_class WHERE oid = 'corporate_actions'::regclass"
+            )
+            assert cur.fetchone() == (True,)
+            public = [
+                _has_table_privilege(cur, role, "corporate_actions") for role in PUBLIC_API_ROLES
+            ]
+
+            _set_role(cur, "service_role")
+            cur.execute(self._INSERT, ("CA_SR", Decimal("2")))
+            cur.execute("SELECT ratio FROM corporate_actions WHERE symbol = 'CA_SR'")
+            assert cur.fetchone() == (Decimal("2"),)
+
+        assert public == [False, False]
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "anon")
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("SELECT 1 FROM corporate_actions LIMIT 1")
+
+    def test_062_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "062_corporate_actions.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'corporate_actions'::regclass AND contype = 'u'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration063RagExactSearch:
+    """ML-23: `match_news_embeddings_exact` — kontrakt `match_news_embeddings`, ale
+    dokładne KNN. ivfflat z lists = 100 przy probes = 1 przeszukuje ~1% list, więc
+    najbliższy analog bywa pominięty, a z filtrem reżimu brakuje wierszy (sprawdzone
+    2026-10-25 na tym samym zbiorze: stara funkcja oddała 2 z 5 wierszy reżimu)."""
+
+    _ROWS = 500
+    _DIMENSIONS = 1536
+
+    @classmethod
+    def _vectors(cls) -> list[str]:
+        import random
+
+        rng = random.Random(23)
+        return [
+            "[" + ",".join(f"{rng.uniform(-1, 1):.4f}" for _ in range(cls._DIMENSIONS)) + "]"
+            for _ in range(cls._ROWS)
+        ]
+
+    def _insert(self, cur: psycopg2.extensions.cursor, vectors: list[str]) -> None:
+        """Wektory testu jako jedyne embeddingi tabeli (transakcja jest wycofywana) i plan
+        jak na produkcji: indeks ivfflat przebudowany na danych (prawdziwe centroidy),
+        a planer bez skanu sekwencyjnego — na 500 wierszach sam wybrałby dokładny skan."""
+        cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
+        for index, vector in enumerate(vectors):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, news_summary, regime, embedding) "
+                "VALUES (%s, 'news', %s, %s::vector)",
+                (f"RAG{index:03d}", "RISK_OFF" if index % 2 else "RISK_ON", vector),
+            )
+        cur.execute("REINDEX INDEX idx_prediction_logs_embedding")
+        cur.execute("SET LOCAL enable_seqscan = off")
+
+    def test_match_news_embeddings_returns_exact_nearest_neighbour(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        vectors = self._vectors()
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._insert(cur, vectors)
+            cur.execute(
+                "SELECT symbol FROM match_news_embeddings_exact(%s::vector, 1)", (vectors[137],)
+            )
+            top = cur.fetchall()
+            cur.execute(
+                "SELECT count(*) FROM match_news_embeddings_exact(%s::vector, 5, 'RISK_OFF')",
+                (vectors[0],),
+            )
+            filtered = cur.fetchone()
+
+        assert top == [("RAG137",)]
+        assert filtered == (5,)
+
+    def test_service_role_executes_the_exact_search(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        vector = "[" + ",".join(["0.1"] * 1536) + "]"
+        with _rolled_back(supabase_like_conn) as cur:
+            _set_role(cur, "service_role")
+            cur.execute(
+                "SELECT count(*) FROM match_news_embeddings_exact(%s::vector, 3)", (vector,)
+            )
+            assert cur.fetchone() == (0,)
+
+    def test_063_is_idempotent_and_keeps_the_approximate_search(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "063_rag_exact_search.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT proname FROM pg_proc "
+                "WHERE proname LIKE 'match_news_embeddings%%' ORDER BY proname"
+            )
+            names = [row[0] for row in cur.fetchall()]
+
+        # ML-41: 076 dokłada `match_news_embeddings_pit` (ten sam prefiks nazwy).
+        assert names == [
+            "match_news_embeddings",
+            "match_news_embeddings_exact",
+            "match_news_embeddings_pit",
+        ]
+        assert "idx_prediction_logs_embedding" in _indexes(migrated_pg_conn, "prediction_logs")
+
+
+@pytest.mark.containers
+class TestMigration072PredictionEntryPrice:
+    """WIA-54: cena wykonalna od otwarcia sesji obok `price_at_prediction` —
+    dodatnia albo NULL (krypto, zaległe rozliczenie, stare wiersze), nigdy zero."""
+
+    def test_settlement_carries_the_executable_entry_next_to_the_quote(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert "entry_price" in _columns(migrated_pg_conn, "prediction_logs")
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) VALUES "
+                "('EP072', '2026-10-19T05:30:00+00:00', 100.0) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET actual_price_after_12h = 106.0, "
+                "entry_price = 105.12345 WHERE id = %s "
+                "RETURNING price_at_prediction, entry_price, actual_price_after_12h",
+                (prediction_id,),
+            )
+            row = cur.fetchone()
+
+        assert row == (Decimal("100.0000"), Decimal("105.1235"), Decimal("106.0000"))
+
+    def test_entry_price_rejects_zero(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, entry_price) "
+                "VALUES ('EP072_BAD', '2026-10-19T05:30:00+00:00', 0)"
+            )
+
+    def test_072_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "072_prediction_entry_price.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%entry_price%'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+_GENESIS = "0" * 64
+
+
+def _open_trade(
+    cur: psycopg2.extensions.cursor, symbol: str, prev_hash: str, row_hash: str
+) -> int:
+    """Predykcja w `prediction_logs` (FK) i jej otwarta pozycja w ledgerze; zwraca `seq`."""
+    cur.execute(
+        "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction) "
+        "VALUES (%s, '2026-10-19T05:30:00+00:00', 100.0) RETURNING id",
+        (symbol,),
+    )
+    prediction_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO paper_trades (prediction_id, symbol, side, entry_price, entry_ts, "
+        "weight, cost_bps, prev_hash, row_hash) VALUES "
+        "(%s, %s, 'long', 100.0, '2026-10-19T05:30:00+00:00', 1, 10, %s, %s) RETURNING seq",
+        (prediction_id, symbol, prev_hash, row_hash),
+    )
+    return int(cur.fetchone()[0])
+
+
+_CLOSE = (
+    "UPDATE paper_trades SET exit_price = %s, exit_ts = '2026-10-20T05:30:00+00:00', "
+    "pnl = 0.06, exit_reason = 'settled' WHERE seq = %s"
+)
+
+
+@pytest.mark.containers
+class TestMigration073PaperTrades:
+    """WIA-59: append-only paper ledger — łańcuch liniowy od 64 zer, pozycja
+    zamykana raz, bez DELETE i TRUNCATE; tabela zamknięta dla ról publicznych."""
+
+    def test_trades_chain_from_the_genesis_hash(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert _columns(migrated_pg_conn, "paper_trades") == {
+            "seq", "prediction_id", "symbol", "side", "entry_price", "entry_ts", "weight",
+            "cost_bps", "prev_hash", "row_hash", "exit_price", "exit_ts", "pnl",
+            "exit_reason", "recorded_at",
+        }
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            _open_trade(cur, "PT_B", "a" * 64, "b" * 64)
+            cur.execute("SELECT prev_hash, row_hash FROM paper_trades ORDER BY seq")
+            assert cur.fetchall() == [(_GENESIS, "a" * 64), ("a" * 64, "b" * 64)]
+
+    def test_insert_after_a_stale_head_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        # Drugi zapis z tą samą głową (równoległe symbole) rozgałęziłby łańcuch.
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.SerializationFailure):
+                _open_trade(cur, "PT_B", _GENESIS, "b" * 64)
+
+    def test_paper_trades_rejects_update_of_closed_trade(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            cur.execute(_CLOSE, (106.0, seq))
+            cur.execute(
+                "SELECT exit_price, pnl, exit_reason FROM paper_trades WHERE seq = %s", (seq,)
+            )
+            assert cur.fetchone() == (Decimal("106.0000"), Decimal("0.06000000"), "settled")
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(_CLOSE, (90.0, seq))
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            "UPDATE paper_trades SET side = 'short' WHERE seq = %s",
+            "UPDATE paper_trades SET exit_price = 106, exit_ts = now(), pnl = 0.06, "
+            "exit_reason = 'settled', entry_price = 90 WHERE seq = %s",
+        ],
+    )
+    def test_entry_columns_are_immutable(
+        self, migrated_pg_conn: psycopg2.extensions.connection, update: str
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(update, (seq,))
+
+    def test_partial_close_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            seq = _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.CheckViolation):
+                cur.execute("UPDATE paper_trades SET exit_price = 106 WHERE seq = %s", (seq,))
+
+    @pytest.mark.parametrize("statement", ["DELETE FROM paper_trades", "TRUNCATE paper_trades"])
+    def test_ledger_is_append_only(
+        self, migrated_pg_conn: psycopg2.extensions.connection, statement: str
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            _open_trade(cur, "PT_A", _GENESIS, "a" * 64)
+            with pytest.raises(psycopg2.errors.RaiseException):
+                cur.execute(statement)
+
+    def test_paper_trades_are_closed_to_public_roles_and_writable_by_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'paper_trades'::regclass")
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "paper_trades") for role in PUBLIC_API_ROLES]
+
+            _set_role(cur, "service_role")
+            seq = _open_trade(cur, "PT_SR", _GENESIS, "c" * 64)
+            cur.execute(_CLOSE, (106.0, seq))
+            cur.execute("SELECT exit_reason FROM paper_trades WHERE seq = %s", (seq,))
+            assert cur.fetchone() == ("settled",)
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("DELETE FROM paper_trades WHERE seq = %s", (seq,))
+
+        assert public == [False, False]
+
+    def test_073_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "073_paper_trades.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgrelid = 'paper_trades'::regclass AND NOT tgisinternal"
+            )
+            assert cur.fetchone() == (4,)
+
+
+@pytest.mark.containers
+class TestMigration074InvalidationPrice:
+    """ML-27: poziom unieważnienia tezy i stempel alarmu watcha w `prediction_logs`."""
+
+    def test_prediction_carries_the_invalidation_level_and_its_alert(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"invalidation_price", "invalidation_alerted_at"} <= _columns(
+            migrated_pg_conn, "prediction_logs"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, price_at_prediction, "
+                "invalidation_price) VALUES ('IV074', '2026-10-19T05:30:00+00:00', 120.0, "
+                "118.12345) RETURNING id"
+            )
+            prediction_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE prediction_logs SET invalidation_alerted_at = "
+                "'2026-10-19T15:00:00+00:00' WHERE id = %s "
+                "RETURNING invalidation_price, invalidation_alerted_at IS NOT NULL",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (Decimal("118.1235"), True)
+
+    def test_invalidation_price_rejects_zero(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, invalidation_price) "
+                "VALUES ('IV074_BAD', '2026-10-19T05:30:00+00:00', 0)"
+            )
+
+    def test_074_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "074_invalidation_price.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'prediction_logs'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%invalidation_price%'"
+            )
+            assert cur.fetchone() == (1,)
+        assert "idx_prediction_logs_open_invalidation" in _indexes(
+            migrated_pg_conn, "prediction_logs"
+        )
+
+
+def _full_analysis_record() -> dict[str, object]:
+    """TEST-14: rekord `prediction_logs` z PEŁNEJ analizy grafu przy każdej fladze
+    i porcie, który dokłada klucz (kwit v2, przepis, atestacja, opcje, przedział,
+    rozkład trendu, notowanie, embedding), PO serializacji adaptera — dokładnie ten
+    słownik idzie do PostgREST."""
+    from datetime import timedelta
+    from unittest.mock import MagicMock, Mock, patch
+
+    from src.application.agent_graph import AgentGraphDeps, create_agent_graph
+    from src.application.ports import (
+        AttestationPublisherPort,
+        EmbeddingPort,
+        LLMPort,
+        MarketDataPort,
+        MLPredictionPort,
+        NewsPort,
+        OptionsFlowPort,
+        QuotePort,
+        RepositoryPort,
+        SentimentPort,
+    )
+    from src.domain.asset import Asset
+    from src.domain.conformal import CalibrationPoint
+    from src.domain.options_flow import OptionsFlowSnapshot
+    from src.domain.recipe import PredictionRecipe
+    from src.domain.value_objects import AssetType, Money, Quote, Threshold
+    from src.infrastructure.adapters.supabase_repo import SupabaseRepository
+
+    now = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+    repository = Mock(spec=RepositoryPort)
+    repository.get_unverified_prediction.return_value = None
+    repository.get_last_prediction_price.return_value = Money(Decimal("100"))
+    repository.find_similar_predictions.return_value = []
+    repository.get_current_hour_commitment.return_value = None
+    repository.save_prediction.return_value = "pred-1"
+    sentiment = Mock(spec=SentimentPort)
+    sentiment.get_social_score.return_value = {
+        "av_sentiment_score": 0.3,
+        "av_relevance_avg": 0.7,
+        "news_volume_24h": 4,
+        "high_relevance_count": 2,
+        "av_sentiment_label": "Bullish",
+    }
+    news = Mock(spec=NewsPort)
+    news.get_news_context.return_value = [{"title": "Reuters: Apple beats", "source": "Reuters"}]
+    llm = Mock(spec=LLMPort)
+    llm.analyze.return_value = {
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.8,
+        "av_agreement": 0.7,
+        "target_price_12h": 110.0,
+        "reasoning": "Momentum.",
+        "probabilities": {"BULLISH": 0.6, "BEARISH": 0.1, "SIDEWAYS": 0.3},
+        "invalidation": {"price": 104.0, "reason": "Spadek pod 104 obala tezę."},
+    }
+    ml = Mock(spec=MLPredictionPort)
+    ml.is_trained = True
+    ml.predict.return_value = Money(Decimal("108"))
+    ml.explain.return_value = {"price_delta": 0.01}
+    embedding = Mock(spec=EmbeddingPort)
+    embedding.embed.return_value = [0.01] * 1536
+    options = Mock(spec=OptionsFlowPort)
+    options.get_options_flow.return_value = OptionsFlowSnapshot("AAPL", 0.6, implied_vol=0.4)
+    quotes = Mock(spec=QuotePort)
+    quotes.get_quote.return_value = Quote(
+        price=Money(Decimal("106")),
+        quoted_at=now - timedelta(hours=64),
+        prev_close=Money(Decimal("104")),
+    )
+    window = [CalibrationPoint(0.001 * i, 0.002 * i - 0.01) for i in range(30)]
+    deps = AgentGraphDeps(
+        market_port=Mock(spec=MarketDataPort),
+        sentiment_port=sentiment,
+        news_port=news,
+        repository_port=repository,
+        ml_port=ml,
+        llm_port=llm,
+        threshold=Threshold(Decimal("0.02")),
+        embedding_port=embedding,
+        options_port=options,
+        quote_port=quotes,
+        attestation_publisher=Mock(spec=AttestationPublisherPort),
+        vector_memory_enabled=True,
+        regime_tagging_enabled=True,
+        receipts_enabled=True,
+        feature_set_version_enabled=True,
+        recipe=PredictionRecipe(
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+            council_provider="openai",
+            council_model="gpt-5-mini",
+            prompt_sha256="a" * 64,
+            personas_sha256="b" * 64,
+            config_hash="c" * 64,
+            model_version="cold_start",
+            universe_version="d" * 64,
+            git_sha="local",
+            run_id="local",
+        ),
+        recipe_version_enabled=True,
+        move_calibration={AssetType.STOCK: window},
+        interval_columns_enabled=True,
+        gate_delta_enabled=True,
+        experiment_arms_enabled=True,
+        trend_probabilities_enabled=True,
+        stale_quote_enabled=True,
+        invalidation_level_enabled=True,
+        clock=lambda: now,
+    )
+    create_agent_graph(deps).compile().invoke(
+        {
+            "symbol": "AAPL",
+            "previous_price": Decimal("100"),
+            "asset": Asset(symbol="AAPL", asset_type=AssetType.STOCK),
+            "regime_context": "NEUTRAL",
+            "experiment_arms": {"EXP-02": "blind"},
+        }
+    )
+    record = repository.save_prediction.call_args.args[0]
+
+    client = MagicMock()
+    client.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
+    with patch("src.infrastructure.adapters.supabase_repo.create_client", return_value=client):
+        SupabaseRepository(url="https://test.supabase.co", key="key").save_prediction(record)
+    serialized: dict[str, object] = client.table.return_value.upsert.call_args.args[0]
+    return serialized
+
+
+@pytest.mark.containers
+class TestSaveNodeRecordFitsPredictionLogs:
+    """TEST-14 (G69): PGRST204 to powracająca awaria produkcyjna — klucz rekordu
+    bez kolumny zabija zapis całej, już opłaconej predykcji. Rekord pełnej analizy
+    po serializacji musi mieścić się w kolumnach `prediction_logs` po migracjach."""
+
+    # Klucze, które dokładają flagi i porty — pilnuje, że test je naprawdę wywołał.
+    _OPTIONAL_KEYS = frozenset({
+        "regime",
+        "decision_receipts",
+        "feature_set_version",
+        "recipe_version",
+        "edge_sigma",
+        "interval_low",
+        "interval_high",
+        "gate_delta",
+        "experiment_arms",
+        "trend_probabilities",
+        "stale_quote",
+        "commitment_hash",
+        "commitment_salt",
+        "commitment_payload",
+        "embedding",
+        "invalidation_price",
+    })
+
+    def test_saved_record_keys_are_prediction_logs_columns(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        record = _full_analysis_record()
+
+        assert set(record) >= self._OPTIONAL_KEYS, (
+            f"graf nie zapisał kluczy: {sorted(self._OPTIONAL_KEYS - set(record))}"
+        )
+        missing = sorted(set(record) - _columns(migrated_pg_conn, "prediction_logs"))
+        assert missing == [], f"rekord save_node ma klucze bez kolumn prediction_logs: {missing}"
+
+
+@pytest.mark.containers
+class TestMigration061Digests:
+    """MAIL-24: indeks prywatnego archiwum digestów — wiersz na cykl, upsert po
+    `cycle_id`; bucket Storage tylko tam, gdzie jest schemat `storage` (Supabase)."""
+
+    def test_digests_keep_one_row_per_cycle(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "cycle_id",
+            "subject",
+            "lead_json",
+            "top_signals_json",
+            "sent_at",
+        } <= _columns(migrated_pg_conn, "digests")
+        assert "idx_digests_sent_at" in _indexes(migrated_pg_conn, "digests")
+        with _rolled_back(migrated_pg_conn) as cur:
+            for subject in ("pierwszy", "ponowiony"):
+                cur.execute(
+                    "INSERT INTO digests (cycle_id, subject, lead_json, sent_at) "
+                    "VALUES ('20261015T0530Z-1', %s, '[{\"symbol\": \"NVDA\"}]', NOW()) "
+                    "ON CONFLICT (cycle_id) DO UPDATE SET subject = EXCLUDED.subject",
+                    (subject,),
+                )
+            cur.execute("SELECT subject, top_signals_json FROM digests")
+            assert cur.fetchall() == [("ponowiony", [])]
+
+    def test_digests_are_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'digests'::regclass")
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "digests") for role in PUBLIC_API_ROLES]
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO digests (cycle_id, subject, sent_at) "
+                "VALUES ('20261015T0530Z-SR', 's', NOW()) RETURNING id"
+            )
+            assert cur.fetchone() is not None
+
+        assert public == [False, False]
+
+    def test_061_is_idempotent_without_the_storage_schema(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "061_digests.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT to_regclass('storage.buckets')")
+            assert cur.fetchone() == (None,)
+
+
+@pytest.mark.containers
+class TestMigration075ShadowPredictions:
+    """ML-33: prognozy cienia nogi ML — jeden wiersz na model i predykcję, prognoza
+    zwrotu albo prawdopodobieństwo, wersja wag jako sha256; znikają z predykcją."""
+
+    CHAMPION = "a" * 64
+    DIRECTION = "c" * 64
+
+    @staticmethod
+    def _prediction(cur: psycopg2.extensions.cursor, symbol: str) -> str:
+        cur.execute(
+            "INSERT INTO prediction_logs (symbol, price_at_prediction, actual_price_after_12h) "
+            "VALUES (%s, 100.0, 102.0) RETURNING id",
+            (symbol,),
+        )
+        return str(cur.fetchone()[0])
+
+    @staticmethod
+    def _shadow(
+        cur: psycopg2.extensions.cursor,
+        prediction_id: str,
+        name: str,
+        version: str,
+        predicted_return: float | None = None,
+        proba: float | None = None,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO shadow_predictions "
+            "(prediction_id, symbol, model_name, model_version, predicted_return, proba) "
+            "VALUES (%s, 'SP', %s, %s, %s, %s)",
+            (prediction_id, name, version, predicted_return, proba),
+        )
+
+    def test_champion_and_challenger_rows_join_their_settled_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "prediction_id",
+            "symbol",
+            "model_name",
+            "model_version",
+            "predicted_return",
+            "proba",
+            "created_at",
+        } <= _columns(migrated_pg_conn, "shadow_predictions")
+        assert "shadow_predictions_created_at_idx" in _indexes(
+            migrated_pg_conn, "shadow_predictions"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_JOIN")
+            self._shadow(cur, prediction_id, "champion", self.CHAMPION, predicted_return=0.01)
+            self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.7)
+            cur.execute(
+                "SELECT s.model_name, s.predicted_return, s.proba, "
+                "p.actual_price_after_12h / p.price_at_prediction - 1 "
+                "FROM shadow_predictions s JOIN prediction_logs p ON p.id = s.prediction_id "
+                "WHERE p.symbol = 'SP_JOIN' ORDER BY s.model_name"
+            )
+            rows = cur.fetchall()
+
+        assert [(name, ret, proba) for name, ret, proba, _ in rows] == [
+            ("champion", 0.01, None),
+            ("direction", None, 0.7),
+        ]
+        assert all(float(realized) == pytest.approx(0.02) for *_, realized in rows)
+
+    def test_one_row_per_model_and_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_UNIQ")
+            self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.7)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                self._shadow(cur, prediction_id, "direction", self.DIRECTION, proba=0.6)
+
+    @pytest.mark.parametrize(
+        ("name", "version", "predicted_return", "proba"),
+        [
+            ("direction", "c" * 64, None, None),
+            ("direction", "c" * 64, None, 1.2),
+            ("direction", "cold_start", None, 0.6),
+            ("", "c" * 64, 0.01, None),
+        ],
+    )
+    def test_rejects_rows_that_cannot_be_scored(
+        self,
+        migrated_pg_conn: psycopg2.extensions.connection,
+        name: str,
+        version: str,
+        predicted_return: float | None,
+        proba: float | None,
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            prediction_id = self._prediction(cur, "SP_CHECK")
+            self._shadow(cur, prediction_id, name, version, predicted_return, proba)
+
+    def test_rows_go_with_their_prediction(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            prediction_id = self._prediction(cur, "SP_CASCADE")
+            self._shadow(cur, prediction_id, "champion", self.CHAMPION, predicted_return=0.01)
+            cur.execute("DELETE FROM prediction_logs WHERE id = %s", (prediction_id,))
+            cur.execute(
+                "SELECT count(*) FROM shadow_predictions WHERE prediction_id = %s",
+                (prediction_id,),
+            )
+            assert cur.fetchone() == (0,)
+
+    def test_075_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "075_shadow_predictions.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'shadow_predictions'::regclass AND contype = 'u'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration076RagPointInTime:
+    """ML-41: `match_news_embeddings_pit` — tylko analogi rozliczone przed `before_ts`,
+    bez tego samego symbolu z okna horyzontu, z `timestamp` w wyniku; stare RPC bez
+    zmian (EXP-03 porównuje analogi z nich)."""
+
+    BEFORE = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+    SIGNATURE = (
+        "match_news_embeddings_pit(vector,integer,text,timestamp with time zone,text,integer)"
+    )
+    _VECTOR = "[" + ",".join(["0.1"] * 1536) + "]"
+
+    def _insert(
+        self,
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        created: timedelta,
+        *,
+        settled: timedelta | None,
+        correct: bool | None = True,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO prediction_logs "
+            "(symbol, news_summary, embedding, is_trend_correct, timestamp, settled_at) "
+            "VALUES (%s, 'news', %s::vector, %s, %s, %s)",
+            (
+                symbol,
+                self._VECTOR,
+                correct,
+                self.BEFORE + created,
+                None if settled is None else self.BEFORE + settled,
+            ),
+        )
+
+    def _rows(self, cur: psycopg2.extensions.cursor) -> None:
+        cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
+        day = timedelta(days=1)
+        hour = timedelta(hours=1)
+        self._insert(cur, "OLD", -10 * day, settled=-9 * day)
+        self._insert(cur, "OPEN", -10 * day, settled=None, correct=None)
+        self._insert(cur, "FUT", hour, settled=25 * hour)
+        self._insert(cur, "LATE", -20 * hour, settled=hour)
+        self._insert(cur, "AAPL", -24 * hour, settled=-hour)
+        self._insert(cur, "AAPL", -5 * day, settled=-4 * day)
+        self._insert(cur, "MSFT", -24 * hour, settled=-hour)
+
+    def test_match_news_embeddings_excludes_unresolved_and_future_rows(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._rows(cur)
+            cur.execute(
+                'SELECT symbol, "timestamp" FROM match_news_embeddings_pit('
+                "%s::vector, 10, NULL, %s, 'AAPL', 72) ORDER BY symbol",
+                (self._VECTOR, self.BEFORE),
+            )
+            rows = cur.fetchall()
+
+        assert rows == [
+            ("AAPL", self.BEFORE - timedelta(days=5)),
+            ("MSFT", self.BEFORE - timedelta(hours=24)),
+            ("OLD", self.BEFORE - timedelta(days=10)),
+        ]
+
+    def test_without_cutoff_and_symbol_only_unsettled_rows_drop_out(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._rows(cur)
+            cur.execute(
+                "SELECT symbol FROM match_news_embeddings_pit(%s::vector, 10) ORDER BY symbol",
+                (self._VECTOR,),
+            )
+            symbols = [row[0] for row in cur.fetchall()]
+
+        assert symbols == ["AAPL", "AAPL", "FUT", "LATE", "MSFT", "OLD"]
+
+    def test_only_the_service_role_executes_it_and_its_search_path_is_pinned(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (self.SIGNATURE,)
+            )
+            (config,) = cur.fetchone()
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, self.SIGNATURE),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert any(item.startswith("search_path=") for item in config or [])
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
+    def test_076_is_idempotent_and_keeps_the_older_searches(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "076_rag_point_in_time.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT proname FROM pg_proc "
+                "WHERE proname LIKE 'match_news_embeddings%%' ORDER BY proname"
+            )
+            names = [row[0] for row in cur.fetchall()]
+
+        assert names == [
+            "match_news_embeddings",
+            "match_news_embeddings_exact",
+            "match_news_embeddings_pit",
+        ]
+
+
+@pytest.mark.containers
 class TestMigratedPgConn:
     """TEST-08: `migrated_pg_conn` ma komplet schematu niezależnie od kolejności
     testów — ten test przechodzi także uruchomiony sam (`-k`)."""
@@ -3082,3 +4538,117 @@ def test_missing_docker_daemon_still_skips_without_require_docker(
 
     with pytest.raises(pytest.skip.Exception), _pgvector_connection():
         pass
+
+
+@pytest.mark.containers
+class TestMigration060ScorecardWeightsSha256:
+    """CI-13: karta modelu niesie sha256 pliku wag z przebiegu; NULL bez zapisu wag."""
+
+    def test_weights_hash_is_a_nullable_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert "weights_sha256" in _columns(migrated_pg_conn, "model_scorecards")
+        digest = "0f" * 32
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, weights_sha256) VALUES "
+                "('ALL', 'trained_successfully', %s), ('AAPL', 'evaluated_passed_gate', NULL)",
+                (digest,),
+            )
+            cur.execute(
+                "SELECT symbol, weights_sha256 FROM model_scorecards "
+                "WHERE symbol IN ('ALL', 'AAPL') ORDER BY symbol"
+            )
+            rows = cur.fetchall()
+
+        assert rows == [("AAPL", None), ("ALL", digest)]
+
+    def test_weights_hash_rejects_anything_but_a_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, weights_sha256) "
+                "VALUES ('ALL', 'trained_successfully', 'sha256:abc')"
+            )
+
+    def test_060_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "060_model_scorecards_weights_sha256.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%weights_sha256%'"
+            )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration064ScorecardProvenance:
+    """ML-22: karta modelu niesie proweniencję treningu; NULL dla pominięć i historii."""
+
+    def test_provenance_columns_round_trip(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {
+            "dataset_sha256",
+            "data_start",
+            "data_end",
+            "n_per_symbol",
+            "training_params",
+            "library_version",
+            "feature_set_version",
+            "git_sha",
+            "label_overlap_count",
+            "label_overlap_measured",
+        } <= _columns(migrated_pg_conn, "model_scorecards")
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, dataset_sha256, data_start, "
+                "data_end, n_per_symbol, training_params, library_version, "
+                "feature_set_version, git_sha, label_overlap_count, label_overlap_measured) "
+                "VALUES ('ALL', 'trained_successfully', %s, "
+                "'2026-10-01T07:30:00+00:00', '2026-10-20T07:30:00+00:00', "
+                "'{\"AAPL\": 40}'::jsonb, '{\"random_state\": 0}'::jsonb, "
+                "'xgboost 3.2.0', 4, 'abc1234', 10, 49), ('AAPL', 'skipped', NULL, NULL, "
+                "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+                ("ab" * 32,),
+            )
+            cur.execute(
+                "SELECT (n_per_symbol ->> 'AAPL')::int, "
+                "(training_params ->> 'random_state')::int, feature_set_version, "
+                "data_end > data_start, label_overlap_count, label_overlap_measured "
+                "FROM model_scorecards WHERE symbol = 'ALL' AND dataset_sha256 IS NOT NULL"
+            )
+            row = cur.fetchone()
+
+        assert row == (40, 0, 4, True, 10, 49)
+
+    def test_dataset_hash_rejects_anything_but_a_hex_digest(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with (
+            _rolled_back(migrated_pg_conn) as cur,
+            pytest.raises(psycopg2.errors.CheckViolation),
+        ):
+            cur.execute(
+                "INSERT INTO model_scorecards (symbol, status, dataset_sha256) "
+                "VALUES ('ALL', 'trained_successfully', 'not-a-digest')"
+            )
+
+    def test_064_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "064_model_scorecards_provenance.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
+                "AND pg_get_constraintdef(oid) LIKE '%dataset_sha256%'"
+            )
+            assert cur.fetchone() == (1,)

@@ -18,7 +18,13 @@ from __future__ import annotations
 
 import html as _html
 
-from src.domain.digest_lead import LeadItem
+from src.application.reporting.section import (
+    ReportSection,
+    SectionInput,
+    no_text,
+    text_block,
+)
+from src.domain.digest_lead import LeadItem, lead_preview
 
 # Akcent leadu — ciemny pasek z lewej, żeby pierwszy ekran wizualnie „krzyczał".
 # Neutralny grafit (nie czerwień/żółć), bo severity niesie już ikona pozycji.
@@ -77,3 +83,43 @@ def render_lead_text(items: list[LeadItem]) -> str:
             lines.append(f"    → {item.detail}")
     lines.append("")
     return "\n".join(lines)
+
+
+# MAIL-13: wypełniacz za treścią preheadera — bez niego klient poczty dociąga do
+# podglądu dalszy tekst maila („📊 StockAgent — raport cyklu Czas rozpoczęcia…”).
+_PREHEADER_FILLER = "&zwnj;&nbsp;" * 100
+
+
+def _render_preheader_html(lead_items: list[LeadItem], closed_count: int | None) -> str:
+    """MAIL-13: ukryty div na samym początku HTML — klient poczty pokazuje go jako
+    podgląd pod tematem. Treść leadu pochodzi z rady i newsów, więc jest escapowana.
+
+    `closed_count` None (MAIL-25) = odczyt rozliczeń padł: podgląd nie mówi „0”."""
+    closed = (
+        "rozliczenia niedostępne"
+        if closed_count is None
+        else f"{closed_count} zamkniętych predykcji"
+    )
+    preview = lead_preview(lead_items) or f"Brak sygnałów ponad próg · {closed}"
+    return (
+        '<div style="display:none; max-height:0; overflow:hidden; mso-hide:all;">'
+        f"{_html.escape(preview, quote=True)}{_PREHEADER_FILLER}</div>"
+    )
+
+
+def _preheader_html(data: SectionInput) -> str:
+    unavailable = data.context.resolved_unavailable and not data.resolved
+    return _render_preheader_html(data.lead_items, None if unavailable else len(data.resolved))
+
+
+def _lead_html(data: SectionInput) -> str:
+    return render_lead_html(data.lead_items)
+
+
+def _lead_text(data: SectionInput) -> list[str]:
+    return text_block(render_lead_text(data.lead_items), spaced=True)
+
+
+PREHEADER_SECTION = ReportSection(key="preheader", render_html=_preheader_html, render_text=no_text)
+# #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
+LEAD_SECTION = ReportSection(key="lead", render_html=_lead_html, render_text=_lead_text)

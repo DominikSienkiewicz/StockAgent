@@ -26,6 +26,8 @@ from main_agent import (
     STUB_WRITES_REFUSED_EXIT_CODE,
     build_notifier,
     build_push_channels,
+    flag_undelivered_report,
+    gate_flags_by_schema,
     llm_fallback_available,
     persist_llm_calls,
     refuses_stub_writes,
@@ -34,11 +36,17 @@ from main_agent import (
     write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
+from src.application.errors import PortError
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
-from src.application.report_ops import render_trainer_summary_markdown
+from src.application.report_ops import (
+    render_challenger_verdicts_markdown,
+    render_direction_variant_markdown,
+    render_trainer_summary_markdown,
+)
+from src.application.report_snapshot_training import render_snapshot_models_markdown
 from src.application.report_weekly_recap import (
     render_weekly_recap_html,
     render_weekly_recap_text,
@@ -57,14 +65,21 @@ from src.application.use_cases.monitor_output_drift import (
 )
 from src.application.use_cases.probe_models import ModelProbe, ProbeModelsUseCase
 from src.application.use_cases.reference_signal import RunReferenceSignalUseCase
-from src.application.use_cases.train_model import POOLED_MODEL_SYMBOL, TrainModelUseCase
+from src.application.use_cases.review_challengers import ReviewChallengersUseCase
+from src.application.use_cases.train_model import (
+    POOLED_MODEL_SYMBOL,
+    SnapshotModelsResult,
+    TrainModelUseCase,
+)
 from src.application.use_cases.weekly_recap import (
     PAID_LLM_CALLS_PER_RUN as RECAP_LLM_CALLS,
 )
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
-from src.config import Settings
+from src.config import Settings, load_evaluation_protocol
+from src.domain.direction_variant import DirectionReport
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
+from src.domain.promotion import ChallengerVerdict
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters.age_archive import AgeEncryptedArchive, is_age_recipient
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
@@ -126,6 +141,10 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         scorecard_baselines_enabled=settings.model_scorecard_baselines_enabled,
         scorecard_run_id_enabled=settings.model_scorecard_run_id_enabled,
         scorecard_feature_stats_enabled=settings.model_scorecard_feature_stats_enabled,
+        # CI-13: sha256 pliku wag w karcie (migracja 060) za flagą.
+        scorecard_weights_sha256_enabled=settings.model_scorecard_weights_sha256_enabled,
+        # ML-22: proweniencja treningu w karcie (migracja 064) za flagą.
+        scorecard_provenance_enabled=settings.model_scorecard_provenance_enabled,
         correction_category_enabled=settings.correction_category_enabled,
         # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
         fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
@@ -148,6 +167,17 @@ def build_use_case(settings: Settings, *, run_id: str | None = None) -> TrainMod
             else None
         ),
         run_id=run_id,
+        # ML-52: wektory `feature_snapshots` i ceny do etykiety — sam odczyt,
+        # więc bez strażnika zapisu (działa także lokalnie bez `db_writes_enabled`).
+        training_data=_supabase_repository(settings),
+        # ML-52 (4): model wspólny z wektorów zamiast z widoku (zmienia wagi; off).
+        snapshot_source=settings.snapshot_training_enabled,
+        # ML-11: target = zwrot / σ, karty w jednostkach σ (zmienia wagi i serving; off).
+        sigma_target=settings.ml_sigma_target_enabled,
+        # ML-22: commit kodu przebiegu w proweniencji treningu (karta i sidecar wag).
+        git_sha=RunContext.from_environ(os.environ).git_sha,
+        # ML-26: purge foldów po `settled_at` (zmienia werdykt bramki i wagi; off).
+        settled_purge=settings.ml_settled_purge_enabled,
     )
 
 
@@ -199,7 +229,7 @@ def _fundamentals_fetched_at(
     szła kolejnością listy."""
     try:
         known = repository.get_fundamentals_fetched_at(symbols)
-    except Exception:
+    except PortError:
         logger.exception("Fundamentals cache ages unavailable — refresh without rotation")
         known = {}
     return {
@@ -278,6 +308,12 @@ class _TrainingTally:
 
     statuses: Counter[str] = field(default_factory=Counter)
     pooled: Mapping[str, Any] | None = None
+    # ML-52: modele z `feature_snapshots` i raport selekcji (None = krok nie ruszył).
+    snapshot_models: SnapshotModelsResult | None = None
+    # ML-30: wariant binarny modelu (None = flaga off albo krok padł).
+    direction: DirectionReport | None = None
+    # ML-33: werdykt promocji challengerów (None = flaga off albo odczyt padł).
+    challengers: tuple[ChallengerVerdict, ...] | None = None
     feature_store_refreshed: bool = True
     failures: int = 0
     total: int = 0
@@ -289,14 +325,31 @@ class _TrainingTally:
     def render(self) -> str:
         pooled = self.pooled or {}
         samples = pooled.get("n_samples")
-        return render_trainer_summary_markdown(
+        summary = render_trainer_summary_markdown(
             symbol_statuses=self.statuses,
             pooled_status=str(pooled["status"]) if "status" in pooled else None,
             pooled_samples=samples if isinstance(samples, int) else None,
             failures=self.failures,
             total=self.total,
             feature_store_refreshed=self.feature_store_refreshed,
+            pooled_label_overlap=_label_overlap_of(pooled),
         )
+        if self.snapshot_models is not None:
+            summary += "\n" + render_snapshot_models_markdown(self.snapshot_models)
+        if self.direction is not None:
+            summary += "\n" + render_direction_variant_markdown(self.direction)
+        if self.challengers is not None:
+            summary += "\n" + render_challenger_verdicts_markdown(self.challengers)
+        return summary
+
+
+def _label_overlap_of(result: Mapping[str, Any]) -> tuple[int, int] | None:
+    """ML-25: (nakładające się, zmierzone) etykiety z wyniku treningu wspólnego."""
+    overlapping = result.get("label_overlap_count")
+    measured = result.get("label_overlap_measured")
+    if isinstance(overlapping, int) and isinstance(measured, int):
+        return overlapping, measured
+    return None
 
 
 def _train_symbols(
@@ -344,6 +397,101 @@ def _train_pooled_model(
     if tally is not None and isinstance(result, Mapping):
         tally.pooled = result
     return 0
+
+
+def _evaluate_snapshot_models(
+    settings: Settings,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+    tally: _TrainingTally | None = None,
+) -> None:
+    """ML-52: modele z `feature_snapshots` (cechy darmowe na wszystkich cyklach,
+    cechy LLM na cyklach gated) i raport selekcji bramki — sama ewaluacja, bez
+    zapisu wag. Krok pomocniczy: błąd (np. brak tabeli) tylko loguje, exit code
+    przebiegu się nie zmienia. Karty idą do `model_scorecards` jak karta `ALL`."""
+    try:
+        result = use_case.run_snapshot_models(
+            trainable, record_scorecard=settings.model_scorecard_enabled
+        )
+    except Exception:
+        logger.exception("Feature snapshot models failed — pomijam")
+        return
+    if not isinstance(result, SnapshotModelsResult):
+        return
+    logger.info(
+        "Feature snapshot models — vectors=%d labeled=%d free=%s (n=%d) llm=%s (n=%d) "
+        "gated/non-gated mean |return| ratio=%s",
+        result.n_snapshots,
+        result.n_labeled,
+        result.free_model.status,
+        result.free_model.n_samples,
+        result.llm_model.status,
+        result.llm_model.n_samples,
+        result.selection.abs_return_ratio,
+    )
+    if tally is not None:
+        tally.snapshot_models = result
+
+
+def _evaluate_direction_variant(
+    settings: Settings,
+    use_case: TrainModelUseCase,
+    trainable: list[str],
+    tally: _TrainingTally | None = None,
+) -> None:
+    """ML-30: wariant binarny P(wzrost poza martwą strefą z protokołu ewaluacji,
+    EXP-06) na próbce modelu wspólnego — sama ewaluacja, champion bez zmian.
+    Krok pomocniczy: błąd odczytu albo treningu tylko loguje, exit code ten sam."""
+    if not settings.ml_direction_classifier_enabled:
+        return
+    dead_band = float(load_evaluation_protocol().directional_dead_zone)
+    try:
+        report = use_case.run_direction_variant(trainable, dead_band=dead_band)
+    except (PortError, LookupError, ValueError, RuntimeError):
+        logger.exception("Direction variant failed — pomijam")
+        return
+    if not isinstance(report, DirectionReport):
+        return
+    logger.info(
+        "Direction variant (ML-30) — %s, n=%d, dead band ±%g (%d rows inside): %s",
+        report.outcome.value,
+        report.n_samples,
+        report.dead_band,
+        report.n_in_dead_band,
+        report.reason,
+    )
+    if tally is not None:
+        tally.direction = report
+
+
+def _review_challengers(
+    settings: Settings, repository: RepositoryPort, tally: _TrainingTally | None = None
+) -> None:
+    """ML-33: werdykt promocji challengerów nogi ML z prognoz cienia rozliczonych
+    predykcji (martwa strefa kierunku z protokołu, EXP-06) — sam raport w summary,
+    bez zapisu i bez podmiany wag. Błąd odczytu (np. brak tabeli przed migracją 075)
+    tylko loguje, exit code ten sam."""
+    if not settings.shadow_predictions_enabled:
+        return
+    dead_band = float(load_evaluation_protocol().directional_dead_zone)
+    try:
+        verdicts = ReviewChallengersUseCase(
+            repository, clock=lambda: datetime.now(UTC)
+        ).run(dead_band=dead_band)
+    except PortError:
+        logger.warning("Champion/challenger review failed — pomijam", exc_info=True)
+        return
+    for entry in verdicts:
+        logger.info(
+            "Challenger (ML-33) %s [%s] — %s, pairs=%d, z=%s",
+            entry.model_name,
+            entry.kind.value,
+            entry.verdict.status.value,
+            entry.verdict.n_pairs,
+            entry.verdict.paired_z,
+        )
+    if tally is not None:
+        tally.challengers = verdicts
 
 
 def _build_llm_or_unavailable(
@@ -576,10 +724,12 @@ def _model_catalogs(settings: Settings) -> dict[str, ModelCatalogPort]:
 
 
 def _push_critical_alerts(settings: Settings, alerts: list[QuotaAlert]) -> None:
-    """NIEZ-25: CRITICAL sondy idzie od razu pushem (ta sama reguła co alerty
-    real-time Fast Loopa: `realtime_alerts_enabled` i kanał Telegram/Slack)."""
+    """NIEZ-25: CRITICAL sondy idzie od razu pushem, ZAWSZE gdy jest kanał
+    (Telegram albo Slack), niezależnie od `realtime_alerts_enabled`: wycofany model
+    to cichy total outage Fast Loopa, a bez pushu właściciel dowiedziałby się o nim
+    dopiero z kolejnego maila. Błąd sieci sondy to WARNING i nie jest pushowany."""
     critical = [alert for alert in alerts if alert.severity is QuotaSeverity.CRITICAL]
-    if not critical or not settings.realtime_alerts_enabled:
+    if not critical:
         return
     channels = build_push_channels(settings, quota_monitor=None)
     if not channels:
@@ -649,9 +799,11 @@ def _run_calibration_judge(
 ) -> None:
     """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
     LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
-    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044)."""
+    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044).
+    FIN-20: poniżej `MIN_JUDGE_SAMPLES` rozliczonych predykcji sędzia nie woła LLM."""
     try:
         from src.application.use_cases.calibrate_confidence import (
+            MIN_JUDGE_SAMPLES,
             CalibrateConfidenceUseCase,
         )
 
@@ -659,6 +811,7 @@ def _run_calibration_judge(
             repository_port=repository,
             llm_port=llm_port,
             brier_score_enabled=brier_score_enabled,
+            min_samples=MIN_JUDGE_SAMPLES,
         ).run(days=30)
         logger.info("Calibration judge — %s", cal_result.get("status"))
     except Exception:
@@ -705,6 +858,7 @@ def _send_weekly_recap(
             repository_port=repository,
             llm_port=llm_port,
             crypto_symbols=settings.crypto_symbols,
+            council_redundancy_enabled=settings.council_redundancy_enabled,
         ).run(days=WEEKLY_RECAP_DAYS, since=since)
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]
@@ -717,6 +871,8 @@ def _send_weekly_recap(
         logger.info("Weekly recap — %s", recap_result.get("status"))
     except Exception:
         logger.exception("Weekly recap failed — pomijam")
+        # NIEZ-12: recap miał wyjść, a nie dotarł — widać to w UI Actions (exit 0 zostaje).
+        flag_undelivered_report(quota_monitor, now=datetime.now(UTC))
 
 
 def main(settings: Settings | None = None) -> int:
@@ -741,6 +897,9 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     warn_if_paid_calls_disabled(settings)
     quota_monitor = QuotaMonitor()
     repository = build_repository(settings)
+    settings, repository = gate_flags_by_schema(
+        settings, repository, quota_monitor, now=datetime.now(UTC), rebuild=build_repository
+    )
     # ML-24: jeden identyfikator na przebieg — wspólny dla wszystkich wierszy karty.
     run_id = str(uuid.uuid4())
     use_case = build_use_case(settings, run_id=run_id)
@@ -764,6 +923,9 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
     failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
     failures += _train_pooled_model(settings, use_case, trainable, tally)
+    _evaluate_snapshot_models(settings, use_case, trainable, tally)
+    _evaluate_direction_variant(settings, use_case, trainable, tally)
+    _review_challengers(settings, repository, tally)
     tally.failures, tally.total = failures, len(trainable) + 1
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)

@@ -34,9 +34,10 @@ from src.infrastructure.adapters._alpha_vantage_common import (
 )
 from src.infrastructure.adapters._http import (
     build_session,
-    raise_for_status_redacted,
+    json_payload,
+    raise_for_status_translated,
     redact_secrets,
-    safe_get,
+    translated_get,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,9 +142,9 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
                 "symbol": symbol,
                 "apikey": self._current_key(),
             }
-            response = safe_get(self._session, _BASE_URL, params=params, timeout=15)
-            raise_for_status_redacted(response)
-            data = response.json()
+            response = translated_get(self._session, _BASE_URL, params=params, timeout=15)
+            raise_for_status_translated(response)
+            data = json_payload(response)
             if not isinstance(data, dict):
                 return {}
             try:
@@ -311,8 +312,12 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             self._report_quota_exhausted(symbol, frequency_limit=exhausted.frequency_limit)
             return None
         except Exception as exc:
+            # ARCH-33: klasa w logu odróżnia awarię dostawcy (taksonomia) od reszty.
             logger.warning(
-                "Alpha Vantage fundamentals fetch failed for %s: %s", symbol, exc
+                "Alpha Vantage fundamentals fetch failed for %s (%s): %s",
+                symbol,
+                type(exc).__name__,
+                exc,
             )
             return None
 

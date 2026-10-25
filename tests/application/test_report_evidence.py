@@ -28,6 +28,7 @@ from src.application.report_evidence import (
 from src.application.report_formatting import DOT_NUMBERS
 from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison
+from src.domain.paper_ledger import LedgerTrade
 
 COSTS = PaperCosts(cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC"}))
 
@@ -226,3 +227,93 @@ def test_prediction_with_non_finite_change_drops_out_of_the_curve() -> None:
     assert curve is not None
     assert curve.n_trades == 1
     assert curve.total_return == pytest.approx(0.01)
+
+
+# ---------------------------------------------------------------------------
+# WIA-59: krzywa kapitału z append-only paper ledgera
+# ---------------------------------------------------------------------------
+
+
+def _ledger_trade(
+    seq: int,
+    side: str,
+    entry: str,
+    exit_price: str | None,
+    *,
+    day: int = 19,
+    reason: str = "settled",
+    cost_bps: str = "0",
+) -> LedgerTrade:
+    from src.domain.paper_ledger import (
+        ExitReason,
+        LedgerRow,
+        LedgerTrade,
+        PaperTradeClose,
+        PaperTradeEntry,
+        TradeSide,
+    )
+
+    entry_row = PaperTradeEntry(
+        prediction_id=f"p-{seq}",
+        symbol=f"S{seq}",
+        side=TradeSide(side),
+        entry_price=Decimal(entry),
+        entry_ts=datetime(2026, 10, day, 5, 30, tzinfo=UTC),
+        cost_bps=Decimal(cost_bps),
+    )
+    close = (
+        None
+        if exit_price is None
+        else PaperTradeClose(
+            exit_price=Decimal(exit_price),
+            exit_ts=datetime(2026, 10, day + 1, 5, 30, tzinfo=UTC),
+            pnl=Decimal(0),
+            exit_reason=ExitReason(reason),
+        )
+    )
+    return LedgerTrade(seq=seq, row=LedgerRow(entry_row, "0" * 64, "0" * 64), close=close)
+
+
+class TestLedgerCurve:
+    def test_closed_trades_make_one_equal_weight_point_per_cycle(self) -> None:
+        from src.application.report_evidence import ledger_curve
+
+        curve = ledger_curve(
+            [
+                _ledger_trade(1, "long", "100", "110"),
+                _ledger_trade(2, "short", "100", "90"),
+                _ledger_trade(3, "flat", "100", "120", day=20),
+            ]
+        )
+
+        assert curve is not None
+        assert [round(point.period_return, 6) for point in curve.points] == [0.10, 0.0]
+        assert curve.n_trades == 3
+
+    def test_open_and_stale_trades_stay_off_the_curve(self) -> None:
+        from src.application.report_evidence import ledger_curve
+
+        curve = ledger_curve(
+            [
+                _ledger_trade(1, "long", "100", "110"),
+                _ledger_trade(2, "long", "100", None),
+                _ledger_trade(3, "long", "100", "50", reason="stale_quote"),
+            ]
+        )
+
+        assert curve is not None
+        assert curve.n_trades == 1
+        assert curve.total_return == pytest.approx(0.10)
+
+    def test_entry_cost_from_the_ledger_row_is_charged(self) -> None:
+        from src.application.report_evidence import ledger_curve
+
+        curve = ledger_curve([_ledger_trade(1, "long", "100", "110", cost_bps="10")])
+
+        assert curve is not None
+        assert curve.total_return == pytest.approx(0.10 - 0.001)
+
+    def test_ledger_without_closed_trades_has_no_curve(self) -> None:
+        from src.application.report_evidence import ledger_curve
+
+        assert ledger_curve([_ledger_trade(1, "long", "100", None)]) is None

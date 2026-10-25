@@ -226,7 +226,9 @@ class TestKeyRotation:
         assert mock_get.call_count == calls_after_first
 
 
-def test_daily_quota_alert_is_polish_and_logged_in_english(caplog) -> None:
+def test_daily_quota_alert_is_polish_and_logged_in_english(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
 
@@ -245,7 +247,7 @@ def test_daily_quota_alert_is_polish_and_logged_in_english(caplog) -> None:
     assert "fundamentals daily quota exhausted" in caplog.text
 
 
-def test_http_error_warning_omits_apikey(caplog) -> None:
+def test_http_error_warning_omits_apikey(caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: ostrzeżenie wkleja `str(exc)`, a HTTPError z requests niesie URL z kluczem.
     import logging
 
@@ -264,7 +266,7 @@ def test_http_error_warning_omits_apikey(caplog) -> None:
     assert "fund-secret-key" not in caplog.text
 
 
-def test_network_error_warning_omits_apikey(caplog) -> None:
+def test_network_error_warning_omits_apikey(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     import requests
@@ -335,7 +337,9 @@ def test_note_on_every_key_alerts_about_the_frequency_limit() -> None:
     assert "dzienny limit" not in message
 
 
-def test_soft_limit_log_carries_the_marker_without_the_key(caplog) -> None:
+def test_soft_limit_log_carries_the_marker_without_the_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     import logging
 
     adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
@@ -426,7 +430,7 @@ def test_rejected_key_rotates_to_the_next_key() -> None:
     assert "ALPHA_VANTAGE_API_KEYS" in monitor.alerts[0].action
 
 
-def test_rotated_key_log_omits_the_key(caplog) -> None:
+def test_rotated_key_log_omits_the_key(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key", "KEY2"])
@@ -461,7 +465,9 @@ def test_only_the_last_rejected_key_is_critical() -> None:
     ]
 
 
-def test_error_message_without_apikey_is_a_warning_for_that_symbol(caplog) -> None:
+def test_error_message_without_apikey_is_a_warning_for_that_symbol(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     import logging
 
     from src.application.quota_monitor import QuotaMonitor
@@ -482,7 +488,7 @@ def test_error_message_without_apikey_is_a_warning_for_that_symbol(caplog) -> No
     assert any("NOPE" in w and "Invalid API call" in w for w in warnings)
 
 
-def test_rejected_key_log_omits_the_key(caplog) -> None:
+def test_rejected_key_log_omits_the_key(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     adapter = AlphaVantageFundamentalsAdapter(api_keys=["fund-secret-key"])
@@ -519,3 +525,18 @@ def test_missing_market_cap_is_none() -> None:
 
     assert fundamentals is not None
     assert fundamentals.market_cap is None
+
+
+def test_failure_warning_names_the_port_error_class(caplog: pytest.LogCaptureFixture) -> None:
+    # ARCH-33: log degradacji niesie klasę taksonomii — awaria dostawcy odróżnialna
+    # od kwoty i od śmieciowej odpowiedzi bez czytania treści wyjątku.
+    import logging
+
+    import requests
+
+    adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY"])
+    with caplog.at_level(logging.WARNING), patch.object(adapter._session, "get") as mock_get:
+        mock_get.side_effect = requests.ConnectionError("reset")
+        assert adapter.get_fundamentals("AAPL") is None
+
+    assert "ProviderUnavailable[ConnectionError]" in caplog.text

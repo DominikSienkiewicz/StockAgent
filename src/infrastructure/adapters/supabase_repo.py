@@ -1,50 +1,74 @@
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import re
 import time
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, NamedTuple, cast
 
+import httpx
 from postgrest.exceptions import APIError
 from supabase import create_client
 
+from src.application.errors import MalformedPayload, NotFound, PortError, ProviderUnavailable
 from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
     EvidenceSourcePort,
     LatestPrediction,
+    OpenInvalidation,
     OpenReferenceCall,
     PreviousVerdict,
     RepositoryPort,
     StoredReceipt,
+    StoredShockAlert,
+    TrainingDataPort,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import (
     CouncilVerdict,
     InvestorOpinion,
     Recommendation,
     parse_recommendation,
 )
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.paper_ledger import (
+    GENESIS_HASH,
+    ExitReason,
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+    TradeSide,
+    chain_entry,
+    utc_timestamp,
+)
 from src.domain.persona_track_record import (
+    PersonaScoring,
     PersonaVoteOutcome,
     persona_accuracy_weights,
     persona_hit_stats,
 )
 from src.domain.prediction import (
+    SAME_SYMBOL_ANALOG_EXCLUSION_HOURS,
     UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
     Prediction,
     TrendDirection,
     normalize_trend,
 )
 from src.domain.price_levels import LevelDirection, PriceLevel, PriceLevelAlert
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.reference_signal import (
     REFERENCE_RECIPE_VERSION,
@@ -57,12 +81,15 @@ from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionCloseSettlement
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
+from src.domain.training_labels import FeatureSnapshot
+from src.domain.training_provenance import PROVENANCE_RECORD_KEYS
 from src.domain.value_objects import (
     FUNDAMENTALS_CACHE_TTL_HOURS,
     AssetType,
     Fundamentals,
     Money,
 )
+from src.infrastructure.error_translation import as_port_error
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +100,7 @@ DEFAULT_COUNCIL_VOTES_TABLE = "council_votes"
 DEFAULT_QUOTA_ALERTS_TABLE = "quota_alerts"
 DEFAULT_FEATURE_SNAPSHOT_TABLE = "feature_snapshots"
 DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
+DEFAULT_SHADOW_PREDICTION_TABLE = "shadow_predictions"
 # WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
 REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
@@ -84,6 +112,10 @@ EARNINGS_CACHE_TABLE = "earnings_cache"
 # ALR-11 (migracja 057): alerty poziomów cenowych ustawiane przez użytkownika.
 PRICE_LEVEL_ALERTS_TABLE = "price_level_alerts"
 _PRICE_LEVEL_UNIQUE = "symbol,level,direction"
+# DAT-23 (migracja 062): podejrzenia splitów, jeden wiersz na symbol, rodzaj i dzień.
+CORPORATE_ACTIONS_TABLE = "corporate_actions"
+_CORPORATE_ACTION_UNIQUE = "symbol,kind,detected_on"
+_CORPORATE_ACTION_PRICE_COLUMNS = frozenset({"prev_close", "reference_price"})
 
 # Retry parametry dla refresh_feature_store — Slow Loop wywołuje RPC przed
 # treningiem; transient błąd sieci nie powinien wywalać całego treningu.
@@ -94,6 +126,29 @@ _REFRESH_BACKOFF_S = 2.0
 # Agregaty (get_accuracy_stats itd.) muszą paginować po .range(), inaczej
 # trafność liczona jest na obciętym, niedeterministycznym podzbiorze.
 _PAGE_SIZE = 1000
+
+
+def _cycle_run(row: Mapping[str, Any]) -> CycleRun:
+    """Wiersz `cycle_runs` (041) jako `CycleRun`; `paid_calls` to JSONB z liczbami."""
+    attempt = row.get("run_attempt")
+    delivered = row.get("report_delivered")
+    paid = row.get("paid_calls")
+    return CycleRun(
+        loop=str(row["loop"]),
+        run_id=str(row["run_id"]),
+        run_attempt=None if attempt is None else int(attempt),
+        started_at=datetime.fromisoformat(str(row["started_at"])),
+        duration_s=float(row["duration_s"]),
+        eligible=int(row["eligible"]),
+        saved=int(row["saved"]),
+        failures=int(row["failures"]),
+        paid_calls=(
+            {str(key): int(value) for key, value in paid.items()}
+            if isinstance(paid, Mapping)
+            else {}
+        ),
+        report_delivered=None if delivered is None else bool(delivered),
+    )
 
 
 def _paginate(query_builder: Any) -> list[dict[str, Any]]:
@@ -169,13 +224,12 @@ def _is_missing_column(exc: APIError, column: str) -> bool:
     return exc.code in _MISSING_COLUMN_CODES and column in (exc.message or "")
 
 
-# NIEZ-16: kody, które naprawdę znaczą brak obiektu schematu — funkcji RPC
-# (PGRST202, 42883), tabeli (PGRST205, 42P01) albo kolumny (jak wyżej). Tylko
-# wtedy odczyt graceful wskazuje migrację; zerwane połączenie, timeout albo
-# wstrzymany projekt to inna diagnoza, logowana z typem wyjątku.
-_MISSING_SCHEMA_CODES = (
-    frozenset({"PGRST202", "PGRST205", "42P01", "42883"}) | _MISSING_COLUMN_CODES
-)
+# NIEZ-16 (decyzja 2026-10-23: ściśle cztery kody): brak funkcji RPC (PGRST202,
+# 42883) albo tabeli (PGRST205, 42P01). Tylko wtedy odczyt graceful wskazuje
+# migrację. Brak kolumny (`_MISSING_COLUMN_CODES`) ma osobną, tolerancyjną ścieżkę
+# odczytu, a zerwane połączenie, timeout albo wstrzymany projekt to inna
+# diagnoza — oba logowane z typem wyjątku i tracebackiem.
+_MISSING_SCHEMA_CODES = frozenset({"PGRST202", "PGRST205", "42P01", "42883"})
 
 
 def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception) -> None:
@@ -187,6 +241,53 @@ def _log_degraded_read(source: str, skipped: str, migration: str, exc: Exception
     logger.warning(
         "%s failed (%s) — %s.", source, type(exc).__name__, skipped, exc_info=True
     )
+
+
+# ARCH-33: PostgREST nie dosięgnął bazy (PGRST000–003: brak połączenia, cache
+# schematu, timeout puli), Postgres przerwał zapytanie (57014 statement_timeout)
+# albo odrzucił połączenie (53300 too_many_connections).
+_UNAVAILABLE_CODES = frozenset(
+    {"PGRST000", "PGRST001", "PGRST002", "PGRST003", "57014", "53300"}
+)
+
+
+def _port_error_kind(exc: APIError | httpx.HTTPError) -> type[PortError]:
+    """Klasa taksonomii dla błędu PostgREST: brak bazy (kod albo zerwany transport
+    httpx — połączenie, timeout) → niedostępny dostawca, brak obiektu schematu albo
+    kolumny → NotFound, reszta → ogólny błąd portu."""
+    if isinstance(exc, httpx.TransportError):
+        return ProviderUnavailable
+    if isinstance(exc, httpx.HTTPError):
+        return PortError
+    if exc.code in _UNAVAILABLE_CODES:
+        return ProviderUnavailable
+    if exc.code in _MISSING_SCHEMA_CODES or exc.code in _MISSING_COLUMN_CODES:
+        return NotFound
+    return PortError
+
+
+def _translates_api_errors[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """ARCH-33: `APIError` i błąd transportu httpx uciekające z metody wychodzą
+    przetłumaczone na taksonomię portów (wciąż `APIError` z kodem / typ httpx)."""
+
+    @functools.wraps(method)
+    def translating(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return method(*args, **kwargs)
+        except (APIError, httpx.HTTPError) as exc:
+            raise as_port_error(exc, _port_error_kind(exc)) from None
+
+    return translating
+
+
+def _translates_public_methods[C: type](cls: C) -> C:
+    """ARCH-33: każda publiczna metoda klasy tłumaczy błędy dostawcy — także metoda
+    dopisana później, bez pamiętania o dekoratorze. Metody z własną ścieżką
+    degradacji działają jak dotąd (łapią wyjątek, zanim dojdzie do tłumaczenia)."""
+    for name, member in list(vars(cls).items()):
+        if inspect.isfunction(member) and not name.startswith("_"):
+            setattr(cls, name, _translates_api_errors(member))
+    return cls
 
 
 class MissingColumnError(RuntimeError):
@@ -241,6 +342,10 @@ _LLM_FALLBACK_FLAG = "llm_analysis_failed"
 # w `data_quality_flags` (migracja 008), więc nie wymaga nowej kolumny; wiersz
 # nie dostaje ceny, więc i tak nie wchodzi do ml_feature_store ani do trafności.
 EXPIRED_UNVERIFIED_FLAG = "expired_unverified"
+# Filtr PostgREST: brak flag (NULL, wiersze sprzed 008) albo lista bez flagi wygaśnięcia.
+_NOT_EXPIRED_FILTER = (
+    f'data_quality_flags.is.null,data_quality_flags.not.cs.["{EXPIRED_UNVERIFIED_FLAG}"]'
+)
 
 
 def _without_llm_fallback(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -295,6 +400,29 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _settled_shadow(row: Mapping[str, Any]) -> SettledShadowForecast | None:
+    """ML-33: wiersz cienia z osadzoną predykcją → prognoza ze zwrotem zrealizowanym.
+    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, albo prognoza łamie
+    kontrakt domeny (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
+    prediction = row.get("prediction_logs")
+    if not isinstance(prediction, Mapping):
+        return None
+    price = _optional_float(prediction.get("price_at_prediction"))
+    actual = _optional_float(prediction.get("actual_price_after_12h"))
+    if price is None or actual is None or price <= 0:
+        return None
+    try:
+        forecast = ShadowForecast(
+            model_name=str(row.get("model_name") or ""),
+            model_version=str(row.get("model_version") or ""),
+            predicted_return=_optional_float(row.get("predicted_return")),
+            proba=_optional_float(row.get("proba")),
+        )
+    except ValueError:
+        return None
+    return SettledShadowForecast(str(row.get("prediction_id")), forecast, actual / price - 1.0)
+
+
 def _optional_timestamp(value: Any) -> datetime | None:
     """Znacznik czasu z wiersza PostgREST (ISO 8601) albo None, gdy go brak."""
     if not isinstance(value, str) or not value:
@@ -303,6 +431,26 @@ def _optional_timestamp(value: Any) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _feature_snapshot(row: Mapping[str, Any], feature_set_version: int) -> FeatureSnapshot | None:
+    """Wiersz `feature_snapshots` jako domenowy wektor; bez symbolu, chwili albo
+    obiektu JSON cech → None (wiersz pominięty, nie zgadujemy)."""
+    symbol = row.get("symbol")
+    as_of = _optional_timestamp(row.get("as_of"))
+    features = row.get("features")
+    if not isinstance(symbol, str) or not symbol or as_of is None:
+        return None
+    if not isinstance(features, Mapping):
+        return None
+    version = row.get("feature_set_version")
+    return FeatureSnapshot(
+        symbol=symbol,
+        as_of=as_of,
+        gated=row.get("gated") is True,
+        features=dict(features),
+        feature_set_version=version if isinstance(version, int) else feature_set_version,
+    )
 
 
 def _resolved_window(query: Any, cutoff: datetime, since: datetime | None) -> Any:
@@ -360,6 +508,7 @@ _PREDICTION_PRICE_COLUMNS = frozenset({
     "interval_low",
     "interval_high",
     "settlement_close_price",
+    "entry_price",
 })
 
 # WIA-61 (migracja 059): trafność kierunku na oficjalnym zamknięciu sesji.
@@ -494,6 +643,47 @@ def _persona_vote_outcome(row: Mapping[str, Any]) -> PersonaVoteOutcome | None:
     )
 
 
+# WIA-59 (migracja 073): append-only paper ledger.
+PAPER_TRADES_TABLE = "paper_trades"
+_PAPER_LEDGER_APPEND_ATTEMPTS = 3
+# Przegrany wyścig o głowę łańcucha: UNIQUE(prev_hash) albo trigger głowy (40001).
+_PAPER_LEDGER_CONFLICT_CODES = frozenset({"23505", "40001"})
+_PAPER_TRADE_COLUMNS = (
+    "seq, prediction_id, symbol, side, entry_price, entry_ts, weight, cost_bps, "
+    "prev_hash, row_hash, exit_price, exit_ts, pnl, exit_reason"
+)
+
+
+def _paper_trade_record(row: LedgerRow) -> dict[str, Any]:
+    """Wiersz `paper_trades` z tych samych wartości, które weszły do hasha."""
+    payload = row.entry.payload()
+    payload.pop("ledger_version")
+    return {**payload, "prev_hash": row.prev_hash, "row_hash": row.row_hash}
+
+
+def _ledger_trade(raw: Mapping[str, Any]) -> LedgerTrade:
+    """Wiersz bazy → wpis łańcucha domeny (ceny przez `str`, nigdy przez float)."""
+    entry = PaperTradeEntry(
+        prediction_id=str(raw["prediction_id"]),
+        symbol=str(raw["symbol"]),
+        side=TradeSide(raw["side"]),
+        entry_price=Decimal(str(raw["entry_price"])),
+        entry_ts=datetime.fromisoformat(str(raw["entry_ts"])),
+        cost_bps=Decimal(str(raw["cost_bps"])),
+        weight=Decimal(str(raw["weight"])),
+    )
+    row = LedgerRow(entry=entry, prev_hash=str(raw["prev_hash"]), row_hash=str(raw["row_hash"]))
+    close = None
+    if raw.get("exit_price") is not None:
+        close = PaperTradeClose(
+            exit_price=Decimal(str(raw["exit_price"])),
+            exit_ts=datetime.fromisoformat(str(raw["exit_ts"])),
+            pnl=Decimal(str(raw["pnl"])),
+            exit_reason=ExitReason(raw["exit_reason"]),
+        )
+    return LedgerTrade(seq=int(raw["seq"]), row=row, close=close)
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     """Narrow supabase response.data (JSON union) do list[dict]."""
     data = response.data or []
@@ -546,7 +736,8 @@ def _failed_personas_of(raw: Any) -> int:
         return 0
 
 
-class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
+@_translates_public_methods
+class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     """Adapter dla Supabase (PostgreSQL via PostgREST).
 
     Tabela `prediction_logs` + zmaterializowany widok `ml_feature_store`
@@ -573,8 +764,34 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         stale_quote_enabled: bool = False,
         fundamentals_market_cap_enabled: bool = False,
         session_close_settlement_enabled: bool = False,
+        rag_exact_search_enabled: bool = False,
+        rag_point_in_time_enabled: bool = False,
+        receipts_enabled: bool = True,
+        scorecard_weights_sha256_enabled: bool = False,
+        scorecard_provenance_enabled: bool = False,
+        executable_entry_enabled: bool = False,
     ) -> None:
         self._client = create_client(url, key)
+        # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
+        # z probes = 1. Bez flagi RPC sprzed ML-23 — analogi w prompcie jak dziś.
+        self._rag_function, self._rag_migration = (
+            ("match_news_embeddings_exact", "063")
+            if rag_exact_search_enabled
+            else ("match_news_embeddings", "011")
+        )
+        # ML-41: analogi rozliczone przed chwilą predykcji, bez tego samego symbolu
+        # w oknie horyzontu (funkcja z migracji 076, dokładne KNN). Ma pierwszeństwo
+        # przed ML-23. Bez flagi RPC jak wyżej.
+        self._rag_point_in_time_enabled = rag_point_in_time_enabled
+        # WIA-56: odczyt rozliczeń niesie kwit (`decision_receipts`, 020) do linii pod
+        # chybieniem tylko przy włączonych kwitach. Domyślnie true — bezpośrednia
+        # konstrukcja (narzędzia, testy) czyta jak dotąd; Fast Loop podaje flagę z configu.
+        self._receipts_enabled = receipts_enabled
+        # ML-22: kolumny proweniencji treningu istnieją od migracji 064 — ta sama zasada.
+        self._scorecard_provenance_enabled = scorecard_provenance_enabled
+        # CI-13: kolumna `model_scorecards.weights_sha256` istnieje od migracji 060 —
+        # bez flagi payload karty jej nie niesie (PGRST204 zgubiłby cały wiersz).
+        self._scorecard_weights_sha256_enabled = scorecard_weights_sha256_enabled
         # DAT-14: kolumna `stale_quote` istnieje od migracji 055 — bez flagi odczyty
         # trafności jej nie wybierają (400 zabiłby raport), a zapis jej nie niesie.
         self._stale_quote_enabled = stale_quote_enabled
@@ -584,6 +801,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # WIA-61: kolumny zamknięcia sesji istnieją od migracji 059 — bez flagi
         # odczyt trafności ich nie wybiera (400 zabiłby raport).
         self._session_close_settlement_enabled = session_close_settlement_enabled
+        # WIA-54: kolumna `entry_price` istnieje od migracji 072 — bez flagi odczyt
+        # track recordu jej nie wybiera (400 zabiłby raport).
+        self._executable_entry_enabled = executable_entry_enabled
         # ML-10: kolumny baseline'ów dryfu i „sam LLM" istnieją od migracji 028 —
         # bez flagi payload karty ich nie niesie (PGRST204 zgubiłby cały wiersz).
         self._scorecard_baselines_enabled = scorecard_baselines_enabled
@@ -722,6 +942,11 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         if max_age_hours is not None and max_age_hours > 0:
             oldest = datetime.now(UTC) - timedelta(hours=max_age_hours)
             query = query.gte("timestamp", oldest.isoformat())
+        # WIA-49: wiersz oznaczony `expired_unverified` jest już poza oceną — bez tego
+        # filtra wracałby, gdy `max_age_hours` jest puste albo szersze niż przy
+        # oznaczeniu. `OR ... IS NULL`: wiersze sprzed migracji 008 nie mają flag
+        # (samo `NOT cs` wycięłoby NULL), a one zostają w kolejce.
+        query = query.or_(_NOT_EXPIRED_FILTER)
         # ASC (oldest-first) — #19: opróżniamy backlog, rozliczając NAJSTARSZĄ
         # nierozliczoną predykcję, która przekroczyła próg min_age_hours. Przy
         # DESC starsze nierozliczone predykcje nigdy nie stałyby się znów
@@ -758,6 +983,46 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             # nieznana). Kolumna istnieje dopiero po migracji 027.
             query = query.eq("feature_set_version", feature_set_version)
         return _paginate(query.order("timestamp", desc=False).order("id", desc=False))
+
+    def get_feature_snapshots(self, feature_set_version: int) -> list[FeatureSnapshot]:
+        # ML-52: wektor czytany z JSONB bez żadnego przeliczania — trening dostaje
+        # dokładnie to, co cykl zapisał (i podał modelowi). `id` jako drugi klucz:
+        # granica strony deterministyczna przy równych `as_of` (NIEZ-15).
+        query = (
+            self._client.table(DEFAULT_FEATURE_SNAPSHOT_TABLE)
+            .select("symbol, as_of, gated, features, feature_set_version")
+            .eq("feature_set_version", feature_set_version)
+        )
+        rows = _paginate(query.order("as_of", desc=False).order("id", desc=False))
+        return [
+            snapshot
+            for row in rows
+            if (snapshot := _feature_snapshot(row, feature_set_version)) is not None
+        ]
+
+    def get_price_series(
+        self, symbols: Sequence[str], *, since: datetime
+    ) -> dict[str, list[tuple[datetime, float]]]:
+        # ML-52: szereg cen do etykiety point-in-time — jeden odczyt dla wszystkich
+        # symboli treningu zamiast `get_price_history` per symbol.
+        wanted = list(dict.fromkeys(symbols))
+        if not wanted:
+            return {}
+        query = (
+            self._client.table(self._snapshot_table)
+            .select("symbol, timestamp, price")
+            .in_("symbol", wanted)
+            .gte("timestamp", since.isoformat())
+        )
+        series: dict[str, list[tuple[datetime, float]]] = {}
+        for row in _paginate(query.order("timestamp", desc=False).order("id", desc=False)):
+            moment = _optional_timestamp(row.get("timestamp"))
+            price = _optional_float(row.get("price"))
+            symbol = row.get("symbol")
+            if moment is None or price is None or not isinstance(symbol, str):
+                continue
+            series.setdefault(symbol, []).append((moment, price))
+        return series
 
     def refresh_feature_store(self) -> None:
         """Wywołuje RPC `refresh_ml_feature_store` (zdef. w migrations/001_init.sql).
@@ -803,15 +1068,16 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # prognoza się potwierdziła".
         # Paginacja (#8) — bez niej raport pokazałby max ~1000 zamkniętych
         # predykcji (cichy cap PostgREST).
+        columns = (
+            "symbol, predicted_trend, is_trend_correct, timestamp, "
+            "reasoning_text, correction_insights, price_at_prediction, "
+            "actual_price_after_12h, data_quality_flags"
+        )
+        if self._receipts_enabled:
+            # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
+            columns += ", decision_receipts"
         query = _resolved_window(
-            self._client.table(self._table).select(
-                self._countable_columns(
-                    "symbol, predicted_trend, is_trend_correct, timestamp, "
-                    "reasoning_text, correction_insights, price_at_prediction, "
-                    # WIA-56: kwit (migracja 020, na produkcji) do linii pod chybieniem.
-                    "actual_price_after_12h, data_quality_flags, decision_receipts"
-                )
-            ),
+            self._client.table(self._table).select(self._countable_columns(columns)),
             cutoff,
             since,
         )
@@ -832,6 +1098,8 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         )
         if self._correction_category_enabled:
             columns += ", correction_category"
+        if self._executable_entry_enabled:
+            columns += ", entry_price"
         query = (
             self._client.table(self._table)
             .select(self._countable_columns(columns))
@@ -1146,6 +1414,47 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             .execute()
         )
 
+    @_translates_api_errors
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        # ML-33 (migracja 075): jeden wiersz na model; upsert po (prediction_id,
+        # model_name), bo re-run w tej samej godzinie nadpisuje predykcję upsertem.
+        if not forecasts:
+            return
+        records = [
+            {
+                "prediction_id": prediction_id,
+                "symbol": symbol,
+                "model_name": forecast.model_name,
+                "model_version": forecast.model_version,
+                "predicted_return": forecast.predicted_return,
+                "proba": forecast.proba,
+            }
+            for forecast in forecasts
+        ]
+        (
+            self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
+            .upsert(records, on_conflict="prediction_id,model_name")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        # ML-33: `!inner` + filtr na osadzonej predykcji — tylko rozliczone. `id`
+        # jako drugi klucz: granica strony deterministyczna przy równych `created_at`.
+        query = (
+            self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
+            .select(
+                "prediction_id, model_name, model_version, predicted_return, proba, "
+                "prediction_logs!inner(price_at_prediction, actual_price_after_12h)"
+            )
+            .gte("created_at", since.isoformat())
+            .not_.is_("prediction_logs.actual_price_after_12h", "null")
+        )
+        rows = _paginate(query.order("created_at", desc=False).order("id", desc=False))
+        return [settled for row in rows if (settled := _settled_shadow(row)) is not None]
+
     def get_latest_regime_state(self) -> RegimeState | None:
         # ALR-03 (migracja 033): `id` rozstrzyga remis dwóch przebiegów o tym
         # samym `cycle_at`. Kandydata do wyjścia z RISK_OFF tabela nie trzyma
@@ -1239,29 +1548,46 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         return out
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Similarity search nad `prediction_logs.embedding` (pgvector) przez
-        RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017).
+        RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017),
+        a z `rag_exact_search_enabled` przez `match_news_embeddings_exact` (063, ML-23).
 
         Graceful: gdy RPC nie istnieje (migracja niezaaplikowana) lub błąd
         sieci/Supabase — zwraca `[]`, żeby RAG był czysto opcjonalnym
         wzbogaceniem, a nie twardą zależnością predykcji.
 
         `regime`: gdy podany, dokłada parametr `filter_regime` do RPC (migracja
-        017 filtruje analogi po reżimie; NULL/UNKNOWN w bazie przepuszcza)."""
+        017 filtruje analogi po reżimie; NULL/UNKNOWN w bazie przepuszcza).
+
+        ML-41: z `rag_point_in_time_enabled` RPC `match_news_embeddings_pit` (076) —
+        `before` jako `before_ts` (tylko analogi rozliczone wcześniej), `symbol` jako
+        `exclude_symbol` z oknem `SAME_SYMBOL_ANALOG_EXCLUSION_HOURS`."""
         params: dict[str, Any] = {
             "query_embedding": embedding,
             "match_count": limit,
         }
         if regime is not None:
             params["filter_regime"] = canonical_regime_key(regime)
+        function, migration = self._rag_function, self._rag_migration
+        if self._rag_point_in_time_enabled:
+            function, migration = "match_news_embeddings_pit", "076"
+            if before is not None:
+                params["before_ts"] = before.isoformat()
+            if symbol is not None:
+                params["exclude_symbol"] = symbol
+                params["exclude_window_hours"] = SAME_SYMBOL_ANALOG_EXCLUSION_HOURS
         try:
-            response = self._client.rpc("match_news_embeddings", params).execute()
+            response = self._client.rpc(function, params).execute()
         except Exception as exc:
-            _log_degraded_read(
-                "match_news_embeddings RPC", "RAG retrieval skipped", "011", exc
-            )
+            _log_degraded_read(f"{function} RPC", "RAG retrieval skipped", migration, exc)
             return []
         return _rows(response)
 
@@ -1361,6 +1687,34 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             if name is None or hit_rate is None or votes is None:
                 continue
             out[str(name)] = (float(hit_rate), int(votes))
+        return out
+
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        # WIA-44: RPC `persona_scoring_stats` (migracja 065) liczy hit-rate, Brier
+        # i log loss pewności tą samą regułą co domena; pasmo HOLD krypto idzie
+        # parametrem (jak `crypto_symbols` adaptera). Graceful: brak RPC → {}.
+        try:
+            response = self._client.rpc(
+                "persona_scoring_stats",
+                {"window_days": window_days, "crypto_symbols": sorted(self._crypto_symbols)},
+            ).execute()
+        except APIError as exc:
+            _log_degraded_read(
+                "persona_scoring_stats RPC", "persona Brier ranking skipped", "065", exc
+            )
+            return {}
+        out: dict[str, PersonaScoring] = {}
+        for row in _rows(response):
+            name = row.get("investor_name")
+            hit_rate = row.get("hit_rate")
+            votes = row.get("vote_count")
+            brier = row.get("brier")
+            loss = row.get("log_loss")
+            if name is None or hit_rate is None or votes is None or brier is None or loss is None:
+                continue
+            out[str(name)] = PersonaScoring(
+                hit_rate=float(hit_rate), votes=int(votes), brier=float(brier), log_loss=float(loss)
+            )
         return out
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
@@ -1572,6 +1926,18 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         if not isinstance(response.data, list):
             raise RuntimeError("Supabase: odpowiedź bez listy wierszy price_snapshots")
 
+    @_translates_api_errors
+    def schema_version(self) -> int | None:
+        """NIEZ-30: RPC `schema_version` (migracja 071) — najwyższa zaaplikowana migracja.
+        NULL z bazy (rejestr Supabase CLI nieobecny albo pusty) to None, nie 0. Brak
+        funkcji (PGRST202) wychodzi jako `NotFound`, awaria bazy jako `ProviderUnavailable`."""
+        data = self._client.rpc("schema_version").execute().data
+        if data is None:
+            return None
+        if isinstance(data, bool) or not isinstance(data, int):
+            raise MalformedPayload(f"schema_version zwróciło {type(data).__name__}, nie liczbę")
+        return data
+
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05: select `limit 0` po `columns`. PostgREST zgłasza jedną brakującą
         kolumnę na raz (42703), więc po każdej usuwamy ją z selecta i pytamy dalej —
@@ -1699,6 +2065,46 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 latest[key] = stamp
         return latest
 
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        # SUROWO (ARCH-33): błąd bazy leci do ReportAssemblera, który chowa sekcję.
+        response = (
+            self._client.table("shock_alerts")
+            .select("symbol, delta, direction, created_at")
+            .gte("created_at", since.isoformat())
+            .order("created_at", desc=False)
+            .execute()
+        )
+        alerts: list[StoredShockAlert] = []
+        for row in _rows(response):
+            symbol, delta = row.get("symbol"), row.get("delta")
+            direction, raw_stamp = row.get("direction"), row.get("created_at")
+            if symbol is None or delta is None or not isinstance(raw_stamp, str):
+                continue
+            alerts.append(
+                StoredShockAlert(
+                    symbol=str(symbol),
+                    delta=float(delta),
+                    direction=str(direction),
+                    created_at=datetime.fromisoformat(raw_stamp),
+                )
+            )
+        return alerts
+
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        response = (
+            self._client.table("cycle_runs")
+            .select("started_at")
+            .eq("loop", "fast")
+            .eq("report_delivered", True)
+            .lt("started_at", before.isoformat())
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        stamp = rows[0].get("started_at") if rows else None
+        return datetime.fromisoformat(stamp) if isinstance(stamp, str) else None
+
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
         # SUROWO, bez try/except — watch czyta za flagą i sam degraduje (ALR-11).
         response = (
@@ -1804,6 +2210,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         feature_stats = result.get("feature_stats")
         if self._scorecard_feature_stats_enabled and feature_stats is not None:
             payload["feature_stats"] = feature_stats
+        weights_sha256 = result.get("weights_sha256")
+        if self._scorecard_weights_sha256_enabled and weights_sha256 is not None:
+            payload["weights_sha256"] = weights_sha256
+        # ML-22: proweniencja tylko z treningu, który się odbył (ma odcisk zbioru) —
+        # pominięcie niesie w extras samą wersję zestawu cech, nie proweniencję.
+        if self._scorecard_provenance_enabled and result.get("dataset_sha256") is not None:
+            payload.update({key: result.get(key) for key in PROVENANCE_RECORD_KEYS})
         self._client.table("model_scorecards").insert(payload).execute()
 
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
@@ -1863,6 +2276,34 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             )
             for (name, sym), recs in grouped.items()
         ]
+
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        # WIA-45: tylko trzy kolumny, paginacja z `id` jako drugim kluczem (jak historia
+        # głosów). Graceful: baza niedostępna → [] z WARNING-iem, mail bez redundancji.
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
+        query = (
+            self._client.table(self._council_votes_table)
+            .select("prediction_id, investor_name, recommendation")
+            .gte("timestamp", cutoff.isoformat())
+            .order("timestamp", desc=True)
+            .order("id", desc=True)
+        )
+        try:
+            rows = _paginate(query)
+        except (APIError, httpx.HTTPError) as exc:
+            _log_degraded_read(
+                "council_votes", "council redundancy skipped", "007", exc
+            )
+            return []
+        samples: list[CouncilVoteSample] = []
+        for row in rows:
+            prediction_id = row.get("prediction_id")
+            name = str(row.get("investor_name") or "")
+            rec = parse_recommendation(row.get("recommendation"))
+            if prediction_id is None or not name or rec is None:
+                continue
+            samples.append(CouncilVoteSample(str(prediction_id), name, rec))
+        return samples
 
     def get_council_votes_for_prediction(
         self, prediction_id: str
@@ -1982,6 +2423,20 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         }
         self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
 
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        query = (
+            self._client.table(CYCLE_RUNS_TABLE)
+            .select(
+                "loop, run_id, run_attempt, started_at, duration_s, eligible, saved, "
+                "failures, paid_calls, report_delivered"
+            )
+            .gte("started_at", since.isoformat())
+            .order("started_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [_cycle_run(row) for row in _paginate(query)]
+
     def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
         # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
         query = (
@@ -2053,6 +2508,135 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
             "id", record_id
         ).execute()
 
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        record = _serialize_record(
+            {
+                "symbol": action.symbol,
+                "kind": action.kind.value,
+                "ratio": action.ratio,
+                "prev_close": action.prev_close,
+                "reference_price": action.reference_price,
+                "detected_at": action.detected_at.isoformat(),
+                "detected_on": action.detected_on.isoformat(),
+            },
+            _CORPORATE_ACTION_PRICE_COLUMNS,
+        )
+        # ON CONFLICT DO NOTHING: powtórka cyklu tego dnia nie dubluje zdarzenia.
+        self._client.table(CORPORATE_ACTIONS_TABLE).upsert(
+            record, on_conflict=_CORPORATE_ACTION_UNIQUE, ignore_duplicates=True
+        ).execute()
+
+    @_translates_api_errors
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        # ML-27 (migracja 074): indeks częściowy obsługuje dokładnie ten filtr.
+        response = (
+            self._client.table(self._table)
+            .select(
+                "id, symbol, predicted_trend, price_at_prediction, invalidation_price, timestamp"
+            )
+            .not_.is_("invalidation_price", "null")
+            .is_("actual_price_after_12h", "null")
+            .is_("invalidation_alerted_at", "null")
+            .gte("timestamp", since.isoformat())
+            .order("timestamp", desc=True)
+            .execute()
+        )
+        return [
+            OpenInvalidation(
+                prediction_id=str(row["id"]),
+                symbol=str(row["symbol"]),
+                predicted_trend=str(row["predicted_trend"]),
+                price_at_prediction=Decimal(str(row["price_at_prediction"])),
+                invalidation_price=Decimal(str(row["invalidation_price"])),
+                predicted_at=datetime.fromisoformat(str(row["timestamp"])),
+            )
+            for row in _rows(response)
+        ]
+
+    @_translates_api_errors
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        # Filtr NULL: drugi przebieg watcha nie przesuwa stempla pierwszego alarmu.
+        (
+            self._client.table(self._table)
+            .update({"invalidation_alerted_at": at.isoformat()})
+            .eq("id", prediction_id)
+            .is_("invalidation_alerted_at", "null")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        # WIA-59: hash liczy domena za głową odczytaną tuż przed zapisem. Równoległy
+        # symbol z tą samą głową przegrywa w bazie (UNIQUE(prev_hash) → 23505 albo
+        # trigger głowy → 40001) i ponawia od nowej głowy. ON CONFLICT (prediction_id)
+        # DO NOTHING: re-run tej samej predykcji nie dopisuje drugiej pozycji.
+        conflict: APIError | None = None
+        for _attempt in range(_PAPER_LEDGER_APPEND_ATTEMPTS):
+            head = self.get_paper_ledger_head()
+            row = chain_entry(entry, GENESIS_HASH if head is None else head.row_hash)
+            try:
+                response = (
+                    self._client.table(PAPER_TRADES_TABLE)
+                    .upsert(
+                        _paper_trade_record(row),
+                        on_conflict="prediction_id",
+                        ignore_duplicates=True,
+                    )
+                    .execute()
+                )
+            except APIError as exc:
+                if exc.code not in _PAPER_LEDGER_CONFLICT_CODES:
+                    raise
+                conflict = exc
+                continue
+            return row if _rows(response) else None
+        assert conflict is not None
+        raise conflict
+
+    @_translates_api_errors
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        # Trigger 073 pozwala zamknąć pozycję raz; filtr `exit_price IS NULL` robi
+        # z powtórnego rozliczenia (retry cyklu) no-op zamiast błędu triggera.
+        (
+            self._client.table(PAPER_TRADES_TABLE)
+            .update(
+                {
+                    "exit_price": str(Money(close.exit_price).for_storage().amount),
+                    "exit_ts": utc_timestamp(close.exit_ts),
+                    "pnl": str(close.pnl),
+                    "exit_reason": close.exit_reason.value,
+                }
+            )
+            .eq("prediction_id", prediction_id)
+            .is_("exit_price", "null")
+            .execute()
+        )
+
+    @_translates_api_errors
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(PAPER_TRADES_TABLE)
+            .select(_PAPER_TRADE_COLUMNS)
+            .gte("entry_ts", cutoff.isoformat())
+            .order("seq")
+        )
+        return [_ledger_trade(row) for row in _paginate(query)]
+
+    @_translates_api_errors
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        response = (
+            self._client.table(PAPER_TRADES_TABLE)
+            .select("seq, row_hash")
+            .order("seq", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = _rows(response)
+        if not rows:
+            return None
+        return LedgerHead(seq=int(rows[0]["seq"]), row_hash=str(rows[0]["row_hash"]))
+
     def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
         cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
         # Ostra granica (`lt`) dopełnia `gte` z `get_unverified_prediction`: wiersz
@@ -2082,6 +2666,29 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
                 expired += 1
         return expired
 
+    def count_expired_unverified(self, days: int) -> int:
+        # WIA-49: flaga żyje w `data_quality_flags` (JSONB, 008), więc zliczamy wiersze
+        # okna z `cs ["expired_unverified"]`; `actual_price IS NULL` odsiewa wiersz
+        # rozliczony po oznaczeniu. Paginacja po `id` — okno 30 dni może mieć >1000 wierszy.
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(self._table)
+            .select("id")
+            .gte("timestamp", cutoff.isoformat())
+            .is_("actual_price_after_12h", "null")
+            .contains("data_quality_flags", f'["{EXPIRED_UNVERIFIED_FLAG}"]')
+        )
+        try:
+            return len(_paginate(query.order("id", desc=False)))
+        except (APIError, httpx.HTTPError) as exc:
+            _log_degraded_read(
+                "expired predictions count",
+                "count of expired predictions taken from this run only",
+                "008",
+                exc,
+            )
+            return 0
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -2093,6 +2700,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         settlement: dict[str, Any] = {
             "actual_price_after_12h": actual_price,
@@ -2107,6 +2715,9 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort):
         # WIA-61: klucze tylko, gdy graf podał zamknięcie (flaga po migracji 059).
         if session_close is not None:
             settlement.update(_session_close_payload(session_close))
+        # WIA-54: klucz tylko, gdy graf podał cenę wykonalną (flaga po migracji 072).
+        if entry_price is not None:
+            settlement["entry_price"] = entry_price
         payload = _serialize_record(settlement, _PREDICTION_PRICE_COLUMNS)
         # Idempotency guard: aktualizujemy tylko gdy actual_price_after_12h jest
         # NULL. Bez tego dwa równoczesne cykle (np. ręczny workflow_dispatch

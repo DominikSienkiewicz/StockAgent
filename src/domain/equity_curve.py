@@ -1,10 +1,10 @@
 """Domena Equity Curve — krzywa kapitału z track recordu predykcji agenta.
 
 Czysta domena (stdlib only). Bierze prymitywy, NIE `ResolvedPrediction` —
-mapowanie z modelu raportu na pary `(trend, realized_change_pct)` robi
+mapowanie z modelu raportu na pary `(trend, realized_change)` robi
 orkiestrator. Dzięki temu moduł jest odsprzężony od warstwy aplikacji.
 
-Każdy trade to `(predicted_trend, realized_change_pct)`, gdzie zmiana ceny jest
+Każdy trade to `(predicted_trend, realized_change)`, gdzie zmiana ceny jest
 ułamkiem (np. 0.03 = +3%). Sygnał kierunku: BULLISH→+1, BEARISH→-1,
 SIDEWAYS/inne→0. Zwrot okresu = sygnał * zmiana ceny, więc trafiony short
 (cena spadła) daje zysk, a chybiony long — stratę. Kapitał składa się
@@ -158,8 +158,8 @@ def equity_curve(
 ) -> EquityCurve:
     """Buduje krzywą kapitału ze składania kolejnych trade'ów.
 
-    Każdy trade = `(predicted_trend, realized_change_pct)` (zmiana jako ułamek).
-    Zwrot okresu = `signal_of(trend) * realized_change_pct` minus koszt zmiany
+    Każdy trade = `(predicted_trend, realized_change)` (zmiana jako ułamek).
+    Zwrot okresu = `signal_of(trend) * realized_change` minus koszt zmiany
     pozycji względem poprzedniego trade'u (WIA-50, `cost_bps` jednostronnie,
     start z gotówki); kapitał składa się procentowo. Metryki:
 
@@ -175,9 +175,9 @@ def equity_curve(
     require_finite((change for _, change in trades), "equity curve price changes")
     period_returns: list[float] = []
     prev_signal = 0
-    for trend, change_pct in trades:
+    for trend, change in trades:
         signal = signal_of(trend)
-        period_returns.append(net_return(signal, prev_signal, signal * change_pct, cost_bps))
+        period_returns.append(net_return(signal, prev_signal, signal * change, cost_bps))
         prev_signal = signal
     return _compound(period_returns, trades, starting_equity)
 
@@ -207,7 +207,7 @@ def portfolio_equity_curve(
     """Krzywa kapitału portfela o równej wadze — jeden punkt na cykl (WIA-17).
 
     `cycles` to kolejne cykle w porządku chronologicznym, każdy z listą trade'ów
-    `(predicted_trend, realized_change_pct)`. Zwrot cyklu to ŚREDNIA
+    `(predicted_trend, realized_change)`. Zwrot cyklu to ŚREDNIA
     `signal_of(trend) * change` po wszystkich trade'ach cyklu: każda predykcja
     dostaje 1/N kapitału, a SIDEWAYS (sygnał 0) trzyma swoją część w gotówce.
     Puste cykle są pomijane. `win_rate`, `max_drawdown` i `n_trades` liczone

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import math
+import statistics
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from src.domain.price_features import (
     PRICE_FEATURE_NAMES,
+    SIGMA_FLOOR,
+    SIGMA_MIN_RETURNS,
+    SIGMA_WINDOW_CYCLES,
     PriceFeatures,
     price_features,
+    return_sigma,
 )
 
 _START = datetime(2026, 9, 1, 21, 0, tzinfo=UTC)
@@ -106,3 +111,70 @@ def test_empty_or_invalid_history_gives_no_features() -> None:
 
     assert price_features(history, _START + timedelta(days=2)) == PriceFeatures()
     assert set(PriceFeatures().as_features()) == set(PRICE_FEATURE_NAMES)
+
+
+# -- ML-11: σ zwrotów z poprzednich cykli (normalizacja targetu modelu wspólnego) --
+
+
+def _cycle_returns(prices: list[float]) -> list[float]:
+    return [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)]
+
+
+def test_sigma_uses_only_returns_before_as_of() -> None:
+    # Jedna funkcja w treningu i servingu: ruch po `as_of` (etykieta) nie może zmienić σ.
+    prices = _zigzag(30)
+    history = _series(prices)
+    as_of = history[24][0] + timedelta(hours=12)
+    crash = [(as_of + timedelta(hours=1), prices[24] * 0.5), *history[25:]]
+
+    sigma = return_sigma(history[:25], as_of)
+
+    assert sigma == return_sigma([*history[:25], *crash], as_of)
+    assert sigma == pytest.approx(statistics.stdev(_cycle_returns(prices[4:25])))
+
+
+def test_sigma_takes_the_last_window_of_cycle_returns() -> None:
+    prices = _zigzag(40)
+    history = _series(prices)
+    as_of = history[-1][0] + timedelta(days=1)
+
+    expected = statistics.stdev(_cycle_returns(prices)[-SIGMA_WINDOW_CYCLES:])
+
+    assert SIGMA_WINDOW_CYCLES == 20
+    assert return_sigma(history, as_of) == pytest.approx(expected)
+
+
+def test_price_of_the_current_cycle_is_not_a_previous_cycle() -> None:
+    # Snapshot ceny cyklu zapisuje węzeł terminalny tuż PRZED wektorem cech — w treningu
+    # ma chwilę sprzed `as_of` wektora, a w servingu (predict) jeszcze go nie ma.
+    prices = _zigzag(30)
+    history = _series(prices)
+    as_of = history[-1][0] + timedelta(days=1)
+    same_cycle = (as_of - timedelta(seconds=2), prices[-1] * 1.2)
+
+    assert return_sigma([*history, same_cycle], as_of) == return_sigma(history, as_of)
+
+
+def test_flat_history_is_floored() -> None:
+    history = _series([100.0] * 25)
+
+    assert return_sigma(history, history[-1][0] + timedelta(days=1)) == SIGMA_FLOOR
+
+
+def test_short_history_has_no_sigma() -> None:
+    as_of = _START + timedelta(days=30)
+
+    assert return_sigma(_series(_zigzag(SIGMA_MIN_RETURNS)), as_of) is None
+    assert return_sigma(_series(_zigzag(SIGMA_MIN_RETURNS + 1)), as_of) is not None
+
+
+def test_sigma_ignores_broken_prices() -> None:
+    prices = _zigzag(25)
+    history = _series(prices)
+    broken = [
+        (history[3][0] + timedelta(hours=1), 0.0),
+        (history[5][0] + timedelta(hours=1), math.nan),
+    ]
+    as_of = history[-1][0] + timedelta(days=1)
+
+    assert return_sigma([*history, *broken], as_of) == return_sigma(history, as_of)

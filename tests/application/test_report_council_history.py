@@ -52,11 +52,11 @@ class TestHtmlRendering:
             [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
         )
         # Sekwencja głosów (od najnowszego) widoczna w renderze.
-        seq_pos = html.index("SELL")
-        assert "SELL" in html
-        assert "HOLD" in html
-        # SELL pojawia się przed HOLD (kolejność od najnowszego).
-        assert seq_pos < html.index("HOLD")
+        seq_pos = html.index("SPRZEDAJ")
+        assert "SPRZEDAJ" in html
+        assert "TRZYMAJ" in html
+        # SPRZEDAJ pojawia się przed TRZYMAJ (kolejność od najnowszego).
+        assert seq_pos < html.index("TRZYMAJ")
 
     def test_renders_buy_sell_hold_tally(self) -> None:
         # 2x SELL, 1x HOLD, 0x BUY.
@@ -122,7 +122,47 @@ class TestMostBearishMostBullish:
                 _history("Wood", "NVDA", ["BUY", "BUY", "BUY"]),
             ]
         )
-        assert "bearish" in html.lower()
+        assert "pesymistyczny" in html.lower()
+
+
+class TestPolishLabels:
+    """MAIL-61: głosy rady w słowniku `polish_labels` (KUP / SPRZEDAJ / TRZYMAJ),
+    „bearish” po polsku; BUY/SELL/HOLD zostają w bazie i w logach."""
+
+    def test_html_sequence_is_in_polish(self) -> None:
+        html = render_council_history_html(
+            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
+        )
+
+        assert "SPRZEDAJ" in html
+        assert "TRZYMAJ" in html
+        assert html.index("SPRZEDAJ") < html.index("TRZYMAJ")
+        assert "SELL" not in html
+        assert "HOLD" not in html
+
+    def test_html_badge_for_the_most_bearish_voter_is_in_polish(self) -> None:
+        html = render_council_history_html(
+            [
+                _history("Soros", "NVDA", ["SELL", "SELL", "SELL"]),
+                _history("Wood", "NVDA", ["BUY", "BUY", "BUY"]),
+            ]
+        )
+
+        assert "najbardziej pesymistyczny" in html
+        assert "bearish" not in html.lower()
+
+    def test_text_sequence_tally_and_badge_are_in_polish(self) -> None:
+        text = render_council_history_text(
+            [
+                _history("Soros", "NVDA", ["SELL", "SELL", "HOLD"]),
+                _history("Wood", "NVDA", ["BUY", "BUY", "BUY"]),
+            ]
+        )
+
+        assert "NVDA: SPRZEDAJ, SPRZEDAJ, TRZYMAJ — najbardziej pesymistyczny głos" in text
+        assert "Bilans: KUP 0 · SPRZEDAJ 2 · TRZYMAJ 1" in text
+        for english in ("SELL", "BUY", "HOLD", "bearish"):
+            assert english not in text
 
 
 class TestPlainTextRendering:
@@ -132,8 +172,8 @@ class TestPlainTextRendering:
         )
         assert "Soros" in text
         assert "NVDA" in text
-        assert "SELL" in text
-        assert "HOLD" in text
+        assert "SPRZEDAJ" in text
+        assert "TRZYMAJ" in text
 
     def test_text_shows_window_days(self) -> None:
         text = render_council_history_text(

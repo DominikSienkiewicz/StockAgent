@@ -1,4 +1,4 @@
-"""Render sekcji "🔄 Zmiany nastawienia" w raporcie e-mail (roadmap #8).
+"""Render sekcji "🔄 Zmiany nastawienia" w raporcie e-mail (R-8).
 
 Day-over-day narracja rady: pokazuje, jak zmieniło się nastawienie między
 poprzednim a bieżącym cyklem — pełne odwrócenie (FLIP), osłabienie przekonania
@@ -30,13 +30,16 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_formatting import PALETTE
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
+from src.domain.polish_labels import council_recommendation_label
 
 # Kolory rekomendacji spójne z sekcją RADA DORADCZA / historią głosów.
 _REC_COLOR: dict[str, str] = {
-    "BUY": "#16a34a",
-    "SELL": "#dc2626",
-    "HOLD": "#ca8a04",
+    "BUY": PALETTE.positive,
+    "SELL": PALETTE.negative,
+    "HOLD": PALETTE.caution,
 }
 
 # Etykieta i kolor akcentu per rodzaj zmiany. FLIP jest najbardziej actionable,
@@ -49,9 +52,9 @@ _KIND_LABEL: dict[ShiftKind, str] = {
 }
 
 _KIND_COLOR: dict[ShiftKind, str] = {
-    ShiftKind.FLIP: "#dc2626",
-    ShiftKind.SOFTENING: "#ca8a04",
-    ShiftKind.STALE_COMPARISON: "#9ca3af",
+    ShiftKind.FLIP: PALETTE.negative,
+    ShiftKind.SOFTENING: PALETTE.caution,
+    ShiftKind.STALE_COMPARISON: PALETTE.subtle,
 }
 
 
@@ -70,15 +73,18 @@ def _stale_days(shift: ConsensusShift) -> int:
 
 
 def _direction_html(shift: ConsensusShift) -> str:
-    """Kolorowa strzałka kierunku 'BUY→SELL' z escapowanymi rekomendacjami."""
+    """Kolorowa strzałka kierunku 'SPRZEDAJ → KUP' z escapowanymi rekomendacjami
+    (MAIL-61: etykiety ze słownika `polish_labels`, kolor wg wartości z domeny)."""
     prev = shift.previous_recommendation
     curr = shift.current_recommendation
     prev_color = _REC_COLOR.get(prev, "#374151")
     curr_color = _REC_COLOR.get(curr, "#374151")
     return (
-        f"<span style='color:{prev_color};font-weight:600;'>{_html.escape(prev)}</span>"
-        "<span style='color:#9ca3af;'>→</span>"
-        f"<span style='color:{curr_color};font-weight:600;'>{_html.escape(curr)}</span>"
+        f"<span style='color:{prev_color};font-weight:600;'>"
+        f"{_html.escape(council_recommendation_label(prev))}</span>"
+        f"<span style='color:{PALETTE.subtle};'> → </span>"
+        f"<span style='color:{curr_color};font-weight:600;'>"
+        f"{_html.escape(council_recommendation_label(curr))}</span>"
     )
 
 
@@ -142,7 +148,10 @@ def render_consensus_shift_html(shifts: list[tuple[str, ConsensusShift]]) -> str
 
 def _narrative_text(shift: ConsensusShift) -> str:
     """Jednozdaniowa narracja per rodzaj zmiany (plain text)."""
-    direction = f"{shift.previous_recommendation}→{shift.current_recommendation}"
+    direction = (
+        f"{council_recommendation_label(shift.previous_recommendation)} → "
+        f"{council_recommendation_label(shift.current_recommendation)}"
+    )
     if shift.kind is ShiftKind.FLIP:
         return f"Odwrócenie {direction} — {shift.votes_changed} zmienionych głosów."
     if shift.kind is ShiftKind.SOFTENING:
@@ -165,3 +174,17 @@ def render_consensus_shift_text(shifts: list[tuple[str, ConsensusShift]]) -> str
         lines.append(f"  {sym}: {_narrative_text(s)}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_consensus_shift_html(data.context.consensus_shifts or [])
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(render_consensus_shift_text(data.context.consensus_shifts or []))
+
+
+# #8: flipy rady i skoki sentymentu vs poprzedni cykl — za rozliczeniami.
+CONSENSUS_SHIFT_SECTION = ReportSection(
+    key="consensus_shift", render_html=_section_html, render_text=_section_text
+)

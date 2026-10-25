@@ -1,4 +1,7 @@
 import inspect
+import typing
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -16,6 +19,8 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.domain.council import CouncilInput
+from src.domain.model_scorecard import TrainingReport
+from src.domain.value_objects import Percent
 
 ALL_PORTS = [
     MarketDataPort,
@@ -48,9 +53,9 @@ def test_advisory_council_port_can_be_mocked() -> None:
     data = CouncilInput(
         symbol="AAPL",
         current_price=Decimal("180.00"),
-        price_delta_pct=Decimal("3.5"),
+        price_delta_pct=Percent(Decimal("3.5")),
         sentiment_score=0.6,
-        news_articles=["headline"],
+        news_articles=("headline",),
         llm_trend="BULLISH",
         llm_confidence=0.8,
         ml_price_target=Decimal("185.00"),
@@ -78,3 +83,21 @@ def test_repository_port_has_save_council_votes() -> None:
     sig = inspect.signature(RepositoryPort.save_council_votes)
     assert "prediction_id" in sig.parameters
     assert "votes" in sig.parameters
+
+
+def test_ml_train_returns_domain_training_report() -> None:
+    # ARCH-09: werdykt treningu przekracza port jako typ domenowy, nie jako
+    # dict[str, Any] ze stringami, z którego nieznany status stawał się SKIPPED.
+    hints = typing.get_type_hints(MLPredictionPort.train)
+
+    assert hints["return"] is TrainingReport
+
+
+def test_ml_train_takes_feature_rows_not_a_dataframe() -> None:
+    # ARCH-09: application nie przekazuje DataFrame przez port — wiersze cech,
+    # target i znaczniki czasu to zwykłe sekwencje; ramkę buduje adapter.
+    hints = typing.get_type_hints(MLPredictionPort.train)
+
+    assert hints["features"] == Sequence[Mapping[str, float | None]]
+    assert hints["target"] == Sequence[float]
+    assert hints["timestamps"] == Sequence[datetime] | None

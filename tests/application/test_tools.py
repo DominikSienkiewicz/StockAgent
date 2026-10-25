@@ -21,7 +21,7 @@ import pytest
 from src.application.ports import FundamentalsPort, MacroIndicatorsPort, Tool
 from src.application.tools import build_research_tools
 from src.domain.polish_macro import PolishMacroSnapshot
-from src.domain.value_objects import Fundamentals
+from src.domain.value_objects import Fundamentals, Ratio
 
 
 def _make_fundamentals() -> Fundamentals:
@@ -38,8 +38,8 @@ def _make_macro() -> PolishMacroSnapshot:
     return PolishMacroSnapshot(
         eur_pln=Decimal("4.30"),
         usd_pln=Decimal("3.95"),
-        eur_pln_30d_change_pct=Decimal("0.021"),
-        usd_pln_30d_change_pct=Decimal("0.048"),
+        eur_pln_30d_change_ratio=Ratio(Decimal("0.021")),
+        usd_pln_30d_change_ratio=Ratio(Decimal("0.048")),
         fetched_at=datetime(2026, 6, 21, 12, 0, 0),
     )
 

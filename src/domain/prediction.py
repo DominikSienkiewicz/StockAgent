@@ -4,7 +4,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from src.domain.value_objects import AssetType
+from src.domain.market_calendar import last_started_session, next_open, to_nyse_time
+from src.domain.value_objects import AssetType, Quote
 
 
 def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
@@ -124,6 +125,11 @@ def normalize_trend(value: object) -> tuple[TrendDirection, bool]:
 # etykieta modelu ML). Wchodzi do commitmentu v2 i do protokołu ewaluacji.
 PREDICTION_HORIZON_HOURS = 12
 
+# ML-41: analog RAG tego samego symbolu sprzed mniej niż tylu godzin to echo bieżących
+# newsów, nie historia — prognoza z piątku rozlicza się dopiero w poniedziałek (WIA-28),
+# więc okno obejmuje horyzont przez weekend. RAG point-in-time (migracja 076) go pomija.
+SAME_SYMBOL_ANALOG_EXCLUSION_HOURS = 72
+
 SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS
@@ -157,7 +163,10 @@ class Prediction:
     created_at: datetime | None = None
 
     def is_trend_correct(
-        self, actual_price: Decimal, tolerance: Decimal | None = None
+        self,
+        actual_price: Decimal,
+        tolerance: Decimal | None = None,
+        dead_band: Decimal | None = None,
     ) -> bool:
         """Czy KIERUNEK predykcji się potwierdził.
 
@@ -165,12 +174,18 @@ class Prediction:
         None → `SIDEWAYS_TOLERANCE` (±0.5%, akcje/ETF). Dla krypto wołający
         podaje `CRYPTO_SIDEWAYS_TOLERANCE`: przy dziennej zmienności BTC 3–5%
         pasmo akcyjne uznawałoby niemal każdy dzień za ruch i zaniżało trafność.
+
+        EXP-06: `dead_band` (ułamek ceny przy predykcji) to martwa strefa kierunku —
+        BULLISH trafia dopiero przy zmianie > +pasmo, BEARISH przy < −pasmo, więc
+        +0,01% nie jest już trafieniem. None (domyślnie) i 0 to reguła sprzed
+        EXP-06; szerokość pasma żyje w protokole ewaluacji
+        (`directional_dead_zone`). SIDEWAYS ma własne pasmo (`tolerance`).
         """
+        if dead_band is not None and dead_band < 0:
+            raise ValueError(f"dead_band must be >= 0, got {dead_band}")
         actual_delta = actual_price - self.price_at_prediction
-        if self.predicted_trend == TrendDirection.BULLISH:
-            return actual_delta > 0
-        if self.predicted_trend == TrendDirection.BEARISH:
-            return actual_delta < 0
+        if self.predicted_trend in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+            return self._directional_hit(actual_delta, dead_band)
         # SIDEWAYS — w granicach ±SIDEWAYS_TOLERANCE. Guard: cena bazowa 0
         # (skażony rekord) → brak punktu odniesienia. Traktujemy brak ruchu
         # jako SIDEWAYS-correct zamiast dzielić przez zero.
@@ -178,6 +193,41 @@ class Prediction:
             return actual_delta == 0
         band = SIDEWAYS_TOLERANCE if tolerance is None else tolerance
         return abs(actual_delta / self.price_at_prediction) <= band
+
+    def _directional_hit(self, actual_delta: Decimal, dead_band: Decimal | None) -> bool:
+        """BULLISH/BEARISH: znak zmiany poza martwą strefą. Bez ceny bazowej (0,
+        skażony rekord) pasma nie da się wyrazić ułamkiem — liczy się sam znak."""
+        move = actual_delta
+        band = Decimal("0")
+        if dead_band is not None and self.price_at_prediction != 0:
+            move = actual_delta / self.price_at_prediction
+            band = dead_band
+        if self.predicted_trend == TrendDirection.BULLISH:
+            return move > band
+        return move < -band
+
+    def executable_entry(self, quote: Quote, now: datetime) -> Decimal | None:
+        """WIA-54: cena, po której predykcję dało się wykonać, z notowania /quote
+        wziętego w `now` przy jej rozliczeniu.
+
+        Fast Loop chodzi przed sesją, więc `price_at_prediction` to ostatnie
+        zamknięcie, a luki na otwarciu nikt nie kupi. Wykonalne jest otwarcie
+        pierwszej sesji po predykcji (`o` notowania) — tylko gdy notowanie pochodzi
+        z tej właśnie sesji. Rozliczenie z zaległości (późniejsza sesja), przed
+        sesją (weekend, święto, drugi przebieg) albo bez `o` → None, nie zero.
+        Predykcja w trakcie sesji była wykonalna od razu, po własnej cenie.
+        Naiwny `datetime` to UTC."""
+        if self.created_at is None:
+            return None
+        running = last_started_session(self.created_at)
+        if to_nyse_time(self.created_at) < running.closes_at:
+            return self.price_at_prediction
+        session = last_started_session(now)
+        if session.opens_at != next_open(self.created_at):
+            return None
+        if quote.open_price is None or to_nyse_time(quote.quoted_at) < session.opens_at:
+            return None
+        return quote.open_price.amount
 
     def accuracy_score(self, actual_price: Decimal) -> Decimal:
         # Guard: bez ceny bazowej (0) nie da się policzyć błędu względnego —

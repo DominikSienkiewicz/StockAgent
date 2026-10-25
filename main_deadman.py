@@ -29,19 +29,13 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 
 from src.config import Settings
-from src.domain.liveness import LivenessExpectation, overdue_jobs
+from src.domain.liveness import FAST_LOOP_TRADING_DAY_SLOT, LivenessExpectation, overdue_jobs
 from src.infrastructure.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
-
-# NIEZ-11: Fast Loop chodzi w dni handlowe przed otwarciem (cron 05:30 UTC = 00:30 EST
-# / 01:30 EDT), więc ślad dnia handlowego liczymy od północy ET tego dnia, a
-# `liveness_fast_loop_max_gap_h` to zapas od tej chwili. Weekend i święto NYSE nie
-# mają terminu.
-FAST_LOOP_TRADING_DAY_SLOT = time(0, 0)
 
 
 def _render(overdue: tuple[str, ...], last_seen: dict[str, datetime | None]) -> tuple[str, str]:

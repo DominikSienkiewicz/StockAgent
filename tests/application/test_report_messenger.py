@@ -1,6 +1,6 @@
 """Testy kontraktowe dla `build_messenger_digest`.
 
-Największe ryzyko produktowe (roadmap #5): dryf dwóch formatów tekstowych —
+Największe ryzyko produktowe (R-5): dryf dwóch formatów tekstowych —
 pełny raport plain-text vs. zwięzły push do Telegrama/Slacka. Push MUSI zmieścić
 się w twardym limicie znaków (Telegram odrzuca > 4096 znaków statusem 400 i push
 po cichu ginie), więc trzymamy własny, ostrzejszy limit 1500 znaków ZAWSZE oraz

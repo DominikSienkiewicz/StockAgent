@@ -1,3 +1,4 @@
+from typing import Any
 from unittest.mock import Mock
 
 import pandas as pd
@@ -30,11 +31,11 @@ def repository_port() -> Mock:
 
 
 @pytest.fixture
-def use_case(ml_port, repository_port) -> BacktestUseCase:
+def use_case(ml_port: Mock, repository_port: Mock) -> BacktestUseCase:
     return BacktestUseCase(ml_port=ml_port, db_port=repository_port)
 
 
-def _feature_store_rows(n: int) -> list[dict]:
+def _feature_store_rows(n: int) -> list[dict[str, Any]]:
     """Rekordy jak z widoku ml_feature_store — gotowe price_delta + target_return."""
     return [
         {
@@ -53,8 +54,8 @@ def _feature_store_rows(n: int) -> list[dict]:
 
 class TestRun:
     def test_runs_walk_forward_report_and_returns_summary(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
         ml_port.walk_forward_report.return_value = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60},
@@ -75,8 +76,8 @@ class TestRun:
         assert summary.beats_baseline is True
 
     def test_too_few_rows_returns_empty_summary_without_calling_ml(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(
             MIN_BACKTEST_SAMPLES - 1
         )
@@ -90,8 +91,8 @@ class TestRun:
         assert "mało" in summary.verdict or "za mało" in summary.verdict.lower()
 
     def test_empty_rows_returns_empty_summary_without_calling_ml(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         summary = use_case.run("AAPL")
@@ -100,12 +101,12 @@ class TestRun:
         assert summary.n_folds == 0
 
     def test_rows_with_nan_after_dropna_below_minimum_skips_ml(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         # 60 wierszy, ale wszystkie poza 10 mają NaN w target_return → po dropna < 50.
         rows = _feature_store_rows(60)
         for r in rows[10:]:
-            r["target_return"] = None  # type: ignore[assignment]
+            r["target_return"] = None
         repository_port.get_feature_store_data.return_value = rows
 
         summary = use_case.run("AAPL")
@@ -114,8 +115,8 @@ class TestRun:
         assert summary.n_folds == 0
 
     def test_refresh_view_true_refreshes_feature_store(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         use_case.run("AAPL", refresh_view=True)
@@ -123,8 +124,8 @@ class TestRun:
         repository_port.refresh_feature_store.assert_called_once()
 
     def test_refresh_view_default_false_does_not_refresh(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         use_case.run("AAPL")
@@ -132,8 +133,8 @@ class TestRun:
         repository_port.refresh_feature_store.assert_not_called()
 
     def test_never_raises_on_empty_data(
-        self, use_case, repository_port, ml_port
-    ):
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         # Brak wyjątku = graceful degradacja.
@@ -142,7 +143,7 @@ class TestRun:
         assert isinstance(summary, BacktestSummary)
 
 
-def _stamped_rows(n: int) -> list[dict]:
+def _stamped_rows(n: int) -> list[dict[str, Any]]:
     """Wiersze z godzinnym `timestamp` (ISO jak z PostgREST); `target_return` koduje
     godzinę, żeby test widział kolejność wierszy w foldach."""
     base = pd.Timestamp("2026-09-01T00:00:00+00:00")
@@ -157,7 +158,9 @@ class TestLabelHorizonPurge:
     """Decyzja 4 (2026-10-18): main_backtest purguje horyzont etykiety tak jak model
     wspólny — walk-forward dostaje znaczniki czasu wierszy."""
 
-    def test_passes_row_timestamps_to_walk_forward(self, use_case, repository_port, ml_port):
+    def test_passes_row_timestamps_to_walk_forward(
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _stamped_rows(60)[::-1]
         ml_port.walk_forward_report.return_value = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
@@ -171,7 +174,9 @@ class TestLabelHorizonPurge:
         assert stamps == sorted(stamps)
         assert list(target) == [float(hour) for hour in range(60)]
 
-    def test_rows_without_timestamps_run_unpurged(self, use_case, repository_port, ml_port):
+    def test_rows_without_timestamps_run_unpurged(
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
         ml_port.walk_forward_report.return_value = [
             {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
@@ -185,7 +190,7 @@ class TestLabelHorizonPurge:
 class TestTradingCosts:
     """WIA-50: backtest raportuje zwrot strategii znakowej po kosztach obrotu."""
 
-    def test_cost_bps_reaches_the_summary(self, ml_port, repository_port) -> None:
+    def test_cost_bps_reaches_the_summary(self, ml_port: Mock, repository_port: Mock) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
         ml_port.walk_forward_report.return_value = [
             {
@@ -203,7 +208,9 @@ class TestTradingCosts:
         assert summary.turnover == pytest.approx(0.5)
         assert summary.mean_net_return == pytest.approx(0.002)
 
-    def test_default_cost_is_zero(self, use_case, ml_port, repository_port) -> None:
+    def test_default_cost_is_zero(
+        self, use_case: BacktestUseCase, ml_port: Mock, repository_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
         ml_port.walk_forward_report.return_value = [
             {
@@ -222,7 +229,9 @@ class TestFeatureSetVersion:
     """ML-51: backtest czyta tę samą próbkę co trening — przy fladze
     `feature_set_filter_enabled` wyłącznie wiersze bieżącej wersji zestawu cech."""
 
-    def test_reads_only_the_current_feature_set_version(self, ml_port, repository_port) -> None:
+    def test_reads_only_the_current_feature_set_version(
+        self, ml_port: Mock, repository_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
         use_case = BacktestUseCase(
             ml_port=ml_port, db_port=repository_port, feature_set_version=FEATURE_SET_VERSION
@@ -234,7 +243,9 @@ class TestFeatureSetVersion:
             "AAPL", feature_set_version=FEATURE_SET_VERSION
         )
 
-    def test_without_a_version_reads_the_whole_history(self, use_case, repository_port) -> None:
+    def test_without_a_version_reads_the_whole_history(
+        self, use_case: BacktestUseCase, repository_port: Mock
+    ) -> None:
         repository_port.get_feature_store_data.return_value = []
 
         use_case.run("AAPL")

@@ -12,7 +12,14 @@ from __future__ import annotations
 import html as _html
 from decimal import Decimal
 
-from src.application.report_formatting import company_label, number, number_exact, pct
+from src.application.report_formatting import (
+    PALETTE,
+    company_label,
+    number,
+    number_exact,
+    pct,
+)
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
 from src.domain.drawdown import DrawdownSignal
 from src.domain.hedge import HedgeAssessment
@@ -22,14 +29,15 @@ from src.domain.macro_risk import (
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
+from src.domain.value_objects import Ratio
 
 # Domknięcie tabeli HTML — powtarzane w trzech podsekcjach Risk Watch.
 _TABLE_CLOSE = "</tbody></table>"
 
 # Progi drawdownu spójne z use case'em — render tylko prezentuje wynik
 # domeny, ale poziom alertu liczy tą samą skalą (ELEVATED -10%, CRITICAL -20%).
-_DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
-_DRAWDOWN_CRITICAL_PCT = Decimal("0.20")
+_DRAWDOWN_ELEVATED_THRESHOLD = Ratio(Decimal("0.10"))
+_DRAWDOWN_CRITICAL_THRESHOLD = Ratio(Decimal("0.20"))
 
 _ALERT_LABEL = {
     MacroAlertLevel.NORMAL: "NORMAL",
@@ -38,15 +46,15 @@ _ALERT_LABEL = {
 }
 
 _ALERT_COLOR = {
-    MacroAlertLevel.NORMAL: "#16a34a",
-    MacroAlertLevel.ELEVATED: "#ca8a04",
-    MacroAlertLevel.CRITICAL: "#dc2626",
+    MacroAlertLevel.NORMAL: PALETTE.positive,
+    MacroAlertLevel.ELEVATED: PALETTE.caution,
+    MacroAlertLevel.CRITICAL: PALETTE.negative,
 }
 
 _ALERT_BG = {
     MacroAlertLevel.NORMAL: "#f0fdf4",
     MacroAlertLevel.ELEVATED: "#fefce8",
-    MacroAlertLevel.CRITICAL: "#fef2f2",
+    MacroAlertLevel.CRITICAL: PALETTE.tint_negative,
 }
 
 _INSTRUMENT_LABEL = {
@@ -71,8 +79,8 @@ def _format_pct(value: Decimal) -> str:
 
 def _drawdown_alert(dd: DrawdownSignal) -> MacroAlertLevel:
     return dd.evaluate_drawdown(
-        elevated_pct=_DRAWDOWN_ELEVATED_PCT,
-        critical_pct=_DRAWDOWN_CRITICAL_PCT,
+        elevated_threshold=_DRAWDOWN_ELEVATED_THRESHOLD,
+        critical_threshold=_DRAWDOWN_CRITICAL_THRESHOLD,
     )
 
 
@@ -122,9 +130,9 @@ def render_risk_watch_html(report: MacroRiskReport) -> str:
 # Kolor etykiety skuteczności hedge'a: zielony = skuteczny, bursztyn =
 # nieskuteczny, czerwony = odwrócony (porusza się jak book, nie chroni).
 _HEDGE_COLOR = {
-    "skuteczny": "#16a34a",
-    "nieskuteczny": "#ca8a04",
-    "odwrócony": "#dc2626",
+    "skuteczny": PALETTE.positive,
+    "nieskuteczny": PALETTE.caution,
+    "odwrócony": PALETTE.negative,
 }
 
 
@@ -147,7 +155,7 @@ def _render_hedges_table_html(hedges: list[HedgeAssessment]) -> str:
         )
     return (
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
-        "🛡️ Skuteczność hedge'y (realized corr vs portfel):</p>"
+        "🛡️ Skuteczność hedge'y (realized corr vs watchlista):</p>"
         "<table style='width: 100%; border-collapse: collapse; "
         "font-size: 13px; margin-bottom: 16px;'>"
         "<thead><tr style='background: #f9fafb; color: #6b7280; "
@@ -174,7 +182,7 @@ def _render_signals_table_html(signals: list[MacroRiskSignal]) -> str:
             f"<td style='padding: 6px 8px; color: #6b7280;'>"
             f"{_INSTRUMENT_LABEL[sig.instrument_type]}</td>"
             f"<td style='padding: 6px 8px; text-align: right;'>"
-            f"{_format_pct(sig.change_pct)}</td>"
+            f"{_format_pct(sig.change_ratio)}</td>"
             f"<td style='padding: 6px 8px; color: {color}; font-weight: 600;'>"
             f"{_ALERT_LABEL[alert]}</td>"
             f"</tr>"
@@ -239,9 +247,9 @@ def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
         "border-radius: 4px; font-size: 13px; margin-bottom: 16px;'>"
         "<strong>Polska — kursy referencyjne (NBP, 30d):</strong><br>"
         f"EUR/PLN: <strong>{number_exact(snap.eur_pln)}</strong> "
-        f"({_format_pct(snap.eur_pln_30d_change_pct)}) · "
+        f"({_format_pct(snap.eur_pln_30d_change_ratio)}) · "
         f"USD/PLN: <strong>{number_exact(snap.usd_pln)}</strong> "
-        f"({_format_pct(snap.usd_pln_30d_change_pct)})<br>"
+        f"({_format_pct(snap.usd_pln_30d_change_ratio)})<br>"
         f"Poziom stresu fiskalnego: <strong>{label}</strong>"
         "</div>"
     )
@@ -269,7 +277,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
             lines.append(
                 f"  {company_label(sig.symbol):40s} "
                 f"{_INSTRUMENT_LABEL[sig.instrument_type]:18s} "
-                f"Δ={_format_pct(sig.change_pct):>7s} "
+                f"Δ={_format_pct(sig.change_ratio):>7s} "
                 f"[{_ALERT_LABEL[alert]}]"
             )
         lines.append("")
@@ -287,7 +295,7 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         lines.append("")
 
     if report.hedges:
-        lines.append("-- Skuteczność hedge'y (corr vs portfel) --")
+        lines.append("-- Skuteczność hedge'y (corr vs watchlista) --")
         for h in report.hedges:
             lines.append(
                 f"  {company_label(h.hedge_symbol):40s} "
@@ -301,11 +309,11 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         snap = report.polish_macro
         lines.append(
             f"  EUR/PLN: {number_exact(snap.eur_pln)} "
-            f"({_format_pct(snap.eur_pln_30d_change_pct)} / 30d)"
+            f"({_format_pct(snap.eur_pln_30d_change_ratio)} / 30d)"
         )
         lines.append(
             f"  USD/PLN: {number_exact(snap.usd_pln)} "
-            f"({_format_pct(snap.usd_pln_30d_change_pct)} / 30d)"
+            f"({_format_pct(snap.usd_pln_30d_change_ratio)} / 30d)"
         )
         lines.append(
             f"  Stres fiskalny: {_STRESS_LABEL[snap.evaluate_stress_level()]}"
@@ -313,3 +321,18 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    report = data.context.macro_risk_report
+    return render_risk_watch_html(report) if report else ""
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    report = data.context.macro_risk_report
+    return text_block(render_risk_watch_text(report) if report else "")
+
+
+RISK_WATCH_SECTION = ReportSection(
+    key="risk_watch", render_html=_section_html, render_text=_section_text
+)

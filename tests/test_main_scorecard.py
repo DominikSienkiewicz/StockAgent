@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ import yaml
 import main_scorecard
 from src.application.ports import RepositoryPort, WebPublisherPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 ROOT = Path(__file__).parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "scorecard_pages.yml"
@@ -45,7 +47,7 @@ FREE_SECRET_KEYS = {"SUPABASE_URL", "SUPABASE_KEY"}
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -263,3 +265,93 @@ def test_every_job_ends_with_a_failure_alert() -> None:
         env = last.get("env", {})
         assert env.get("RESEND_API_KEY") == "${{ secrets.RESEND_API_KEY }}", job_name
         assert env.get("DIGEST_TO_EMAIL") == "${{ secrets.DIGEST_TO_EMAIL }}", job_name
+
+
+def test_publishes_the_json_twin_next_to_the_page(settings: Settings, mocker: Any) -> None:
+    # WIA-81: `scorecard.json` w katalogu strony — ten sam artefakt Pages.
+    import json
+
+    publisher = _wire(mocker, _repo())
+
+    assert main_scorecard.main([], settings=settings) == 0
+
+    name, content, content_type = publisher.publish_asset.call_args.args
+    assert (name, content_type) == ("scorecard.json", "application/json")
+    assert json.loads(content)["window_days"] == 30
+
+
+def test_failed_json_write_exits_1(settings: Settings, mocker: Any) -> None:
+    publisher = _wire(mocker, _repo())
+    publisher.publish_asset.return_value = ""
+
+    assert main_scorecard.main([], settings=settings) == 1
+
+
+def _wire_status(mocker: Any, repository: MagicMock) -> MagicMock:
+    """NIEZ-33: osobny publisher strony statusu (w katalogu scorecardu)."""
+    from src.application.ports import CycleRun
+
+    repository.get_cycle_runs_since.return_value = [
+        CycleRun(
+            loop="fast",
+            run_id="1",
+            run_attempt=1,
+            started_at=datetime(2026, 10, 24, 5, 30, tzinfo=UTC),
+            duration_s=10.0,
+            eligible=42,
+            saved=40,
+            failures=2,
+            paid_calls={"llm": 7},
+            report_delivered=True,
+        )
+    ]
+    status = MagicMock(spec=WebPublisherPort)
+    status.publish.return_value = "/runner/public/scorecard/status/index.html"
+    status.publish_asset.return_value = "/runner/public/scorecard/status/badge.json"
+    mocker.patch("main_agent.build_public_status_publisher", return_value=status)
+    return status
+
+
+def test_status_page_is_published_with_the_scorecard(settings: Settings, mocker: Any) -> None:
+    repository = _repo()
+    _wire(mocker, repository)
+    status = _wire_status(mocker, repository)
+    settings.public_status_page_enabled = True
+
+    assert main_scorecard.main([], settings=settings) == 0
+
+    assert "Status StockAgenta" in status.publish.call_args.args[0]
+    assert status.publish_asset.call_args.args[0] == "badge.json"
+
+
+def test_status_page_flag_off_publishes_no_status(settings: Settings, mocker: Any) -> None:
+    repository = _repo()
+    _wire(mocker, repository)
+    status = _wire_status(mocker, repository)
+
+    assert main_scorecard.main([], settings=settings) == 0
+
+    status.publish.assert_not_called()
+    repository.get_cycle_runs_since.assert_not_called()
+
+
+def test_unreadable_run_history_exits_1(settings: Settings, mocker: Any) -> None:
+    from src.application.errors import ProviderUnavailable
+
+    repository = _repo()
+    _wire(mocker, repository)
+    _wire_status(mocker, repository)
+    repository.get_cycle_runs_since.side_effect = ProviderUnavailable("cycle_runs down")
+    settings.public_status_page_enabled = True
+
+    assert main_scorecard.main([], settings=settings) == 1
+
+
+def test_failed_status_write_exits_1(settings: Settings, mocker: Any) -> None:
+    repository = _repo()
+    _wire(mocker, repository)
+    status = _wire_status(mocker, repository)
+    status.publish_asset.return_value = ""
+    settings.public_status_page_enabled = True
+
+    assert main_scorecard.main([], settings=settings) == 1

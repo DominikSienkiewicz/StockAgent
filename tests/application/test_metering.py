@@ -4,6 +4,7 @@ potem padnie albo nie zdąży przed limitem czasu rady)."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -118,8 +119,17 @@ class TestUsageAttribution:
         ledger = UsageLedger()
         usage = LLMUsage(provider="openai", model="gpt-5-mini", input_tokens=5, output_tokens=5)
         inner = Mock(spec=LLMPort)
-        inner.analyze.side_effect = lambda _prompt: ledger.record(usage) or {}
-        inner.analyze_mistake.side_effect = lambda _prompt: ledger.record(usage) or ""
+
+        def analyze(_prompt: str) -> dict[str, Any]:
+            ledger.record(usage)
+            return {}
+
+        def analyze_mistake(_prompt: str) -> str:
+            ledger.record(usage)
+            return ""
+
+        inner.analyze.side_effect = analyze
+        inner.analyze_mistake.side_effect = analyze_mistake
         port = MeteredLLMPort(inner, CycleTelemetry(), "council_llm")
 
         with usage_scope(node="council", symbol="NVDA"):

@@ -1,8 +1,9 @@
-"""Jinja2 setup dla report_builder.
+"""Jinja2 setup dla sekcji maila.
 
 Etap migracji 1: dwie izolowane sekcje (council + valuation) renderowane
 przez templates/ zamiast inline'owych f-string. Reszta raportu pozostaje
-w report_builder.py — migracja przyrostowa, sekcja po sekcji.
+f-stringami w modułach sekcji `report_*.py` — migracja przyrostowa, sekcja
+po sekcji.
 
 Autoescape włączony dla .html / .j2 — input z LLM-a (reasoning, summary,
 dissenting_views) jest niezaufany i mógłby zawierać HTML/script.

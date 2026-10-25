@@ -4,6 +4,8 @@ aktywa i na pokrycie przedziałów. Zero I/O: wejście to wiersze z
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from src.application.move_interval import calibration_windows, interval_coverage
@@ -36,7 +38,9 @@ def test_windows_are_split_by_asset_class_in_input_order() -> None:
 
     assert set(windows) == {AssetType.STOCK, AssetType.CRYPTO, AssetType.ETF}
     stock = windows[AssetType.STOCK]
-    assert stock[0] == CalibrationPoint(predicted_return=0.0, realized_return=pytest.approx(0.02))
+    assert stock[0] == CalibrationPoint(
+        predicted_return=0.0, realized_return=cast(float, pytest.approx(0.02))
+    )
     assert stock[1].predicted_return == pytest.approx(0.01)
     assert stock[1].realized_return == pytest.approx(-0.005)
     assert windows[AssetType.CRYPTO][0].realized_return == pytest.approx(-0.05)

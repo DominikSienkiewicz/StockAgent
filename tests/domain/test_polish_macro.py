@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
+from src.domain.value_objects import Ratio
 
 
 def _snap(
@@ -23,8 +24,8 @@ def _snap(
     return PolishMacroSnapshot(
         eur_pln=Decimal(eur_pln),
         usd_pln=Decimal(usd_pln),
-        eur_pln_30d_change_pct=Decimal(eur_change),
-        usd_pln_30d_change_pct=Decimal(usd_change),
+        eur_pln_30d_change_ratio=Ratio(Decimal(eur_change)),
+        usd_pln_30d_change_ratio=Ratio(Decimal(usd_change)),
         fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
     )
 

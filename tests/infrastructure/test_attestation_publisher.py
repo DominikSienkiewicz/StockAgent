@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from src.domain.attestation import commitment_ledger_record
 from src.infrastructure.adapters.attestation_publisher import (
     FileAttestationPublisher,
     NullAttestationPublisher,
@@ -84,7 +87,7 @@ class TestFileAttestationPublisher:
         assert "commit" not in reveal.read_text(encoding="utf-8")
 
     def test_write_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, mocker: Any
     ) -> None:
         publisher = self._make(tmp_path)
         # Symulujemy błąd I/O — publikacja nie może wywalić cyklu.
@@ -97,7 +100,7 @@ class TestFileAttestationPublisher:
         assert "disk full" in caplog.text or "publish" in caplog.text.lower()
 
     def test_mkdir_failure_is_swallowed_and_returns_empty(
-        self, tmp_path: Path, mocker
+        self, tmp_path: Path, mocker: Any
     ) -> None:
         publisher = self._make(tmp_path)
         mocker.patch.object(Path, "mkdir", side_effect=OSError("perm denied"))
@@ -109,7 +112,7 @@ class TestFileAttestationPublisher:
 
 class TestNullAttestationPublisher:
     def test_commitment_returns_empty_without_writing(
-        self, mocker
+        self, mocker: Any
     ) -> None:
         opener = mocker.patch("builtins.open")
         publisher = NullAttestationPublisher()
@@ -119,7 +122,7 @@ class TestNullAttestationPublisher:
         assert result == ""
         opener.assert_not_called()
 
-    def test_reveal_returns_empty_without_writing(self, mocker) -> None:
+    def test_reveal_returns_empty_without_writing(self, mocker: Any) -> None:
         opener = mocker.patch("builtins.open")
         publisher = NullAttestationPublisher()
 
@@ -127,3 +130,31 @@ class TestNullAttestationPublisher:
 
         assert result == ""
         opener.assert_not_called()
+
+
+class TestCommitmentLedgerLine:
+    """WIA-25: linia commitmentu niesie to, czym weryfikator paruje ją z revealem."""
+
+    def test_commitment_line_has_prediction_id(self, tmp_path: Path) -> None:
+        target = tmp_path / "commitments.jsonl"
+        publisher = FileAttestationPublisher(
+            commitment_path=str(target), reveal_path=str(tmp_path / "reveals.jsonl")
+        )
+
+        publisher.publish_commitment(
+            commitment_ledger_record(
+                symbol="NVDA",
+                commitment="ab" * 32,
+                prediction_id="pred-7",
+                committed_at=datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC),
+            )
+        )
+
+        (line,) = target.read_text(encoding="utf-8").splitlines()
+        assert json.loads(line) == {
+            "commitment": "ab" * 32,
+            "committed_at": "2026-10-26T05:31:07+00:00",
+            "prediction_id": "pred-7",
+            "schema_version": 2,
+            "symbol": "NVDA",
+        }

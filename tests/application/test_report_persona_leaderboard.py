@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.application.report_formatting import PALETTE
 from src.application.report_persona_leaderboard import (
     render_persona_leaderboard_html,
 )
@@ -73,11 +74,11 @@ class TestRenderPersonaLeaderboardHtml:
     @pytest.mark.parametrize(
         ("hit_rate", "color"),
         [
-            (0.68, "#16a34a"),  # >= 55% — persona realnie dodaje wartość
-            (0.55, "#16a34a"),  # próg włącznie
-            (0.50, "#ca8a04"),  # okolice losowego strzału (~33% na 3 opcjach)
-            (0.45, "#ca8a04"),  # próg włącznie
-            (0.41, "#dc2626"),  # < 45% — persona szkodzi
+            (0.68, PALETTE.positive),  # >= 55% — persona realnie dodaje wartość
+            (0.55, PALETTE.positive),  # próg włącznie
+            (0.50, PALETTE.caution),  # okolice losowego strzału (~33% na 3 opcjach)
+            (0.45, PALETTE.caution),  # próg włącznie
+            (0.41, PALETTE.negative),  # < 45% — persona szkodzi
         ],
     )
     def test_hit_rate_is_color_coded(self, hit_rate: float, color: str) -> None:
@@ -143,3 +144,44 @@ class TestPersonaVerdict:
         assert "przybliżenie" in assessed
         assert "BH-FDR" in assessed
         assert "przybliżenie" not in plain
+
+
+class TestPersonaBrierScore:
+    """WIA-44: pod hit-rate'em stoi Brier pewności i jego umiejętność (BSS) —
+    tylko dla rekordów z oceną Briera (flaga), reszta maila bez zmian."""
+
+    @staticmethod
+    def _scored(name: str, brier: float) -> PersonaTrackRecord:
+        return PersonaTrackRecord(
+            investor_name=name, hit_rate=0.6, votes=20, brier=brier, log_loss=0.7
+        )
+
+    def test_row_shows_brier_and_skill_with_decimal_commas(self) -> None:
+        html = render_persona_leaderboard_html([self._scored("Alfa", 0.40)])
+
+        assert "Brier 0,40" in html
+        assert "BSS -0,67" in html
+
+    def test_note_explains_the_brier_order_only_when_scores_are_present(self) -> None:
+        with_scores = render_persona_leaderboard_html([self._scored("Alfa", 0.40)])
+        without = render_persona_leaderboard_html([_record("Alfa", 0.6, 20)])
+
+        assert "Brier" in with_scores
+        assert "przepewna" in with_scores
+        assert "Brier" not in without
+
+    def test_records_without_a_score_render_exactly_as_before(self) -> None:
+        html = render_persona_leaderboard_html([_record("Buffett", 0.68, 22)])
+
+        assert "BSS" not in html
+        assert "Brier" not in html
+
+    def test_undefined_skill_shows_only_the_brier(self) -> None:
+        record = PersonaTrackRecord(
+            investor_name="Perfect", hit_rate=1.0, votes=10, brier=0.01, log_loss=0.05
+        )
+
+        html = render_persona_leaderboard_html([record])
+
+        assert "Brier 0,01" in html
+        assert "· BSS" not in html

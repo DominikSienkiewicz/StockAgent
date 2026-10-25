@@ -6,6 +6,8 @@ z „BULLISH 0.8” zawyża hit-rate, którym ranking kalibruje predykcje kierun
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.application.signal_calibration import (
     directional_calibration_curve,
     split_calibration_samples,
@@ -90,3 +92,32 @@ def test_rows_without_timestamp_share_one_cycle() -> None:
 
 def test_no_directional_samples_give_no_curve() -> None:
     assert directional_calibration_curve([_row("SIDEWAYS", 0.9, True)]) is None
+
+
+def test_timed_samples_keep_directional_rows_with_their_moment() -> None:
+    # ML-28: okna oceny poza próbą tną po chwili predykcji.
+    from datetime import UTC, datetime
+
+    from src.application.signal_calibration import timed_directional_samples
+
+    rows: list[dict[str, Any]] = [
+        {"confidence_score": 0.7, "is_trend_correct": True, "predicted_trend": "BULLISH",
+         "timestamp": "2026-10-01T05:30:00+00:00"},
+        {"confidence_score": 0.6, "is_trend_correct": False, "predicted_trend": "BEARISH",
+         "timestamp": "2026-10-02T07:30:00+02:00"},
+        {"confidence_score": 0.9, "is_trend_correct": True, "predicted_trend": "SIDEWAYS",
+         "timestamp": "2026-10-03T05:30:00+00:00"},
+        {"confidence_score": 0.8, "is_trend_correct": True, "predicted_trend": "BULLISH",
+         "timestamp": "not a date"},
+        {"confidence_score": 0.8, "is_trend_correct": None, "predicted_trend": "BULLISH",
+         "timestamp": "2026-10-04T05:30:00+00:00"},
+        {"confidence_score": 0.8, "is_trend_correct": True, "predicted_trend": "BULLISH"},
+        {"confidence_score": 0.5, "is_trend_correct": True, "predicted_trend": "BULLISH",
+         "timestamp": "2026-10-05T05:30:00"},
+    ]
+
+    assert timed_directional_samples(rows) == [
+        (datetime(2026, 10, 1, 5, 30, tzinfo=UTC), 0.7, True),
+        (datetime(2026, 10, 2, 5, 30, tzinfo=UTC), 0.6, False),
+        (datetime(2026, 10, 5, 5, 30, tzinfo=UTC), 0.5, True),
+    ]

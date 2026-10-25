@@ -9,7 +9,7 @@ def _use_case(repo: Mock, llm: Mock) -> CalibrateConfidenceUseCase:
 
 
 class TestCalibrateConfidence:
-    def test_skips_when_no_resolved_predictions(self):
+    def test_skips_when_no_resolved_predictions(self) -> None:
         repo = Mock(spec=RepositoryPort)
         repo.get_resolved_for_calibration.return_value = []
         llm = Mock(spec=LLMPort)
@@ -20,7 +20,7 @@ class TestCalibrateConfidence:
         llm.analyze_mistake.assert_not_called()
         repo.save_calibration.assert_not_called()
 
-    def test_persists_per_prediction_and_one_judge_call(self):
+    def test_persists_per_prediction_and_one_judge_call(self) -> None:
         repo = Mock(spec=RepositoryPort)
         repo.get_resolved_for_calibration.return_value = [
             {"id": "p1", "confidence_score": 0.9, "is_trend_correct": False},
@@ -43,7 +43,7 @@ class TestCalibrateConfidence:
         assert first.args[0] == "p1"
         assert abs(first.args[1] - 0.1) < 1e-9
 
-    def test_judge_failure_still_persists_scores(self):
+    def test_judge_failure_still_persists_scores(self) -> None:
         repo = Mock(spec=RepositoryPort)
         repo.get_resolved_for_calibration.return_value = [
             {"id": "p1", "confidence_score": 0.8, "is_trend_correct": True},
@@ -71,7 +71,7 @@ class TestBrierCalibrationScore:
         ]
         return repo
 
-    def test_judge_persists_brier_based_score(self):
+    def test_judge_persists_brier_based_score(self) -> None:
         repo = self._repo()
         llm = Mock(spec=LLMPort)
         llm.analyze_mistake.return_value = "Przepewna."
@@ -87,7 +87,7 @@ class TestBrierCalibrationScore:
         assert abs(second.args[1] - 0.96) < 1e-9
         assert first.kwargs == {"score_version": 2}
 
-    def test_flag_off_keeps_the_linear_score_without_a_version(self):
+    def test_flag_off_keeps_the_linear_score_without_a_version(self) -> None:
         repo = self._repo()
         llm = Mock(spec=LLMPort)
         llm.analyze_mistake.return_value = "Przepewna."
@@ -97,3 +97,69 @@ class TestBrierCalibrationScore:
         first = repo.save_calibration.call_args_list[0]
         assert abs(first.args[1] - 0.1) < 1e-9
         assert first.kwargs == {}
+
+
+class TestMinimumSamples:
+    """FIN-20: sędzia nie płaci za wniosek o kalibracji z chudej próby — trzy
+    rozliczone predykcje nie mówią nic o tym, czy agent jest przepewny."""
+
+    @staticmethod
+    def _rows(count: int) -> list[dict[str, object]]:
+        return [
+            {"id": f"p{i}", "confidence_score": 0.8, "is_trend_correct": i % 2 == 0}
+            for i in range(count)
+        ]
+
+    def test_below_the_minimum_skips_without_paying(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = self._rows(3)
+        llm = Mock(spec=LLMPort)
+
+        result = CalibrateConfidenceUseCase(
+            repository_port=repo, llm_port=llm, min_samples=20
+        ).run()
+
+        assert result["status"] == "skipped"
+        llm.analyze_mistake.assert_not_called()
+        repo.save_calibration.assert_not_called()
+
+    def test_rows_without_a_score_do_not_count_toward_the_minimum(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        unusable = [{"id": f"u{i}", "confidence_score": None, "is_trend_correct": True}
+                    for i in range(30)]
+        repo.get_resolved_for_calibration.return_value = [*self._rows(3), *unusable]
+        llm = Mock(spec=LLMPort)
+
+        result = CalibrateConfidenceUseCase(
+            repository_port=repo, llm_port=llm, min_samples=20
+        ).run()
+
+        assert result["status"] == "skipped"
+        llm.analyze_mistake.assert_not_called()
+
+    def test_at_the_minimum_the_judge_runs(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = self._rows(20)
+        llm = Mock(spec=LLMPort)
+        llm.analyze_mistake.return_value = "Dobrze skalibrowana."
+
+        result = CalibrateConfidenceUseCase(
+            repository_port=repo, llm_port=llm, min_samples=20
+        ).run()
+
+        assert result["status"] == "calibrated"
+        assert result["n_samples"] == 20
+        llm.analyze_mistake.assert_called_once()
+        assert repo.save_calibration.call_count == 20
+
+    def test_without_a_minimum_a_single_sample_is_still_judged(self) -> None:
+        # Zgodność wstecz: wołający, który nie poda progu, dostaje dotychczasowe zachowanie.
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = self._rows(1)
+        llm = Mock(spec=LLMPort)
+        llm.analyze_mistake.return_value = "Za mało danych."
+
+        result = _use_case(repo, llm).run()
+
+        assert result["status"] == "calibrated"
+        llm.analyze_mistake.assert_called_once()

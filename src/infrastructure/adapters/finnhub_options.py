@@ -10,10 +10,13 @@ i uśredniamy impliedVolatility po wszystkich kontraktach → implied_vol.
 
 UWAGA: option-chain to PREMIUM endpoint Finnhuba. Na free tier zwraca 403 albo
 pustą listę — adapter robi wtedy graceful no-op (None). To opcjonalne źródło
-alpha (flag-gated + Null default), więc `get_options_flow` NIGDY nie rzuca.
+alpha (flag-gated + Null default), więc błąd dostawcy (sieć, status, nieparsowalna
+treść) daje None. ARCH-33: łapiemy wyłącznie przetłumaczone błędy dostawcy
+(`PortError`) — błąd programisty nie udaje braku danych.
 
 DAT-12: request bierze token ze wspólnego limitera Finnhub procesu; 429 daje
-QuotaAlert, a 401/403 jeden WARNING na adapter (403 = brak planu premium).
+jeden CRITICAL QuotaAlert na cykl, a 401/403 jeden WARNING na adapter (403 = brak
+planu premium).
 """
 
 from __future__ import annotations
@@ -22,11 +25,17 @@ import logging
 
 import requests
 
+from src.application.errors import PortError
 from src.application.ports import OptionsFlowPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
-from src.infrastructure.adapters._http import RateLimiter, build_session, safe_get
+from src.infrastructure.adapters._http import (
+    RateLimiter,
+    build_session,
+    json_payload,
+    translated_get,
+)
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10.0
@@ -58,7 +67,7 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
         try:
             if self._rate_limiter is not None:
                 self._rate_limiter.acquire()
-            response = safe_get(
+            response = translated_get(
                 self._session,
                 f"{self._base_url}/stock/option-chain",
                 params={"symbol": symbol, "token": self._api_key},
@@ -69,9 +78,9 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
             # danych (no-op), nie podnosimy wyjątku.
             if response.status_code != 200:
                 return None
-            payload = response.json()
-        except Exception:
-            # Opcjonalne źródło — sieć, parse, brak pola: zawsze None, nigdy raise.
+            payload = json_payload(response)
+        except PortError:
+            # Opcjonalne źródło — sieć albo nieparsowalna treść: None, nigdy raise.
             logger.debug("Finnhub option-chain failed for %s", symbol, exc_info=True)
             return None
 

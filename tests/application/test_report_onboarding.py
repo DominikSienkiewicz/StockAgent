@@ -1,4 +1,4 @@
-"""Testy sekcji powitalnej "Dzień 1" w raporcie e-mail (roadmap #4).
+"""Testy sekcji powitalnej "Dzień 1" w raporcie e-mail (R-4).
 
 Najważniejsze ryzyko zamrożone tu testem: pomylenie cold-startu z masową
 awarią źródeł. Renderer NIE decyduje sam o tonie — bierze `CycleMaturity`
@@ -115,25 +115,25 @@ class TestInstrumentPluralization:
     """Polska odmiana "instrument" przez liczebnik — po końcówce liczby."""
 
     def test_singular(self) -> None:
-        assert "1 instrument" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=1
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=1)
+        assert subject is not None
+        assert "1 instrument" in subject
 
     def test_few(self) -> None:
-        assert "3 instrumenty" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=3
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=3)
+        assert subject is not None
+        assert "3 instrumenty" in subject
 
     def test_many(self) -> None:
-        assert "5 instrumentów" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=5
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=5)
+        assert subject is not None
+        assert "5 instrumentów" in subject
 
     def test_teens_are_genitive(self) -> None:
         # 12-14 to wyjątek: mimo końcówki 2-4 → "instrumentów", nie "instrumenty".
-        assert "13 instrumentów" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=13
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=13)
+        assert subject is not None
+        assert "13 instrumentów" in subject
 
 
 def test_sectors_follow_the_config_order() -> None:
@@ -147,3 +147,29 @@ def test_sectors_follow_the_config_order() -> None:
     )
 
     assert text.index("Big Tech") < text.index("Krypto") < text.index("Inne")
+
+
+def test_first_run_explains_how_to_read_signals() -> None:
+    # MAIL-22: pierwszy mail tłumaczy, jak czytać sygnały — nie tylko cold-start.
+    html = render_onboarding_html(
+        CycleMaturity.FIRST_RUN, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+    text = render_onboarding_text(
+        CycleMaturity.FIRST_RUN, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+
+    for out in (html, text):
+        assert "Jak czytać ten mail" in out
+        assert "nie prawdopodobieństwo" in out
+        assert "nie rekomendacja inwestycyjna" in out
+        assert "paper-PnL" in out
+        assert "Track Record" in out
+    assert html.count("<li") >= 4 + len(_SECTORS_SAMPLE)
+
+
+def test_steady_state_has_no_reading_guide() -> None:
+    html = render_onboarding_html(
+        CycleMaturity.STEADY_STATE, instrument_count=3, sectors=_SECTORS_SAMPLE
+    )
+
+    assert "Jak czytać ten mail" not in html

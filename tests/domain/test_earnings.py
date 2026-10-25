@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from src.domain.earnings import EarningsEvent, EarningsProximity
 
 
@@ -136,3 +138,67 @@ class TestCachedEarningsDate:
         from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS
 
         assert 5 * 24 < EARNINGS_CACHE_TTL_HOURS < 7 * 24
+
+
+class TestEarningsThisWeek:
+    """DAT-20: poniedziałkowa sekcja „📅 Ten tydzień” — raporty od dziś do niedzieli."""
+
+    MONDAY = date(2026, 10, 26)
+
+    def test_keeps_reports_until_sunday_sorted_by_day_then_symbol(self) -> None:
+        from src.domain.earnings import earnings_this_week
+
+        events = [
+            EarningsEvent("MSFT", days_until=2),
+            EarningsEvent("AAPL", days_until=3),
+            EarningsEvent("AMD", days_until=2),
+            EarningsEvent("NVDA", days_until=0),
+        ]
+
+        week = earnings_this_week(events, self.MONDAY)
+
+        assert [event.symbol for event in week] == ["NVDA", "AMD", "MSFT", "AAPL"]
+
+    def test_drops_next_week_past_unknown_and_missing(self) -> None:
+        from src.domain.earnings import earnings_this_week
+
+        events = [
+            EarningsEvent("SUN", days_until=6),
+            EarningsEvent("NEXT", days_until=7),
+            EarningsEvent("PAST", days_until=-1),
+            EarningsEvent("NONE", days_until=None),
+            None,
+        ]
+
+        assert [e.symbol for e in earnings_this_week(events, self.MONDAY)] == ["SUN"]
+
+    def test_midweek_day_counts_only_the_rest_of_the_week(self) -> None:
+        from src.domain.earnings import earnings_this_week
+
+        thursday = date(2026, 10, 29)
+        events = [EarningsEvent("FRI", days_until=1), EarningsEvent("MON", days_until=4)]
+
+        assert [e.symbol for e in earnings_this_week(events, thursday)] == ["FRI"]
+
+
+class TestEarningsDueWithin:
+    """DAT-20: kandydaci leadu „wyniki Twojej spółki” — raporty dziś i jutro."""
+
+    def test_keeps_today_and_tomorrow_sorted_by_day_then_symbol(self) -> None:
+        from src.domain.earnings import earnings_due_within
+
+        events = [
+            EarningsEvent("MSFT", days_until=1),
+            EarningsEvent("AAPL", days_until=2),
+            EarningsEvent("AMD", days_until=1),
+            EarningsEvent("NVDA", days_until=0),
+            EarningsEvent("PAST", days_until=-1),
+            EarningsEvent("NONE", days_until=None),
+            None,
+        ]
+
+        assert [event.symbol for event in earnings_due_within(events)] == [
+            "NVDA",
+            "AMD",
+            "MSFT",
+        ]

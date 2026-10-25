@@ -10,6 +10,7 @@ nigdy nie rzuca, zwraca None gdy wszystkie serie padną.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -68,7 +69,7 @@ def client() -> FredClient:
 
 
 class TestFetchYieldCurve:
-    def test_returns_snapshot_inverted(self, client: FredClient, mocker) -> None:
+    def test_returns_snapshot_inverted(self, client: FredClient, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(
@@ -91,7 +92,7 @@ class TestFetchYieldCurve:
         assert snap.state() == YieldCurveState.INVERTED
 
     def test_sets_timeout_on_every_call(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -112,7 +113,7 @@ class TestFetchYieldCurve:
             assert call.kwargs["timeout"] > 0
 
     def test_passes_api_key_and_series_params(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -142,7 +143,7 @@ class TestFetchYieldCurve:
         assert sent_series == {"DGS10", "DGS2", "DFF"}
 
     def test_missing_value_dot_becomes_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         """FRED zwraca "." dla braku — ta seria ma być None, reszta bez zmian."""
         mocker.patch(
@@ -167,7 +168,7 @@ class TestFetchYieldCurve:
         assert snap.state() == YieldCurveState.NORMAL
 
     def test_one_series_non_200_becomes_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -188,7 +189,7 @@ class TestFetchYieldCurve:
         assert snap.fed_funds == pytest.approx(5.33)
 
     def test_unparseable_value_becomes_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -209,7 +210,7 @@ class TestFetchYieldCurve:
         assert snap.fed_funds == pytest.approx(5.33)
 
     def test_all_series_non_200_returns_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -221,7 +222,7 @@ class TestFetchYieldCurve:
         assert snap is None
 
     def test_network_error_returns_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         """Wyjątek sieciowy nie może wyciec — to opcjonalne źródło alpha."""
         mocker.patch(
@@ -234,7 +235,7 @@ class TestFetchYieldCurve:
         assert snap is None
 
     def test_empty_observations_returns_none(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         response = Mock(spec=requests.Response)
         response.status_code = 200
@@ -247,7 +248,7 @@ class TestFetchYieldCurve:
         assert snap is None
 
     def test_non_dict_payload_returns_none_without_raising(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         # FRED za proxy/CDN może zwrócić listę/null zamiast dicta — .get()
         # rzuciłby AttributeError. Optional source NIE MOŻE wywalić cyklu.
@@ -260,7 +261,7 @@ class TestFetchYieldCurve:
         assert client.fetch_yield_curve() is None
 
     def test_non_dict_observation_element_returns_none_without_raising(
-        self, client: FredClient, mocker
+        self, client: FredClient, mocker: Any
     ) -> None:
         # Element observations może być nie-dictem (string/null) → .get() na nim
         # rzuciłby AttributeError.
@@ -274,7 +275,7 @@ class TestFetchYieldCurve:
 
 
 class TestNullMacroRatesAdapter:
-    def test_returns_none_without_io(self, mocker) -> None:
+    def test_returns_none_without_io(self, mocker: Any) -> None:
         mock_get = mocker.patch("requests.Session.get")
 
         adapter = NullMacroRatesAdapter()
@@ -283,7 +284,7 @@ class TestNullMacroRatesAdapter:
         mock_get.assert_not_called()
 
 
-def test_http_error_log_omits_api_key(mocker, caplog) -> None:
+def test_http_error_log_omits_api_key(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: `exc_info=True` drukuje traceback z URL-em zawierającym `&api_key=`.
     import logging
 
@@ -304,7 +305,7 @@ def test_http_error_log_omits_api_key(mocker, caplog) -> None:
     assert "fred-secret-key" not in caplog.text
 
 
-def test_network_error_log_omits_api_key(mocker, caplog) -> None:
+def test_network_error_log_omits_api_key(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     mocker.patch(
@@ -349,7 +350,7 @@ class TestMacroSeries:
         responses.update(overrides)
         return responses
 
-    def test_fetches_latest_vixcls_observation(self, mocker) -> None:
+    def test_fetches_latest_vixcls_observation(self, mocker: Any) -> None:
         get = mocker.patch("requests.Session.get", side_effect=_by_series(self._responses()))
         client = FredClient(api_key="test-key")
 
@@ -368,7 +369,7 @@ class TestMacroSeries:
         assert vix_params["sort_order"] == "asc"
         assert vix_params["api_key"] == "test-key"
 
-    def test_missing_values_are_skipped(self, mocker) -> None:
+    def test_missing_values_are_skipped(self, mocker: Any) -> None:
         responses = self._responses(
             VIXCLS=_window_response(
                 [{"date": "2026-10-19", "value": "17.9"}, {"date": "2026-10-20", "value": "."}]
@@ -381,7 +382,7 @@ class TestMacroSeries:
         assert snapshot is not None
         assert snapshot.vix == (SeriesObservation(date(2026, 10, 19), 17.9),)
 
-    def test_one_failing_series_keeps_the_others(self, mocker) -> None:
+    def test_one_failing_series_keeps_the_others(self, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(self._responses(NFCI=_error_response(500))),
@@ -393,12 +394,12 @@ class TestMacroSeries:
         assert snapshot.nfci is None
         assert snapshot.vxn == SeriesObservation(date(2026, 10, 20), 22.4)
 
-    def test_all_series_failing_returns_none(self, mocker) -> None:
+    def test_all_series_failing_returns_none(self, mocker: Any) -> None:
         mocker.patch("requests.Session.get", return_value=_error_response(503))
 
         assert FredClient(api_key="test-key").fetch_macro_series(self._AS_OF) is None
 
-    def test_error_log_omits_api_key(self, mocker, caplog) -> None:
+    def test_error_log_omits_api_key(self, mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
         mocker.patch(
@@ -415,8 +416,41 @@ class TestMacroSeries:
         assert "FRED fetch failed" in caplog.text
         assert "fred-secret-key" not in caplog.text
 
-    def test_null_adapter_returns_none_without_io(self, mocker) -> None:
+    def test_null_adapter_returns_none_without_io(self, mocker: Any) -> None:
         get = mocker.patch("requests.Session.get")
 
         assert NullMacroSeriesAdapter().fetch_macro_series(self._AS_OF) is None
         get.assert_not_called()
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: awaria serii FRED jest logowana jako klasa taksonomii portów
+    (telemetria liczy błędy per klasa), a adapter nadal degraduje do None / ()."""
+
+    def test_server_error_is_logged_as_provider_unavailable(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
+
+        assert FredClient(api_key="fred-key").fetch_yield_curve() is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], ProviderUnavailable)
+
+    def test_unparseable_window_is_logged_as_malformed_payload(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from datetime import date
+
+        from src.application.errors import MalformedPayload
+
+        broken = _ok_response("1.0")
+        broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=broken)
+
+        assert FredClient(api_key="fred-key").fetch_macro_series(date(2026, 6, 20)) is None
+        exc_info = caplog.records[-1].exc_info
+        assert exc_info is not None and exc_info[0] is not None
+        assert issubclass(exc_info[0], MalformedPayload)

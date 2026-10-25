@@ -16,6 +16,7 @@ import pytest
 
 from src.domain.persona_track_record import (
     DEFAULT_MIN_VOTES,
+    PersonaScoring,
     PersonaTrackRecord,
     PersonaVoteOutcome,
     assess_against_track_record,
@@ -26,6 +27,7 @@ from src.domain.persona_track_record import (
     persona_hit_stats,
     persona_vote_correct,
     rank_personas,
+    rank_scored_personas,
     sort_personas,
 )
 from src.domain.track_record import HitRateEvidence, ScoredCall, assess_directional_hit_rate
@@ -367,3 +369,79 @@ class TestPersonaWeightsAsOf:
 
         assert persona_accuracy_weights_as_of([old], as_of=cutoff, window_days=7) == {}
         assert persona_accuracy_weights_as_of([old], as_of=cutoff, window_days=31) != {}
+
+
+class TestBrierScoring:
+    """WIA-44 — ocena regułą Briera: persona mówiąca „BUY 0.95” i myląca się traci
+    więcej niż „BUY 0.55”; hit-rate sam tego nie widzi i nagradza przepewne persony."""
+
+    @staticmethod
+    def _same_hit_rate() -> dict[str, PersonaScoring]:
+        return {
+            # Obie trafiają w 60%; Alfa deklaruje pewność ~0.95, Zeta ~0.6.
+            "Alfa": PersonaScoring(hit_rate=0.6, votes=20, brier=0.40, log_loss=0.95),
+            "Zeta": PersonaScoring(hit_rate=0.6, votes=20, brier=0.24, log_loss=0.67),
+        }
+
+    def test_overconfident_persona_ranks_below_calibrated_with_same_hit_rate(self) -> None:
+        by_hit_rate = rank_personas(
+            {name: (s.hit_rate, s.votes) for name, s in self._same_hit_rate().items()}
+        )
+        by_skill = rank_scored_personas(self._same_hit_rate())
+
+        # Hit-rate remisuje i rozstrzyga alfabet, więc przepewna Alfa jest pierwsza.
+        assert [r.investor_name for r in by_hit_rate] == ["Alfa", "Zeta"]
+        assert [r.investor_name for r in by_skill] == ["Zeta", "Alfa"]
+
+    def test_skill_is_measured_against_the_constant_forecast_of_the_persona(self) -> None:
+        by_name = {r.investor_name: r for r in rank_scored_personas(self._same_hit_rate())}
+
+        # Stała prognoza „zawsze 0.6” ma Brier 0.6·0.4 = 0.24.
+        assert by_name["Zeta"].brier_skill == pytest.approx(0.0)
+        assert by_name["Alfa"].brier_skill == pytest.approx(1 - 0.40 / 0.24)
+
+    def test_record_carries_brier_and_log_loss(self) -> None:
+        (record,) = rank_scored_personas(
+            {"Buffett": PersonaScoring(hit_rate=0.68, votes=22, brier=0.2, log_loss=0.6)}
+        )
+
+        assert (record.brier, record.log_loss) == (0.2, 0.6)
+        assert (record.hit_rate, record.votes) == (0.68, 22)
+
+    def test_skill_is_undefined_when_the_constant_forecast_cannot_miss(self) -> None:
+        records = rank_scored_personas(
+            {"Perfect": PersonaScoring(hit_rate=1.0, votes=10, brier=0.01, log_loss=0.05)}
+        )
+
+        assert records[0].brier_skill is None
+
+    def test_undefined_skill_ranks_as_no_skill_not_last(self) -> None:
+        records = rank_scored_personas(
+            {
+                "Perfect": PersonaScoring(hit_rate=1.0, votes=10, brier=0.01, log_loss=0.05),
+                "Over": PersonaScoring(hit_rate=0.6, votes=20, brier=0.40, log_loss=0.95),
+                "Skilled": PersonaScoring(hit_rate=0.6, votes=20, brier=0.20, log_loss=0.6),
+            }
+        )
+
+        assert [r.investor_name for r in records] == ["Skilled", "Perfect", "Over"]
+
+    def test_personas_below_min_votes_are_dropped(self) -> None:
+        records = rank_scored_personas(
+            {"Few": PersonaScoring(hit_rate=1.0, votes=2, brier=0.0, log_loss=0.0)},
+            min_votes=5,
+        )
+
+        assert records == []
+
+    def test_record_without_a_brier_has_no_skill(self) -> None:
+        assert PersonaTrackRecord("Wood", 0.5, 10).brier_skill is None
+
+    def test_significance_assessment_keeps_the_scores(self) -> None:
+        (record,) = rank_scored_personas(
+            {"Buffett": PersonaScoring(hit_rate=0.7, votes=30, brier=0.2, log_loss=0.6)}
+        )
+
+        (assessed,) = assess_persona_significance([record], baseline=0.5)
+
+        assert (assessed.brier, assessed.log_loss) == (0.2, 0.6)

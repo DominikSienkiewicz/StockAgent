@@ -148,6 +148,52 @@ def purged_train_end(
     return bisect_right(timestamps, cutoff, 0, valid_start)
 
 
+# ML-26: embargo — dodatkowa przerwa między końcem etykiety wiersza treningu
+# a startem walidacji. Walk-forward trenuje wyłącznie na przeszłości foldu, więc
+# przeciek przyszłość→trening (powód embarga u López de Prado) tu nie występuje;
+# przeciek etykiet zamyka sam purge po końcu etykiety. Stała jest jawna, żeby
+# zmiana szerokości była decyzją w jednym miejscu, nie strojeniem pod wynik.
+PURGE_EMBARGO = timedelta(0)
+
+
+def label_end_times(
+    prediction_ts: Sequence[datetime],
+    settled_at: Sequence[datetime | None],
+    horizon: timedelta = LABEL_HORIZON,
+) -> list[datetime]:
+    """ML-26: chwila końca etykiety każdego wiersza — rozliczenie (`settled_at`),
+    ale nigdy wcześniej niż chwila + `horizon`.
+
+    Brak rozliczenia = stały horyzont (jak dotąd). Migracja 029 wpisała historii
+    dolną granicę `settled_at = timestamp`; taki koniec skróciłby etykietę poniżej
+    horyzontu i osłabił purge, więc bierzemy późniejszą z dwóch chwil."""
+    if len(prediction_ts) != len(settled_at):
+        raise ValueError("settled_at must align with the prediction timestamps")
+    return [
+        stamp + horizon if settled is None else max(settled, stamp + horizon)
+        for stamp, settled in zip(prediction_ts, settled_at, strict=True)
+    ]
+
+
+def purge_training_indices(
+    prediction_ts: Sequence[datetime],
+    label_end_ts: Sequence[datetime],
+    valid_start: int,
+    embargo: timedelta = PURGE_EMBARGO,
+) -> tuple[int, ...]:
+    """ML-26: indeksy wierszy treningu foldu walidowanego od wiersza `valid_start`.
+
+    Trening to wiersze przed `valid_start`, których etykieta kończy się najpóźniej
+    `embargo` przed startem walidacji (`prediction_ts[valid_start]`); koniec
+    dokładnie w tej chwili jest dozwolony. Wynik bywa nieciągły: późne rozliczenie
+    (weekend) wyrzuca wiersz, a późniejszy wiersz z dojrzałą etykietą zostaje.
+    `prediction_ts` posortowane rosnąco (czas globalny w modelu wspólnym). Ze
+    stałym horyzontem (`label_end_times` bez rozliczeń) i zerowym embargiem to
+    dokładnie prefiks `purged_train_end`."""
+    cutoff = prediction_ts[valid_start] - embargo
+    return tuple(index for index in range(valid_start) if label_end_ts[index] <= cutoff)
+
+
 @dataclass(frozen=True)
 class LabelOverlap:
     """ML-25: pomiar nakładania etykiet przed decyzją o purge'u po `settled_at`.

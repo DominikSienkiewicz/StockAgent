@@ -1,13 +1,16 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from src.domain.asset import (
     REFERENCE_MAX_AGE_HOURS,
     Asset,
     PriceDelta,
+    is_near_threshold,
     is_reference_stale,
 )
-from src.domain.value_objects import Money, Threshold
+from src.domain.value_objects import Money, Ratio, Threshold
 
 
 class TestPriceDelta:
@@ -173,3 +176,25 @@ class TestEffectiveThreshold:
         assert effective_threshold(base, None, None, regime_multiplier=0.5).value == Decimal(
             "0.02"
         )
+
+
+class TestNearThreshold:
+    """MAIL-18: ruch od 75% progu efektywnego, ale pod nim, jest „blisko progu”."""
+
+    @pytest.mark.parametrize(
+        ("delta", "expected"),
+        [
+            (Decimal("0.015"), True),
+            (Decimal("-0.019"), True),
+            (Decimal("0.0149"), False),
+            (Decimal("0.02"), False),
+            (Decimal("0"), False),
+        ],
+    )
+    def test_move_from_three_quarters_of_the_threshold_is_near(
+        self, delta: Decimal, expected: bool
+    ) -> None:
+        assert is_near_threshold(Ratio(delta), Ratio(Decimal("0.02"))) is expected
+
+    def test_zero_threshold_is_never_near(self) -> None:
+        assert is_near_threshold(Ratio(Decimal("0.01")), Ratio(Decimal("0"))) is False

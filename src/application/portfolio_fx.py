@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from src.application.ports import FxRatePort
 from src.domain.fx import FxRate
 from src.domain.polish_macro import PolishMacroSnapshot
-from src.domain.portfolio import HOME_CURRENCY, PlnRates, Portfolio
+from src.domain.portfolio import HOME_CURRENCY, PlnRates, Portfolio, Position
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +33,26 @@ def nbp_today(now: datetime) -> date:
     return now.astimezone(NBP_TIMEZONE).date()
 
 
-def collect_pln_rates(portfolio: Portfolio, fx: FxRatePort, *, today: date) -> PlnRates:
-    """Kursy bieżące (na `today`) i z dni zakupu dla obcych walut portfela."""
-    foreign = [p for p in portfolio.positions if p.currency != HOME_CURRENCY]
+def _current_rates(foreign: list[Position], fx: FxRatePort, today: date) -> dict[str, Decimal]:
     current: dict[str, Decimal] = {}
     for currency in sorted({p.currency for p in foreign}):
         rate = _rate(fx, currency, today)
         if rate is not None:
             current[currency] = rate.rate
+    return current
+
+
+def collect_current_pln_rates(portfolio: Portfolio, fx: FxRatePort, *, today: date) -> PlnRates:
+    """Tylko kursy bieżące obcych walut portfela (ALR-08): wagi w złotych nie
+    potrzebują kursów z dni zakupu, więc nie dokładamy zapytań do NBP."""
+    foreign = [p for p in portfolio.positions if p.currency != HOME_CURRENCY]
+    return PlnRates(current=_current_rates(foreign, fx, today))
+
+
+def collect_pln_rates(portfolio: Portfolio, fx: FxRatePort, *, today: date) -> PlnRates:
+    """Kursy bieżące (na `today`) i z dni zakupu dla obcych walut portfela."""
+    foreign = [p for p in portfolio.positions if p.currency != HOME_CURRENCY]
+    current = _current_rates(foreign, fx, today)
     on_purchase: dict[tuple[str, date], Decimal] = {}
     purchases: set[tuple[str, date]] = set()
     for position in foreign:
@@ -75,3 +87,4 @@ def _rate(fx: FxRatePort, currency: str, day: date) -> FxRate | None:
     except Exception:
         logger.exception("FX rate for %s on %s failed — left without a rate", currency, day)
         return None
+

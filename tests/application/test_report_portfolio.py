@@ -132,6 +132,48 @@ class TestRenderVarAndStress:
         assert render_correlation_html(PortfolioRiskReport()) == ""
 
 
+class TestWatchlistWording:
+    """MAIL-31: VaR i stress-test liczą się z równych wag całej watchlisty, a nie
+    z pozycji właściciela — mail nie nazywa ich „portfelem”, bo od #15 „💼 Twój
+    portfel” to realne pieniądze."""
+
+    _REPORT = PortfolioRiskReport(
+        var=0.08,
+        cvar=0.12,
+        var_confidence=0.95,
+        scenarios=(
+            ScenarioImpact(
+                scenario_name="Krach -20%",
+                market_shock=-0.20,
+                portfolio_pnl=-0.18,
+                per_symbol={"NVDA": -0.30},
+                worst_symbol="NVDA",
+                worst_pnl=-0.30,
+            ),
+        ),
+    )
+
+    def test_html_calls_the_equal_weight_basket_the_watchlist(self) -> None:
+        html = render_correlation_html(self._REPORT)
+
+        assert "strata watchlisty (równe wagi)" in html
+        assert "β względem watchlisty" in html
+        assert ">Watchlista</th>" in html
+        assert "portfel" not in html.lower()
+
+    def test_text_calls_the_scenario_result_the_watchlist(self) -> None:
+        text = render_correlation_text(self._REPORT)
+
+        assert "watchlista -18,0%" in text
+        assert "portfel" not in text.lower()
+
+    def test_missing_beta_history_names_the_watchlist(self) -> None:
+        report = PortfolioRiskReport(watchlist_size=3, insufficient=(("beta", 9, 20),))
+
+        assert "β względem watchlisty" in render_correlation_html(report)
+        assert "β względem watchlisty" in render_correlation_text(report)
+
+
 class TestInsufficientHistory:
     """PORT-22: przy zbyt krótkiej historii mail mówi „za mało historii (n/60)”
     zamiast pustki albo liczby z kilku obserwacji."""

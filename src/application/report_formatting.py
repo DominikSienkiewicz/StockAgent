@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import html
+import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -240,19 +241,48 @@ MESSENGER_DISCLAIMER = "ℹ️ Sygnały modelu nie stanowią rekomendacji inwest
 # MAIL-07: atrybucja źródeł danych w stopce maila (HTML i tekst). Lista zależy od
 # flag w config.toml, więc stopka mówi to wprost zamiast udawać, że każde źródło
 # zasila każdy cykl. Warunki dostawców: docs/how-it-works.md („Data sources and terms”).
+# „Powered by CoinGecko” to dosłowne brzmienie klauzuli atrybucji z warunków API
+# CoinGecko. Reddit nie figuruje, dopóki dostęp do jego Data API nie jest zatwierdzony.
 DATA_SOURCES_FOOTER_PL = (
-    "Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; "
-    "newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus "
-    "analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — "
-    "Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele "
-    "LLM (Anthropic, OpenAI)."
+    "Źródła danych (w zależności od konfiguracji): ceny akcji, konsensus analityków "
+    "i opcje — Finnhub; ceny kryptowalut — Powered by CoinGecko; newsy, sentyment, "
+    "fundamenty i kalendarz wyników — Alpha Vantage (nagłówki należą do ich "
+    "wydawców); transakcje insiderów — SEC EDGAR (dane publiczne SEC, bez powiązania "
+    "z SEC); stopy procentowe — FRED, Federal Reserve Bank of St. Louis (seria H.15: "
+    "Board of Governors of the Federal Reserve System); kursy walut — NBP; analiza "
+    "i rada — modele AI (Anthropic, OpenAI): treść generowana automatycznie, podane "
+    "w niej fakty mogą być błędne."
+)
+# MAIL-07: licencje Finnhub i Alpha Vantage są osobiste, więc mail prosi, żeby go nie
+# przekazywać. Nota FRED zostaje po angielsku — warunki API FRED wymagają dosłownie
+# tego tekstu (ten sam stoi w README, sekcja License).
+DATA_TERMS_NOTICE = (
+    "Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj "
+    "tego maila dalej. This product uses the FRED® API but is not endorsed or "
+    "certified by the Federal Reserve Bank of St. Louis."
+)
+# MAIL-07: w HTML stopki te frazy z `DATA_SOURCES_FOOTER_PL` linkują do dostawców
+# (CoinGecko wg swojego przewodnika marki, FRED do serwisu FRED). Tekst maila niesie
+# te same frazy bez adresów.
+DATA_SOURCE_LINKS: tuple[tuple[str, str], ...] = (
+    ("Powered by CoinGecko", "https://www.coingecko.com"),
+    ("FRED", "https://fred.stlouisfed.org/"),
 )
 
 
 # MAIL-14: strefa czasu w temacie, nagłówku maila i pushu. Logi zostają w UTC.
 DEFAULT_DISPLAY_TIMEZONE = "Europe/Warsaw"
 
+# G03: przy cold-starcie target == bieżąca cena, więc "+0.00%" udawałoby prognozę.
+# Wspólne dla 🎯 sygnałów i 🔮 predykcji.
+COLD_START_FORECAST = "— (ML: cold-start)"
+
 _WEEKDAYS_PL = ("pon", "wt", "śr", "czw", "pt", "sob", "nd")
+
+
+def weekday_day_label(day: date) -> str:
+    """Dzień jako „śr 28.10” — ten sam skrót dnia tygodnia co `format_local`."""
+    return f"{_WEEKDAYS_PL[day.weekday()]} {day:%d.%m}"
 
 
 def format_local(moment: datetime, tz: str) -> str:
@@ -373,7 +403,13 @@ class ReportPalette:
     MAIL-57: kolory tekstu mają mieć ≥ 4.5:1 na białym i na `surface` (WCAG AA dla
     tekstu 11–13 px, `contrast_ratio`). `positive`, `caution` i `subtle` ściemnione
     z #16a34a (3.3:1), #ca8a04 (2.9:1) i #9ca3af (2.5:1) — jaśniejszy szary tekst
-    niż `muted` nie przechodzi AA, więc `subtle` mu równy."""
+    niż `muted` nie przechodzi AA, więc `subtle` mu równy.
+
+    MAIL-63: sekcje nie mają własnych literałów tekstu poniżej AA — strażnik
+    w `test_report_a11y.py` liczy kontrast każdego tekstu na jego prawdziwym tle.
+    `surface` to najciemniejsze tło, na którym przechodzą wszystkie role tekstu;
+    zabarwione tła pod tekstem z palety (czerwone, niebieskie) są od niego jaśniejsze
+    w sensie kontrastu: `tint_negative`, `tint_info`."""
 
     positive: str = "#15803d"
     negative: str = "#dc2626"
@@ -385,6 +421,8 @@ class ReportPalette:
     subtle: str = "#6b7280"
     border: str = "#e5e7eb"
     surface: str = "#f9fafb"
+    tint_negative: str = "#fef6f6"
+    tint_info: str = "#f3f8ff"
 
 
 PALETTE = ReportPalette()
@@ -483,3 +521,61 @@ def provenance_badges_html(badges: Sequence[ProvenanceBadge]) -> str:
             f"color: {color}; background: {bg};\">{label}</span>"
         )
     return "".join(chips)
+
+
+# ---------------------------------------------------------------------------
+# ⚠️  BEZPIECZEŃSTWO — escapowanie niezaufanych pól w treści maila
+# ---------------------------------------------------------------------------
+# Większość HTML-a maila składana jest f-stringami (moduły sekcji
+# `src/application/report_*.py`, np. `report_crypto`, `report_resolved`). W tym
+# trybie escapowanie NIE jest domyślne: KAŻDA wartość pochodząca z danych
+# zewnętrznych (tytuły/źródła newsów z Alpha Vantage, `reasoning`/`insight`
+# z LLM-a, `reflection_insight`, `error_message`, dowolny symbol/tekst spoza
+# whitelisty) MUSI być ręcznie owinięta w `escape(...)` (w modułach sekcji
+# importowane jako `_html`) przed wstawieniem do f-stringa. Jedno zapomniane
+# `_html()` = stored-HTML-injection sink.
+#
+# Regresje pilnujące tej reguły: `TestHtmlEscaping` oraz
+# `TestHtmlEscapingRegression` w tests/application/test_report_builder.py —
+# wstrzykują payload XSS w każde niezaufane pole i żądają zescapowanego outputu.
+# Dodając nowe pole z danych zewnętrznych: owiń je w `_html()` ORAZ dopisz tam
+# test regresyjny.
+#
+# Docelowo te sekcje migrują na autoescapowany Jinja env (jak council/valuation
+# w templates/), gdzie escapowanie jest domyślne, nie opt-in. Pierwszą sekcją
+# przeniesioną na ten model jest blok "Top newsy" (`_render_news_block_html`
+# w `report_reasoning.py`, renderowany przez `_env.from_string` z włączonym
+# autoescape). Pozostałe sekcje wciąż używają ręcznego `_html()`.
+# ---------------------------------------------------------------------------
+
+
+def escape(value: object) -> str:
+    """Wartość do wstawienia w HTML maila składanego f-stringiem — każde pole
+    z danych zewnętrznych (newsy, LLM, komunikaty błędów) przechodzi tędy."""
+    return html.escape(str(value), quote=True)
+
+
+_SAFE_URL_SCHEMES = {"http", "https"}
+
+
+def safe_http_url(url: str | None) -> str | None:
+    """Zwraca ZWALIDOWANY surowy URL (http/https + netloc) albo None.
+
+    Waliduje schemat (tylko http/https) i obecność hosta — odrzuca m.in.
+    `javascript:`. NIE escapuje: autoescape Jinja zrobi to sam w atrybucie
+    `href`, więc unikamy podwójnego escapowania w template'cie.
+    """
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _SAFE_URL_SCHEMES or not parsed.netloc:
+        return None
+    return url
+
+
+def section_h2(title: str) -> str:
+    """Nagłówek sekcji raportu (H2) — jedno źródło prawdy dla stylu.
+
+    Moduły sekcji importują go jako `_section_h2`: pod tą nazwą strażnik
+    DOC-15 (`tests/test_docs_report_sections.py`) czyta tytuły sekcji."""
+    return f"<h2 style='font-size: 16px; margin: 20px 0 8px 0;'>{title}</h2>"

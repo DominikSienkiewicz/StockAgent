@@ -23,6 +23,7 @@ from src.infrastructure.llm.model_catalog import (
     LocalStubModelCatalog,
     OpenAIModelCatalog,
 )
+from tests.settings_kwargs import NO_ENV_FILE
 
 NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 
@@ -30,7 +31,7 @@ NOW = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         anthropic_api_key="sk-ant-test",
         finnhub_api_key="fh",
@@ -137,7 +138,11 @@ def test_critical_is_pushed_when_realtime_alerts_are_on(settings: Settings, mock
     assert "claude-sonnet-4-6" in str(channel.send_report.call_args)
 
 
-def test_no_push_while_realtime_alerts_are_off(settings: Settings, mocker: Any) -> None:
+def test_push_channels_are_built_while_realtime_alerts_are_off(
+    settings: Settings, mocker: Any
+) -> None:
+    # NIEZ-25 (decyzja 2026-10-23): CRITICAL sondy idzie pushem zawsze, gdy jest kanał,
+    # więc kanały buduje się także przy wyłączonych alertach real-time.
     settings.realtime_alerts_enabled = False
     channels = mocker.patch("main_trainer.build_push_channels")
 
@@ -148,4 +153,58 @@ def test_no_push_while_realtime_alerts_are_off(settings: Settings, mocker: Any) 
         catalogs={"anthropic": _missing("claude-sonnet-4-6"), "openai": _missing("none")},
     )
 
-    channels.assert_not_called()
+    channels.assert_called_once_with(settings, quota_monitor=None)
+
+
+def test_critical_is_pushed_to_a_configured_channel_even_while_realtime_alerts_are_off(
+    settings: Settings, mocker: Any
+) -> None:
+    # NIEZ-25 (decyzja 2026-10-23): wycofany model to cichy total outage Fast Loopa,
+    # więc kanał, który właściciel skonfigurował, dostaje CRITICAL sondy zawsze.
+    settings.realtime_alerts_enabled = False
+    channel = MagicMock(spec=ReportNotifierPort)
+    mocker.patch("main_trainer.build_push_channels", return_value=[channel])
+
+    main_trainer._run_model_probe(
+        settings,
+        QuotaMonitor(),
+        now=NOW,
+        catalogs={"anthropic": _missing("claude-sonnet-4-6"), "openai": _missing("none")},
+    )
+
+    channel.send_report.assert_called_once()
+    assert "claude-sonnet-4-6" in str(channel.send_report.call_args)
+
+
+def test_without_a_channel_the_critical_stays_in_quota_alerts_with_a_warning(
+    settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings.realtime_alerts_enabled = False
+    mocker.patch("main_trainer.build_push_channels", return_value=[])
+    monitor = QuotaMonitor()
+
+    with caplog.at_level("WARNING"):
+        main_trainer._run_model_probe(
+            settings,
+            monitor,
+            now=NOW,
+            catalogs={"anthropic": _missing("claude-sonnet-4-6"), "openai": _missing("none")},
+        )
+
+    assert [alert.severity for alert in monitor.alerts] == [QuotaSeverity.CRITICAL]
+    assert "brak kanału push" in caplog.text
+
+
+def test_a_probe_network_error_is_never_pushed(settings: Settings, mocker: Any) -> None:
+    # Błąd sieci sondy to WARNING, nie wycofany model — bez pushu nawet z kanałem.
+    settings.realtime_alerts_enabled = False
+    channel = MagicMock(spec=ReportNotifierPort)
+    mocker.patch("main_trainer.build_push_channels", return_value=[channel])
+    broken = Mock(spec=ModelCatalogPort)
+    broken.is_available.side_effect = ConnectionError("down")
+
+    main_trainer._run_model_probe(
+        settings, QuotaMonitor(), now=NOW, catalogs={"anthropic": broken, "openai": broken}
+    )
+
+    channel.send_report.assert_not_called()

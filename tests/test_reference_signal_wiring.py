@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -26,12 +27,13 @@ from src.application.ports import (
 )
 from src.config import Settings
 from src.domain.value_objects import Money
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -51,13 +53,14 @@ def _repository() -> Mock:
     return repository
 
 
-def _free_router(mocker) -> Mock:
+def _free_router(mocker: Any) -> Mock:
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("100"))
-    return mocker.patch("main_agent.build_market_port", return_value=market)
+    router: Mock = mocker.patch("main_agent.build_market_port", return_value=market)
+    return router
 
 
-def test_flag_off_skips_the_step_without_any_read(settings, mocker) -> None:
+def test_flag_off_skips_the_step_without_any_read(settings: Settings, mocker: Any) -> None:
     settings.reference_signal_enabled = False
     build_market = _free_router(mocker)
     repository = _repository()
@@ -68,7 +71,9 @@ def test_flag_off_skips_the_step_without_any_read(settings, mocker) -> None:
     assert repository.method_calls == []
 
 
-def test_reads_the_trained_universe_from_the_free_price_router(settings, mocker) -> None:
+def test_reads_the_trained_universe_from_the_free_price_router(
+    settings: Settings, mocker: Any
+) -> None:
     build_market = _free_router(mocker)
     repository = _repository()
 
@@ -83,7 +88,7 @@ def test_reads_the_trained_universe_from_the_free_price_router(settings, mocker)
     ]
 
 
-def test_never_calls_paid_ports(settings, mocker) -> None:
+def test_never_calls_paid_ports(settings: Settings, mocker: Any) -> None:
     _free_router(mocker)
     # Każda droga do płatnego portu (LLM, rada, embeddingi, Alpha Vantage) zwraca atrapę
     # ze `spec` portu — krok nie może zbudować żadnej ani niczego na niej wywołać.
@@ -110,7 +115,7 @@ def test_never_calls_paid_ports(settings, mocker) -> None:
         assert port.method_calls == []
 
 
-def test_never_writes_price_snapshots_or_llm_predictions(settings, mocker) -> None:
+def test_never_writes_price_snapshots_or_llm_predictions(settings: Settings, mocker: Any) -> None:
     _free_router(mocker)
     repository = _repository()
 
@@ -120,7 +125,9 @@ def test_never_writes_price_snapshots_or_llm_predictions(settings, mocker) -> No
     repository.save_prediction.assert_not_called()
 
 
-def test_local_run_without_db_writes_skips_the_write(settings, mocker, caplog) -> None:
+def test_local_run_without_db_writes_skips_the_write(
+    settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # BEZ-08: Slow Loop bez `db_writes_enabled` dostaje ReadOnlyRepository.
     import logging
 
@@ -136,7 +143,9 @@ def test_local_run_without_db_writes_skips_the_write(settings, mocker, caplog) -
     assert "save_reference_read" in caplog.text
 
 
-def test_failing_step_does_not_raise(settings, mocker, caplog) -> None:
+def test_failing_step_does_not_raise(
+    settings: Settings, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     _free_router(mocker)
     repository = _repository()
     repository.get_reference_reads.side_effect = RuntimeError("relation does not exist")
@@ -146,7 +155,7 @@ def test_failing_step_does_not_raise(settings, mocker, caplog) -> None:
     assert "Reference signal" in caplog.text
 
 
-def test_slow_loop_runs_the_step_once_after_training(settings, mocker) -> None:
+def test_slow_loop_runs_the_step_once_after_training(settings: Settings, mocker: Any) -> None:
     mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
     fake_uc = MagicMock()
     fake_uc.run.return_value = {"status": "skipped"}
@@ -161,7 +170,7 @@ def test_slow_loop_runs_the_step_once_after_training(settings, mocker) -> None:
     assert step.call_args.args[0] is settings
 
 
-def test_reads_carry_the_run_time_in_utc(settings, mocker) -> None:
+def test_reads_carry_the_run_time_in_utc(settings: Settings, mocker: Any) -> None:
     _free_router(mocker)
     repository = _repository()
     moment = datetime(2026, 10, 25, 3, 0, tzinfo=UTC)

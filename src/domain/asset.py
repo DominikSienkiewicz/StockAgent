@@ -8,8 +8,11 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+    Percent,
+    Ratio,
     Threshold,
     ValuationVerdict,
+    to_percent,
 )
 
 # Progi heurystyki wyceny — jawnie nazwane, łatwe do strojenia w testach.
@@ -30,24 +33,30 @@ DRIFT_WINDOW_DAYS = 10
 
 @dataclass(frozen=True)
 class PriceDelta:
-    # `fraction` trzyma UŁAMEK zmiany ceny (np. 0.02 dla +2%), NIE procent.
-    # Dawna nazwa `percentage` była myląca i groziła 100x błędem (finding #33).
+    """Względna zmiana ceny między ceną odniesienia a bieżącą.
+
+    `fraction` to UŁAMEK zmiany (jednostka `Ratio`: 0.02 = +2%), NIE procent — na
+    nim działa bramka volatility i on trafia do stanu grafu (`AgentState.delta`).
+    Procent do prezentacji daje `percent`. Dawna nazwa `percentage` była myląca
+    i groziła 100x błędem (finding #33, gap4-1).
+    """
+
     fraction: Decimal
 
     @property
-    def percent(self) -> Decimal:
+    def percent(self) -> Percent:
         """Zmiana wyrażona w procentach (fraction * 100). Wygodny przelicznik
         dla warstwy prezentacji — nie używać do bramki volatility, która
         operuje na ułamku."""
-        return self.fraction * 100
+        return to_percent(Ratio(self.fraction))
 
     @property
     def percentage(self) -> Decimal:
         """DEPRECATED alias na `fraction` (zwraca UŁAMEK, nie procent).
 
-        Zachowany wyłącznie dla zewnętrznych czytelników poza tym pakietem
-        (np. `application/agent_graph.py` czyta `delta.percentage` jako ułamek).
-        Nowy kod powinien używać `fraction` (ułamek) lub `percent` (procent).
+        Kod produkcyjny czyta już `fraction` (ARCH-04); alias zostaje tylko dla
+        zgodności wstecz do czasu usunięcia (ARCH-14). Nowy kod używa `fraction`
+        (ułamek) albo `percent` (procent).
         """
         return self.fraction
 
@@ -104,6 +113,20 @@ def effective_threshold(
     if math.isclose(multiplier, 1.0):
         return chosen
     return Threshold(chosen.value * Decimal(str(multiplier)))
+
+
+# MAIL-18: ruch od tej części progu efektywnego (włącznie), ale wciąż pod progiem,
+# mail pokazuje jako „blisko progu” — kandydat na analizę w następnym cyklu.
+NEAR_THRESHOLD_SHARE = Decimal("0.75")
+
+
+def is_near_threshold(delta: Ratio, threshold: Ratio) -> bool:
+    """MAIL-18: |Δ| w przedziale [75% progu, próg) — ruch pod bramką, ale blisko
+    niej. Zerowy próg nie ma „blisko” (każdy ruch przechodzi bramkę)."""
+    if threshold <= 0:
+        return False
+    move = abs(delta)
+    return NEAR_THRESHOLD_SHARE * threshold <= move < threshold
 
 
 def drift_reference(

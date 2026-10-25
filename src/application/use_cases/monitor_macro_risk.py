@@ -33,7 +33,7 @@ from src.domain.macro_risk import (
     MacroRiskSignal,
 )
 from src.domain.polish_macro import MacroStressLevel, PolishMacroSnapshot
-from src.domain.value_objects import Money, require_finite
+from src.domain.value_objects import Money, Ratio, require_finite
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ _DRAWDOWN_HISTORY_DAYS = 30
 # Domyślne progi drawdownu (dodatnie ułamki głębokości spadku):
 # ELEVATED przy -10% od szczytu, CRITICAL przy -20% — kalibracja pod
 # swing instrumentów akcyjnych, nie dzienny szum.
-_DRAWDOWN_ELEVATED_PCT = Decimal("0.10")
-_DRAWDOWN_CRITICAL_PCT = Decimal("0.20")
+_DRAWDOWN_ELEVATED_THRESHOLD = Ratio(Decimal("0.10"))
+_DRAWDOWN_CRITICAL_THRESHOLD = Ratio(Decimal("0.20"))
 
 # Mapowanie poziomu stresu PL → MacroAlertLevel, by overall_alert miał
 # jedną wspólną skalę.
@@ -276,8 +276,8 @@ class MonitorMacroRiskUseCase:
         levels: list[MacroAlertLevel] = [s.evaluate_alert() for s in signals]
         levels.extend(
             dd.evaluate_drawdown(
-                elevated_pct=_DRAWDOWN_ELEVATED_PCT,
-                critical_pct=_DRAWDOWN_CRITICAL_PCT,
+                elevated_threshold=_DRAWDOWN_ELEVATED_THRESHOLD,
+                critical_threshold=_DRAWDOWN_CRITICAL_THRESHOLD,
             )
             for dd in drawdowns
         )

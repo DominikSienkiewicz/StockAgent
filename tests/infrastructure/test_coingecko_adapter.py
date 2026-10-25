@@ -10,6 +10,7 @@ Adapter mapuje wewnętrznie tickery (BTC, ETH) na nazwy CoinGecko
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -20,7 +21,7 @@ from src.domain.value_objects import Money
 from src.infrastructure.adapters.coingecko import CoinGeckoAdapter
 
 
-def _ok_response(payload: dict) -> Mock:
+def _ok_response(payload: dict[str, Any]) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload
@@ -43,7 +44,7 @@ def adapter() -> CoinGeckoAdapter:
 
 
 class TestGetCurrentPrice:
-    def test_returns_money_for_btc(self, adapter: CoinGeckoAdapter, mocker) -> None:
+    def test_returns_money_for_btc(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"bitcoin": {"usd": 67234.55}}),
@@ -54,7 +55,7 @@ class TestGetCurrentPrice:
         assert isinstance(price, Money)
         assert price.amount == Decimal("67234.55")
 
-    def test_returns_money_for_eth(self, adapter: CoinGeckoAdapter, mocker) -> None:
+    def test_returns_money_for_eth(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"ethereum": {"usd": 3142.10}}),
@@ -65,7 +66,7 @@ class TestGetCurrentPrice:
         assert price.amount == Decimal("3142.10")
 
     def test_maps_ticker_to_coingecko_id(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -81,7 +82,7 @@ class TestGetCurrentPrice:
         assert params.get("vs_currencies") == "usd"
 
     def test_request_url_targets_simple_price_endpoint(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -93,7 +94,7 @@ class TestGetCurrentPrice:
         url = mock_get.call_args.args[0]
         assert url.endswith("/simple/price")
 
-    def test_sets_timeout(self, adapter: CoinGeckoAdapter, mocker) -> None:
+    def test_sets_timeout(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_ok_response({"bitcoin": {"usd": 50000}}),
@@ -113,7 +114,7 @@ class TestErrorHandling:
             adapter.get_current_price("DOGE")
 
     def test_raises_on_http_error(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -124,7 +125,7 @@ class TestErrorHandling:
             adapter.get_current_price("BTC")
 
     def test_raises_on_empty_response(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -135,7 +136,7 @@ class TestErrorHandling:
             adapter.get_current_price("BTC")
 
     def test_raises_on_missing_usd_field(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -147,7 +148,7 @@ class TestErrorHandling:
 
 
 class TestExtensibility:
-    def test_custom_mapping_supports_additional_tickers(self, mocker) -> None:
+    def test_custom_mapping_supports_additional_tickers(self, mocker: Any) -> None:
         """User może dorzucić własne tickery przez custom mapping."""
         adapter = CoinGeckoAdapter(
             ticker_to_id={"BTC": "bitcoin", "SOL": "solana"}
@@ -179,7 +180,7 @@ def _rate_limited_response(retry_after: str | None = None) -> Mock:
 class TestQuotaAlertEmit:
     """429 z CoinGecko → QuotaAlert do monitora (mirror FinnhubAdapter)."""
 
-    def test_emits_critical_alert_on_429(self, mocker) -> None:
+    def test_emits_critical_alert_on_429(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
 
@@ -200,7 +201,7 @@ class TestQuotaAlertEmit:
         assert alert.message
         assert alert.action
 
-    def test_retry_after_header_surfaced_in_action(self, mocker) -> None:
+    def test_retry_after_header_surfaced_in_action(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()
@@ -215,7 +216,7 @@ class TestQuotaAlertEmit:
 
         assert "42" in monitor.alerts[0].action
 
-    def test_happy_path_emits_no_alert(self, mocker) -> None:
+    def test_happy_path_emits_no_alert(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()
@@ -229,7 +230,7 @@ class TestQuotaAlertEmit:
 
         assert monitor.alerts == []
 
-    def test_no_monitor_means_no_crash_on_429(self, mocker) -> None:
+    def test_no_monitor_means_no_crash_on_429(self, mocker: Any) -> None:
         # Backward-compat: bez monitora 429 dalej raisuje HTTPError, brak emitu.
         adapter = CoinGeckoAdapter()
         mocker.patch(
@@ -241,7 +242,9 @@ class TestQuotaAlertEmit:
             adapter.get_current_price("BTC")
 
 
-def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> None:
+def test_rate_limit_alert_is_polish_and_logged_in_english(
+    mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
 
@@ -266,7 +269,9 @@ def test_rate_limit_alert_is_polish_and_logged_in_english(mocker, caplog) -> Non
 class TestGetDailyChange:
     """ALR-02: zmiana 24 h i chwila aktualizacji z tego samego /simple/price."""
 
-    def test_asks_for_24h_change_and_update_time(self, adapter: CoinGeckoAdapter, mocker) -> None:
+    def test_asks_for_24h_change_and_update_time(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(
@@ -281,7 +286,7 @@ class TestGetDailyChange:
         assert params["include_24hr_change"] == "true"
         assert params["include_last_updated_at"] == "true"
 
-    def test_returns_fraction_and_update_time(self, adapter: CoinGeckoAdapter, mocker) -> None:
+    def test_returns_fraction_and_update_time(self, adapter: CoinGeckoAdapter, mocker: Any) -> None:
         from datetime import UTC, datetime
 
         from src.domain.shock import DailyChange
@@ -299,7 +304,7 @@ class TestGetDailyChange:
         )
 
     def test_raises_value_error_without_change_field(
-        self, adapter: CoinGeckoAdapter, mocker
+        self, adapter: CoinGeckoAdapter, mocker: Any
     ) -> None:
         mocker.patch(
             "requests.Session.get",
@@ -313,7 +318,7 @@ class TestGetDailyChange:
         with pytest.raises(ValueError, match="not mapped"):
             adapter.get_daily_change("DOGE")
 
-    def test_rate_limit_emits_a_quota_alert(self, mocker) -> None:
+    def test_rate_limit_emits_a_quota_alert(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()
@@ -329,3 +334,83 @@ class TestGetDailyChange:
         from src.application.ports import DailyChangePort
 
         assert issubclass(CoinGeckoAdapter, DailyChangePort)
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: błędy CoinGecko wychodzą jako taksonomia portów, a przetłumaczony
+    wyjątek nadal jest typem `requests` / `ValueError` (wywołujący działają jak dotąd)."""
+
+    def test_network_error_is_provider_unavailable(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        mocker.patch("requests.Session.get", side_effect=requests.ConnectionError("reset"))
+
+        with pytest.raises(ProviderUnavailable) as excinfo:
+            adapter.get_current_price("BTC")
+
+        assert isinstance(excinfo.value, requests.ConnectionError)
+
+    @pytest.mark.parametrize(
+        ("status", "kind_name"), [(503, "ProviderUnavailable"), (429, "QuotaExhausted")]
+    )
+    def test_error_status_maps_to_its_kind(
+        self, adapter: CoinGeckoAdapter, mocker: Any, status: int, kind_name: str
+    ) -> None:
+        from src.application import errors
+
+        mocker.patch("requests.Session.get", return_value=_error_response(status))
+
+        with pytest.raises(getattr(errors, kind_name)) as excinfo:
+            adapter.get_daily_change("BTC")
+
+        assert isinstance(excinfo.value, requests.HTTPError)
+
+    def test_unmapped_and_unknown_coins_are_not_found(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
+        from src.application.errors import NotFound
+
+        mocker.patch("requests.Session.get", return_value=_ok_response({}))
+
+        with pytest.raises(NotFound):
+            adapter.get_current_price("DOGE")
+        with pytest.raises(NotFound) as excinfo:
+            adapter.get_current_price("BTC")
+
+        assert isinstance(excinfo.value, ValueError)
+
+    def test_price_block_without_the_currency_is_malformed_payload(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        mocker.patch("requests.Session.get", return_value=_ok_response({"bitcoin": {}}))
+
+        with pytest.raises(MalformedPayload):
+            adapter.get_current_price("BTC")
+
+    def test_change_block_without_the_change_is_malformed_payload(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        mocker.patch(
+            "requests.Session.get", return_value=_ok_response({"bitcoin": {"usd": 1.0}})
+        )
+
+        with pytest.raises(MalformedPayload):
+            adapter.get_daily_change("BTC")
+
+    def test_unparseable_body_is_malformed_payload(
+        self, adapter: CoinGeckoAdapter, mocker: Any
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        response = _ok_response({})
+        response.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+        mocker.patch("requests.Session.get", return_value=response)
+
+        with pytest.raises(MalformedPayload):
+            adapter.get_current_price("BTC")

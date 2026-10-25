@@ -9,7 +9,7 @@ ustawianego przez `symbol_context`. W GitHub Actions linia jest JSON-em
 zostaje czytelny tekst.
 
 ContextVar nie przechodzi sam do wątków puli: worker symbolu ustawia go u siebie
-(`main_agent._process_one_symbol`), a rada person startuje wątki przez
+(`RunFastLoopCycle.process_one` przez `symbol_scope`), a rada person startuje wątki przez
 `contextvars.copy_context()` (`advisory_council._run_round`).
 """
 

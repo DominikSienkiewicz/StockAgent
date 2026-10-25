@@ -16,6 +16,7 @@ from src.domain.market_calendar import (
     NYSE_HOLIDAYS,
     NYSE_TZ,
     holiday_name,
+    hours_to_next_trading_day,
     is_calendar_covered,
     is_trading_day,
     next_open,
@@ -206,3 +207,37 @@ class TestLastStartedSession:
         session = last_started_session(datetime(2026, 11, 26, 17, 0, tzinfo=UTC))
 
         assert session.day == date(2026, 11, 25)
+
+
+class TestHoursToNextTradingDay:
+    """WIA-28: horyzont predykcji z kalendarza NYSE — godziny do tej samej godziny ET
+    następnego dnia handlowego (cykl rozliczający), zamiast stałych 24 h."""
+
+    def test_weekday_prediction_spans_one_day(self) -> None:
+        # Wtorek 01:30 ET (cron 05:30 UTC) → środa 01:30 ET.
+        assert hours_to_next_trading_day(_et(2026, 10, 27, 1, 30)) == 24.0
+
+    def test_friday_after_the_session_spans_the_weekend(self) -> None:
+        # Piątek 17:00 ET po sesji → poniedziałek 17:00 ET.
+        assert hours_to_next_trading_day(_et(2026, 10, 23, 17)) == 72.0
+
+    def test_day_before_a_holiday_skips_it(self) -> None:
+        # Środa przed Świętem Dziękczynienia 2026 (czwartek 26.11) → piątek.
+        assert hours_to_next_trading_day(_et(2026, 11, 25, 1, 30)) == 48.0
+
+    def test_friday_before_a_monday_holiday_spans_four_days(self) -> None:
+        # Piątek 15.01.2027 → wtorek 19.01.2027 (poniedziałek: Dzień M. L. Kinga).
+        assert hours_to_next_trading_day(_et(2027, 1, 15, 1, 30)) == 96.0
+
+    def test_counts_real_hours_across_the_end_of_daylight_saving(self) -> None:
+        # Piątek 30.10.2026 01:30 EDT → poniedziałek 2.11.2026 01:30 EST: zmiana czasu
+        # w niedzielę dokłada godzinę.
+        assert hours_to_next_trading_day(_et(2026, 10, 30, 1, 30)) == 73.0
+
+    def test_naive_moment_is_utc(self) -> None:
+        # Wtorek 05:30 UTC (naiwny) to wtorek 01:30 ET.
+        assert hours_to_next_trading_day(datetime(2026, 10, 27, 5, 30)) == 24.0
+
+    def test_weekend_moment_spans_to_monday(self) -> None:
+        # Sobota 01:30 ET → poniedziałek 01:30 ET.
+        assert hours_to_next_trading_day(datetime(2026, 10, 24, 5, 30, tzinfo=UTC)) == 48.0

@@ -52,6 +52,8 @@ _ELLIPSIS = "…"
 # MAIL-08: ogon z zastrzeżeniem doklejany PO clampie, więc jego długość
 # schodzi z budżetu treści — clamp nie może go uciąć.
 _DISCLAIMER_TAIL = f"\n{MESSENGER_DISCLAIMER}"
+# MAIL-24: podpisany URL prywatnego archiwum (TTL 7 dni) w skrócie push.
+ARCHIVE_LINK_PREFIX = "🔗 Pełny raport (link ważny 7 dni)"
 
 _TREND_ARROWS = {"BULLISH": "📈", "BEARISH": "📉"}
 _TREND_NEUTRAL = "➡️"
@@ -162,6 +164,7 @@ def build_messenger_digest(
     resolved_unavailable: bool = False,
     lead_items: Sequence[LeadItem] = (),
     ranked_signals: Sequence[TradeSignal] = (),
+    archive_url: str | None = None,
 ) -> str:
     """Buduje zwięzły digest push (~5–8 linii) dla Telegrama/Slacka.
 
@@ -184,6 +187,8 @@ def build_messenger_digest(
         lead_items: lead cyklu (MAIL-20) — do 3 pozycji zaraz pod nagłówkiem.
         ranked_signals: ranking sygnałów cyklu (MAIL-20) — linia sygnałów
             pokazuje jego czołówkę zamiast symboli w kolejności watchlisty.
+        archive_url: podpisany URL pełnego digestu w prywatnym archiwum
+            (MAIL-24); None = push bez linku.
 
     Returns:
         Gotowy tekst push, ≤ `MAX_DIGEST_CHARS` znaków.
@@ -192,6 +197,8 @@ def build_messenger_digest(
     lines = [
         _header_line(started_at, display_timezone),
         *([] if email_delivered else [UNDELIVERED_EMAIL_LINE]),
+        # MAIL-24: link do pełnego digestu tuż pod nagłówkiem — przetrwa przycięcie.
+        *([f"{ARCHIVE_LINK_PREFIX}: {archive_url}"] if archive_url else []),
         *_lead_lines(lead_items),
         _cycle_line(results),
         _scorecard_line(resolved, unavailable=resolved_unavailable),

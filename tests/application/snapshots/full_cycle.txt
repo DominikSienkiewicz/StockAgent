@@ -1,5 +1,5 @@
 === 🚨 ALERTY SUBSKRYPCJI / LIMITÓW (1) ===
-  [⚠️ OSTRZEŻENIE] Alpha Vantage  (2026-10-15 09:40 UTC)
+  [⚠️ OSTRZEŻENIE] Alpha Vantage  (czw 15.10 11:40)
     Klucz 1 z 3 wyczerpany — rotacja na kolejny.
     → Sprawdź limit dzienny kluczy AV.
 
@@ -14,7 +14,7 @@
 STOCKAGENT — RAPORT CYKLU
 ================================================================
 Czas rozpoczęcia:  czw 15.10 12:30
-Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min
+Sesja NYSE:        🌅 Premarket — Otwarcie za 3h 0min (15:30 czasu PL)
 
 Twój portfel od ostatniego maila: -0,8% (-112,73 zł)
 Sygnały ponad próg: 3
@@ -50,7 +50,7 @@ ZAMKNIĘTE PREDYKCJE (ostatnie 24h)
 
 === 🔄 Zmiany nastawienia ===
 
-  NVDA: Odwrócenie SELL→BUY — 2 zmienionych głosów.
+  NVDA: Odwrócenie SPRZEDAJ → KUP — 2 zmienionych głosów.
 
 NAJSILNIEJSZE SYGNAŁY
 ----------------------------------------------------------------
@@ -66,7 +66,7 @@ SYGNAŁY OSTRZEGAWCZE
 
 PREDYKCJE
 ----------------------------------------------------------------
-  Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: czw 15.10 16:00 ET
+  Horyzont prognozy: następny cykl · najbliższe zamknięcie NYSE: czw 15.10 16:00 ET (22:00 czasu PL)
   NVDA (NVIDIA Corporation) · Półprzewodniki/AI              $140,00  Δ   +4,20%  →  Wzrostowy   prognoza $143,50 (+2,50%) · pewność 82%
          sentyment +0,41
          Sygnał modelu: KUP (pewność 82%, prognoza +2,50%)
@@ -136,12 +136,12 @@ KARTA KONDYCJI MODELU
 
 === 🗳️ Rada — historia głosów ===
 
-  Buffett — ostatnie 30 dni na NVDA: BUY, BUY, HOLD
-    Bilans: BUY 2 · SELL 0 · HOLD 1
-  Soros — ostatnie 30 dni na NVDA: HOLD, SELL, SELL — najbardziej bearish głos
-    Bilans: BUY 0 · SELL 2 · HOLD 1
+  Buffett — ostatnie 30 dni na NVDA: KUP, KUP, TRZYMAJ
+    Bilans: KUP 2 · SPRZEDAJ 0 · TRZYMAJ 1
+  Soros — ostatnie 30 dni na NVDA: TRZYMAJ, SPRZEDAJ, SPRZEDAJ — najbardziej pesymistyczny głos
+    Bilans: KUP 0 · SPRZEDAJ 2 · TRZYMAJ 1
 
-NASTROJE PORTFELA
+NASTROJE WATCHLISTY
 ----------------------------------------------------------------
   Średni sentyment: +0,15 (Lekko pozytywny)
   Najbardziej pozytywny: NVDA (NVIDIA Corporation) (+0,41)
@@ -178,6 +178,7 @@ BŁĘDY
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.
 Symboli: 7 · predykcji: 3 · pominiętych: 3 · błędów: 1 · czas trwania: 74,2s
-Źródła danych (w zależności od konfiguracji): ceny — Finnhub i CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage; konsensus analityków i opcje — Finnhub; transakcje insiderów — SEC EDGAR; wzmianki — Reddit; stopy procentowe — FRED; kursy walut — NBP; analiza i rada — modele LLM (Anthropic, OpenAI).
+Źródła danych (w zależności od konfiguracji): ceny akcji, konsensus analityków i opcje — Finnhub; ceny kryptowalut — Powered by CoinGecko; newsy, sentyment, fundamenty i kalendarz wyników — Alpha Vantage (nagłówki należą do ich wydawców); transakcje insiderów — SEC EDGAR (dane publiczne SEC, bez powiązania z SEC); stopy procentowe — FRED, Federal Reserve Bank of St. Louis (seria H.15: Board of Governors of the Federal Reserve System); kursy walut — NBP; analiza i rada — modele AI (Anthropic, OpenAI): treść generowana automatycznie, podane w niej fakty mogą być błędne.
+Dane dostawców służą wyłącznie do osobistego użytku odbiorcy — nie przekazuj tego maila dalej. This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 ----------------------------------------------------------------
 przebieg #18234567890 · commit 6eff942 · logi: https://github.com/example/StockAgent/actions/runs/18234567890

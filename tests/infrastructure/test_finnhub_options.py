@@ -5,6 +5,7 @@ listę. Adapter ma wtedy graceful no-op (None), nigdy nie rzuca. Mockujemy
 `requests.Session.get`, nie gołe `requests`.
 """
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -31,13 +32,13 @@ def _response(payload: object, status_code: int = 200) -> Mock:
     return response
 
 
-def _chain(calls: list[dict], puts: list[dict]) -> dict:
+def _chain(calls: list[dict[str, Any]], puts: list[dict[str, Any]]) -> dict[str, Any]:
     """Buduje payload option-chain Finnhuba z jednym wygaśnięciem."""
     return {"data": [{"options": {"CALL": calls, "PUT": puts}}]}
 
 
 class TestGetOptionsFlow:
-    def test_aggregates_put_call_ratio(self, adapter, mocker) -> None:
+    def test_aggregates_put_call_ratio(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         # PUT vol 120, CALL vol 200 → ratio 0.6 → BULLISH.
         payload = _chain(
             calls=[
@@ -58,7 +59,7 @@ class TestGetOptionsFlow:
         assert snapshot.put_call_ratio == pytest.approx(0.6)
         assert snapshot.sentiment() is OptionsSentiment.BULLISH
 
-    def test_averages_implied_vol(self, adapter, mocker) -> None:
+    def test_averages_implied_vol(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         payload = _chain(
             calls=[{"volume": 100, "impliedVolatility": 0.40}],
             puts=[{"volume": 100, "impliedVolatility": 0.60}],
@@ -71,7 +72,9 @@ class TestGetOptionsFlow:
         # Średnia z {0.40, 0.60} = 0.50.
         assert snapshot.implied_vol == pytest.approx(0.50)
 
-    def test_passes_symbol_and_token_as_query_params(self, adapter, mocker) -> None:
+    def test_passes_symbol_and_token_as_query_params(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_response(
@@ -87,7 +90,7 @@ class TestGetOptionsFlow:
         call = mock_get.call_args
         assert call.kwargs["params"] == {"symbol": "TSLA", "token": "test-token-123"}
 
-    def test_sets_request_timeout(self, adapter, mocker) -> None:
+    def test_sets_request_timeout(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             return_value=_response(
@@ -103,7 +106,7 @@ class TestGetOptionsFlow:
         assert "timeout" in mock_get.call_args.kwargs
         assert mock_get.call_args.kwargs["timeout"] > 0
 
-    def test_returns_none_on_403_premium(self, adapter, mocker) -> None:
+    def test_returns_none_on_403_premium(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         # Free tier: option-chain jest płatne → 403, graceful None.
         response = Mock(spec=requests.Response)
         response.status_code = 403
@@ -113,17 +116,21 @@ class TestGetOptionsFlow:
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_returns_none_on_empty_data(self, adapter, mocker) -> None:
+    def test_returns_none_on_empty_data(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         mocker.patch("requests.Session.get", return_value=_response({"data": []}))
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_returns_none_on_missing_data_field(self, adapter, mocker) -> None:
+    def test_returns_none_on_missing_data_field(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         mocker.patch("requests.Session.get", return_value=_response({}))
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_returns_none_on_zero_call_volume_no_div0(self, adapter, mocker) -> None:
+    def test_returns_none_on_zero_call_volume_no_div0(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         # CALL vol = 0 → unikamy dzielenia przez zero, zwracamy None.
         payload = _chain(
             calls=[{"volume": 0, "impliedVolatility": 0.4}],
@@ -133,7 +140,9 @@ class TestGetOptionsFlow:
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_returns_none_on_network_error(self, adapter, mocker) -> None:
+    def test_returns_none_on_network_error(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=requests.ConnectionError("boom"),
@@ -141,7 +150,9 @@ class TestGetOptionsFlow:
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_returns_none_on_malformed_json(self, adapter, mocker) -> None:
+    def test_returns_none_on_malformed_json(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         response = Mock(spec=requests.Response)
         response.status_code = 200
         response.raise_for_status = Mock()
@@ -150,7 +161,9 @@ class TestGetOptionsFlow:
 
         assert adapter.get_options_flow("AAPL") is None
 
-    def test_tolerates_missing_volume_fields(self, adapter, mocker) -> None:
+    def test_tolerates_missing_volume_fields(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
         # Kontrakty bez "volume" liczymy jako 0 wolumenu, ale nie wywalamy się.
         payload = _chain(
             calls=[{"impliedVolatility": 0.4}, {"volume": 200, "impliedVolatility": 0.4}],
@@ -166,7 +179,7 @@ class TestGetOptionsFlow:
 
 
 class TestNullAdapter:
-    def test_returns_none_without_io(self, mocker) -> None:
+    def test_returns_none_without_io(self, mocker: Any) -> None:
         mock_get = mocker.patch("requests.Session.get")
         null = NullOptionsFlowAdapter()
 
@@ -182,7 +195,7 @@ class TestAdaptersImplementPort:
         assert issubclass(NullOptionsFlowAdapter, OptionsFlowPort)
 
 
-def test_network_error_debug_log_omits_token(mocker, caplog) -> None:
+def test_network_error_debug_log_omits_token(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: traceback w logu DEBUG też nie może nieść URL-a z `&token=`.
     import logging
 
@@ -205,7 +218,7 @@ def test_network_error_debug_log_omits_token(mocker, caplog) -> None:
 # --- DAT-12: wspólny limiter i alerty 401/403/429 -----------------------------
 
 
-def test_429_on_option_chain_emits_quota_alert(mocker) -> None:
+def test_429_on_option_chain_emits_quota_alert(mocker: Any) -> None:
     from src.application.quota_monitor import QuotaMonitor
     from src.domain.quota import QuotaSeverity
 
@@ -215,11 +228,11 @@ def test_429_on_option_chain_emits_quota_alert(mocker) -> None:
 
     assert adapter.get_options_flow("AAPL") is None
 
-    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.WARNING]
+    assert [a.severity for a in monitor.alerts] == [QuotaSeverity.CRITICAL]
     assert "429" in monitor.alerts[0].message
 
 
-def test_premium_403_warns_once_per_adapter(mocker, caplog) -> None:
+def test_premium_403_warns_once_per_adapter(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
     adapter = FinnhubOptionsAdapter(api_key="test-token-123")
@@ -234,7 +247,7 @@ def test_premium_403_warns_once_per_adapter(mocker, caplog) -> None:
     assert "test-token-123" not in caplog.text
 
 
-def test_option_chain_request_takes_a_token_from_the_shared_limiter(mocker) -> None:
+def test_option_chain_request_takes_a_token_from_the_shared_limiter(mocker: Any) -> None:
     limiter = Mock()
     adapter = FinnhubOptionsAdapter(api_key="test-token-123", rate_limiter=limiter)
     mocker.patch("requests.Session.get", return_value=_response({"data": []}))
@@ -242,3 +255,16 @@ def test_option_chain_request_takes_a_token_from_the_shared_limiter(mocker) -> N
     adapter.get_options_flow("AAPL")
 
     limiter.acquire.assert_called_once()
+
+
+class TestPortErrorTaxonomy:
+    """ARCH-33: adapter łapie wyłącznie przetłumaczone błędy dostawcy (sieć, status,
+    śmieciowa treść → None); błąd programisty nie znika jako „brak opcji”."""
+
+    def test_programming_error_is_not_swallowed(
+        self, adapter: FinnhubOptionsAdapter, mocker: Any
+    ) -> None:
+        mocker.patch("requests.Session.get", side_effect=TypeError("bug in the adapter"))
+
+        with pytest.raises(TypeError, match="bug in the adapter"):
+            adapter.get_options_flow("AAPL")

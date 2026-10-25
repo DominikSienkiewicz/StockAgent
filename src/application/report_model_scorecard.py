@@ -1,4 +1,4 @@
-"""Render sekcji "Karta kondycji modelu" w raporcie e-mail (roadmap #12).
+"""Render sekcji "Karta kondycji modelu" w raporcie e-mail (R-12).
 
 Repo shipuje model tylko, gdy kandydat bije naiwny baseline persystencji
 ("zwrot=0"), ale ta bramka jest dla użytkownika NIEWIDZIALNA. Ta sekcja zdejmuje
@@ -28,8 +28,10 @@ from datetime import datetime
 from typing import Any
 
 from src.application.data_coverage import coverage_line_pl
+from src.application.report_formatting import PALETTE
 from src.application.report_formatting import number as _number
 from src.application.report_formatting import pct as _pct
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.backtest import (
     DRIFT_BASELINE_LABEL,
     LLM_BASELINE_LABEL,
@@ -39,10 +41,15 @@ from src.domain.backtest import (
 from src.domain.coverage import CoverageReport
 from src.domain.drift import PSI_DRIFT_THRESHOLD, FeatureDrift, drifted_features
 from src.domain.model_scorecard import (
+    FREE_SNAPSHOT_MODEL_SYMBOL,
+    LLM_SNAPSHOT_MODEL_SYMBOL,
     METRIC_NOTE,
     POOLED_MODEL_SYMBOL,
+    SNAPSHOT_MODEL_SYMBOLS,
     EvaluationSummary,
     RunSummary,
+    TrainingOutcome,
+    classify_status,
     improvement_pct,
     is_stale,
     latest_run_indices_by_id,
@@ -52,9 +59,22 @@ from src.domain.model_scorecard import (
 
 _HEADING = "🩺 Karta kondycji modelu"
 
+# ML-52: modele z `feature_snapshots` w kolejności linii i ich etykiety w mailu.
+_SNAPSHOT_MODEL_LABELS: Mapping[str, str] = {
+    FREE_SNAPSHOT_MODEL_SYMBOL: "cechy darmowe",
+    LLM_SNAPSHOT_MODEL_SYMBOL: "cechy LLM (cykle gated)",
+}
+_SNAPSHOT_OUTCOME_PL = {
+    TrainingOutcome.ACCEPTED: "bije baseline",
+    TrainingOutcome.EVALUATION_PASSED: "bije baseline",
+    TrainingOutcome.REJECTED: "nie bije baseline'u",
+    TrainingOutcome.EVALUATION_FAILED: "nie bije baseline'u",
+    TrainingOutcome.SKIPPED: "pominięty (za mało próbek)",
+}
+
 # Kolory poprawki względem baseline'u — spójne z resztą raportu.
-_COLOR_GOOD = "#16a34a"
-_COLOR_POOR = "#dc2626"
+_COLOR_GOOD = PALETTE.positive
+_COLOR_POOR = PALETTE.negative
 _COLOR_MUTED = "#6b7280"
 
 # Badge STALE — bursztynowy, jak ostrzeżenia w innych sekcjach.
@@ -180,6 +200,7 @@ def render_model_scorecard_html(
     llm_baseline_rmse: float | None = None,
     coverage: CoverageReport | None = None,
     drifted_features: tuple[FeatureDrift, ...] = (),
+    snapshot_models: tuple[SnapshotModelCard, ...] = (),
 ) -> str:
     """Renderuje sekcję HTML karty kondycji modelu lub "" gdy brak danych.
 
@@ -213,6 +234,12 @@ def render_model_scorecard_html(
         rows.append(
             "<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
             + f"{_html.escape(evaluations_line)}</div>"
+        )
+    snapshot_line = _snapshot_models_line(snapshot_models)
+    if snapshot_line:
+        rows.append(
+            "<div style='font-size: 12px; color: #374151; margin-bottom: 4px;'>"
+            + f"{_html.escape(snapshot_line)}</div>"
         )
 
     notice = _model_notice(summary, model_loaded=model_loaded)
@@ -299,6 +326,7 @@ def render_model_scorecard_text(
     drift_baseline_rmse: float | None = None,
     llm_baseline_rmse: float | None = None,
     drifted_features: tuple[FeatureDrift, ...] = (),
+    snapshot_models: tuple[SnapshotModelCard, ...] = (),
 ) -> str:
     """Renderuje sekcję plain-text karty kondycji modelu lub "" gdy brak danych.
 
@@ -317,6 +345,9 @@ def render_model_scorecard_text(
     evaluations_line = _evaluations_line(evaluations)
     if evaluations_line:
         lines.append(f"  {evaluations_line}")
+    snapshot_line = _snapshot_models_line(snapshot_models)
+    if snapshot_line:
+        lines.append(f"  {snapshot_line}")
 
     notice = _model_notice(summary, model_loaded=model_loaded)
     if notice:
@@ -353,6 +384,72 @@ def render_model_scorecard_text(
 
 
 @dataclass(frozen=True)
+class SnapshotModelCard:
+    """ML-52: najnowsza karta modelu ewaluowanego na wektorach `feature_snapshots`.
+
+    `symbol` to `FREE_SNAPSHOT_MODEL_SYMBOL` albo `LLM_SNAPSHOT_MODEL_SYMBOL`;
+    metryki None, gdy ewaluacja się nie odbyła (za mało próbek)."""
+
+    symbol: str
+    outcome: TrainingOutcome
+    candidate_rmse: float | None = None
+    baseline_rmse: float | None = None
+    n_samples: int | None = None
+
+
+def snapshot_model_cards(rows: list[dict[str, Any]]) -> tuple[SnapshotModelCard, ...]:
+    """ML-52: najnowsza karta każdego modelu z `feature_snapshots` w oknie odczytu,
+    w kolejności `_SNAPSHOT_MODEL_LABELS` (cechy darmowe, potem LLM). Wiersz bez daty
+    dającej się sparsować pomijamy; brak kart → pusta krotka."""
+    newest: dict[str, tuple[datetime, dict[str, Any]]] = {}
+    for row in rows:
+        symbol = row.get("symbol")
+        stamp = _parse_timestamp(row.get("timestamp"))
+        if symbol not in SNAPSHOT_MODEL_SYMBOLS or stamp is None:
+            continue
+        key = str(symbol)
+        if key not in newest or stamp > newest[key][0]:
+            newest[key] = (stamp, row)
+    cards: list[SnapshotModelCard] = []
+    for symbol in _SNAPSHOT_MODEL_LABELS:
+        if symbol not in newest:
+            continue
+        _, row = newest[symbol]
+        cards.append(
+            SnapshotModelCard(
+                symbol=symbol,
+                outcome=classify_status(str(row.get("status", ""))),
+                candidate_rmse=row.get("candidate_holdout_rmse"),
+                baseline_rmse=row.get("baseline_rmse"),
+                n_samples=row.get("n_samples"),
+            )
+        )
+    return tuple(cards)
+
+
+def _snapshot_card_text(card: SnapshotModelCard) -> str:
+    """„cechy darmowe — bije baseline, RMSE 0,0210 vs 0,0240 (+12,5%), n=812”."""
+    bits = [_SNAPSHOT_OUTCOME_PL[card.outcome]]
+    if card.candidate_rmse is not None and card.baseline_rmse is not None:
+        pct = improvement_pct(card.candidate_rmse, card.baseline_rmse)
+        bits.append(
+            f"RMSE {_number(card.candidate_rmse, decimals=4)} vs "
+            f"{_number(card.baseline_rmse, decimals=4)} ({_number(pct, decimals=1, signed=True)}%)"
+        )
+    if card.n_samples is not None:
+        bits.append(f"n={card.n_samples}")
+    return f"{_SNAPSHOT_MODEL_LABELS[card.symbol]} — {', '.join(bits)}"
+
+
+def _snapshot_models_line(cards: tuple[SnapshotModelCard, ...]) -> str:
+    """ML-52: jedna linia z kartami modeli z `feature_snapshots` albo "" bez kart."""
+    if not cards:
+        return ""
+    listed = " · ".join(_snapshot_card_text(card) for card in cards)
+    return f"Modele z feature_snapshots (ewaluacja, bez zapisu wag): {listed}"
+
+
+@dataclass(frozen=True)
 class ModelScorecardView:
     """Widok sekcji: zagregowany przebieg + metryki ostatniego kandydata.
 
@@ -381,6 +478,9 @@ class ModelScorecardView:
     # DAT-16: pokrycie danych okna track recordu; None = zdanie się chowa.
     coverage: CoverageReport | None = None
     drifted_features: tuple[FeatureDrift, ...] = ()
+    # ML-52: karty modeli z `feature_snapshots` (ALL_FREE, ALL_LLM) — jedna linia
+    # pod werdyktem; pusta krotka = linia się chowa (dokłada je ReportAssembler).
+    snapshot_models: tuple[SnapshotModelCard, ...] = ()
 
 
 def _feature_drifts(row: Mapping[str, Any] | None) -> tuple[FeatureDrift, ...]:
@@ -438,7 +538,10 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
     symbolem oraz liczbą próbek; przy wierszu `ALL` wyłącznie z niego — RMSE
     ewaluacji per symbol nie może udawać metryki modelu wspólnego.
     Brak wierszy albo brak dającej się sparsować daty → None (sekcja się chowa).
+    Karty modeli z `feature_snapshots` (ML-52, `SNAPSHOT_MODEL_SYMBOLS`) to osobne
+    modele ewaluacyjne, więc ta karta ich nie liczy.
     """
+    rows = [r for r in rows if r.get("symbol") not in SNAPSHOT_MODEL_SYMBOLS]
     stamps = [_parse_timestamp(r.get("timestamp")) for r in rows]
     run_ids = [str(r["run_id"]) if r.get("run_id") else None for r in rows]
     run: list[tuple[datetime, dict[str, Any]]] = []
@@ -479,3 +582,61 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
         llm_baseline_rmse=metrics.get("llm_baseline_rmse") if metrics else None,
         drifted_features=_feature_drifts(metrics),
     )
+
+
+def _section_html(data: SectionInput) -> str:
+    """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
+    model_scorecard = data.context.model_scorecard
+    if model_scorecard is None:
+        return ""
+    return render_model_scorecard_html(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=data.started_at,
+        model_loaded=data.context.ml_model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+        coverage=model_scorecard.coverage,
+        drifted_features=model_scorecard.drifted_features,
+        snapshot_models=model_scorecard.snapshot_models,
+    )
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    """MAIL-09: karta kondycji modelu w wersji tekstowej (te same dane co HTML)."""
+    model_scorecard = data.context.model_scorecard
+    if model_scorecard is None:
+        return []
+    text = render_model_scorecard_text(
+        model_scorecard.summary,
+        trained_at=model_scorecard.trained_at,
+        now=data.started_at,
+        model_loaded=data.context.ml_model_loaded,
+        candidate_rmse=model_scorecard.candidate_rmse,
+        baseline_rmse=model_scorecard.baseline_rmse,
+        directional_hit_rate=model_scorecard.directional_hit_rate,
+        folds=model_scorecard.folds,
+        metrics_symbol=model_scorecard.metrics_symbol,
+        n_samples=model_scorecard.metrics_n_samples,
+        evaluations=model_scorecard.evaluations,
+        drift_baseline_rmse=model_scorecard.drift_baseline_rmse,
+        llm_baseline_rmse=model_scorecard.llm_baseline_rmse,
+        snapshot_models=model_scorecard.snapshot_models,
+    )
+    return text_block(text)
+
+
+# #12: tuż za Track Recordem i Historią trafności — ta sama oś zaufania.
+MODEL_SCORECARD_SECTION = ReportSection(
+    key="model_scorecard",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"model_scorecard", "ml_model_loaded"}),
+)

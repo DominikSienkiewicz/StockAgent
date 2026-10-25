@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -17,7 +18,7 @@ def notifier() -> ResendNotifier:
     )
 
 
-def _ok_response(payload: dict | None = None) -> MagicMock:
+def _ok_response(payload: dict[str, Any] | None = None) -> MagicMock:
     response = MagicMock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload or {"id": "msg-uuid-123"}
@@ -26,10 +27,10 @@ def _ok_response(payload: dict | None = None) -> MagicMock:
 
 
 class TestResendNotifier:
-    def test_implements_port(self):
+    def test_implements_port(self) -> None:
         assert issubclass(ResendNotifier, ReportNotifierPort)
 
-    def test_posts_to_emails_endpoint(self, notifier, mocker):
+    def test_posts_to_emails_endpoint(self, notifier: ResendNotifier, mocker: Any) -> None:
         mock_post = mocker.patch(
             "requests.Session.post",
             return_value=_ok_response(),
@@ -40,7 +41,9 @@ class TestResendNotifier:
         url = mock_post.call_args.args[0]
         assert url.endswith("/emails")
 
-    def test_passes_bearer_token_in_authorization(self, notifier, mocker):
+    def test_passes_bearer_token_in_authorization(
+        self, notifier: ResendNotifier, mocker: Any
+    ) -> None:
         mock_post = mocker.patch(
             "requests.Session.post",
             return_value=_ok_response(),
@@ -51,7 +54,9 @@ class TestResendNotifier:
         headers = mock_post.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer re-test-key"
 
-    def test_payload_contains_from_to_subject_html_text(self, notifier, mocker):
+    def test_payload_contains_from_to_subject_html_text(
+        self, notifier: ResendNotifier, mocker: Any
+    ) -> None:
         mock_post = mocker.patch(
             "requests.Session.post",
             return_value=_ok_response(),
@@ -66,7 +71,7 @@ class TestResendNotifier:
         assert body["html"] == "<p>HTML body</p>"
         assert body["text"] == "Plain body"
 
-    def test_sends_idempotency_key_header(self, notifier, mocker):
+    def test_sends_idempotency_key_header(self, notifier: ResendNotifier, mocker: Any) -> None:
         # MAIL-03: Resend ma retry POST po 5xx — bez klucza idempotencji to dwa maile.
         mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
 
@@ -76,7 +81,9 @@ class TestResendNotifier:
         keys = [c.kwargs["headers"]["Idempotency-Key"] for c in mock_post.call_args_list]
         assert all(keys) and keys[0] != keys[1]
 
-    def test_logs_message_id_on_success(self, notifier, mocker, caplog):
+    def test_logs_message_id_on_success(
+        self, notifier: ResendNotifier, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         caplog.set_level(logging.INFO)
         mocker.patch(
             "requests.Session.post",
@@ -88,7 +95,9 @@ class TestResendNotifier:
         assert "abc-123" in caplog.text
         assert "d***@example.com" in caplog.text
 
-    def test_success_log_masks_recipient(self, notifier, mocker, caplog):
+    def test_success_log_masks_recipient(
+        self, notifier: ResendNotifier, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # BEZ-11: repo i logi GHA są publiczne — pełny adres nie trafia do logu.
         caplog.set_level(logging.DEBUG)
         mocker.patch(
@@ -100,7 +109,7 @@ class TestResendNotifier:
 
         assert "dom@example.com" not in caplog.text
 
-    def test_raises_on_http_error(self, notifier, mocker):
+    def test_raises_on_http_error(self, notifier: ResendNotifier, mocker: Any) -> None:
         response = MagicMock(spec=requests.Response)
         response.status_code = 401
         response.raise_for_status.side_effect = requests.HTTPError("401")
@@ -114,16 +123,16 @@ class TestResendNotifier:
 
 
 class TestNullNotifier:
-    def test_implements_port(self):
+    def test_implements_port(self) -> None:
         assert issubclass(NullNotifier, ReportNotifierPort)
 
-    def test_does_nothing_no_network(self, mocker):
+    def test_does_nothing_no_network(self, mocker: Any) -> None:
         # Jeśli ktoś przypadkiem zaimportuje requests w Null, to przykryjemy:
         post = mocker.patch("requests.post")
         NullNotifier().send_report("S", "H", "T")
         post.assert_not_called()
 
-    def test_logs_at_info_level(self, caplog):
+    def test_logs_at_info_level(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO)
         NullNotifier().send_report("Mój subject", "html", "text")
         assert "Mój subject" in caplog.text
@@ -131,7 +140,7 @@ class TestNullNotifier:
 
 
 
-def test_silent_mail_is_the_same_mail(notifier, mocker):
+def test_silent_mail_is_the_same_mail(notifier: ResendNotifier, mocker: Any) -> None:
     # ALR-09: mail nie ma dźwięku do wyciszenia — `silent` niczego w nim nie zmienia.
     mock_post = mocker.patch("requests.Session.post", return_value=_ok_response())
 
@@ -142,7 +151,7 @@ def test_silent_mail_is_the_same_mail(notifier, mocker):
     assert mock_post.call_args.kwargs["json"] == silent_payload
 
 
-def test_null_notifier_accepts_silent(caplog):
+def test_null_notifier_accepts_silent(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO)
 
     NullNotifier().send_report("Cichy subject", "html", "text", silent=True)
@@ -151,7 +160,7 @@ def test_null_notifier_accepts_silent(caplog):
 
 @pytest.mark.integration
 class TestResendLive:
-    def test_sends_real_email(self):
+    def test_sends_real_email(self) -> None:
         import os
 
         api_key = os.environ.get("RESEND_API_KEY")
@@ -173,7 +182,7 @@ class TestResendLive:
 
 
 class TestQuotaAlertEmit:
-    def _resp(self, status_code: int, body: dict | None = None) -> Mock:
+    def _resp(self, status_code: int, body: dict[str, Any] | None = None) -> Mock:
         import requests
 
         r = Mock(spec=requests.Response)
@@ -185,7 +194,7 @@ class TestQuotaAlertEmit:
             r.raise_for_status = Mock()
         return r
 
-    def test_emits_critical_on_429(self, mocker):
+    def test_emits_critical_on_429(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
         from src.infrastructure.adapters.resend_notifier import ResendNotifier
@@ -205,7 +214,7 @@ class TestQuotaAlertEmit:
         assert monitor.alerts[0].source == "Resend"
         assert "100" in monitor.alerts[0].message  # mails/day
 
-    def test_emits_critical_on_4xx_other(self, mocker):
+    def test_emits_critical_on_4xx_other(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.infrastructure.adapters.resend_notifier import ResendNotifier
 
@@ -222,7 +231,7 @@ class TestQuotaAlertEmit:
         assert len(monitor.alerts) == 1
         assert "401" in monitor.alerts[0].message
 
-    def test_server_error_emits_critical_alert(self, mocker):
+    def test_server_error_emits_critical_alert(self, mocker: Any) -> None:
         # NIEZ-04: docs obiecują, że zablokowany mail nie zniknie w logach — 5xx też.
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
@@ -242,7 +251,7 @@ class TestQuotaAlertEmit:
         assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
         assert "503" in monitor.alerts[0].message
 
-    def test_network_error_emits_critical_alert(self, mocker):
+    def test_network_error_emits_critical_alert(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.infrastructure.adapters.resend_notifier import ResendNotifier
 
@@ -259,7 +268,7 @@ class TestQuotaAlertEmit:
         assert len(monitor.alerts) == 1
         assert "ConnectionError" in monitor.alerts[0].message
 
-    def test_no_alert_on_200(self, mocker):
+    def test_no_alert_on_200(self, mocker: Any) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.infrastructure.adapters.resend_notifier import ResendNotifier
 
@@ -289,7 +298,9 @@ class TestPolishAlertText:
         response.raise_for_status.side_effect = requests.HTTPError(str(status_code))
         return response
 
-    def test_rate_limit_alert_is_polish_and_logged_in_english(self, mocker, caplog):
+    def test_rate_limit_alert_is_polish_and_logged_in_english(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()
@@ -307,7 +318,9 @@ class TestPolishAlertText:
         assert alert.action.startswith("Poczekaj")
         assert "Resend returned 429" in caplog.text
 
-    def test_network_alert_is_polish_and_logged_in_english(self, mocker, caplog):
+    def test_network_alert_is_polish_and_logged_in_english(
+        self, mocker: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         monitor = QuotaMonitor()

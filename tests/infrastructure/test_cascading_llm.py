@@ -36,14 +36,14 @@ def frontier() -> Mock:
 
 
 class TestPortContract:
-    def test_is_llm_port(self, cheap, frontier) -> None:
+    def test_is_llm_port(self, cheap: Mock, frontier: Mock) -> None:
         adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier)
         assert isinstance(adapter, LLMPort)
 
 
 class TestNoEscalation:
     def test_high_confidence_returns_cheap_without_calling_frontier(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result(0.9, "cheap")
         adapter = CascadingLLMAdapter(
@@ -57,7 +57,7 @@ class TestNoEscalation:
         frontier.analyze.assert_not_called()
 
     def test_confidence_equal_to_floor_does_not_escalate(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         # Próg jest WŁĄCZAJĄCY: confidence == floor liczymy jako wystarczające.
         cheap.analyze.return_value = _result(0.6, "cheap")
@@ -73,7 +73,7 @@ class TestNoEscalation:
 
 class TestEscalation:
     def test_low_confidence_escalates_and_returns_frontier_result(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result(0.3, "cheap")
         frontier.analyze.return_value = _result(0.95, "frontier")
@@ -88,7 +88,7 @@ class TestEscalation:
         frontier.analyze.assert_called_once_with("prompt")
 
     def test_escalation_is_logged(
-        self, cheap, frontier, caplog
+        self, cheap: Mock, frontier: Mock, caplog: pytest.LogCaptureFixture
     ) -> None:
         cheap.analyze.return_value = _result(0.1, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
@@ -104,7 +104,7 @@ class TestEscalation:
 
 class TestMissingOrInvalidConfidence:
     def test_missing_confidence_treated_as_low_and_escalates(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = {"_source": "cheap"}  # brak confidence_score
         frontier.analyze.return_value = _result(0.9, "frontier")
@@ -116,7 +116,7 @@ class TestMissingOrInvalidConfidence:
         frontier.analyze.assert_called_once()
 
     def test_non_numeric_confidence_treated_as_low_and_escalates(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result("oops", "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
@@ -128,7 +128,7 @@ class TestMissingOrInvalidConfidence:
         frontier.analyze.assert_called_once()
 
     def test_none_confidence_treated_as_low_and_escalates(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result(None, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
@@ -142,7 +142,7 @@ class TestMissingOrInvalidConfidence:
 
 class TestEscalationBudget:
     def test_budget_caps_number_of_escalations(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         # Wszystkie wyniki taniego są mało pewne → każde wywołanie CHCE eskalować,
         # ale budżet = 2 pozwala tylko na 2 realne eskalacje.
@@ -162,7 +162,7 @@ class TestEscalationBudget:
         assert frontier.analyze.call_count == 2
         assert cheap.analyze.call_count == 4
 
-    def test_zero_budget_never_escalates(self, cheap, frontier) -> None:
+    def test_zero_budget_never_escalates(self, cheap: Mock, frontier: Mock) -> None:
         cheap.analyze.return_value = _result(0.0, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
         adapter = CascadingLLMAdapter(
@@ -175,7 +175,7 @@ class TestEscalationBudget:
         frontier.analyze.assert_not_called()
 
     def test_budget_exhaustion_logged_once(
-        self, cheap, frontier, caplog
+        self, cheap: Mock, frontier: Mock, caplog: pytest.LogCaptureFixture
     ) -> None:
         cheap.analyze.return_value = _result(0.0, "cheap")
         frontier.analyze.return_value = _result(0.9, "frontier")
@@ -195,7 +195,7 @@ class TestEscalationBudget:
         assert len(exhaustion_logs) == 1
 
     def test_high_confidence_does_not_consume_budget(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         # Pewny wynik nie zużywa budżetu — kolejne niepewne wciąż mogą eskalować.
         adapter = CascadingLLMAdapter(
@@ -213,7 +213,7 @@ class TestEscalationBudget:
 
 
 class TestAnalyzeMistake:
-    def test_delegates_to_cheap_only(self, cheap, frontier) -> None:
+    def test_delegates_to_cheap_only(self, cheap: Mock, frontier: Mock) -> None:
         cheap.analyze_mistake.return_value = "diagnoza"
         adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier)
 
@@ -230,7 +230,7 @@ class TestFrontierFailure:
     schował się za cichym fallbackiem."""
 
     def test_frontier_failure_falls_back_to_cheap_result(
-        self, cheap, frontier, caplog
+        self, cheap: Mock, frontier: Mock, caplog: pytest.LogCaptureFixture
     ) -> None:
         from src.application.quota_monitor import QuotaMonitor
         from src.domain.quota import QuotaSeverity
@@ -251,7 +251,7 @@ class TestFrontierFailure:
         assert [alert.severity for alert in monitor.alerts] == [QuotaSeverity.WARNING]
 
     def test_repeated_frontier_failures_alert_once_per_instance(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
@@ -269,7 +269,7 @@ class TestFrontierFailure:
         assert len(monitor.alerts) == 1
 
     def test_frontier_failure_without_monitor_still_returns_cheap(
-        self, cheap, frontier
+        self, cheap: Mock, frontier: Mock
     ) -> None:
         cheap.analyze.return_value = _result(0.2, "cheap")
         frontier.analyze.side_effect = TimeoutError("frontier timeout")
@@ -286,6 +286,12 @@ class _RendezvousCap(int):
     punktu przełączenia wątku, więc wyścig nie odtwarza się sam. Ten int wymusza
     przeplot: bez locka wszystkie wątki porównują stary licznik i każdy eskaluje;
     z lockiem porównania idą po kolei, a każde czeka najwyżej `patience`."""
+
+    _parties: int
+    _patience: float
+    _arrived: int
+    _guard: threading.Lock
+    _everyone_here: threading.Event
 
     def __new__(cls, value: int, *, parties: int, patience: float) -> _RendezvousCap:
         cap = super().__new__(cls, value)
@@ -306,7 +312,7 @@ class _RendezvousCap(int):
 
 
 class TestEscalationConcurrency:
-    def test_escalation_cap_holds_under_concurrency(self, cheap, frontier) -> None:
+    def test_escalation_cap_holds_under_concurrency(self, cheap: Mock, frontier: Mock) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
         threads = 4

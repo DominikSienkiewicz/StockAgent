@@ -179,6 +179,28 @@ class TestMaxDrawdown:
         curve = equity_curve([("BULLISH", 0.01), ("BULLISH", 0.02)])
         assert curve.max_drawdown == pytest.approx(0.0)
 
+    def test_max_drawdown_within_unit_interval_on_wipeout(self) -> None:
+        # Short przy +150% to strata ponad cały kapitał: kapitał kończy na 0
+        # (ruina), a nie na -0.5, więc obsunięcie to 100%, nie 150%.
+        curve = equity_curve([("BEARISH", 1.5)])
+
+        assert curve.points[0].equity == 0.0
+        assert curve.max_drawdown == 1.0
+
+    def test_wipeout_ends_the_curve_at_zero_equity(self) -> None:
+        # Po ruinie kolejne zyski nie wskrzeszają kapitału ani nie zmieniają obsunięcia.
+        curve = equity_curve([("BULLISH", 0.10), ("BEARISH", 1.5), ("BULLISH", 0.20)])
+
+        assert [point.equity for point in curve.points][1:] == [0.0, 0.0]
+        assert 0.0 <= curve.max_drawdown <= 1.0
+        assert curve.max_drawdown == 1.0
+
+    def test_portfolio_wipeout_stays_within_unit_interval(self) -> None:
+        curve = portfolio_equity_curve([[("BEARISH", 3.0)], [("BULLISH", 0.5)]])
+
+        assert all(point.equity >= 0.0 for point in curve.points)
+        assert curve.max_drawdown == 1.0
+
 
 class TestImmutability:
     def test_equity_point_is_frozen(self) -> None:

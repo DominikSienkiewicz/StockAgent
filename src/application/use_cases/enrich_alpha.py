@@ -16,12 +16,14 @@ from typing import TypeVar
 from src.application.alpha_signals import AlphaSignals
 from src.application.ports import (
     AnalystConsensusPort,
+    CorporateEventsPort,
     EarningsCalendarPort,
     FundamentalsPort,
     InsiderFlowPort,
     OptionsFlowPort,
     SocialVelocityPort,
 )
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.earnings import EarningsEvent
 from src.domain.insider_flow import InsiderFlowSnapshot, has_insider_filings
 from src.domain.value_objects import AssetType
@@ -47,6 +49,7 @@ class AlphaEnrichmentUseCase:
         social_port: SocialVelocityPort,
         analyst_port: AnalystConsensusPort,
         market_cap_port: FundamentalsPort | None = None,
+        corporate_events_port: CorporateEventsPort | None = None,
         asset_type_of: Callable[[str], AssetType] = _stock,
     ) -> None:
         """`asset_type_of` klasyfikuje symbol (DI zna listy krypto/ETF); insider
@@ -60,6 +63,18 @@ class AlphaEnrichmentUseCase:
         # znaczącego zakupu insidera. None = próg stały, jak przed DAT-21.
         self._market_caps = market_cap_port
         self._asset_type_of = asset_type_of
+        # DAT-17: raporty 8-K — DI podaje TEN SAM adapter EDGAR co insider flow, więc
+        # 8-K czyta odpowiedź submissions pobraną dla Form 4. None = flaga off.
+        self._corporate_events = corporate_events_port
+
+    def fetch_corporate_events(self, symbol: str) -> CorporateEventSnapshot | None:
+        """DAT-17: raporty 8-K symbolu gracefully (błąd → None). Tylko spółki: ETF-y
+        nie składają 8-K, a ticker krypto w mapie SEC może należeć do trustu ETF."""
+        if self._corporate_events is None or not has_insider_filings(
+            self._asset_type_of(symbol)
+        ):
+            return None
+        return self._safe(self._corporate_events.get_corporate_events, symbol, "8-K")
 
     def fetch_earnings(self, symbol: str) -> EarningsEvent | None:
         """#6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).

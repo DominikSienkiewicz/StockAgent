@@ -3,7 +3,8 @@
 Jedno źródło prawdy dla etykiet, które trafiają do maila, leadu i tematu:
 trend modelu jako sygnał akcji (KUP / SPRZEDAJ / TRZYMAJ), nazwa trendu
 (Wzrostowy / Spadkowy / Boczny), prognoza w zdaniu leadu („trafiona prognoza
-wzrostu”) i werdykt rady (KUP / SPRZEDAJ / TRZYMAJ). Domena (`digest_lead`)
+wzrostu”), werdykt i pojedynczy głos rady (KUP / SPRZEDAJ / TRZYMAJ) oraz
+prefiks tematu przy krytycznym alercie limitów. Domena (`digest_lead`)
 i renderery warstwy application biorą etykiety stąd — moduł nie zna nic spoza
 domeny.
 
@@ -15,6 +16,10 @@ mówić inaczej. Angielskie wartości (BULLISH, BUY…) zostają w logach i w ba
 from __future__ import annotations
 
 MODEL_SIGNAL_TITLE = "Sygnał modelu"
+
+# MAIL-61: prefiks tematu przy alercie CRITICAL. Bywa filtrem w skrzynce, więc zmiana
+# tekstu jest opisana w docs/how-it-works.md; poziom alertu zostaje CRITICAL w logach.
+QUOTA_CRITICAL_SUBJECT_PREFIX = "⚠️ [LIMIT] "
 
 # Decyzja 2026-10-19: ruch boczny modelu i HOLD rady to JEDNA etykieta.
 # Brak / nieznany trend też jest „trzymaj”: brak kierunku to brak akcji, nie „KUP”.

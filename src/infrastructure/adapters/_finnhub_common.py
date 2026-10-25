@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 class FinnhubStatusWatcher:
-    """429 → `QuotaAlert` (WARNING — źródło jest opcjonalne), 401/403 → jeden
-    WARNING na endpoint na czas życia adaptera (403 bywa planem premium, więc
+    """429 → jeden CRITICAL `QuotaAlert` na endpoint na czas życia adaptera (jeden
+    cykl, decyzja 2026-10-24): przy wspólnym limiterze 429 znaczy wyczerpany limit
+    planu, więc dane źródła znikną do końca cyklu — kolejne 429 tylko w logu.
+    401/403 → jeden WARNING w logu na endpoint (403 bywa planem premium, więc
     powtórka per symbol byłaby szumem). Bez tokenu w komunikatach."""
 
     def __init__(self, source: str, label_pl: str, quota_monitor: QuotaMonitor | None) -> None:
@@ -35,6 +37,7 @@ class FinnhubStatusWatcher:
         self._label_pl = label_pl
         self._quota_monitor = quota_monitor
         self._warned: set[tuple[str, int]] = set()
+        self._alerted_endpoints: set[str] = set()
         self._lock = threading.Lock()
 
     def observe(self, endpoint: str, symbol: str, status: int) -> None:
@@ -64,15 +67,19 @@ class FinnhubStatusWatcher:
             endpoint,
             symbol,
         )
-        if self._quota_monitor is None:
+        with self._lock:
+            first = endpoint not in self._alerted_endpoints
+            self._alerted_endpoints.add(endpoint)
+        if self._quota_monitor is None or not first:
             return
         self._quota_monitor.record(
             QuotaAlert(
                 source=self._source,
-                severity=QuotaSeverity.WARNING,
+                severity=QuotaSeverity.CRITICAL,
                 message=(
                     f"Finnhub zwrócił 429 dla '{symbol}' ({self._label_pl}) — wyczerpany "
-                    "wspólny limit 60 zapytań/min; ten sygnał dla symbolu pominięty."
+                    "wspólny limit 60 zapytań/min; temu źródłu może brakować danych do "
+                    "końca cyklu (kolejne 429 tylko w logu)."
                 ),
                 action=(
                     "Wyłącz część źródeł alpha Finnhub albo zmniejsz liczbę SYMBOLS; "

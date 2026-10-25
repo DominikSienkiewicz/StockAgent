@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -28,7 +28,13 @@ GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 # TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
-MYPY_RATCHET = ("tests/domain",)
+MYPY_RATCHET = (
+    "tests/domain",
+    "tests/tools",
+    "tests/infrastructure",
+    "tests/application",
+    "tests/*.py",
+)
 
 
 def _entrypoints() -> list[str]:
@@ -156,6 +162,28 @@ def test_mypy_ratchet_keeps_the_typed_test_directories() -> None:
     assert not missing, f"[tool.mypy].files zgubiło katalogi ratchetu: {missing}"
 
 
+def _covered_by_mypy(path: str, files: list[str]) -> bool:
+    return any(
+        PurePosixPath(path).match(entry)
+        if "*" in entry
+        else path == entry or path.startswith(f"{entry}/")
+        for entry in files
+    )
+
+
+def test_mypy_gate_covers_every_test_module() -> None:
+    """TEST-13: ratchet doszedł do końca — każdy moduł `tests/` jest pod strict mypy.
+    Nowy katalog testów dopisz do `[tool.mypy].files` i `MYPY_RATCHET`."""
+    files = _mypy_files()
+    uncovered = [
+        relative
+        for path in sorted((ROOT / "tests").rglob("*.py"))
+        if not _covered_by_mypy(relative := path.relative_to(ROOT).as_posix(), files)
+    ]
+
+    assert not uncovered, f"moduły testów poza bramką mypy: {uncovered[:5]}"
+
+
 def _job_runs(job: str) -> list[str]:
     steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"][job]["steps"]
     return [str(step.get("run", "")) for step in steps]
@@ -232,3 +260,64 @@ def test_ci_container_step_requires_docker() -> None:
 
     assert len(container_steps) == 1
     assert dict(container_steps[0].get("env") or {}).get("REQUIRE_DOCKER") == "1"
+
+
+# CI-03 (G68): próg coverage z gałęziami na src/domain z zapadką. Zmierzone 2026-10-24
+# na `main` + paczka F: 98,49% (4392 instrukcji, 1118 gałęzi), czyli próg 98. Bramka 80%
+# istniała tylko w SonarCloud i tylko z SONAR_TOKEN. Zapadka: próg tylko rośnie — podnieś
+# `fail_under`, `--cov-fail-under` w ci.yml i tę stałą razem.
+COVERAGE_RATCHET = 98
+COVERAGE_TARGET = "src/domain"
+
+
+def _coverage_section(name: str) -> dict[str, object]:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    section: dict[str, object] = config.get("tool", {}).get("coverage", {}).get(name, {})
+    return section
+
+
+def _fail_under() -> int:
+    value = _coverage_section("report").get("fail_under", 0)
+    assert isinstance(value, int), f"fail_under musi być liczbą całkowitą, jest {value!r}"
+    return value
+
+
+def _pytest_tokens(job: str) -> list[str]:
+    commands = [run for run in _job_runs(job) if _pytest_marker(run) is not None]
+    assert commands, f"job `{job}` nie uruchamia pytest"
+    return shlex.split(commands[0].split("#", 1)[0])
+
+
+def test_domain_coverage_floor_never_drops_below_the_ratchet() -> None:
+    assert _fail_under() >= COVERAGE_RATCHET, (
+        f"fail_under = {_fail_under()} < {COVERAGE_RATCHET}: próg coverage tylko rośnie "
+        "(CI-03) — dopisz testy zamiast obniżać próg."
+    )
+
+
+def test_coverage_measures_branches() -> None:
+    assert _coverage_section("run").get("branch") is True
+
+
+def test_ci_quality_job_enforces_the_domain_coverage_floor() -> None:
+    tokens = _pytest_tokens("quality")
+
+    assert f"--cov={COVERAGE_TARGET}" in tokens
+    assert "--cov-branch" in tokens
+    assert f"--cov-fail-under={_fail_under()}" in tokens, (
+        "ci.yml i [tool.coverage.report].fail_under mają ten sam próg"
+    )
+
+
+def test_sonarcloud_coverage_run_does_not_inherit_the_domain_floor() -> None:
+    # pytest-cov czyta `fail_under` z pyproject także tam, gdzie mierzy cały `src`
+    # i entry-pointy (niższe pokrycie niż domena) — job dla Sonara raportuje, nie bramkuje.
+    assert "--cov-fail-under=0" in _pytest_tokens("sonarcloud")
+
+
+def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
+    dev = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "dependency-groups"
+    ]["dev"]
+
+    assert any(str(requirement).startswith("pytest-cov") for requirement in dev)

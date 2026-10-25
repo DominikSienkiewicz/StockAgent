@@ -1,7 +1,8 @@
 """Render bannera 🚨 Alerty subskrypcji / limitów na samej górze maila.
 
 Banner pojawia się ZAWSZE przed sekcją sesji NYSE, gdy są jakiekolwiek
-alerty (z bieżącego cyklu lub history 24h). Kolory:
+alerty (z bieżącego cyklu lub history 24h). Czas alertu jest w strefie wyświetlania
+maila (`display_timezone`, MAIL-59), jak nagłówek i temat. Kolory:
 - CRITICAL → czerwony banner
 - WARNING  → żółty banner
 """
@@ -10,6 +11,12 @@ from __future__ import annotations
 
 import html as _html
 
+from src.application.report_formatting import (
+    DEFAULT_DISPLAY_TIMEZONE,
+    PALETTE,
+    format_local,
+)
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 # MAIL-15: banner jest treścią maila, więc po polsku; nazwy poziomów w logach
@@ -19,16 +26,18 @@ _SEVERITY_LABEL = {
     QuotaSeverity.CRITICAL: "🔴 KRYTYCZNY",
 }
 _SEVERITY_COLOR = {
-    QuotaSeverity.WARNING: "#ca8a04",
-    QuotaSeverity.CRITICAL: "#dc2626",
+    QuotaSeverity.WARNING: PALETTE.caution,
+    QuotaSeverity.CRITICAL: PALETTE.negative,
 }
 _SEVERITY_BG = {
     QuotaSeverity.WARNING: "#fefce8",
-    QuotaSeverity.CRITICAL: "#fef2f2",
+    QuotaSeverity.CRITICAL: PALETTE.tint_negative,
 }
 
 
-def render_quota_banner_html(alerts: list[QuotaAlert]) -> str:
+def render_quota_banner_html(
+    alerts: list[QuotaAlert], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+) -> str:
     if not alerts:
         return ""
 
@@ -60,7 +69,7 @@ def render_quota_banner_html(alerts: list[QuotaAlert]) -> str:
             f"<td style='padding: 6px 8px; white-space: nowrap; "
             f"font-weight: 600;'>{_html.escape(a.source)}</td>"
             f"<td style='padding: 6px 8px; color: #6b7280;'>"
-            f"{a.occurred_at.strftime('%Y-%m-%d %H:%M UTC')}</td>"
+            f"{format_local(a.occurred_at, display_timezone)}</td>"
             f"<td style='padding: 6px 8px;'>"
             f"<div style='font-weight: 500;'>{_html.escape(a.message)}</div>"
             f"<div style='color: #6b7280; font-size: 12px; margin-top: 2px;'>"
@@ -84,7 +93,9 @@ def render_quota_banner_html(alerts: list[QuotaAlert]) -> str:
     )
 
 
-def render_quota_banner_text(alerts: list[QuotaAlert]) -> str:
+def render_quota_banner_text(
+    alerts: list[QuotaAlert], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+) -> str:
     if not alerts:
         return ""
 
@@ -104,9 +115,25 @@ def render_quota_banner_text(alerts: list[QuotaAlert]) -> str:
     for a in deduped:
         lines.append(
             f"  [{_SEVERITY_LABEL[a.severity]}] {a.source}  "
-            f"({a.occurred_at.strftime('%Y-%m-%d %H:%M UTC')})"
+            f"({format_local(a.occurred_at, display_timezone)})"
         )
         lines.append(f"    {a.message}")
         lines.append(f"    → {a.action}")
     lines.append("")
     return "\n".join(lines)
+
+
+def _section_html(data: SectionInput) -> str:
+    return render_quota_banner_html(data.context.quota_alerts or [], data.context.display_timezone)
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    return text_block(
+        render_quota_banner_text(data.context.quota_alerts or [], data.context.display_timezone)
+    )
+
+
+# Banner idzie NAJWYŻEJ: wyczerpany płatny klucz waży więcej niż ruch ceny.
+QUOTA_BANNER_SECTION = ReportSection(
+    key="quota_banner", render_html=_section_html, render_text=_section_text
+)

@@ -8,6 +8,7 @@ checku w ścieżce) — żaden komunikat wyjątku nie może go nieść.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,7 +33,7 @@ def _response(status: int, url: str) -> requests.Response:
     return response
 
 
-def test_successful_run_pings_the_url(mocker) -> None:
+def test_successful_run_pings_the_url(mocker: Any) -> None:
     get = mocker.patch("requests.Session.get", return_value=_response(200, _URL))
 
     HttpHeartbeat(_URL).ping(ok=True)
@@ -42,7 +43,7 @@ def test_successful_run_pings_the_url(mocker) -> None:
     assert get.call_args.kwargs["timeout"] > 0
 
 
-def test_failed_run_pings_the_fail_endpoint(mocker) -> None:
+def test_failed_run_pings_the_fail_endpoint(mocker: Any) -> None:
     get = mocker.patch("requests.Session.get", return_value=_response(200, f"{_URL}/fail"))
 
     HttpHeartbeat(f"{_URL}/").ping(ok=False)
@@ -50,7 +51,7 @@ def test_failed_run_pings_the_fail_endpoint(mocker) -> None:
     assert get.call_args.args[0] == f"{_URL}/fail"
 
 
-def test_http_error_never_carries_the_url(mocker) -> None:
+def test_http_error_never_carries_the_url(mocker: Any) -> None:
     mocker.patch("requests.Session.get", return_value=_response(404, _URL))
 
     with pytest.raises(HeartbeatPingError) as raised:
@@ -64,7 +65,7 @@ def test_http_error_never_carries_the_url(mocker) -> None:
     assert raised.value.__suppress_context__ is True
 
 
-def test_network_error_never_carries_the_url_or_its_path(mocker) -> None:
+def test_network_error_never_carries_the_url_or_its_path(mocker: Any) -> None:
     # `requests` wkleja do błędu sieci ścieżkę URL-a — tu siedzi UUID checku.
     mocker.patch(
         "requests.Session.get",
@@ -81,7 +82,7 @@ def test_network_error_never_carries_the_url_or_its_path(mocker) -> None:
     assert "ConnectionError" in str(raised.value)
 
 
-def test_null_heartbeat_does_nothing(mocker) -> None:
+def test_null_heartbeat_does_nothing(mocker: Any) -> None:
     get = mocker.patch("requests.Session.get")
 
     NullHeartbeat().ping(ok=True)

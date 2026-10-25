@@ -60,7 +60,7 @@ The rules that keep the loop cheap and a bad day survivable, each with the test 
 | A symbol below the gate costs nothing: no sentiment, news, prediction or paid diagnosis, and a fully gated cycle says so in the email | [`tests/application/test_analyze_market_use_case.py`](tests/application/test_analyze_market_use_case.py) `TestRun::test_ignores_minor_change_below_threshold`; [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestReflectMistakeDiagnosisGatedByVolatility::test_skips_paid_diagnosis_when_below_threshold_but_still_records`; [`tests/application/test_report_finops.py`](tests/application/test_report_finops.py) `test_free_cycle_renders_explicitly_html` |
 | A symbol cut by the cycle's paid-call ceiling ends without an analysis and without a price snapshot | [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestPaidCallBudget::test_third_symbol_routed_to_ignore_with_budget_exhausted_flag` |
 | The threshold is validated: `Settings` refuses a volatility threshold of 0 | [`tests/test_config.py`](tests/test_config.py) `test_zero_volatility_threshold_rejected` |
-| One failing symbol never fails the cycle; the Fast Loop exits 1 only when every symbol failed | [`tests/test_main_entrypoints.py`](tests/test_main_entrypoints.py) `TestMainAgent::test_main_returns_zero_on_partial_failure`, `TestMainAgent::test_main_returns_one_when_all_symbols_fail`, `TestAnalyzeSymbolsParallel::test_parallel_single_failure_isolated` |
+| One failing symbol never fails the cycle; the Fast Loop exits 1 only when every symbol failed | [`tests/test_main_agent.py`](tests/test_main_agent.py) `TestMainAgent::test_main_returns_zero_on_partial_failure`, `TestMainAgent::test_main_returns_one_when_all_symbols_fail`, `TestAnalyzeSymbolsParallel::test_parallel_single_failure_isolated` |
 | Writes are idempotent: predictions and price snapshots are upserts on `(symbol, timestamp_hour)`, and only a terminal node writes the snapshot | [`tests/infrastructure/test_supabase_repository.py`](tests/infrastructure/test_supabase_repository.py) `TestSavePrediction::test_upsert_uses_symbol_timestamp_hour_conflict_key`, `TestSavePriceSnapshot::test_upsert_uses_symbol_timestamp_hour_conflict_key`; [`tests/application/test_agent_graph.py`](tests/application/test_agent_graph.py) `TestPriceSnapshot::test_snapshot_not_written_when_cycle_crashes_before_terminal` |
 | `main_watch.py` and `main_deadman.py` build no paid port, and the watch writes no price snapshot | [`tests/test_main_watch.py`](tests/test_main_watch.py) `test_watch_starts_with_stubbed_paid_ports_and_database_writes`, `TestWatchCycle::test_watch_never_writes_a_price_snapshot`; [`tests/test_main_deadman.py`](tests/test_main_deadman.py) `test_deadman_builds_no_paid_adapter` |
 | CI is under test: the quality job runs ruff and mypy on every entry point, and an active Fast Loop cron needs the deadman, the cost ceiling and the weekly budget | [`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) `test_ci_quality_job_runs_ruff_and_mypy`, `test_ci_lints_and_typechecks_every_entrypoint`; [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py) `test_enabled_fast_loop_schedule_requires_deadman` |
@@ -158,7 +158,11 @@ section it is described in [the report email](docs/report-email.md).
 The same sample as HTML is [docs/img/report-email.html](docs/img/report-email.html) (GitHub
 shows its source; open it locally in a browser). Render it yourself without any key, database
 or network: `uv run python main_tools.py render-sample-report` writes the HTML and the
-plain-text version to `build/sample-report/`. The screenshot is not regenerated
+plain-text version to `build/sample-report/`. To see the loop itself work (the volatility
+gate, self-reflection settling the previous prediction, the council and the save), `uv run
+python main_tools.py offline` runs two cycles of a fixed scenario on in-memory fakes, equally
+without keys, database or network, and writes one email per cycle to `build/offline/` (see
+[Offline cycle](docs/running-locally.md#offline-cycle-dx-04)). The screenshot is not regenerated
 automatically, so it can lag behind the email after a report change. The repository's social
 preview, [docs/img/social-preview.png](docs/img/social-preview.png), is the top of the same
 sample at 1280 × 640.
@@ -173,6 +177,8 @@ sample at 1280 × 640.
 | [Configuration](docs/configuration.md) | Every `Settings` field with its default, a tested table of every flag (default, `config.toml`, migration, secret, paid calls, status), and what each flag does and costs |
 | [Data and access](docs/data-and-access.md) | Every table and view with its data class and who reads and writes it, the Supabase keys, retention, and the Row Level Security rollout |
 | [Reference signal protocol](docs/reference-protocol-v1.md) | The frozen rule of the free weekly benchmark the paid LLM has to beat (`reference-v1`) |
+| [Decision log](docs/decisions.md) | The roadmap items `R-N` that the code and `config.toml` refer to, and the decisions behind the architecture, each with its commit and the test that holds it, plus the rationale behind each feature flag |
+| [Engineering log](docs/engineering-log.md) | Incident, rule, guard: what went wrong, the rule it taught and the test that fails when the rule is broken again |
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) →
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /
@@ -206,14 +212,17 @@ SIDEWAYS bands and directional dead zone, the baselines, the primary metrics, α
 the adoption date and how the universe was selected. Its sha256 is part of every prediction's
 recipe and of every attestation commitment, and the public scorecard prints it, so a metric
 cannot be chosen after the results are in; a test fails when the file and the domain constants
-disagree. A new protocol is a new version with its own hash, and results scored under the old
-one stay in their own segment.
+disagree. The directional dead zone is the optional `dead_band` of `Prediction.is_trend_correct`
+(EXP-06): a BULLISH call counts only above +band and a BEARISH one only below −band, and the
+protocol's `0` is exactly the current rule, so widening it means a new protocol version. A new
+protocol is a new version with its own hash, and results scored under the old one stay in their
+own segment.
 
 **No retroactive LLM replays.** The LLM is never backtested on history: it has read the news
 and prices of the days it would be "predicting", so a replay measures memory, not forecasting,
 and every replayed day costs paid calls. `main_backtest.py` replays only the stored feature
 rows through XGBoost walk-forward folds, and
-`tests/test_main_entrypoints.py::TestMainBacktest::test_backtest_builds_no_paid_adapter` fails
+`tests/test_main_backtest.py::TestMainBacktest::test_backtest_builds_no_paid_adapter` fails
 if it ever builds an OpenAI, Anthropic or Alpha Vantage client. The LLM's record is the live
 one: predictions written before the outcome and scored once it is known.
 
@@ -226,7 +235,8 @@ claim is written next to the code, where a change has to face it.
    [`src/domain/attestation.py`](src/domain/attestation.py) says so: Git commit dates can be
    forged, so commit-reveal only shows that a published commitment was not altered later
    under branch protection. Today nothing is published: `attestation_enabled` stays off until
-   a workflow has a publish step.
+   the `attestation-log` branch exists and is protected (the workflow that appends to it is
+   in place).
 2. **The model scorecard describes the candidate, not the shipped model.** `METRIC_NOTE` in
    [`src/domain/model_scorecard.py`](src/domain/model_scorecard.py), printed under every
    scorecard: the metrics come from walk-forward folds, while the shipped model is refit on
@@ -237,15 +247,18 @@ claim is written next to the code, where a change has to face it.
    meter does not see.
 4. **No trained weights yet.** The XGBoost leg runs on the no-change baseline, and the report
    and the council prompt label it as cold-start (see [Status](#status)).
-5. **Nothing is public yet, and the daily run is paused.** The public scorecard and the
-   attestation log are implemented and unit-tested but not deployed (see the
-   [resume checklist](docs/resume-checklist.md)), and with the daily run paused since
-   2026-08-17 no live track record is accumulating.
+5. **Nothing is public yet, and the live track record starts from zero.** The public
+   scorecard and the attestation log are implemented and unit-tested but not deployed (see
+   the [resume checklist](docs/resume-checklist.md)). The daily run resumed on 2026-10-23 on
+   a new, empty database (see [Status](#status)), so the live track record only starts
+   accumulating then: the first run records reference prices and nothing settles before
+   the second.
 6. **A short track record is an anecdote.** Telling a 55% hit rate from a coin flip with a
    one-sided test (α = 0.05, 80% power) takes about 617 settled directional predictions in
    `n_eff` (`required_n` in [`src/domain/significance.py`](src/domain/significance.py)). The
    public scorecard prints that number, the window's `n_eff` and, at the window's pace, the
-   date the sample would suffice; while the daily run is paused there is no inflow and no date.
+   date the sample would suffice; until predictions on the new database settle there is no
+   pace and no date.
 
 Each channel carries its own honesty note:
 
@@ -275,3 +288,7 @@ direction get the sign of the return over IVV right).
 ## License
 
 [MIT](LICENSE)
+
+This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+
+The code is MIT-licensed; the market data it fetches is not. Every provider's terms, and what of its data reaches the email, are in [how-it-works.md](docs/how-it-works.md#data-sources-and-terms).

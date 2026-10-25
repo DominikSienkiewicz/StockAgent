@@ -14,6 +14,7 @@ tautologią „moduł zgadza się sam ze sobą".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, cast
 
@@ -346,3 +347,267 @@ def test_superseded_check_compares_hashes_not_the_stored_payload() -> None:
 def test_superseded_reveal_status_is_frozen() -> None:
     # Status trafia do publicznego ledgera revealów — weryfikator filtruje po nim.
     assert attestation.REVEAL_STATUS_SUPERSEDED == "superseded"
+
+
+# --- WIA-25: linia ledgera commitmentów --------------------------------------
+
+_LINE_HASH = "ab" * 32
+
+
+def test_ledger_record_binds_symbol_hash_prediction_time_and_schema() -> None:
+    record = attestation.commitment_ledger_record(
+        symbol="AAPL",
+        commitment=_LINE_HASH,
+        prediction_id="pred-1",
+        committed_at=datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC),
+    )
+
+    assert record == {
+        "symbol": "AAPL",
+        "commitment": _LINE_HASH,
+        "prediction_id": "pred-1",
+        "committed_at": "2026-10-26T05:31:07+00:00",
+        "schema_version": attestation.SCHEMA_VERSION,
+    }
+
+
+def test_ledger_record_states_the_time_in_utc() -> None:
+    warsaw = timezone(timedelta(hours=2))
+
+    record = attestation.commitment_ledger_record(
+        symbol="AAPL",
+        commitment=_LINE_HASH,
+        prediction_id="pred-1",
+        committed_at=datetime(2026, 10, 26, 7, 31, 7, tzinfo=warsaw),
+    )
+
+    assert record["committed_at"] == "2026-10-26T05:31:07+00:00"
+
+
+def test_ledger_record_rejects_a_time_without_a_timezone() -> None:
+    with pytest.raises(ValueError, match="strefy czasowej"):
+        attestation.commitment_ledger_record(
+            symbol="AAPL",
+            commitment=_LINE_HASH,
+            prediction_id="pred-1",
+            committed_at=datetime(2026, 10, 26, 5, 31, 7),
+        )
+
+
+def test_ledger_record_rejects_an_unknown_schema_version() -> None:
+    with pytest.raises(ValueError, match="schema_version"):
+        attestation.commitment_ledger_record(
+            symbol="AAPL",
+            commitment=_LINE_HASH,
+            prediction_id="pred-1",
+            committed_at=datetime(2026, 10, 26, tzinfo=UTC),
+            schema_version=99,
+        )
+
+
+def test_ledger_line_fields_do_not_change_the_canonicalisation() -> None:
+    # Linia ledgera nie wchodzi do hasha, więc dopisanie pól nie podbija
+    # SCHEMA_VERSION: golden v2 zostaje bajt w bajt (test_golden_hash_v2).
+    assert attestation.SCHEMA_VERSION == 2
+
+
+# --- WIA-60: drzewo Merkle'a cyklu (RFC 9162, §2.1) ---------------------------------
+# Wartości policzone osobnym skryptem wprost ze wzorów RFC: liść = SHA-256(0x00 ‖ d),
+# węzeł = SHA-256(0x01 ‖ lewy ‖ prawy), podział na największej potędze 2 < n.
+_LEAF_A, _LEAF_B, _LEAF_C = "aa" * 32, "bb" * 32, "cc" * 32
+_GOLDEN_ROOT_ABC = "d73cea60f2ce124730a688b2456b84beb6fed822ab3e6d23c30c1ccdcbb5433b"
+_EMPTY_ROOT = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+_GOLDEN_PROOF_C = ("03938e2c8f758e6cae443d499b41c899c373eb0c0198bae61796a069f2b05904",)
+_GOLDEN_PROOF_A = (
+    "4f16119d36ccd0da91102f57692d73934fd0ad2494280df88449accedbbfb7ea",
+    "2e3aa189e1f666b2c3e864e21d978388020b89a6725e31ff2657bad5840a7f02",
+)
+
+
+def _leaves(n: int) -> list[str]:
+    return [f"{index:064x}" for index in range(n)]
+
+
+def test_golden_root_for_three_known_leaves() -> None:
+    assert attestation.merkle_root([_LEAF_A, _LEAF_B, _LEAF_C]) == _GOLDEN_ROOT_ABC
+
+
+def test_golden_inclusion_proofs_for_three_known_leaves() -> None:
+    leaves = [_LEAF_A, _LEAF_B, _LEAF_C]
+
+    assert attestation.inclusion_proof(leaves, 0) == _GOLDEN_PROOF_A
+    assert attestation.inclusion_proof(leaves, 2) == _GOLDEN_PROOF_C
+
+
+def test_root_of_an_empty_cycle_is_the_hash_of_nothing() -> None:
+    assert attestation.merkle_root([]) == _EMPTY_ROOT
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 5, 8, 13])
+def test_merkle_inclusion_proof_verifies_for_each_leaf(size: int) -> None:
+    leaves = _leaves(size)
+    root = attestation.merkle_root(leaves)
+
+    for index, leaf in enumerate(leaves):
+        proof = attestation.inclusion_proof(leaves, index)
+        assert attestation.verify_inclusion(leaf, index, size, proof, root), (size, index)
+
+
+def test_proof_fails_for_leaf_not_in_tree() -> None:
+    leaves = _leaves(5)
+    root = attestation.merkle_root(leaves)
+    proof = attestation.inclusion_proof(leaves, 3)
+
+    assert not attestation.verify_inclusion("ff" * 32, 3, 5, proof, root)
+
+
+@pytest.mark.parametrize(
+    ("index", "size", "proof_change"),
+    [
+        (2, 5, "keep"),  # dowód liścia 3 podany dla pozycji 2
+        (3, 4, "keep"),  # rozmiar drzewa o innym kształcie ścieżki
+        (3, 5, "drop"),  # obcięta ścieżka
+        (3, 5, "extra"),  # ścieżka dłuższa niż drzewo
+        (5, 5, "keep"),  # indeks poza drzewem
+        (-1, 5, "keep"),
+    ],
+)
+def test_proof_fails_for_a_wrong_position_size_or_path(
+    index: int, size: int, proof_change: str
+) -> None:
+    leaves = _leaves(5)
+    root = attestation.merkle_root(leaves)
+    proof = list(attestation.inclusion_proof(leaves, 3))
+    if proof_change == "drop":
+        proof.pop()
+    elif proof_change == "extra":
+        proof.append("00" * 32)
+
+    assert not attestation.verify_inclusion(leaves[3], index, size, proof, root)
+
+
+def test_proof_check_rejects_text_that_is_not_hex() -> None:
+    leaves = _leaves(2)
+    root = attestation.merkle_root(leaves)
+
+    assert not attestation.verify_inclusion("zz", 0, 2, ["00" * 32], root)
+    assert not attestation.verify_inclusion(leaves[0], 0, 2, ["not hex"], root)
+
+
+def test_merkle_input_must_be_hex() -> None:
+    with pytest.raises(ValueError, match="hex"):
+        attestation.merkle_root(["not a hash"])
+    with pytest.raises(IndexError):
+        attestation.inclusion_proof(_leaves(2), 2)
+
+
+def test_cycle_root_record_is_one_line_with_sorted_unique_leaves() -> None:
+    record = attestation.cycle_root_record(
+        cycle_id="123.1.20261026T053000Z",
+        committed_at=datetime(2026, 10, 26, 7, 31, tzinfo=timezone(timedelta(hours=2))),
+        commitments=[_LEAF_C, _LEAF_A.upper(), _LEAF_B, _LEAF_C],
+    )
+
+    assert record == {
+        "cycle_id": "123.1.20261026T053000Z",
+        "committed_at": "2026-10-26T05:31:00+00:00",
+        "root": _GOLDEN_ROOT_ABC,
+        "n_leaves": 3,
+        "leaves": [_LEAF_A, _LEAF_B, _LEAF_C],
+        "schema_version": attestation.SCHEMA_VERSION,
+        "tree": "rfc9162-sha256",
+    }
+
+
+def test_cycle_root_record_is_published_for_an_empty_cycle() -> None:
+    record = attestation.cycle_root_record(
+        cycle_id="c", committed_at=datetime(2026, 10, 26, tzinfo=UTC), commitments=[]
+    )
+
+    assert (record["root"], record["n_leaves"], record["leaves"]) == (_EMPTY_ROOT, 0, [])
+
+
+def test_cycle_root_record_rejects_a_time_without_a_timezone() -> None:
+    with pytest.raises(ValueError, match="strefy"):
+        attestation.cycle_root_record(
+            cycle_id="c", committed_at=datetime(2026, 10, 26), commitments=[]
+        )
+
+
+def _root_line(cycle_id: str, leaves: list[str]) -> dict[str, Any]:
+    return attestation.cycle_root_record(
+        cycle_id=cycle_id, committed_at=datetime(2026, 10, 26, tzinfo=UTC), commitments=leaves
+    )
+
+
+def test_ledger_gives_a_verifiable_inclusion_for_a_leaf_of_a_cycle() -> None:
+    ledger = attestation.CommitmentLedger.from_records(
+        [{"symbol": "OLD", "commitment": "dd" * 32}, _root_line("c1", [_LEAF_A, _LEAF_B, _LEAF_C])]
+    )
+
+    inclusion = ledger.inclusion_of(_LEAF_C.upper())
+
+    assert inclusion is not None
+    assert inclusion.as_record() == {
+        "cycle_id": "c1",
+        "root": _GOLDEN_ROOT_ABC,
+        "leaf_index": 2,
+        "tree_size": 3,
+        "proof": list(_GOLDEN_PROOF_C),
+    }
+    assert inclusion.verifies(_LEAF_C)
+
+
+def test_ledger_knows_legacy_single_lines_and_cycle_leaves() -> None:
+    ledger = attestation.CommitmentLedger.from_records(
+        [
+            {"symbol": "OLD", "commitment": "DD" * 32},
+            {"note": "linia bez hasha nic nie publikuje"},
+            _root_line("c1", [_LEAF_A]),
+        ]
+    )
+
+    assert ledger.is_published("dd" * 32)
+    assert ledger.is_published(_LEAF_A)
+    assert ledger.inclusion_of("dd" * 32) is None
+    assert not ledger.is_published(_LEAF_B)
+    assert ledger.published == frozenset({"dd" * 32, _LEAF_A})
+
+
+def test_cycle_root_line_states_whether_its_root_matches_its_leaves() -> None:
+    honest = attestation.CycleRoot.from_record(_root_line("c1", [_LEAF_A, _LEAF_B]))
+    forged = attestation.CycleRoot.from_record(
+        {**_root_line("c1", [_LEAF_A, _LEAF_B]), "leaves": [_LEAF_A]}
+    )
+    miscounted = attestation.CycleRoot.from_record(
+        {**_root_line("c1", [_LEAF_A, _LEAF_B]), "n_leaves": 3}
+    )
+
+    garbled = attestation.CycleRoot.from_record({**_root_line("c1", [_LEAF_A]), "leaves": ["zz"]})
+
+    assert honest is not None and honest.consistent
+    assert forged is not None and not forged.consistent
+    assert miscounted is not None and not miscounted.consistent
+    assert garbled is not None and not garbled.consistent
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"symbol": "OLD", "commitment": "dd" * 32},
+        {"cycle_id": "c", "root": 5, "leaves": []},
+        {"cycle_id": "c", "root": "ab", "leaves": "aa"},
+        {"cycle_id": "c", "root": "ab", "leaves": [1]},
+        {"cycle_id": "c", "root": "ab", "leaves": [], "n_leaves": "0"},
+        {"cycle_id": None, "root": "ab", "leaves": []},
+    ],
+)
+def test_lines_that_are_not_a_well_formed_cycle_root_are_not_roots(
+    record: dict[str, Any],
+) -> None:
+    assert attestation.CycleRoot.from_record(record) is None
+
+
+def test_incomplete_cycle_reveal_status_is_frozen() -> None:
+    # Publiczny kontrakt ledgera: zmiana napisu rozjechałaby weryfikator z historią.
+    assert attestation.REVEAL_STATUS_INCOMPLETE_CYCLE == "incomplete_cycle"

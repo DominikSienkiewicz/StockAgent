@@ -279,3 +279,44 @@ def test_invariant_table_links_tests_that_exist(doc: str) -> None:
             problems.append((row[:60], sorted(set(named) - known)))
 
     assert problems == []
+
+
+# DOC-10: docs/running-locally.md opisywał stan sprzed miesięcy — listę migracji do
+# 018 przy 059 plikach, „every file fully typed” przy zawężonej bramce mypy i brak
+# Supabase CLI wśród prerekwizytów (migracje aplikuje `supabase db push`).
+RUNNING_LOCALLY = ROOT / "docs" / "running-locally.md"
+_MIGRATION_FILE_CITED = re.compile(r"supabase/migrations/(\d{3}_\w+\.sql)")
+
+
+def _running_locally() -> str:
+    return RUNNING_LOCALLY.read_text(encoding="utf-8")
+
+
+def test_running_locally_mentions_every_migration_or_none() -> None:
+    migrations = {path.name for path in (ROOT / "supabase" / "migrations").glob("*.sql")}
+
+    cited = set(_MIGRATION_FILE_CITED.findall(_running_locally()))
+
+    assert not cited or cited == migrations, (
+        f"running-locally.md wymienia {len(cited)} z {len(migrations)} migracji — "
+        "link do katalogu zamiast listy, która się starzeje"
+    )
+
+
+def test_running_locally_links_the_migrations_directory() -> None:
+    assert "](../supabase/migrations/)" in _running_locally()
+
+
+def test_running_locally_does_not_claim_every_file_is_typed() -> None:
+    # Bramka mypy obejmuje src, entry pointy i tests/domain (ratchet, TEST-13).
+    text = _running_locally()
+
+    assert "every file fully typed" not in text
+    assert "`tests/` not yet" in text
+
+
+def test_running_locally_prerequisites_name_the_supabase_cli_and_db_url() -> None:
+    section = _section_of(_running_locally(), "## Prerequisites")
+
+    assert "Supabase CLI" in section
+    assert "SUPABASE_DB_URL" in section

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
 
 from src.application.ports import ReportNotifierPort
 from src.application.quota_monitor import QuotaMonitor
@@ -32,7 +34,7 @@ class TestSlackNotifier:
     def test_implements_port(self) -> None:
         assert issubclass(SlackNotifier, ReportNotifierPort)
 
-    def test_posts_to_webhook_url(self, notifier: SlackNotifier, mocker) -> None:
+    def test_posts_to_webhook_url(self, notifier: SlackNotifier, mocker: Any) -> None:
         mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
 
         notifier.send_report("Subject", "<p>HTML</p>", "plain text body")
@@ -40,7 +42,7 @@ class TestSlackNotifier:
         url = mock_post.call_args.args[0]
         assert url == WEBHOOK
 
-    def test_sends_plain_text_with_subject(self, notifier: SlackNotifier, mocker) -> None:
+    def test_sends_plain_text_with_subject(self, notifier: SlackNotifier, mocker: Any) -> None:
         mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
 
         notifier.send_report("My subject", "<p>html</p>", "Plain body content")
@@ -49,7 +51,7 @@ class TestSlackNotifier:
         assert "Plain body content" in body["text"]
         assert "My subject" in body["text"]
 
-    def test_does_not_use_html_body(self, notifier: SlackNotifier, mocker) -> None:
+    def test_does_not_use_html_body(self, notifier: SlackNotifier, mocker: Any) -> None:
         mock_post = mocker.patch("requests.Session.post", return_value=_resp(200))
 
         notifier.send_report("S", "<p>UNIQUE_HTML_MARKER</p>", "plain")
@@ -57,7 +59,7 @@ class TestSlackNotifier:
         body = mock_post.call_args.kwargs["json"]
         assert "UNIQUE_HTML_MARKER" not in body["text"]
 
-    def test_emits_critical_on_4xx_and_does_not_raise(self, mocker) -> None:
+    def test_emits_critical_on_4xx_and_does_not_raise(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
         notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(404, "no_service"))
@@ -68,7 +70,7 @@ class TestSlackNotifier:
         assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
         assert monitor.alerts[0].source == "Slack"
 
-    def test_emits_critical_on_network_error_and_does_not_raise(self, mocker) -> None:
+    def test_emits_critical_on_network_error_and_does_not_raise(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
         notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
         mocker.patch(
@@ -82,7 +84,7 @@ class TestSlackNotifier:
         assert monitor.alerts[0].severity is QuotaSeverity.CRITICAL
         assert monitor.alerts[0].source == "Slack"
 
-    def test_no_alert_on_200(self, mocker) -> None:
+    def test_no_alert_on_200(self, mocker: Any) -> None:
         monitor = QuotaMonitor()
         notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(200))
@@ -91,13 +93,13 @@ class TestSlackNotifier:
 
         assert monitor.alerts == []
 
-    def test_does_not_raise_without_monitor_on_failure(self, mocker) -> None:
+    def test_does_not_raise_without_monitor_on_failure(self, mocker: Any) -> None:
         notifier = SlackNotifier(webhook_url=WEBHOOK)
         mocker.patch("requests.Session.post", return_value=_resp(500))
 
         notifier.send_report("S", "<p>H</p>", "T")
 
-    def test_uses_quota_monitor_spec_mock(self, mocker) -> None:
+    def test_uses_quota_monitor_spec_mock(self, mocker: Any) -> None:
         monitor = Mock(spec=QuotaMonitor)
         notifier = SlackNotifier(webhook_url=WEBHOOK, quota_monitor=monitor)
         mocker.patch("requests.Session.post", return_value=_resp(404))
@@ -109,11 +111,15 @@ class TestSlackNotifier:
 
 def test_session_does_not_retry_post_on_5xx(notifier: SlackNotifier) -> None:
     # MAIL-03: webhook Slacka nie jest idempotentny — powtórzony POST to dwa posty.
-    retry = notifier._session.get_adapter("https://hooks.slack.com").max_retries
+    adapter = cast(HTTPAdapter, notifier._session.get_adapter("https://hooks.slack.com"))
+    retry = adapter.max_retries
+    assert retry.allowed_methods is not None
     assert "POST" not in retry.allowed_methods
 
 
-def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
+def test_alert_text_is_polish_and_english_stays_in_logs(
+    mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # MAIL-15: komunikat alertu idzie do maila po polsku, diagnoza do logów po angielsku.
     import logging
 
@@ -131,7 +137,7 @@ def test_alert_text_is_polish_and_english_stays_in_logs(mocker, caplog) -> None:
     assert "Slack returned 404" in caplog.text
 
 
-def test_network_alert_omits_webhook_url(mocker, caplog) -> None:
+def test_network_alert_omits_webhook_url(mocker: Any, caplog: pytest.LogCaptureFixture) -> None:
     # BEZ-07: cały URL webhooka jest sekretem, a treść błędu sieci go niesie; alert
     # idzie do maila i `quota_alerts`, log do publicznego GHA.
     import logging
@@ -155,7 +161,7 @@ def test_network_alert_omits_webhook_url(mocker, caplog) -> None:
         assert "T000/B000/XXXX" not in text
 
 
-def test_silent_send_posts_the_same_text_without_a_mention(mocker) -> None:
+def test_silent_send_posts_the_same_text_without_a_mention(mocker: Any) -> None:
     # ALR-09: incoming webhook nie ma flagi cichej wiadomości — cisza nocna znaczy
     # tu brak @-wzmianki, a adapter żadnej nie dokleja, więc treść jest ta sama.
     notifier = SlackNotifier(webhook_url=WEBHOOK)

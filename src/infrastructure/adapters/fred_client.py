@@ -35,8 +35,9 @@ from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot, SeriesObservation
 from src.infrastructure.adapters._http import (
     build_session,
-    raise_for_status_redacted,
-    safe_get,
+    json_payload,
+    raise_for_status_translated,
+    translated_get,
 )
 
 DEFAULT_BASE_URL = "https://api.stlouisfed.org/fred"
@@ -114,14 +115,14 @@ class FredClient(MacroRatesPort, MacroSeriesPort):
             "sort_order": "asc",
         }
         try:
-            response = safe_get(
+            response = translated_get(
                 self._session,
                 f"{self._base_url}/series/observations",
                 params=params,
                 timeout=self._timeout,
             )
-            raise_for_status_redacted(response)
-            payload = response.json()
+            raise_for_status_translated(response)
+            payload = json_payload(response)
             observations = payload.get("observations") if isinstance(payload, dict) else None
             if not isinstance(observations, list):
                 return ()
@@ -142,14 +143,14 @@ class FredClient(MacroRatesPort, MacroSeriesPort):
             "limit": 1,
         }
         try:
-            response = safe_get(
+            response = translated_get(
                 self._session,
                 f"{self._base_url}/series/observations",
                 params=params,
                 timeout=self._timeout,
             )
-            raise_for_status_redacted(response)
-            payload = response.json()
+            raise_for_status_translated(response)
+            payload = json_payload(response)
             # Body może być nie-dictem (lista/null z proxy/CDN) — twardo strażujemy
             # kształt przed .get(), inaczej AttributeError wyciekłby z except.
             if not isinstance(payload, dict):

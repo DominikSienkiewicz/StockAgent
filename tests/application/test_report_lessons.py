@@ -124,8 +124,8 @@ def test_empty_input_yields_empty_report() -> None:
     assert build_lessons([]) == LessonsReport((), 0, None)
 
 
-def test_lesson_item_carries_actual_change_pct() -> None:
-    """LessonItem niesie predicted_trend, insight i actual_change_pct z predykcji."""
+def test_lesson_item_carries_actual_change_ratio() -> None:
+    """LessonItem niesie predicted_trend, insight i actual_change_ratio z predykcji."""
     resolved = [
         _resolved(
             "AAA",
@@ -142,7 +142,7 @@ def test_lesson_item_carries_actual_change_pct() -> None:
     assert item.symbol == "AAA"
     assert item.predicted_trend == "up"
     assert item.insight == "źle oszacowany kierunek"
-    assert item.actual_change_pct == Decimal("-0.1")
+    assert item.actual_change_ratio == Decimal("-0.1")
 
 
 def test_recurring_theme_ignores_pure_digit_runs() -> None:

@@ -216,3 +216,15 @@ def test_expiring_predictions_is_a_skipped_write_that_expires_nothing() -> None:
     assert expired == 0
     assert "expire_unverified_predictions" in ReadOnlyRepository.WRITE_METHODS
     delegate.expire_unverified_predictions.assert_not_called()
+
+
+def test_shock_alerts_and_last_report_are_reads() -> None:
+    # ALR-06: lokalny run tylko do odczytu też widzi szoki od ostatniego maila.
+    delegate = create_autospec(RepositoryPort, instance=True)
+    guard = ReadOnlyRepository(delegate)
+
+    guard.get_shock_alerts_since(sentinel.since)
+    guard.get_last_report_at(sentinel.before)
+
+    delegate.get_shock_alerts_since.assert_called_once_with(sentinel.since)
+    delegate.get_last_report_at.assert_called_once_with(sentinel.before)

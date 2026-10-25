@@ -17,7 +17,16 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 
 from src.application.report_models import SymbolResult
+from src.domain.direction_variant import DirectionReport
 from src.domain.finops import CycleCost
+from src.domain.promotion import (
+    LIVE_WINDOW_DAYS,
+    MIN_LIVE_N,
+    PROMOTION_MARGIN,
+    PROMOTION_Z_CRIT,
+    ChallengerVerdict,
+    ForecastKind,
+)
 from src.domain.quota import QuotaAlert
 
 UNKNOWN_ERROR_TYPE = "unknown"
@@ -131,28 +140,76 @@ def render_trainer_summary_markdown(
     failures: int,
     total: int,
     feature_store_refreshed: bool = True,
+    pooled_label_overlap: tuple[int, int] | None = None,
 ) -> str:
     """Summary Slow Loopa: statusy ewaluacji per symbol jako liczby i wynik modelu
-    wspólnego. `pooled_status` None = trening wspólny rzucił albo nie ruszył."""
+    wspólnego. `pooled_status` None = trening wspólny rzucił albo nie ruszył.
+    `pooled_label_overlap` (ML-25) — (nakładające się, zmierzone) etykiety próbki
+    modelu wspólnego; None = próbka bez chwili rozliczenia, wiersza nie ma."""
+    rows = [
+        ("Feature store refresh", "ok" if feature_store_refreshed else "failed"),
+        ("Pooled model", pooled_status or "failed"),
+        (
+            "Pooled samples",
+            _NOT_AVAILABLE if pooled_samples is None else str(pooled_samples),
+        ),
+    ]
+    if pooled_label_overlap is not None:
+        overlapping, measured = pooled_label_overlap
+        rows.append(("Label overlaps (settle after the next row)", f"{overlapping} / {measured}"))
+    rows.append(("Failures", f"{failures} / {total}"))
     return "\n".join(
         [
             "## Slow Loop training summary",
             "",
-            _table(
-                ("Metric", "Value"),
-                [
-                    ("Feature store refresh", "ok" if feature_store_refreshed else "failed"),
-                    ("Pooled model", pooled_status or "failed"),
-                    (
-                        "Pooled samples",
-                        _NOT_AVAILABLE if pooled_samples is None else str(pooled_samples),
-                    ),
-                    ("Failures", f"{failures} / {total}"),
-                ],
-            ),
+            _table(("Metric", "Value"), rows),
             "### Per-symbol evaluation by status",
             "",
             _count_table("Status", Counter(dict(symbol_statuses))),
+        ]
+    )
+
+
+def _pair(first: float | None, second: float | None) -> str:
+    def number(value: float | None) -> str:
+        return _NOT_AVAILABLE if value is None else f"{value:.4f}"
+
+    return f"{number(first)} / {number(second)}"
+
+
+def render_direction_variant_markdown(report: DirectionReport) -> str:
+    """ML-30: wariant binarny P(wzrost poza martwą strefą) w summary Slow Loopa —
+    Brier i log loss klasyfikatora obok stopy bazowej, liczności i werdykt. Sama
+    ewaluacja: serwowany model regresji się nie zmienia."""
+    summary = report.summary
+    rows = [
+        ("Status", report.outcome.value),
+        (f"Rows outside the dead band (±{report.dead_band:g})", str(report.n_samples)),
+        ("Rows inside the dead band", str(report.n_in_dead_band)),
+        (
+            "Out-of-sample points",
+            _NOT_AVAILABLE if summary is None else str(summary.n_oos_points),
+        ),
+        (
+            "Brier (classifier / base rate)",
+            _pair(None, None) if summary is None else _pair(summary.brier, summary.base_rate_brier),
+        ),
+        (
+            "Log loss (classifier / base rate)",
+            _pair(None, None)
+            if summary is None
+            else _pair(summary.log_loss, summary.base_rate_log_loss),
+        ),
+        ("Verdict", report.reason or _NOT_AVAILABLE),
+    ]
+    return "\n".join(
+        [
+            "### Direction classifier (ML-30)",
+            "",
+            _table(("Metric", "Value"), rows),
+            "",
+            "P(12h return above the dead band); the variant never replaces the served "
+            "regression model.",
         ]
     )
 
@@ -185,3 +242,49 @@ def _table(header: tuple[str, str], rows: Iterable[tuple[str, str]]) -> str:
     lines = [f"| {header[0]} | {header[1]} |", "|---|---|"]
     lines.extend(f"| {key} | {value} |" for key, value in rows)
     return "\n".join(lines) + "\n"
+
+
+# ML-33: nazwa straty pary w summary według rodzaju prognozy challengera.
+_CHALLENGER_LOSS_LABELS = {
+    ForecastKind.RETURN: "squared return error",
+    ForecastKind.DIRECTION: "direction Brier",
+}
+
+
+def render_challenger_verdicts_markdown(verdicts: Sequence[ChallengerVerdict]) -> str:
+    """ML-33: werdykt promocji każdego challengera nogi ML w summary Slow Loopa —
+    pary z championem na tych samych predykcjach live, średnie straty, względna
+    poprawa, z testu sparowanego i werdykt reguły. Sam raport: podmiana wag zostaje
+    decyzją właściciela."""
+    lines = ["### Champion/challenger (ML-33)", ""]
+    if not verdicts:
+        lines.append(
+            f"No challenger forecast paired with the champion on settled predictions "
+            f"of the last {LIVE_WINDOW_DAYS} days."
+        )
+        return "\n".join(lines)
+    lines += [
+        "| Challenger | Loss | Weights | Pairs | Loss (champion / challenger) "
+        "| Improvement | Paired z | Verdict |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for entry in verdicts:
+        verdict = entry.verdict
+        improvement = (
+            _NOT_AVAILABLE if verdict.improvement is None else f"{verdict.improvement:.1%}"
+        )
+        z = _NOT_AVAILABLE if verdict.paired_z is None else f"{verdict.paired_z:.2f}"
+        lines.append(
+            f"| {entry.model_name} | {_CHALLENGER_LOSS_LABELS[entry.kind]} | "
+            f"{entry.n_versions} | {verdict.n_pairs} | "
+            f"{_pair(verdict.champion_loss, verdict.challenger_loss)} | {improvement} | "
+            f"{z} | {verdict.status.value} |"
+        )
+    lines += [
+        "",
+        f"Settled live predictions of the last {LIVE_WINDOW_DAYS} days. Pre-registered "
+        f"rule: at least {MIN_LIVE_N} pairs, a mean loss at least {PROMOTION_MARGIN:.0%} "
+        f"lower and a paired z above {PROMOTION_Z_CRIT:g}. The verdict only reports; "
+        "serving a challenger's weights stays the owner's decision.",
+    ]
+    return "\n".join(lines)

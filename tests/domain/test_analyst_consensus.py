@@ -93,3 +93,88 @@ class TestAggregates:
         consensus = AnalystConsensus(symbol="NONE")
         assert consensus.mean_score() is None
         assert consensus.total() == 0
+
+
+class TestRevision:
+    """DAT-13: rewizja konsensusu m/m — UPGRADE / DOWNGRADE / STABLE z progiem
+    zmiany średniej oceny (0.3) albo przesunięcia netto analityków (2)."""
+
+    def test_revision_detects_upgrade(self) -> None:
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="AAPL", buy=10, hold=10)
+        latest = AnalystConsensus(
+            symbol="AAPL", strong_buy=3, buy=12, hold=5, previous=previous
+        )
+
+        revision = latest.revision()
+
+        assert revision.direction is RevisionDirection.UPGRADE
+        assert (revision.strong_buy_change, revision.buy_change, revision.hold_change) == (
+            3,
+            2,
+            -5,
+        )
+        assert revision.bullish_change == 5
+
+    def test_revision_flat_with_single_period(self) -> None:
+        from src.domain.analyst_consensus import RevisionDirection
+
+        revision = AnalystConsensus(symbol="AAPL", strong_buy=3, buy=12).revision()
+
+        assert revision.direction is RevisionDirection.STABLE
+        assert revision.bullish_change == 0
+
+    def test_two_analysts_moving_to_hold_is_a_downgrade(self) -> None:
+        # Średnia spada tylko o ~0.07, ale dwóch analityków zeszło z kupna.
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="MSFT", buy=20, hold=10)
+        latest = AnalystConsensus(symbol="MSFT", buy=18, hold=12)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.DOWNGRADE
+
+    def test_one_analyst_moving_is_stable(self) -> None:
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="MSFT", buy=20, hold=10)
+        latest = AnalystConsensus(symbol="MSFT", buy=19, hold=11)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.STABLE
+
+    def test_mean_score_jump_without_net_shift_is_an_upgrade(self) -> None:
+        # Hold → strong buy: strona kupna +1, ale średnia rośnie o 0.4.
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="KO", buy=1, hold=4)
+        latest = AnalystConsensus(symbol="KO", strong_buy=1, buy=1, hold=3)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.UPGRADE
+
+    def test_contradicting_mean_and_shift_is_stable(self) -> None:
+        # Średnia rośnie (4.0 → 4.67), ale strona kupna straciła czterech analityków
+        # (pokrycie się skurczyło) — sygnały sprzeczne, bez rewizji.
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="XYZ", buy=10)
+        latest = AnalystConsensus(symbol="XYZ", strong_buy=4, buy=2)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.STABLE
+
+    def test_empty_previous_period_counts_only_the_shift(self) -> None:
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="NEW")
+        latest = AnalystConsensus(symbol="NEW", buy=3)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.UPGRADE
+
+    def test_mean_change_exactly_at_the_step_counts(self) -> None:
+        # 3.5 → 3.8 to w floatach 0.2999…; próg 0.3 ma go objąć. Strona kupna bez
+        # zmiany liczebności (3 buy → strong buy), więc decyduje sama średnia.
+        from src.domain.analyst_consensus import RevisionDirection
+
+        previous = AnalystConsensus(symbol="KO", buy=5, hold=5)
+        latest = AnalystConsensus(symbol="KO", strong_buy=3, buy=2, hold=5)
+
+        assert latest.revision_vs(previous).direction is RevisionDirection.UPGRADE

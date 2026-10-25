@@ -14,6 +14,7 @@ import pytest
 
 from src.domain.drawdown import DrawdownSignal, peak_from_history
 from src.domain.macro_risk import MacroAlertLevel
+from src.domain.value_objects import Ratio
 
 
 def _signal(peak: str, current: str) -> DrawdownSignal:
@@ -61,8 +62,8 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="100", current="100")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.NORMAL
         )
@@ -72,8 +73,8 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="100", current="95")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.NORMAL
         )
@@ -83,8 +84,8 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="100", current="88")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.ELEVATED
         )
@@ -94,8 +95,8 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="100", current="75")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.CRITICAL
         )
@@ -105,8 +106,8 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="100", current="80")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.CRITICAL
         )
@@ -115,25 +116,31 @@ class TestEvaluateDrawdown:
         sig = _signal(peak="0", current="50")
         assert (
             sig.evaluate_drawdown(
-                elevated_pct=Decimal("0.10"),
-                critical_pct=Decimal("0.20"),
+                elevated_threshold=Ratio(Decimal("0.10")),
+                critical_threshold=Ratio(Decimal("0.20")),
             )
             is MacroAlertLevel.NORMAL
         )
 
     def test_negative_thresholds_raise(self) -> None:
         sig = _signal(peak="100", current="80")
-        elevated_pct = Decimal("-0.1")
-        critical_pct = Decimal("0.2")
+        elevated_threshold = Ratio(Decimal("-0.1"))
+        critical_threshold = Ratio(Decimal("0.2"))
         with pytest.raises(ValueError):
-            sig.evaluate_drawdown(elevated_pct=elevated_pct, critical_pct=critical_pct)
+            sig.evaluate_drawdown(
+                elevated_threshold=elevated_threshold,
+                critical_threshold=critical_threshold,
+            )
 
     def test_inverted_thresholds_raise(self) -> None:
         sig = _signal(peak="100", current="80")
-        elevated_pct = Decimal("0.2")
-        critical_pct = Decimal("0.1")
+        elevated_threshold = Ratio(Decimal("0.2"))
+        critical_threshold = Ratio(Decimal("0.1"))
         with pytest.raises(ValueError):
-            sig.evaluate_drawdown(elevated_pct=elevated_pct, critical_pct=critical_pct)
+            sig.evaluate_drawdown(
+                elevated_threshold=elevated_threshold,
+                critical_threshold=critical_threshold,
+            )
 
 
 class TestDrawdownFromReturns:

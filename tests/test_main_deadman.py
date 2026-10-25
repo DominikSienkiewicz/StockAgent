@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,12 +13,13 @@ import pytest
 import main_deadman
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from tests.settings_kwargs import NO_ENV_FILE
 
 
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],
@@ -31,7 +33,7 @@ def settings() -> Settings:
     )
 
 
-def _wire(mocker, repository: MagicMock) -> MagicMock:
+def _wire(mocker: Any, repository: MagicMock) -> MagicMock:
     mocker.patch("main_agent.build_repository", return_value=repository)
     notifier = MagicMock()
     mocker.patch("main_agent.build_notifier", return_value=notifier)
@@ -44,7 +46,7 @@ def _repo(slow_loop_last_seen: datetime | None) -> MagicMock:
     return repository
 
 
-def test_silent_slow_loop_sends_one_mail(settings, mocker) -> None:
+def test_silent_slow_loop_sends_one_mail(settings: Settings, mocker: Any) -> None:
     notifier = _wire(mocker, _repo(datetime.now(UTC) - timedelta(days=9)))
 
     assert main_deadman.main(settings) == 0
@@ -53,7 +55,7 @@ def test_silent_slow_loop_sends_one_mail(settings, mocker) -> None:
     assert "Slow Loop" in notifier.send_report.call_args.kwargs["subject"]
 
 
-def test_recent_heartbeat_sends_nothing(settings, mocker) -> None:
+def test_recent_heartbeat_sends_nothing(settings: Settings, mocker: Any) -> None:
     notifier = _wire(mocker, _repo(datetime.now(UTC) - timedelta(days=2)))
 
     assert main_deadman.main(settings) == 0
@@ -61,7 +63,7 @@ def test_recent_heartbeat_sends_nothing(settings, mocker) -> None:
     notifier.send_report.assert_not_called()
 
 
-def test_paused_fast_loop_is_not_checked(settings, mocker) -> None:
+def test_paused_fast_loop_is_not_checked(settings: Settings, mocker: Any) -> None:
     repository = _repo(datetime.now(UTC) - timedelta(days=2))
     _wire(mocker, repository)
 
@@ -70,7 +72,9 @@ def test_paused_fast_loop_is_not_checked(settings, mocker) -> None:
     repository.get_latest_snapshot_at.assert_not_called()
 
 
-def test_unreadable_heartbeat_exits_1_so_the_workflow_alert_fires(settings, mocker) -> None:
+def test_unreadable_heartbeat_exits_1_so_the_workflow_alert_fires(
+    settings: Settings, mocker: Any
+) -> None:
     repository = _repo(None)
     repository.get_last_scorecard_at.side_effect = RuntimeError("Supabase 503")
     notifier = _wire(mocker, repository)
@@ -80,7 +84,7 @@ def test_unreadable_heartbeat_exits_1_so_the_workflow_alert_fires(settings, mock
     notifier.send_report.assert_not_called()
 
 
-def test_deadman_builds_no_paid_adapter(settings, mocker) -> None:
+def test_deadman_builds_no_paid_adapter(settings: Settings, mocker: Any) -> None:
     _wire(mocker, _repo(datetime.now(UTC)))
     paid_builders = [
         mocker.patch(f"main_agent.{name}")
@@ -115,7 +119,9 @@ def _resumed_repo(fast_loop_last_seen: datetime, now: datetime) -> MagicMock:
     return repository
 
 
-def test_resumed_fast_loop_after_a_weekend_sends_nothing(resumed_settings, mocker) -> None:
+def test_resumed_fast_loop_after_a_weekend_sends_nothing(
+    resumed_settings: Settings, mocker: Any
+) -> None:
     notifier = _wire(mocker, _resumed_repo(FRIDAY_CYCLE, MONDAY_DEADMAN))
 
     assert main_deadman.main(resumed_settings, now=MONDAY_DEADMAN) == 0
@@ -124,7 +130,7 @@ def test_resumed_fast_loop_after_a_weekend_sends_nothing(resumed_settings, mocke
 
 
 def test_resumed_fast_loop_silent_for_two_trading_days_sends_one_mail(
-    resumed_settings, mocker
+    resumed_settings: Settings, mocker: Any
 ) -> None:
     tuesday_cycle = datetime(2026, 10, 13, 5, 35, tzinfo=UTC)
     thursday_deadman = datetime(2026, 10, 15, 9, 17, tzinfo=UTC)
@@ -141,7 +147,7 @@ def test_resumed_fast_loop_silent_for_two_trading_days_sends_one_mail(
 # gdy baza nie odpowiada — także wtedy, gdy wszystkie joby są wstrzymane.
 
 
-def test_unreachable_database_sends_the_database_alert(settings, mocker) -> None:
+def test_unreachable_database_sends_the_database_alert(settings: Settings, mocker: Any) -> None:
     repository = _repo(datetime.now(UTC))
     repository.probe_database.side_effect = RuntimeError("Supabase 540: project paused")
     notifier = _wire(mocker, repository)
@@ -155,7 +161,7 @@ def test_unreachable_database_sends_the_database_alert(settings, mocker) -> None
     repository.get_last_scorecard_at.assert_not_called()
 
 
-def test_database_is_probed_even_when_every_job_is_paused(settings, mocker) -> None:
+def test_database_is_probed_even_when_every_job_is_paused(settings: Settings, mocker: Any) -> None:
     repository = _repo(None)
     notifier = _wire(mocker, repository)
     paused = settings.model_copy(update={"liveness_slow_loop_max_gap_h": 0})
@@ -166,7 +172,9 @@ def test_database_is_probed_even_when_every_job_is_paused(settings, mocker) -> N
     notifier.send_report.assert_not_called()
 
 
-def test_failed_database_alert_exits_1_so_the_workflow_alert_fires(settings, mocker) -> None:
+def test_failed_database_alert_exits_1_so_the_workflow_alert_fires(
+    settings: Settings, mocker: Any
+) -> None:
     repository = _repo(datetime.now(UTC))
     repository.probe_database.side_effect = RuntimeError("timeout")
     notifier = _wire(mocker, repository)

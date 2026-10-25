@@ -1,4 +1,4 @@
-"""Render sekcji powitalnej "Dzień 1" w raporcie e-mail (roadmap #4).
+"""Render sekcji powitalnej "Dzień 1" w raporcie e-mail (R-4).
 
 Problem: pierwszy mail nowego deploymentu to ściana "⏸ Pominięte" (wszystkie
 symbole to cold-start — brak punktu odniesienia dla bramki volatility). Bez
@@ -20,6 +20,7 @@ from __future__ import annotations
 import html as _html
 from collections.abc import Mapping, Sequence
 
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.cycle_maturity import CycleMaturity
 
 
@@ -53,6 +54,32 @@ def _ordered_sectors(
     ordered_names = [name for name in canonical if name in sectors]
     ordered_names += [name for name in sectors if name not in canonical]
     return [(name, sectors[name]) for name in ordered_names if sectors[name] > 0]
+
+
+# MAIL-22: przewodnik „jak czytać ten mail” — tylko w pierwszym mailu deploymentu.
+READING_GUIDE_TITLE = "📖 Jak czytać ten mail"
+READING_GUIDE = (
+    "Pewność przy prognozie to deklarowana siła sygnału modelu, nie prawdopodobieństwo "
+    "trafienia — ile jest warta, pokazuje kalibracja w Track Recordzie.",
+    "KUP / SPRZEDAJ / TRZYMAJ to sygnał modelu i rady person, nie rekomendacja "
+    "inwestycyjna.",
+    "Wyniki portfela to paper-PnL: symulacja na papierze, bez realnych zleceń, "
+    "poślizgu i podatków.",
+    "Ile model naprawdę trafia, mówi sekcja 📈 Track Record w Zapleczu (trafność "
+    "kierunkowa, Brier, krzywa kapitału) — pierwsze liczby po kilku rozliczonych cyklach.",
+)
+
+
+def _reading_guide_html() -> str:
+    items = "".join(
+        f"<li style='margin: 2px 0;'>{_html.escape(sentence)}</li>" for sentence in READING_GUIDE
+    )
+    return (
+        "<h3 style='font-size: 14px; margin: 12px 0 4px 0; color: #1e3a8a;'>"
+        "📖 Jak czytać ten mail</h3>"
+        "<ul style='margin: 0; padding-left: 18px; font-size: 13px; "
+        f"color: #374151;'>{items}</ul>"
+    )
 
 
 def render_onboarding_html(
@@ -97,6 +124,7 @@ def render_onboarding_html(
         "to nie awaria, tylko brak historii."
         "</div>"
         f"{composition}"
+        f"{_reading_guide_html()}"
         "</div>"
     )
 
@@ -124,6 +152,7 @@ def render_onboarding_text(
     lines += [
         f"  • {name} — {count}" for name, count in _ordered_sectors(sectors, sector_order)
     ]
+    lines += ["", READING_GUIDE_TITLE, *(f"  • {sentence}" for sentence in READING_GUIDE)]
     return "\n".join(lines)
 
 
@@ -142,3 +171,38 @@ def onboarding_subject(
         f"👋 Dzień 1: startuję — buduję punkt odniesienia dla "
         f"{_instruments_label(instrument_count)}"
     )
+
+
+# Renderer nigdy nie decyduje o tonie — dostaje gotową klasyfikację z domeny
+# (brak = STEADY_STATE, czyli sekcji nie ma). Kolejność sektorów: kolejność
+# wstawienia mapy sektorów z configu.
+
+
+def _section_html(data: SectionInput) -> str:
+    context = data.context
+    return render_onboarding_html(
+        context.cycle_maturity or CycleMaturity.STEADY_STATE,
+        instrument_count=len(data.results),
+        sectors=context.portfolio_sectors or {},
+        sector_order=tuple(dict.fromkeys(data.sector_map.values())),
+    )
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    context = data.context
+    text = render_onboarding_text(
+        context.cycle_maturity or CycleMaturity.STEADY_STATE,
+        instrument_count=len(data.results),
+        sectors=context.portfolio_sectors or {},
+        sector_order=tuple(dict.fromkeys(data.sector_map.values())),
+    )
+    return text_block(text, spaced=True)
+
+
+# #4: powitanie pierwszego cyklu („Dzień 1”) zamiast ściany „Pominięte”.
+ONBOARDING_SECTION = ReportSection(
+    key="onboarding",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"cycle_maturity", "portfolio_sectors"}),
+)

@@ -65,14 +65,16 @@ FORBIDDEN_NONSECRET_KEYS = {
 }
 
 
-def _steps() -> list[dict[str, object]]:
+def _steps() -> list[dict[str, Any]]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    return spec["jobs"]["run-market-agent"]["steps"]
+    steps: list[dict[str, Any]] = spec["jobs"]["run-market-agent"]["steps"]
+    return steps
 
 
 def _run_agent_env() -> dict[str, object]:
     run_step = next(s for s in _steps() if str(s.get("run", "")).endswith("main_agent.py"))
-    return run_step.get("env", {})
+    env: dict[str, object] = run_step.get("env", {})
+    return env
 
 
 def test_all_required_secrets_are_mapped() -> None:
@@ -113,6 +115,8 @@ def test_dependency_sync_installs_anthropic_extra() -> None:
 PUBLIC_ARTIFACT_FLAGS = ("attestation_enabled", "public_scorecard_enabled")
 # Pliki ledgera atestacji (#16), które musi zabrać trwały `git push`.
 ATTESTATION_LEDGER_KEYS = ("attestation_commitments_path", "attestation_reveals_path")
+# WIA-59: głowa paper ledgera — ten sam katalog i ten sam push co ledger atestacji.
+PAPER_LEDGER_HEADS_KEY = "paper_ledger_heads_path"
 
 
 def _job_needs(job: Mapping[str, Any]) -> list[str]:
@@ -288,18 +292,15 @@ def test_real_fast_loop_publishes_the_scorecard_once_its_flag_is_on() -> None:
     assert _missing_publications(_repo_config(**SCORECARD_ONLY), steps) == []
 
 
-# BEZ-09: `web_digest_enabled` zapisuje PEŁNY prywatny digest (watchlista, a przy
-# `portfolio_positions_enabled` sekcja „💼 Twój portfel” z kwotami w zł) do
-# `web_digest_path` pod `public/`. Deploy Pages albo commit `public/` przez git
-# wypchnąłby go publicznie jedną flagą, więc flaga jest zakazana obok każdego
-# takiego kroku, a artefakt Pages to wyłącznie katalog publicznego scorecardu.
-PRIVATE_ARTIFACT_FLAGS = ("web_digest_enabled",)
+# BEZ-09 / WIA-16: artefakt Pages to wyłącznie katalog publicznego scorecardu.
+# Deploy zastępuje całą stronę, a pod `public/` leży też dziennik atestacji. Prywatny
+# digest nie leży już na dysku — web digest U3 zastąpiło prywatne archiwum MAIL-24
+# (BEZ-27), więc dawny zakaz flagi `web_digest_enabled` obok Pages zniknął z nią.
 PUBLIC_ROOT = "public"
+# `git add` bez listy ścieżek, który zgarnia całe drzewo (katalog roboczy).
+GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
 # Domyślny `path` akcji `actions/upload-pages-artifact`, gdy krok go nie podaje.
 PAGES_ARTIFACT_DEFAULT_PATH = "_site/"
-# `git add` bez listy ścieżek, który zgarnia całe drzewo — `public/` nie jest
-# w `.gitignore`, więc razem z nim leci digest.
-GIT_ADD_SWEEP_FLAGS = ("-A", "--all")
 # WIA-16: akcje gh-pages firm trzecich → (wejście z publikowanym katalogiem, jego
 # domyślna wartość). `publish_dir` ma domyślnie `./public`; `folder` jest wymagany,
 # więc brak wejścia liczymy jak całe drzewo.
@@ -328,10 +329,6 @@ def _normalized(path: str) -> str:
 def _contains(parent: str, path: str) -> bool:
     """Czy publikacja `parent` zabiera `path` (ten sam katalog albo jego wnętrze)."""
     return parent in (".", path) or path.startswith(parent + "/")
-
-
-def _overlaps(first: str, second: str) -> bool:
-    return _contains(first, second) or _contains(second, first)
 
 
 def _in_workdir(workdir: str, path: str) -> str:
@@ -386,13 +383,6 @@ def _third_party_pages_action(step: Mapping[str, Any]) -> tuple[str, str] | None
     return THIRD_PARTY_PAGES_ACTIONS.get(action)
 
 
-def _is_pages_deploy(step: Mapping[str, Any]) -> bool:
-    return (
-        str(step.get("uses", "")).startswith("actions/deploy-pages")
-        or _third_party_pages_action(step) is not None
-    )
-
-
 def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
     """Katalog, który krok wysyła na Pages: artefakt `actions/upload-pages-artifact`
     albo katalog akcji gh-pages firmy trzeciej (WIA-16)."""
@@ -406,28 +396,16 @@ def _pages_upload_path(step: Mapping[str, Any]) -> str | None:
     return _normalized(str(inputs.get("path", PAGES_ARTIFACT_DEFAULT_PATH)))
 
 
-def _private_digest_publication_violations(
+def _pages_publication_violations(
     config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
 ) -> list[str]:
-    """Kroki, które opublikowałyby prywatny digest: deploy Pages albo `git add`
-    katalogu `public/` przy włączonym `web_digest_enabled`, oraz artefakt Pages
-    inny niż katalog publicznego scorecardu (nigdy `public/` ani katalog digestu)."""
+    """Kroki, które wysyłają na Pages coś innego niż katalog publicznego scorecardu
+    (dirname `public_scorecard_path`) — nigdy całe `public/`."""
     scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
-    digest_dir = posixpath.dirname(_normalized(str(config["web_digest_path"])))
-    private_enabled = [flag for flag in PRIVATE_ARTIFACT_FLAGS if config.get(flag) is True]
     violations: list[str] = []
     for name, spec in workflows.items():
         for step in _workflow_steps(spec):
             label = f"{name}: {step.get('name') or step.get('uses') or step.get('run')}"
-            git_public = any(
-                _overlaps(path, PUBLIC_ROOT) for path in _git_added_paths(str(step.get("run", "")))
-            )
-            if private_enabled and (_is_pages_deploy(step) or git_public):
-                violations.append(
-                    f"{label} publikuje Pages albo `{PUBLIC_ROOT}/`, a config.toml włącza "
-                    f"{private_enabled} — prywatny digest (watchlista, kwoty portfela) "
-                    f"z `{digest_dir}/` trafiłby publicznie."
-                )
             upload = _pages_upload_path(step)
             if upload is None:
                 continue
@@ -436,10 +414,9 @@ def _private_digest_publication_violations(
                     f"{label} wysyła na Pages `{upload}` zamiast `{scorecard_dir}` "
                     f"(dirname `public_scorecard_path`)."
                 )
-            if _contains(upload, PUBLIC_ROOT) or _overlaps(upload, digest_dir):
+            if _contains(upload, PUBLIC_ROOT):
                 violations.append(
-                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/` albo "
-                    f"prywatny digest z `{digest_dir}/`."
+                    f"{label} wysyła na Pages `{upload}`, czyli całe `{PUBLIC_ROOT}/`."
                 )
     return violations
 
@@ -462,50 +439,10 @@ def _pages_steps(path: str | None = "public/scorecard") -> tuple[dict[str, Any],
     return upload, {"uses": "actions/deploy-pages@v4"}
 
 
-def test_pages_upload_never_includes_private_digest() -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow(*_pages_steps())
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        "git add public/scorecard public/attestation && git commit -m pages && git push",
-        "git add -A\ngit commit -m pages\ngit push",
-        "git add .; git push",
-        'git add -f "public/digest/index.html"',
-    ],
-)
-def test_git_publication_of_public_dir_forbids_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        'MODEL_PATH="data/models/price_predictor.ubj"\ngit add "$MODEL_PATH"\ngit push',
-        "git add data/models/price_predictor.ubj && git commit -m weights && git push",
-    ],
-)
-def test_git_commit_outside_public_dir_allows_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert violations == []
-
-
 @pytest.mark.parametrize("path", ["public/scorecard", "./public/scorecard/"])
 def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(*_pages_steps(path))
     )
 
     assert violations == []
@@ -513,21 +450,21 @@ def test_pages_upload_of_the_scorecard_dir_alone_is_allowed(path: str) -> None:
 
 @pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
 def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(*_pages_steps(path))
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(*_pages_steps(path))
     )
 
     assert violations, f"artefakt Pages `{path}` przeszedł strażnika"
 
 
 def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
-    config = _repo_config(web_digest_enabled=False, public_scorecard_path="public/index.html")
+    config = _repo_config(public_scorecard_path="public/index.html")
 
-    violations = _private_digest_publication_violations(
+    violations = _pages_publication_violations(
         config, _synthetic_workflow(*_pages_steps("public"))
     )
 
-    assert violations, "artefakt Pages `public` zabrałby `public/digest/`"
+    assert violations, "artefakt Pages `public` zabrałby `public/attestation/`"
 
 
 # WIA-16: akcje gh-pages firm trzecich i `git -C <dir> add` publikują tak samo jak
@@ -546,25 +483,14 @@ def _third_party_pages_step(uses: str, key: str, path: str | None) -> dict[str, 
 
 
 @pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
-def test_third_party_pages_action_forbids_private_digest(uses: str, key: str) -> None:
-    step = _third_party_pages_step(uses, key, "./public/scorecard")
-
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow(step)
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-@pytest.mark.parametrize(("uses", "key"), THIRD_PARTY_PAGES_STEPS)
 @pytest.mark.parametrize("path", ["public", "./public/", "public/digest", ".", None])
 def test_third_party_pages_action_must_publish_the_scorecard_dir(
     uses: str, key: str, path: str | None
 ) -> None:
     step = _third_party_pages_step(uses, key, path)
 
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(step)
     )
 
     assert violations, f"{uses} z `{key}: {path}` przeszedł strażnika"
@@ -576,47 +502,102 @@ def test_third_party_pages_action_of_the_scorecard_dir_alone_is_allowed(
 ) -> None:
     step = _third_party_pages_step(uses, key, "public/scorecard")
 
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=False), _synthetic_workflow(step)
+    violations = _pages_publication_violations(
+        _repo_config(), _synthetic_workflow(step)
     )
 
     assert violations == []
 
 
-@pytest.mark.parametrize(
-    "script",
-    [
-        "git -C public add . && git -C public commit -m pages && git -C public push",
-        "git -C public add -A",
-        "git -C public/scorecard add index.html && git push",
-        'git -C "./public" add "digest/index.html"',
-    ],
-)
-def test_git_dash_c_add_of_public_dir_forbids_private_digest(script: str) -> None:
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert any("prywatny digest" in violation for violation in violations), violations
-
-
-def test_git_dash_c_add_outside_public_dir_allows_private_digest() -> None:
-    script = "git -C data/models add price_predictor.ubj && git -C data/models push"
-
-    violations = _private_digest_publication_violations(
-        _repo_config(web_digest_enabled=True), _synthetic_workflow({"run": script})
-    )
-
-    assert violations == []
-
-
-def test_real_workflows_never_publish_private_digest() -> None:
+def test_real_workflows_publish_only_the_scorecard_dir() -> None:
     workflows = _all_workflow_specs()
     assert {"fast_loop_12h.yml", "slow_loop_weekly.yml"} <= set(workflows)
 
-    violations = _private_digest_publication_violations(_repo_config(), workflows)
+    violations = _pages_publication_violations(_repo_config(), workflows)
 
     assert not violations, violations
+
+
+# WIA-62: trwała publikacja to WYŁĄCZNIE katalogi publicznych artefaktów — scorecardu
+# (Pages, razem ze `scorecard.json` i stroną statusu) i ledgera atestacji (git push na
+# `attestation-log`). Każda inna ścieżka w artefakcie Pages albo w `git add` jobu, który
+# pushuje, to nowy publiczny artefakt bez decyzji (i bez strażników anty-PII).
+PUBLIC_ARTIFACT_PATH_KEYS = ("public_scorecard_path", *ATTESTATION_LEDGER_KEYS)
+
+
+def _public_artifact_dirs(config: Mapping[str, Any]) -> set[str]:
+    return {posixpath.dirname(_normalized(str(config[key]))) for key in PUBLIC_ARTIFACT_PATH_KEYS}
+
+
+def _published_paths(spec: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """(job, ścieżka) każdej publikacji: artefakt Pages i `git add` w jobie z `git push`."""
+    published: list[tuple[str, str]] = []
+    for name, job in (spec.get("jobs") or {}).items():
+        steps = job.get("steps", [])
+        scripts = [str(step.get("run", "")) for step in steps]
+        pushes = any(_git_pushes(script) for script in scripts)
+        for step in steps:
+            upload = _pages_upload_path(step)
+            if upload is not None:
+                published.append((name, upload))
+        if pushes:
+            published += [(name, path) for script in scripts for path in _git_added_paths(script)]
+    return published
+
+
+def _unexpected_publications(
+    config: Mapping[str, Any], workflows: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    allowed = _public_artifact_dirs(config)
+    return [
+        f"{workflow}/{job}: {path}"
+        for workflow, spec in workflows.items()
+        for job, path in _published_paths(spec)
+        if not any(_contains(directory, path) for directory in allowed)
+    ]
+
+
+def test_status_page_lives_inside_the_pages_artifact() -> None:
+    # NIEZ-33: strona statusu wychodzi deployem scorecardu — poza jego katalogiem nie
+    # trafiłaby na Pages, a osobny artefakt podmieniłby całą witrynę.
+    config = _repo_config()
+    scorecard_dir = posixpath.dirname(_normalized(str(config["public_scorecard_path"])))
+
+    assert _contains(scorecard_dir, _normalized(str(config["public_status_path"])))
+
+
+def test_workflows_publish_only_the_public_artifact_dirs() -> None:
+    assert _unexpected_publications(_repo_config(), _all_workflow_specs()) == []
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ({"uses": "actions/upload-pages-artifact@v3", "with": {"path": "public"}},),
+        ({"uses": "actions/upload-pages-artifact@v3"},),
+        ({"run": "git add data/models/price_predictor.ubj && git commit -m w && git push"},),
+        ({"run": "git add -A"}, {"run": "git commit -m all && git push"}),
+    ],
+)
+def test_publication_guard_catches_a_path_outside_the_public_artifacts(
+    steps: tuple[dict[str, Any], ...],
+) -> None:
+    assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) != []
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ({"uses": "actions/upload-pages-artifact@v3", "with": {"path": "public/scorecard"}},),
+        ({"run": "git -C public/attestation add commitments.jsonl reveals.jsonl\ngit push"},),
+        # `git add` bez pusha w tym samym jobie niczego nie publikuje.
+        ({"run": "git add data/models/price_predictor.ubj"},),
+    ],
+)
+def test_publication_guard_accepts_the_scorecard_and_the_ledger(
+    steps: tuple[dict[str, Any], ...],
+) -> None:
+    assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) == []
 
 
 # WIA-16/WIA-52: deploy publicznego scorecardu na Pages. Artefakt to sam katalog
@@ -750,7 +731,8 @@ def _slow_loop_trainer_env() -> dict[str, object]:
     spec = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     steps = [s for job in spec["jobs"].values() for s in job.get("steps", [])]
     run_step = next(s for s in steps if str(s.get("run", "")).endswith("main_trainer.py"))
-    return run_step.get("env", {})
+    env: dict[str, object] = run_step.get("env", {})
+    return env
 
 
 def test_slow_loop_maps_real_alpha_vantage_secret() -> None:
@@ -829,11 +811,41 @@ def test_slow_loop_uploads_the_weights_file_to_the_model_release() -> None:
     assert dict(upload.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
 
 
+def test_slow_loop_uploads_the_training_sidecar_next_to_the_weights() -> None:
+    # ML-22: sidecar `.json` (odcisk zbioru, parametry, wersje) idzie do Release
+    # razem z wagami — inaczej proweniencja wag z Release ginęłaby z runnerem.
+    upload = _release_step(_workflow_steps(_slow_loop_spec()), "gh release upload")
+    assert upload is not None
+    run = str(upload.get("run", ""))
+
+    assert 'SIDECAR="${MODEL_PATH%.ubj}.json"' in run
+    assert 'gh release upload model-latest "$SIDECAR" --clobber' in run
+    # Sidecar powstaje tylko z wagami; jego brak nie może wywrócić kroku (bash -e).
+    assert 'if [ -f "$SIDECAR" ]; then' in run
+
+
 def test_slow_loop_runs_queue_instead_of_cancelling() -> None:
     concurrency = _slow_loop_spec().get("concurrency") or {}
 
     assert concurrency.get("group") == "slow-loop"
     assert concurrency.get("cancel-in-progress") is False
+
+
+# FIN-18 (G81): anulowanie zabijało run, który już zapłacił za LLM — i przerywało push
+# ledgera atestacji (WIA-14). Następny run czeka w kolejce, zamiast ubijać poprzedni.
+def test_fast_loop_does_not_cancel_a_paid_run_in_progress() -> None:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    concurrency = spec.get("concurrency") or {}
+
+    assert concurrency.get("group") == "fast-loop"
+    assert concurrency.get("cancel-in-progress") is False
+
+
+def test_fast_loop_workflow_is_named_daily_not_12h() -> None:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+    assert str(spec["name"]).startswith("🟢 Fast Loop (daily"), spec["name"]
+    assert WORKFLOW.name == "fast_loop_12h.yml"
 
 
 def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
@@ -848,6 +860,56 @@ def test_fast_loop_downloads_the_weights_before_the_agent_runs() -> None:
     assert posixpath.basename(model_path) in run
     assert posixpath.dirname(model_path) in run
     assert dict(download.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
+
+
+# ML-33: challengerzy nogi ML jadą tym samym Release co champion — Slow Loop wysyła
+# wagi klasyfikatora kierunku ML-30 (plik `<champion>_direction.ubj`), Fast Loop
+# pobiera wagi każdego challengera z config.toml przed agentem; brak assetu nie jest błędem.
+def _direction_weights_path() -> str:
+    stem, suffix = posixpath.splitext(_ml_model_path())
+    return f"{stem}_direction{suffix}"
+
+
+def _steps_naming(steps: list[dict[str, Any]], command: str, path: str) -> list[dict[str, Any]]:
+    return [
+        step
+        for step in steps
+        if f"{command} {MODEL_RELEASE_TAG}" in str(step.get("run", ""))
+        and posixpath.basename(path) in str(step.get("run", "")) + str(step.get("env", ""))
+    ]
+
+
+def test_slow_loop_uploads_the_direction_challenger_weights() -> None:
+    uploads = _steps_naming(
+        _workflow_steps(_slow_loop_spec()), "gh release upload", _direction_weights_path()
+    )
+
+    assert len(uploads) == 1, "Slow Loop nie wysyła wag challengera kierunku do Release"
+    (upload,) = uploads
+    run = str(upload.get("run", ""))
+    assert _direction_weights_path() in str(upload.get("env", "")) + run
+    assert "--clobber" in run
+    # Wagi istnieją tylko, gdy klasyfikator przeszedł bramkę w tym runie (bash -e).
+    assert '[ ! -f "$CHALLENGER_PATH" ]' in run
+    assert str(upload.get("if", "")).replace(" ", "") == "${{!cancelled()}}"
+    assert dict(upload.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}"
+
+
+def test_fast_loop_downloads_every_configured_challenger_before_the_agent() -> None:
+    steps = _steps()
+    agent = next(s for s in steps if str(s.get("run", "")).endswith("main_agent.py"))
+    challengers = _repo_config()["ml_challengers"]
+
+    assert challengers, "config.toml nie ma challengerów — test nie miałby czego sprawdzić"
+    for challenger in challengers:
+        downloads = _steps_naming(steps, "gh release download", challenger["path"])
+        assert len(downloads) == 1, f"Fast Loop nie pobiera wag challengera {challenger['name']}"
+        (download,) = downloads
+        run = str(download.get("run", ""))
+        assert steps.index(download) < steps.index(agent)
+        assert posixpath.dirname(challenger["path"]) in run
+        # Brak assetu (klasyfikator jeszcze nie przeszedł bramki) nie wywraca joba.
+        assert run.lstrip().startswith("if gh release download")
 
 
 def test_slow_loop_write_permission_is_scoped_to_the_trainer_job() -> None:
@@ -884,7 +946,7 @@ def _jobs_injecting_csv_secret() -> list[tuple[str, list[dict[str, object]]]]:
     return found
 
 
-def _is_mask_step(step: dict[str, object]) -> bool:
+def _is_mask_step(step: dict[str, Any]) -> bool:
     env = dict(step.get("env") or {})
     run = str(step.get("run", ""))
     return env.get(CSV_SECRET) == CSV_SECRET_REF and (
@@ -1004,7 +1066,7 @@ def test_env_example_ships_a_session_pooler_db_url_placeholder() -> None:
 FAST_LOOP_WORKFLOW = "fast_loop_12h.yml"
 
 
-def _active_schedule(spec: Mapping[str, Any]) -> list[Any]:
+def _active_schedule(spec: Mapping[Any, Any]) -> list[Any]:
     """Wpisy `schedule` workflow; zakomentowany blok = pusta lista."""
     # PyYAML (YAML 1.1) czyta gołe `on:` jako klucz True.
     triggers = spec.get("on", spec.get(True)) or {}
@@ -1077,7 +1139,7 @@ def _resume_ready_config(**overrides: Any) -> dict[str, Any]:
     return {**config, **overrides}
 
 
-def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -> dict[Any, Any]:
     step: dict[str, Any] = {"run": f"uv run python {entrypoint}"}
     if env is not None:
         step["env"] = dict(env)
@@ -1089,7 +1151,7 @@ def _scheduled_workflow(entrypoint: str, env: Mapping[str, Any] | None = None) -
 _AGENT_ENV = {"PAID_CALLS_ENABLED": "true", "DB_WRITES_ENABLED": "true"}
 
 
-def _resume_ready_workflows() -> dict[str, dict[str, Any]]:
+def _resume_ready_workflows() -> dict[str, dict[Any, Any]]:
     return {
         FAST_LOOP_WORKFLOW: _scheduled_workflow("main_agent.py", _AGENT_ENV),
         "deadman_daily.yml": _scheduled_workflow("main_deadman.py"),
@@ -1245,3 +1307,381 @@ def test_no_workflow_installs_a_tool_at_latest() -> None:
     ]
 
     assert latest == []
+
+
+# WIA-14: ledger atestacji żyje na osieroconej, chronionej gałęzi `attestation-log`.
+# Agent dopisuje do checkoutu tej gałęzi (bez checkoutu świeży runner zaczynałby
+# pusty plik i zgubił historię), a push robi osobny job z `contents: write` — job z
+# kluczami API nie dostaje prawa zapisu do repo. Flagi `attestation_enabled` i
+# `public_scorecard_enabled` zostają off do kroków z docs/resume-checklist.md.
+LEDGER_BRANCH = "attestation-log"
+LEDGER_AGENT_JOB = "run-market-agent"
+LEDGER_SKIP_CI = "[skip ci]"
+# Sekrety, które wolno mieć jobowi z prawem zapisu: wyłącznie mail o jego porażce.
+LEDGER_JOB_ALLOWED_SECRETS = {"RESEND_API_KEY", "DIGEST_TO_EMAIL"}
+
+
+def _fast_loop_spec() -> dict[str, Any]:
+    spec: dict[str, Any] = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return spec
+
+
+def _ledger_dir() -> str:
+    """Katalog obu plików ledgera z config.toml — musi być jeden, bo to jeden checkout."""
+    config = _repo_config()
+    directories = {
+        posixpath.dirname(_normalized(str(config[key]))) for key in ATTESTATION_LEDGER_KEYS
+    }
+    assert len(directories) == 1, f"pliki ledgera w różnych katalogach: {sorted(directories)}"
+    return directories.pop()
+
+
+def _jobs_pushing(spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    jobs: Mapping[str, Any] = spec.get("jobs") or {}
+    return {
+        name: job
+        for name, job in jobs.items()
+        if any(_git_pushes(str(step.get("run", ""))) for step in job.get("steps", []))
+    }
+
+
+def _ledger_checkout(steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next(
+        (
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/checkout")
+            and dict(step.get("with") or {}).get("ref") == LEDGER_BRANCH
+        ),
+        None,
+    )
+
+
+def test_fast_loop_checks_out_the_ledger_branch_before_the_agent_runs() -> None:
+    steps = _steps()
+    checkout = _ledger_checkout(steps)
+    agent = next(s for s in steps if str(s.get("run", "")).endswith("main_agent.py"))
+
+    assert checkout is not None, f"Fast Loop nie robi checkoutu gałęzi `{LEDGER_BRANCH}`"
+    assert steps.index(checkout) < steps.index(agent)
+    assert dict(checkout["with"])["path"] == _ledger_dir()
+
+
+def test_ledger_checkout_in_the_agent_job_leaves_no_push_credentials() -> None:
+    checkout = _ledger_checkout(_steps())
+
+    assert checkout is not None
+    assert dict(checkout["with"]).get("persist-credentials") is False
+
+
+def _ledger_job() -> tuple[str, dict[str, Any]]:
+    """Jedyny job Fast Loopa z `git push`; jego brak to porażka asercji, nie wyjątek."""
+    pushing = _jobs_pushing(_fast_loop_spec())
+    assert len(pushing) == 1, f"push ledgera powinien być w jednym jobie, jest: {sorted(pushing)}"
+    ((name, job),) = pushing.items()
+    return name, job
+
+
+def test_ledger_is_pushed_by_one_separate_job_that_waits_for_the_agent() -> None:
+    name, job = _ledger_job()
+
+    assert name != LEDGER_AGENT_JOB
+    assert LEDGER_AGENT_JOB in _job_needs(job)
+    assert not any("main_agent.py" in str(s.get("run", "")) for s in job["steps"])
+
+
+def test_only_the_ledger_job_has_write_access_to_the_repo() -> None:
+    spec = _fast_loop_spec()
+    name, job = _ledger_job()
+    jobs: Mapping[str, Any] = spec["jobs"]
+
+    assert dict(job.get("permissions") or {}).get("contents") == "write"
+    assert "write" not in dict(spec.get("permissions") or {}).values()
+    others = {
+        other: dict(body.get("permissions") or {}).get("contents")
+        for other, body in jobs.items()
+        if other != name
+    }
+    assert "write" not in others.values(), others
+
+
+def test_the_ledger_job_holds_no_api_secret() -> None:
+    _, job = _ledger_job()
+
+    referenced = set(re.findall(r"secrets\.(\w+)", yaml.safe_dump(job)))
+
+    assert referenced <= LEDGER_JOB_ALLOWED_SECRETS, referenced - LEDGER_JOB_ALLOWED_SECRETS
+
+
+def _ledger_publish_step() -> dict[str, Any]:
+    _, job = _ledger_job()
+    return next(s for s in job["steps"] if _git_pushes(str(s.get("run", ""))))
+
+
+def test_ledger_push_goes_only_to_the_ledger_branch_never_to_main() -> None:
+    for name, spec in _all_workflow_specs().items():
+        for job_name, job in _jobs_pushing(spec).items():
+            for step in job["steps"]:
+                for _, subcommand, args in _git_commands(str(step.get("run", ""))):
+                    if subcommand != "push":
+                        continue
+                    refspecs = [arg for arg in args if not arg.startswith("-")]
+                    assert refspecs, f"{name}:{job_name}: `git push` bez jawnego refspeca"
+                    assert all(
+                        ref.split(":")[-1].removeprefix("refs/heads/") == LEDGER_BRANCH
+                        for ref in refspecs[1:]
+                    ), f"{name}:{job_name}: push poza `{LEDGER_BRANCH}`: {refspecs}"
+
+
+def test_ledger_commit_skips_ci_and_the_push_rebases_and_retries() -> None:
+    script = str(_ledger_publish_step()["run"])
+    commands = _git_commands(script)
+    commits = [args for _, sub, args in commands if sub == "commit"]
+
+    assert commits and all(LEDGER_SKIP_CI in " ".join(args) for args in commits)
+    assert any(sub == "pull" and "--rebase" in args for _, sub, args in commands), (
+        "push ledgera bez `git pull --rebase`"
+    )
+    assert re.search(r"\b(for|while|until)\b", script), "push ledgera bez pętli ponowień"
+
+
+def test_the_ledger_job_runs_even_when_the_agent_job_failed() -> None:
+    # Predykcje zapisane przed awarią (exit 1, gdy padły wszystkie symbole) mają
+    # już commitment w bazie, więc ich hash musi trafić do ledgera mimo porażki joba.
+    _, job = _ledger_job()
+
+    assert "!cancelled()" in str(job.get("if", ""))
+
+
+def test_ledger_artifact_is_uploaded_even_when_the_agent_step_failed() -> None:
+    uploads = [
+        step
+        for step in _steps()
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+        and "ledger" in str(dict(step.get("with") or {}).get("name", ""))
+    ]
+
+    assert len(uploads) == 1, "agent nie wysyła artefaktu ledgera do jobu z pushem"
+    assert "!cancelled()" in str(uploads[0].get("if", ""))
+
+
+def test_ledger_artifact_carries_both_ledger_files_from_config() -> None:
+    upload = next(
+        step
+        for step in _steps()
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+        and "ledger" in str(dict(step.get("with") or {}).get("name", ""))
+    )
+    config = _repo_config()
+
+    uploaded = {
+        _normalized(line)
+        for line in str(dict(upload["with"])["path"]).splitlines()
+        if line.strip()
+    }
+
+    assert uploaded == {
+        _normalized(str(config[key]))
+        for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
+    }
+
+
+def test_publish_step_commits_the_paper_ledger_heads_next_to_the_ledger() -> None:
+    """WIA-59: głowa paper ledgera leży obok ledgera atestacji i idzie tym samym pushem."""
+    config = _repo_config()
+    heads = _normalized(str(config[PAPER_LEDGER_HEADS_KEY]))
+    publish = _jobs_pushing(_fast_loop_spec())
+    scripts = [str(step.get("run", "")) for job in publish.values() for step in job["steps"]]
+
+    assert posixpath.dirname(heads) == _ledger_dir()
+    assert any(
+        _contains(path, heads) for script in scripts for path in _git_added_paths(script)
+    )
+
+
+def test_publish_step_commits_the_paper_ledger_heads_it_got(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    heads = '{"head": "' + "a" * 64 + '", "kind": "paper_ledger_head"}\n'
+    ledger_remote.stage_artifact('{"n": 1}\n')
+    artifact = ledger_remote.workspace / "ledger-artifact"
+    (artifact / "paper_ledger_heads.jsonl").write_text(heads, encoding="utf-8")
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ledger_remote.published("paper_ledger_heads.jsonl") == [heads.strip()]
+
+
+def test_real_fast_loop_publishes_the_attestation_ledger_once_its_flag_is_on() -> None:
+    steps = _agent_workflows()[FAST_LOOP_WORKFLOW]
+
+    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == []
+
+
+# Skrypt kroku pusha uruchamiamy naprawdę, na lokalnym "origin" w katalogu tymczasowym:
+# to jedyny dowód, że dopisanie nie gubi linii innego przebiegu i że ponowienia działają.
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_COMMITTER_EMAIL": "test@example.com",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        env={**os.environ, **_GIT_ENV},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+class _LedgerRemote:
+    """Bare `origin` z gałęzią `attestation-log` i checkout w układzie runnera."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.origin = root / "origin.git"
+        self.workspace = root / "workspace"
+        self.checkout = self.workspace / "public" / "attestation"
+        branch = f"--initial-branch={LEDGER_BRANCH}"
+        _git(root, "init", "--quiet", "--bare", branch, str(self.origin))
+        seed = root / "seed"
+        _git(root, "clone", "--quiet", str(self.origin), str(seed))
+        _git(seed, "checkout", "--quiet", "-b", LEDGER_BRANCH)
+        (seed / "commitments.jsonl").write_text('{"n": 1}\n', encoding="utf-8")
+        (seed / "reveals.jsonl").write_text("", encoding="utf-8")
+        _git(seed, "add", ".")
+        _git(seed, "commit", "--quiet", "-m", "ledger: init [skip ci]")
+        _git(seed, "push", "--quiet", "origin", LEDGER_BRANCH)
+        self.seed = seed
+        self.workspace.mkdir()
+        (self.workspace / "public").mkdir()
+        _git(
+            root,
+            *("clone", "--quiet", "--branch", LEDGER_BRANCH, str(self.origin), str(self.checkout)),
+        )
+        self.base = _git(self.checkout, "rev-parse", "HEAD")
+
+    def stage_artifact(self, commitments: str, reveals: str = "") -> None:
+        artifact = self.workspace / "ledger-artifact"
+        artifact.mkdir(exist_ok=True)
+        (artifact / "commitments.jsonl").write_text(commitments, encoding="utf-8")
+        (artifact / "reveals.jsonl").write_text(reveals, encoding="utf-8")
+
+    def push_from_another_run(self, line: str) -> None:
+        with (self.seed / "commitments.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(line)
+        _git(self.seed, "commit", "--quiet", "-am", "ledger: other run [skip ci]")
+        _git(self.seed, "push", "--quiet", "origin", LEDGER_BRANCH)
+
+    def run_publish_step(self, **env: str) -> subprocess.CompletedProcess[str]:
+        script = str(_ledger_publish_step()["run"])
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=self.workspace,
+            env={
+                **os.environ,
+                **_GIT_ENV,
+                "LEDGER_BASE": self.base,
+                "GITHUB_RUN_ID": "4242",
+                "LEDGER_RETRY_DELAY_SECONDS": "0",
+                **env,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def published(self, name: str = "commitments.jsonl") -> list[str]:
+        blob = f"{LEDGER_BRANCH}:{name}"
+        return _git(self.root, f"--git-dir={self.origin}", "show", blob).splitlines()
+
+    def history(self) -> list[str]:
+        return _git(
+            self.root, f"--git-dir={self.origin}", "log", "--format=%s", LEDGER_BRANCH
+        ).splitlines()
+
+
+@pytest.fixture
+def ledger_remote(tmp_path: Path) -> _LedgerRemote:
+    return _LedgerRemote(tmp_path)
+
+
+def test_publish_step_appends_the_new_lines_in_a_skip_ci_commit(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    ledger_remote.stage_artifact('{"n": 1}\n{"n": 2}\n')
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ledger_remote.published() == ['{"n": 1}', '{"n": 2}']
+    assert ledger_remote.history() == ["ledger: run 4242 [skip ci]", "ledger: init [skip ci]"]
+
+
+def test_publish_step_keeps_lines_another_run_pushed_in_the_meantime(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    ledger_remote.stage_artifact('{"n": 1}\n{"n": 2}\n')
+    ledger_remote.push_from_another_run('{"n": 3}\n')
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sorted(ledger_remote.published()) == ['{"n": 1}', '{"n": 2}', '{"n": 3}']
+    assert ledger_remote.history()[-1] == "ledger: init [skip ci]"
+    assert len(ledger_remote.history()) == 3
+
+
+def test_publish_step_pushes_nothing_when_the_ledger_did_not_change(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    ledger_remote.stage_artifact('{"n": 1}\n')
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ledger_remote.history() == ["ledger: init [skip ci]"]
+
+
+def _reject_first_pushes(remote: _LedgerRemote, count: int) -> None:
+    hook = remote.origin / "hooks" / "pre-receive"
+    counter = remote.root / "rejected"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
+        f'if [ "$n" -lt {count} ]; then echo $((n + 1)) > "{counter}"; exit 1; fi\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+
+def test_publish_step_retries_a_rejected_push(ledger_remote: _LedgerRemote) -> None:
+    ledger_remote.stage_artifact('{"n": 1}\n{"n": 2}\n')
+    _reject_first_pushes(ledger_remote, count=2)
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ledger_remote.published() == ['{"n": 1}', '{"n": 2}']
+
+
+def test_publish_step_fails_loudly_when_every_push_is_rejected(
+    ledger_remote: _LedgerRemote,
+) -> None:
+    ledger_remote.stage_artifact('{"n": 1}\n{"n": 2}\n')
+    _reject_first_pushes(ledger_remote, count=99)
+
+    result = ledger_remote.run_publish_step()
+
+    assert result.returncode != 0
+    assert "::error" in result.stdout
+    assert ledger_remote.published() == ['{"n": 1}']

@@ -31,22 +31,34 @@ from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
     LatestPrediction,
+    OpenInvalidation,
     OpenReferenceCall,
     PositionsImportPort,
     PreviousVerdict,
     RepositoryPort,
     StoredReceipt,
+    StoredShockAlert,
 )
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
 from src.domain.council import InvestorOpinion
+from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.earnings import CachedEarningsDate
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
-from src.domain.persona_track_record import PersonaVoteOutcome
+from src.domain.paper_ledger import (
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+)
+from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -93,6 +105,9 @@ class ReadOnlyRepository(RepositoryPort):
     READ_METHODS: ClassVar[frozenset[str]] = frozenset({
         "get_last_price",
         "get_price_history",
+        "get_paper_trades",
+        "get_open_invalidations",
+        "get_paper_ledger_head",
         "get_last_prediction_price",
         "get_latest_prediction",
         "get_latest_regime_state",
@@ -113,6 +128,9 @@ class ReadOnlyRepository(RepositoryPort):
         "get_persona_accuracy",
         "get_persona_track_record",
         "get_persona_vote_outcomes",
+        "get_persona_scoring",
+        "get_council_vote_samples",
+        "count_expired_unverified",
         "get_deferred_diagnoses",
         "get_resolved_predictions_detailed",
         "get_settled_moves",
@@ -124,15 +142,20 @@ class ReadOnlyRepository(RepositoryPort):
         "get_last_scorecard_at",
         "probe_database",
         "missing_prediction_columns",
+        "schema_version",
         "get_last_price_snapshot",
         "get_sent_shock_alerts",
         "get_shock_alert_times",
+        "get_shock_alerts_since",
+        "get_last_report_at",
         "get_active_price_levels",
         "get_previous_verdict",
         "get_recent_model_scorecards",
         "get_council_vote_history",
         "get_reference_reads",
         "get_open_reference_calls",
+        "get_cycle_runs_since",
+        "get_settled_shadow_predictions",
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
         "save_price_snapshot",
@@ -158,6 +181,11 @@ class ReadOnlyRepository(RepositoryPort):
         "save_cycle_run",
         "save_reference_read",
         "settle_reference_call",
+        "save_corporate_action",
+        "save_shadow_predictions",
+        "append_paper_trade",
+        "close_paper_trade",
+        "mark_invalidation_alerted",
     })
 
     def __init__(self, delegate: RepositoryPort) -> None:
@@ -221,9 +249,17 @@ class ReadOnlyRepository(RepositoryPort):
         return self._delegate.get_recent_quota_alerts(hours)
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        return self._delegate.find_similar_predictions(embedding, limit=limit, regime=regime)
+        return self._delegate.find_similar_predictions(
+            embedding, limit=limit, regime=regime, symbol=symbol, before=before
+        )
 
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         return self._delegate.get_council_votes_for_prediction(prediction_id)
@@ -247,6 +283,15 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
         return self._delegate.get_persona_vote_outcomes(window_days=window_days)
+
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        return self._delegate.get_persona_scoring(window_days=window_days)
+
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        return self._delegate.get_council_vote_samples(window_days=window_days)
+
+    def count_expired_unverified(self, days: int) -> int:
+        return self._delegate.count_expired_unverified(days)
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)
@@ -285,6 +330,9 @@ class ReadOnlyRepository(RepositoryPort):
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         return self._delegate.missing_prediction_columns(columns)
 
+    def schema_version(self) -> int | None:
+        return self._delegate.schema_version()
+
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
         return self._delegate.get_last_price_snapshot(symbol)
 
@@ -293,6 +341,12 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         return self._delegate.get_shock_alert_times(since)
+
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        return self._delegate.get_shock_alerts_since(since)
+
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        return self._delegate.get_last_report_at(before)
 
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
         return self._delegate.get_active_price_levels()
@@ -320,6 +374,13 @@ class ReadOnlyRepository(RepositoryPort):
     def get_open_reference_calls(self) -> list[OpenReferenceCall]:
         return self._delegate.get_open_reference_calls()
 
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        return self._delegate.get_cycle_runs_since(since)
+
+
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        return self._delegate.get_settled_shadow_predictions(since)
+
     # ----- zapisy (pomijane) -----
 
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
@@ -340,6 +401,11 @@ class ReadOnlyRepository(RepositoryPort):
     ) -> None:
         self._skipped.skip("save_regime_state")
 
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        self._skipped.skip("save_shadow_predictions")
+
     def save_prediction(self, prediction: dict[str, Any]) -> str:
         self._skipped.skip("save_prediction")
         return f"{DRY_RUN_PREDICTION_PREFIX}{uuid.uuid4()}"
@@ -359,6 +425,7 @@ class ReadOnlyRepository(RepositoryPort):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         self._skipped.skip("update_prediction_accuracy")
 
@@ -431,6 +498,28 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         self._skipped.skip("save_reference_read")
+
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        self._skipped.skip("save_corporate_action")
+
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        self._skipped.skip("append_paper_trade")
+        return None
+
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        self._skipped.skip("close_paper_trade")
+
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        return self._delegate.get_paper_trades(days)
+
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        return self._delegate.get_paper_ledger_head()
+
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        return self._delegate.get_open_invalidations(since)
+
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        self._skipped.skip("mark_invalidation_alerted")
 
     def settle_reference_call(
         self,

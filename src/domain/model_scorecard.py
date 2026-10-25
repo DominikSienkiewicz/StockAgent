@@ -1,10 +1,13 @@
 # src/domain/model_scorecard.py
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from types import MappingProxyType
+
+from src.domain.training_provenance import TrainingProvenance
 
 # Karta kondycji modelu — czysta domena eksponująca dowód rzetelności retreningu.
 # Repo shipuje model tylko, jeśli bije naiwny baseline persystencji („zwrot=0"),
@@ -17,6 +20,13 @@ from enum import Enum
 # Symbol wiersza karty modelu wspólnego (ML-13) — jedynego, który zapisuje wagi.
 # Werdykt główny karty bierze się z tego wiersza (decyzja 3 z 2026-10-18).
 POOLED_MODEL_SYMBOL = "ALL"
+
+# ML-52: karty modeli ewaluowanych na wektorach `feature_snapshots` (bez zapisu
+# wag): cechy darmowe na wszystkich cyklach i wektor modelu tylko na cyklach gated.
+# Nie są ewaluacjami per symbol ani werdyktem modelu wspólnego.
+FREE_SNAPSHOT_MODEL_SYMBOL = "ALL_FREE"
+LLM_SNAPSHOT_MODEL_SYMBOL = "ALL_LLM"
+SNAPSHOT_MODEL_SYMBOLS = frozenset({FREE_SNAPSHOT_MODEL_SYMBOL, LLM_SNAPSHOT_MODEL_SYMBOL})
 
 # Model starszy niż tyle dni traktujemy jako nieświeży (STALE). Próg zamrożony
 # jako stała modułu — pojedyncze źródło prawdy dla reguły świeżości.
@@ -66,35 +76,131 @@ def is_stale(trained_at: datetime, now: datetime) -> bool:
 
 
 class TrainingOutcome(Enum):
-    """Domenowy status pojedynczego przebiegu treningu per-symbol.
+    """Domenowy werdykt pojedynczego przebiegu treningu albo ewaluacji.
 
     - `ACCEPTED`  — kandydat pobił baseline, model zaszipowany.
     - `REJECTED`  — kandydat gorszy od baseline'u, retrain odrzucony.
     - `SKIPPED`   — trening nie mógł się odbyć (np. za mało próbek).
+    - `EVALUATION_PASSED` / `EVALUATION_FAILED` — sama ewaluacja walk-forward bez
+      zapisu wag (ML-13, per symbol): kandydat przeszedł albo nie przeszedł bramki.
     """
 
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     SKIPPED = "skipped"
+    EVALUATION_PASSED = "evaluation_passed"
+    EVALUATION_FAILED = "evaluation_failed"
 
 
-# Mapowanie stringów `status` z `train()` (infrastruktura) na domenowe outcome.
-# Trzymane jako literały, bo domena nie importuje infrastruktury; komentarz
-# wiąże je z `XGBoostAdapter.train()`.
-_STATUS_TO_OUTCOME = {
-    "trained_successfully": TrainingOutcome.ACCEPTED,
-    "skipped_validation_failed": TrainingOutcome.REJECTED,
-}
+class TargetUnit(Enum):
+    """ML-11: jednostka targetu modelu — surowy zwrot albo zwrot / σ symbolu
+    (`return_sigma`). Model w jednostkach σ serwuje prognozę × σ z chwili cyklu."""
+
+    RETURN = "return"
+    SIGMA = "sigma"
+
+
+# ARCH-09: status zapisywany w `model_scorecards.status` — kontrakt historii tabeli.
+# Werdykt przekracza port jako `TrainingOutcome`, a string powstaje wyłącznie tutaj,
+# więc nowy wiersz karty ma zawsze jeden z tych pięciu statusów.
+LEGACY_STATUS: Mapping[TrainingOutcome, str] = MappingProxyType(
+    {
+        TrainingOutcome.ACCEPTED: "trained_successfully",
+        TrainingOutcome.REJECTED: "skipped_validation_failed",
+        TrainingOutcome.SKIPPED: "skipped",
+        TrainingOutcome.EVALUATION_PASSED: "evaluated_passed_gate",
+        TrainingOutcome.EVALUATION_FAILED: "evaluated_failed_gate",
+    }
+)
+
+# Mapa wstecz dla odczytu historii `model_scorecards` (ARCH-09).
+_STATUS_TO_OUTCOME = {status: outcome for outcome, status in LEGACY_STATUS.items()}
 
 
 def classify_status(status: str) -> TrainingOutcome:
-    """Mapuje string `status` z `train()` na `TrainingOutcome`.
+    """Mapuje zapisany `status` (`LEGACY_STATUS`) na `TrainingOutcome`.
 
-    Znane statusy: `trained_successfully` → ACCEPTED, `skipped_validation_failed`
-    → REJECTED. Wszystko inne (w tym pusty string albo status „za mało próbek"
-    zgłoszony przez orkiestratora po `ValueError`) → SKIPPED.
+    Odczyt historii jest tolerancyjny: status spoza mapy (pusty string albo
+    dawny „za mało próbek” sprzed ARCH-09) → SKIPPED.
     """
     return _STATUS_TO_OUTCOME.get(status, TrainingOutcome.SKIPPED)
+
+
+@dataclass(frozen=True)
+class TrainingReport(Mapping[str, object]):
+    """ARCH-09: wynik `MLPredictionPort.train` — werdykt i metryki walk-forward.
+
+    `outcome` jest typem domenowym; `rmse`, `baseline_rmse` i pozostałe metryki
+    to średnie po foldach (None, gdy trening się nie odbył). `extras` niesie pola
+    poboczne (np. `feature_set_version` przy pominięciu, DAT-09). `weights_sha256`
+    (CI-13) to sha256 pliku wag zapisanego w tym treningu — None bez zapisu wag.
+    `provenance` (ML-22) — odcisk zbioru, parametry i wersje; None, gdy trening
+    się nie odbył (pominięcie).
+
+    Widok `Mapping` to kontrakt słownika sprzed ARCH-09 (te same klucze i wartości,
+    status z `LEGACY_STATUS`): czytają go zapis karty (`save_model_scorecard`),
+    summary Slow Loopa i logi. Metryki są w widoku tylko, gdy policzono foldy.
+    """
+
+    outcome: TrainingOutcome
+    n_samples: int
+    reason: str | None = None
+    n_folds: int | None = None
+    n_oos_points: int | None = None
+    rmse: float | None = None
+    baseline_rmse: float | None = None
+    drift_baseline_rmse: float | None = None
+    llm_baseline_rmse: float | None = None
+    hit_rate: float | None = None
+    feature_stats: Mapping[str, object] | None = None
+    metric_note: str | None = None
+    model_path: str | None = None
+    extras: Mapping[str, object] = field(default_factory=dict)
+    weights_sha256: str | None = None
+    provenance: TrainingProvenance | None = None
+
+    @property
+    def status(self) -> str:
+        """Status do `model_scorecards.status`."""
+        return LEGACY_STATUS[self.outcome]
+
+    def as_legacy_dict(self) -> dict[str, object]:
+        """Słownik w kontrakcie sprzed ARCH-09, w tej samej kolejności kluczy."""
+        legacy: dict[str, object] = {"status": self.status}
+        if self.reason is not None:
+            legacy["reason"] = self.reason
+        legacy["n_samples"] = self.n_samples
+        if self.n_folds is not None:
+            legacy.update(
+                {
+                    "n_folds": self.n_folds,
+                    "n_oos_points": self.n_oos_points,
+                    "candidate_holdout_rmse": self.rmse,
+                    "baseline_rmse": self.baseline_rmse,
+                    "drift_baseline_rmse": self.drift_baseline_rmse,
+                    "llm_baseline_rmse": self.llm_baseline_rmse,
+                    "candidate_holdout_directional_hit_rate": self.hit_rate,
+                    "feature_stats": self.feature_stats,
+                    "metric_note": self.metric_note,
+                }
+            )
+        if self.model_path is not None:
+            legacy["model_path"] = self.model_path
+        if self.weights_sha256 is not None:
+            legacy["weights_sha256"] = self.weights_sha256
+        if self.provenance is not None:
+            legacy.update(self.provenance.as_record())
+        legacy.update(self.extras)
+        return legacy
+
+    def __getitem__(self, key: str) -> object:
+        return self.as_legacy_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.as_legacy_dict())
+
+    def __len__(self) -> int:
+        return len(self.as_legacy_dict())
 
 
 @dataclass(frozen=True)
@@ -166,8 +272,9 @@ def summarize_run(
     """Agreguje per-symbol wyniki treningu w jeden `RunSummary`.
 
     Przyjmuje zarówno `TrainingOutcome`, jak i surowe stringi `status` z
-    `train()` (są klasyfikowane przez `classify_status`). Pusty przebieg daje
-    zerowy `RunSummary` — nie ma „pustego sukcesu".
+    `train()` (są klasyfikowane przez `classify_status`). Ewaluacje bez zapisu wag
+    (`EVALUATION_*`) liczą się jako pominięte, jak przed ARCH-09. Pusty przebieg
+    daje zerowy `RunSummary` — nie ma „pustego sukcesu".
     """
     accepted = rejected = skipped = 0
     for item in outcomes:
@@ -193,8 +300,8 @@ def summarize_run(
 
 
 # Statusy ewaluacji per symbol z `XGBoostAdapter.train(persist=False)` (ML-13).
-_EVALUATION_PASSED = "evaluated_passed_gate"
-_EVALUATION_FAILED = "evaluated_failed_gate"
+_EVALUATION_PASSED = LEGACY_STATUS[TrainingOutcome.EVALUATION_PASSED]
+_EVALUATION_FAILED = LEGACY_STATUS[TrainingOutcome.EVALUATION_FAILED]
 
 
 @dataclass(frozen=True)

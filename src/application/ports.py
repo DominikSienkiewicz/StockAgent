@@ -9,8 +9,12 @@ from typing import Any
 
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
-from src.domain.attestation import StoredCommitment
+from src.domain.attestation import CommitmentLedger, StoredCommitment
+from src.domain.corporate_actions import SplitSuspicion
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.direction_variant import DirectionReport
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
@@ -18,12 +22,21 @@ from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_series import MacroSeriesSnapshot
 from src.domain.mistake_taxonomy import MistakeCategory
+from src.domain.model_scorecard import TargetUnit, TrainingReport
 from src.domain.options_flow import OptionsFlowSnapshot
-from src.domain.persona_track_record import PersonaVoteOutcome
+from src.domain.paper_ledger import (
+    LedgerHead,
+    LedgerRow,
+    LedgerTrade,
+    PaperTradeClose,
+    PaperTradeEntry,
+)
+from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Position
 from src.domain.prediction import Prediction
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
+from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
@@ -31,6 +44,8 @@ from src.domain.session_close import SessionCloseSettlement
 from src.domain.shock import DailyChange
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
+from src.domain.training_labels import FeatureSnapshot
+from src.domain.training_provenance import DatasetDescription
 from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
 
 
@@ -97,6 +112,19 @@ class LatestPrediction:
 
 
 @dataclass(frozen=True)
+class OpenInvalidation:
+    """ML-27 — nierozliczona predykcja z poziomem unieważnienia tezy i bez alarmu:
+    to, czego watch potrzebuje do pusha „Teza X unieważniona” (migracja 074)."""
+
+    prediction_id: str
+    symbol: str
+    predicted_trend: str
+    price_at_prediction: Decimal
+    invalidation_price: Decimal
+    predicted_at: datetime
+
+
+@dataclass(frozen=True)
 class CycleRun:
     """NIEZ-29 — jeden przebieg pętli (wiersz `cycle_runs`, migracja 041).
 
@@ -115,6 +143,19 @@ class CycleRun:
     failures: int
     paid_calls: Mapping[str, int]
     report_delivered: bool | None
+
+
+@dataclass(frozen=True)
+class StoredShockAlert:
+    """ALR-06 — alert szoku wysłany przez watch (wiersz `shock_alerts`, migracja 021).
+
+    `delta` to UŁAMEK ruchu, który wyzwolił alert (-0.062 = -6,2%), `direction`
+    'UP' / 'DOWN', `created_at` — chwila wysyłki (strefa jak w bazie)."""
+
+    symbol: str
+    delta: float
+    direction: str
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -227,6 +268,23 @@ class RepositoryPort(ABC):
         tylko za flagą `feature_snapshots_enabled`."""
 
     @abstractmethod
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None:
+        """ML-33 — prognozy championa i challengerów jednej predykcji (tabela
+        `shadow_predictions`, migracja 075), upsertem po (prediction_id, model_name):
+        re-run w tej samej godzinie nadpisuje predykcję, więc i jej cienie. Pusta
+        lista = brak zapytania. Wołane z save_node tylko za flagą
+        `shadow_predictions_enabled`."""
+
+    @abstractmethod
+    def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
+        """ML-33 — prognozy cienia zapisane od `since` dla ROZLICZONYCH predykcji
+        (paginacja), ze zwrotem zrealizowanym 12 h (cena rozliczenia / cena przy
+        predykcji − 1). Wiersz, którego nie da się ocenić (brak ceny, prognoza poza
+        kontraktem), jest pomijany. Slow Loop liczy z nich werdykt promocji."""
+
+    @abstractmethod
     def get_latest_regime_state(self) -> RegimeState | None:
         """ALR-03 — stan histerezy reżimu z najnowszego wiersza `regime_history`
         (migracja 033, kolejność po `cycle_at`). None = brak historii (pierwszy
@@ -262,7 +320,10 @@ class RepositoryPort(ABC):
         `max_age_hours` > 0 → pomija predykcje starsze niż próg (timestamp ≥
         now − max_age_hours; WIA-04). Po przerwie predykcja sprzed tygodni nie
         jest oceniana bieżącą ceną jak „12h”; zostaje nierozliczona (NULL) i
-        nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy."""
+        nie wchodzi do hit-rate ani ml_feature_store. None = bez granicy.
+
+        WIA-49: wiersz z flagą `expired_unverified` w `data_quality_flags` jest już
+        poza oceną (`expire_unverified_predictions`) i nie wraca z tego odczytu."""
 
     @abstractmethod
     def expire_unverified_predictions(self, symbol: str, older_than_hours: int) -> int:
@@ -276,6 +337,14 @@ class RepositoryPort(ABC):
         wiersz już oznaczony nie liczy się drugi raz."""
 
     @abstractmethod
+    def count_expired_unverified(self, days: int) -> int:
+        """WIA-49: ile predykcji z ostatnich `days` dni (po chwili predykcji) ma flagę
+        `expired_unverified` i wciąż nie ma ceny rozliczenia — także te oznaczone we
+        wcześniejszych przebiegach, nie tylko w bieżącym. Linia „N predykcji wygasło
+        bez oceny” w Track Record liczy z okna `track_record_days`. Błąd odczytu → 0
+        z WARNING-iem (wołający trzyma wtedy liczbę z bieżącego przebiegu)."""
+
+    @abstractmethod
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -287,10 +356,13 @@ class RepositoryPort(ABC):
         *,
         stale_quote: bool | None = None,
         session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
     ) -> None:
         """Zamyka predykcję feedbackiem. `accuracy_score` (bliskość ceny do
-        celu) napędza trening; `is_trend_correct` (zgodność kierunku) napędza
-        trafność raportu — to dwie różne miary, nie wolno ich mylić.
+        celu) służy recapowi tygodnia i eksportowi dowodów, a trening XGBoost
+        uczy się na `target_return` z `ml_feature_store`; `is_trend_correct`
+        (zgodność kierunku) liczy trafność raportu — to dwie różne miary, nie
+        wolno ich mylić.
 
         `correction_category` (WIA-57) — kategoria przyczyny błędu z diagnozy;
         kolumnę z migracji 046 zapisuje adapter tylko za swoją flagą.
@@ -300,7 +372,10 @@ class RepositoryPort(ABC):
         `session_close` (WIA-61, migracja 059): oficjalne zamknięcie sesji z datą,
         źródłem i trafnością na nim — obok ceny /quote, która zostaje rozliczeniem.
         None = kolumn nie dotykamy (graf podaje je wyłącznie za
-        `session_close_settlement_enabled`)."""
+        `session_close_settlement_enabled`).
+        `entry_price` (WIA-54, migracja 072): cena wykonalna — otwarcie pierwszej
+        sesji po predykcji z tego samego notowania. None = kolumny nie dotykamy
+        (graf podaje ją wyłącznie za `executable_entry_enabled`)."""
 
     @abstractmethod
     def get_feature_store_data(
@@ -405,7 +480,13 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Wyszukuje historyczne predykcje o najbardziej podobnym kontekście
         newsowym (similarity search nad `prediction_logs.embedding`, pgvector).
@@ -418,7 +499,12 @@ class RepositoryPort(ABC):
 
         `regime` (Cross-Asset Vector Memory): gdy podany, retrieval preferuje
         analogi z tego samego reżimu rynku (tag zapisany przy embeddingu,
-        migracja 017). None = bez filtra (zachowanie wsteczne)."""
+        migracja 017). None = bez filtra (zachowanie wsteczne).
+
+        `symbol` i `before` (ML-41, RAG point-in-time): implementacja z włączonym
+        point-in-time zwraca tylko analogi rozliczone przed `before` i pomija `symbol`
+        w oknie horyzontu (`SAME_SYMBOL_ANALOG_EXCLUSION_HOURS`); bez niego oba
+        parametry nic nie zmieniają."""
 
     @abstractmethod
     def get_council_votes_for_prediction(
@@ -484,6 +570,21 @@ class RepositoryPort(ABC):
         z wielkością próbki — bez niej nie da się odciąć szumu ani pokazać
         "68% (22 głosy)". Pusta mapa = brak danych / RPC niedostępne
         → sekcja leaderboardu sama się chowa."""
+
+    @abstractmethod
+    def get_council_vote_samples(self, window_days: int = 30) -> list[CouncilVoteSample]:
+        """WIA-45 — zapisane głosy person (`council_votes`) z ostatnich `window_days`:
+        predykcja, persona i rekomendacja, bez uzasadnień. Wejście redundancji rady
+        (kappa Cohena, N_eff). Pusta lista = brak głosów albo błąd odczytu (WARNING)
+        → mail bez pomiaru redundancji."""
+
+    @abstractmethod
+    def get_persona_scoring(self, window_days: int = 90) -> dict[str, PersonaScoring]:
+        """WIA-44 — ocena person regułą Briera: `{investor_name: PersonaScoring}`
+        (hit-rate, liczba głosów, średni Brier i log loss deklarowanej pewności) z RPC
+        `persona_scoring_stats` (migracja 065). Pasmo HOLD krypto z konfiguracji
+        adaptera, jak w domenie. Pusta mapa = brak danych albo migracji (WARNING
+        z numerem) → leaderboard wraca do hit-rate'u."""
 
     @abstractmethod
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
@@ -599,6 +700,13 @@ class RepositoryPort(ABC):
         aktywności, a wtedy każdy job pada na połączeniu. Wyjątek = baza nie odpowiada."""
 
     @abstractmethod
+    def schema_version(self) -> int | None:
+        """NIEZ-30 — numer najnowszej zaaplikowanej migracji (RPC `schema_version`,
+        migracja 071). None = baza nie umie tego powiedzieć (rejestru migracji nie ma
+        albo jest pusty); wołający traktuje to jak „nie wiem”, nigdy jak 0.
+        Brak funkcji (071 niezaaplikowana) albo baza nie odpowiada leci `PortError`."""
+
+    @abstractmethod
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05 — które z `columns` nie istnieją w `prediction_logs` (select bez
         wierszy). Brak kolumny to wyłącznie kod 42703; każdy inny błąd (sieć, timeout,
@@ -631,6 +739,18 @@ class RepositoryPort(ABC):
         (`shock_alerts.created_at`, migracja 021). Watch tłumi nią alert krypto
         ze zmiany 24 h, póki okno zawiera ruch już zaalarmowany. Pusty słownik =
         brak alertów / brak migracji 021."""
+
+    @abstractmethod
+    def get_shock_alerts_since(self, since: datetime) -> list[StoredShockAlert]:
+        """ALR-06 — alerty szoku wysłane od `since` (`created_at`, migracja 021),
+        rosnąco po czasie — sekcja „⚡ Między mailami”. Błąd bazy leci jako
+        `PortError`; mail chowa wtedy sekcję."""
+
+    @abstractmethod
+    def get_last_report_at(self, before: datetime) -> datetime | None:
+        """ALR-06 — start ostatniego przebiegu Fast Loopa sprzed `before`, którego
+        mail wyszedł (`cycle_runs.report_delivered`, migracja 041). None = brak
+        takiego przebiegu. Błąd bazy leci jako `PortError`."""
 
     @abstractmethod
     def get_active_price_levels(self) -> list[PriceLevelAlert]:
@@ -723,6 +843,12 @@ class RepositoryPort(ABC):
         jednym insertem na końcu przebiegu. Wołający pilnuje flagi
         `cycle_runs_enabled` (bez migracji 041 zapis kończyłby się błędem PostgREST)."""
 
+    @abstractmethod
+    def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
+        """NIEZ-33 — przebiegi wszystkich pętli od `since`, rosnąco po starcie. Napędza
+        publiczną stronę statusu; bez migracji 041 → `PortError` (wołający pilnuje
+        flagi `public_status_page_enabled`)."""
+
     # WIA-24 — sygnał referencyjny w osobnej tabeli `reference_predictions` (migracja
     # 042), nigdy w `prediction_logs`. Wołający pilnuje flagi `reference_signal_enabled`.
 
@@ -749,6 +875,50 @@ class RepositoryPort(ABC):
     ) -> None:
         """Rozliczenie wywołania: HIT / MISS z ceną odczytu albo EXPIRED bez ceny."""
 
+    @abstractmethod
+    def save_corporate_action(self, action: SplitSuspicion) -> None:
+        """DAT-23 — podejrzenie splitu w `corporate_actions` (migracja 062), raz na
+        symbol, rodzaj i dzień UTC wykrycia (powtórka cyklu nie dubluje wiersza).
+        Wołane z `check_price` tylko za flagą `split_detection_enabled`."""
+
+    # ML-27 — poziom unieważnienia tezy (migracja 074). Wołający (Shock Watch) pilnuje
+    # flagi `invalidation_level_enabled`.
+
+    @abstractmethod
+    def get_open_invalidations(self, since: datetime) -> list[OpenInvalidation]:
+        """Predykcje od `since` z poziomem unieważnienia, jeszcze nierozliczone
+        i bez alarmu — od najnowszej."""
+
+    @abstractmethod
+    def mark_invalidation_alerted(self, prediction_id: str, at: datetime) -> None:
+        """Stempel alarmu „teza unieważniona” — raz na predykcję (drugi nic nie zmienia)."""
+
+    # WIA-59 — append-only paper ledger `paper_trades` (migracja 073). Wołający
+    # pilnuje flagi `paper_ledger_enabled` (bez migracji tabeli nie ma).
+
+    @abstractmethod
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None:
+        """Dopisuje pozycję za bieżącą głową łańcucha (hash liczy domena) i zwraca
+        wiersz łańcucha. Wyścig o głowę (równoległe symbole) ponawia od nowej głowy;
+        pozycja tej predykcji już w ledgerze → None (pierwsza decyzja zostaje)."""
+
+    @abstractmethod
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None:
+        """Zamyka OTWARTĄ pozycję predykcji (raz); zamkniętej nie dotyka."""
+
+    @abstractmethod
+    def get_paper_trades(self, days: int) -> list[LedgerTrade]:
+        """Wiersze ledgera z wejściem w ostatnich `days` dniach, w kolejności łańcucha."""
+
+    @abstractmethod
+    def get_paper_ledger_head(self) -> LedgerHead | None:
+        """Głowa łańcucha (wiersz o największym `seq`); pusty ledger → None."""
+
+
+class ReturnScaleUnavailableError(RuntimeError):
+    """ML-11: model uczony w jednostkach σ (`TargetUnit.SIGMA`) nie dostał σ symbolu —
+    prognoza w złych jednostkach byłaby cichą pomyłką, więc predykcji nie ma."""
+
 
 class MLPredictionPort(ABC):
     """Lokalny model predykcyjny (np. XGBoost)."""
@@ -763,39 +933,96 @@ class MLPredictionPort(ABC):
 
     @abstractmethod
     def predict(
-        self, current_features: dict[str, float], current_price: Decimal
+        self,
+        current_features: dict[str, float],
+        current_price: Decimal,
+        *,
+        return_scale: float | None = None,
     ) -> Money:
         """Predykcja ceny docelowej 12h. Model przewiduje ZWROT — `current_price`
-        jest potrzebna do rekonstrukcji ceny bezwzględnej (`cena*(1+zwrot)`)."""
+        jest potrzebna do rekonstrukcji ceny bezwzględnej (`cena*(1+zwrot)`).
+
+        ML-11: model uczony w jednostkach σ mnoży prognozę przez `return_scale`
+        (σ symbolu z `return_sigma`); bez niej rzuca `ReturnScaleUnavailableError`.
+        Model w surowych zwrotach ignoruje `return_scale`."""
 
     @abstractmethod
-    def explain(self, current_features: dict[str, float]) -> dict[str, float]:
+    def explain(
+        self, current_features: dict[str, float], *, return_scale: float | None = None
+    ) -> dict[str, float]:
         """Q3 — znakowane wkłady per-cecha (SHAP-lite) w surową predykcję.
 
         Zwraca `{nazwa_cechy: wkład, ..., "_bias": base}`. Lokalny CPU, zero
-        płatnych wywołań. Rzuca RuntimeError gdy model nietrenowany (jak predict)."""
+        płatnych wywołań. Rzuca RuntimeError gdy model nietrenowany (jak predict).
+        ML-11: wkłady modelu w jednostkach σ są w tych samych jednostkach co
+        `predict` (× `return_scale`)."""
 
     @abstractmethod
     def train(
         self,
-        features: Any,
-        target: Any,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
         *,
         persist: bool = True,
-        timestamps: Any = None,
-    ) -> dict[str, Any]:
-        """`features`/`target` to `pandas.DataFrame`/`Series` — typujemy luźno,
-        by nie wprowadzać zależności od pandas w warstwie application.
+        timestamps: Sequence[datetime] | None = None,
+        target_unit: TargetUnit = TargetUnit.RETURN,
+        dataset: DatasetDescription | None = None,
+        label_ends: Sequence[datetime] | None = None,
+    ) -> TrainingReport:
+        """ARCH-09: `features` to wiersze `{cecha: wartość}` (None = brak), `target`
+        wyrównany z nimi — zwykłe sekwencje, bez DataFrame w porcie; ramkę buduje
+        adapter.
 
-        `persist=False` to sama ewaluacja walk-forward: wagi nie są zapisywane ani
-        ładowane, a status to `evaluated_passed_gate` / `evaluated_failed_gate`
-        (ML-13 — per-symbol pętla Slow Loopa). `timestamps` (wyrównane z wierszami,
-        rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu etykiety —
-        wymagane dla modelu wspólnego na wielu symbolach."""
+        Zwraca domenowy `TrainingReport` (ARCH-09): `ACCEPTED` / `REJECTED` przy
+        zapisie wag, a przy `persist=False` — samej ewaluacji walk-forward, bez
+        zapisu ani ładowania wag (ML-13, per-symbol pętla Slow Loopa) —
+        `EVALUATION_PASSED` / `EVALUATION_FAILED`. `timestamps` (wyrównane
+        z wierszami, rosnąco) włączają foldy po czasie GLOBALNYM z purgem horyzontu
+        etykiety — wymagane dla modelu wspólnego na wielu symbolach.
+
+        ML-11: `target_unit` mówi, w jakich jednostkach jest `target` (wołający
+        dzieli zwrot przez σ); metryki i baseline'y są wtedy w jednostkach σ,
+        a zapisane wagi niosą jednostkę, którą odczyta `predict`.
+
+        ML-22: raport niesie `provenance` — odcisk wierszy treningu (niezależny od
+        ich kolejności), zakres dat, parametry z jawnym ziarnem i wersję biblioteki,
+        uzupełnione opisem próbki od wołającego (`dataset`: liczności per symbol,
+        wersja zestawu cech, SHA kodu). Zapis wag dostaje sidecar `.json` obok pliku.
+
+        ML-26: `label_ends` (wyrównane z wierszami, wymagają `timestamps`) to chwile
+        końca etykiet — fold trenuje wtedy na `purge_training_indices` z domeny
+        (także fallback single-split); bez nich purge stałego horyzontu 12 h."""
+
+    @abstractmethod
+    def train_direction_classifier(
+        self,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
+        *,
+        dead_band: float,
+        persist: bool = True,
+        timestamps: Sequence[datetime] | None = None,
+        label_ends: Sequence[datetime] | None = None,
+    ) -> DirectionReport:
+        """ML-30: wariant binarny — klasyfikator P(zwrot 12 h > +`dead_band`) na
+        wierszach poza martwą strefą (`target` to surowe zwroty, nie jednostki σ).
+        Walk-forward z tym samym purgem co `train`, bramka Briera względem stopy
+        bazowej z domeny. Zapis wyłącznie do osobnego pliku wariantu po przejściu
+        bramki — nigdy nie zmienia wag championa (regresji) ani jego predykcji."""
+
+    @abstractmethod
+    def predict_proba(self, current_features: dict[str, float]) -> float:
+        """ML-30: P(zwrot 12 h > +martwa strefa) z wag wariantu binarnego.
+        Rzuca RuntimeError, gdy wariant nie ma zapisanych wag."""
 
     @abstractmethod
     def walk_forward_report(
-        self, features: Any, target: Any, *, timestamps: Any = None
+        self,
+        features: Any,
+        target: Any,
+        *,
+        timestamps: Any = None,
+        label_ends: Sequence[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki out-of-sample (walk-forward, expanding window) BEZ
         persystencji — zasila offline backtest harness (`main_backtest.py`).
@@ -807,8 +1034,56 @@ class MLPredictionPort(ABC):
         `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`,
         a (EXP-04) `sum_loss_diff` / `sum_loss_diff_sq` względem „zwrot 0” i te
         same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
-        `timestamps` działają jak w `train()`: purge horyzontu etykiety w foldach.
+        `timestamps` (i `label_ends`) działają jak w `train()`: purge etykiet w foldach.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
+
+
+class ShadowModelPort(ABC):
+    """ML-33: challenger nogi ML — model z własnym plikiem wag, którego prognoza
+    cienia trafia wyłącznie do `shadow_predictions`.
+
+    Osobny port, a nie drugi `MLPredictionPort`: challenger nie serwuje ceny do
+    maila ani rady, tylko liczbę do porównania z championem. Ma własne wagi i stan,
+    więc jego załadowanie i prognoza nie zmieniają predykcji championa."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Nazwa challengera z config.toml (`model_name` wiersza cienia)."""
+
+    @property
+    @abstractmethod
+    def model_version(self) -> str:
+        """sha256 wczytanego pliku wag (jak `model_version` przepisu, CI-13)."""
+
+    @abstractmethod
+    def forecast(
+        self, features: Mapping[str, float], *, return_scale: float | None = None
+    ) -> ShadowForecast:
+        """Prognoza cienia z tego samego wektora cech, który dostał champion:
+        zwrot 12 h (regresor; model w jednostkach σ × `return_scale`) albo
+        P(wzrost poza martwą strefą) (klasyfikator ML-30).
+
+        Rzuca `MalformedPayload`, gdy wektor nie pasuje do cech modelu, i
+        `ReturnScaleUnavailableError`, gdy model w jednostkach σ nie dostał σ."""
+
+
+class TrainingDataPort(ABC):
+    """ML-52: odczyty Slow Loopa do treningu z zapisanych wektorów cech.
+
+    Wektory cykli (`feature_snapshots`, migracja 031) i szereg snapshotów cen,
+    z którego domena dokleja etykietę point-in-time (`label_snapshots`)."""
+
+    @abstractmethod
+    def get_feature_snapshots(self, feature_set_version: int) -> list[FeatureSnapshot]:
+        """Wszystkie wektory danej wersji zestawu cech (paginacja), rosnąco po
+        `as_of`, z `features` dokładnie w postaci zapisanej przez cykl."""
+
+    @abstractmethod
+    def get_price_series(
+        self, symbols: Sequence[str], *, since: datetime
+    ) -> dict[str, list[tuple[datetime, float]]]:
+        """Snapshoty cen symboli od `since` (paginacja), per symbol rosnąco po czasie."""
 
 
 # NIEZ-44: klucze, którymi adapter failover znakuje wynik `LLMPort.analyze` od
@@ -848,7 +1123,8 @@ class EmbeddingPort(ABC):
     """Generowanie wektorów embeddingu dla tekstu (np. OpenAI embeddings).
 
     Wektor podsumowania newsów trafia do `prediction_logs.embedding` (pgvector),
-    co umożliwia przyszły similarity search nad historycznymi sytuacjami."""
+    z którego `find_similar_predictions` (RAG w `predict_node`, od migracji 011)
+    wyszukuje historyczne sytuacje."""
 
     @abstractmethod
     def embed(self, text: str) -> list[float]: ...
@@ -985,13 +1261,79 @@ class AttestationPublisherPort(ABC):
     def publish_reveal(self, record: Mapping[str, Any]) -> str: ...
 
 
+class AttestationLedgerPort(ABC):
+    """WIA-15 — odczyt trwałego ledgera atestacji: checkoutu gałęzi `attestation-log`,
+    który przeżył poprzedni run (push joba `publish-attestation-ledger`).
+
+    Reveal dopisany do pliku w tym runie nie jest jeszcze trwały — push może paść albo
+    job zostać anulowany. Dopiero linia obecna w ledgerze na starcie runu pozwala
+    ostemplować `revealed_at`. Błąd odczytu → `PortError`."""
+
+    @abstractmethod
+    def revealed_commitments(self) -> frozenset[str]:
+        """Hashe (hex, małe litery) wszystkich revealów w ledgerze; brak pliku = pusty zbiór."""
+
+    @abstractmethod
+    def commitment_ledger(self) -> CommitmentLedger:
+        """WIA-60 — opublikowane commitmenty: linie pojedyncze i rooty cykli (z liśćmi),
+        z których reveal bierze ścieżkę dowodu. Brak pliku = pusty ledger."""
+
+
+class LedgerHeadPublisherPort(ABC):
+    """WIA-59 — publikacja głowy paper ledgera (append-only JSONL obok atestacji).
+
+    Lustro `AttestationPublisherPort`: publikacja zwraca ścieżkę albo "" (błąd);
+    awaria publikacji NIGDY nie wywala cyklu."""
+
+    @abstractmethod
+    def last_published_on(self) -> date | None:
+        """Dzień ostatniej opublikowanej głowy; brak pliku, wpisu albo nieczytelny
+        wpis → None."""
+
+    @abstractmethod
+    def publish_head(self, record: Mapping[str, Any]) -> str: ...
+
+
 class WebPublisherPort(ABC):
-    """Publikacja raportu HTML jako statyczny artefakt web (U3 — read-only
-    dashboard, alternatywa dla maila). Zwraca URL/ścieżkę albo "" gdy
-    wyłączone / błąd (publikacja nigdy nie wywala cyklu)."""
+    """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard #10).
+    Zwraca URL/ścieżkę albo "" gdy wyłączone / błąd (publikacja nigdy nie
+    wywala cyklu). Prywatny digest idzie do `DigestArchivePort` (MAIL-24)."""
 
     @abstractmethod
     def publish(self, html: str) -> str: ...
+
+    @abstractmethod
+    def publish_asset(self, name: str, content: str, content_type: str) -> str:
+        """WIA-81 — plik obok strony (np. `scorecard.json`); `name` to sama nazwa pliku.
+        Zwraca URL/ścieżkę albo "" (wyłączone / błąd), jak `publish`."""
+
+
+@dataclass(frozen=True)
+class DigestRecord:
+    """MAIL-24 — wiersz indeksu prywatnego archiwum (`digests`, migracja 061).
+
+    `lead` i `top_signals` to gotowe do JSON listy słowników (pozycje leadu
+    i czołówka rankingu sygnałów); same tickery i etykiety, bez kwot portfela."""
+
+    cycle_id: str
+    subject: str
+    lead: tuple[Mapping[str, Any], ...]
+    top_signals: tuple[Mapping[str, Any], ...]
+    sent_at: datetime
+
+
+class DigestArchivePort(ABC):
+    """MAIL-24 — prywatne archiwum digestów (zastępuje web digest U3, BEZ-27).
+
+    `store` odkłada HTML cyklu w prywatnym magazynie i zwraca podpisany URL
+    z krótkim TTL (link „Otwórz w przeglądarce”); `record` dopisuje wiersz
+    indeksu. Błąd magazynu leci jako `PortError` — mail wychodzi bez linku."""
+
+    @abstractmethod
+    def store(self, cycle_id: str, html: str) -> str: ...
+
+    @abstractmethod
+    def record(self, entry: DigestRecord) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1374,15 @@ class InsiderFlowPort(ABC):
 
     @abstractmethod
     def get_insider_flow(self, symbol: str) -> InsiderFlowSnapshot | None: ...
+
+
+class CorporateEventsPort(ABC):
+    """DAT-17: raporty bieżące SEC 8-K symbolu z ostatnich dni (wyniki, zmiany
+    w zarządzie, istotne umowy). Zwraca None, gdy źródło niedostępne albo symbol
+    nie ma CIK; Null-adapter zwraca None bez wywołania sieciowego."""
+
+    @abstractmethod
+    def get_corporate_events(self, symbol: str) -> CorporateEventSnapshot | None: ...
 
 
 class EarningsCalendarPort(ABC):
@@ -1127,3 +1478,29 @@ class EvidenceArchivePort(ABC):
     @abstractmethod
     def store(self, name: str, files: Mapping[str, bytes]) -> ArchiveReceipt:
         """Pakuje `files` (nazwa pliku → treść) w jeden zaszyfrowany artefakt `name`."""
+
+
+@dataclass(frozen=True)
+class CircuitState:
+    """NIEZ-31: stan circuit breakera jednego hosta HTTP w tym procesie.
+
+    `source` — nazwa dostawcy dla człowieka („Finnhub”), dla nieznanego hosta sam
+    host. `skipped_symbols` — symbole, których żądania otwarty obwód pominął bez
+    ruchu sieciowego; `skipped_calls` liczy też żądania spoza kontekstu symbolu."""
+
+    source: str
+    host: str
+    is_open: bool
+    consecutive_failures: int
+    skipped_calls: int
+    skipped_symbols: frozenset[str]
+
+
+class CircuitStatePort(ABC):
+    """NIEZ-31: odczyt stanu obwodów HTTP — banner kwot na koniec cyklu i linijka
+    stanu każdego źródła w mailu (MAIL-21)."""
+
+    @abstractmethod
+    def circuit_states(self) -> tuple[CircuitState, ...]:
+        """Obwody hostów, z którymi proces rozmawiał (otwarte i zamknięte)."""
+

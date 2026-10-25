@@ -38,13 +38,17 @@ def _map_fundamentals(fundamentals: Fundamentals) -> dict[str, Any]:
 
 
 def _map_macro(snapshot: PolishMacroSnapshot) -> dict[str, Any]:
-    """Mapuje snapshot makro na JSON-safe dict — Decimal → float."""
+    """Mapuje snapshot makro na JSON-safe dict — Decimal → float.
+
+    Klucze `*_30d_change_pct` niosą UŁAMEK (`*_change_ratio`) i zostają bez zmian:
+    to kontrakt narzędzia widziany przez LLM, więc ich zmiana zmienia przepis
+    predykcji (ARCH-04)."""
     return {
         "available": True,
         "eur_pln": float(snapshot.eur_pln),
         "usd_pln": float(snapshot.usd_pln),
-        "eur_pln_30d_change_pct": float(snapshot.eur_pln_30d_change_pct),
-        "usd_pln_30d_change_pct": float(snapshot.usd_pln_30d_change_pct),
+        "eur_pln_30d_change_pct": float(snapshot.eur_pln_30d_change_ratio),
+        "usd_pln_30d_change_pct": float(snapshot.usd_pln_30d_change_ratio),
     }
 
 

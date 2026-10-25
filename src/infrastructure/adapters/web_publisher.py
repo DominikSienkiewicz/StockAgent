@@ -1,7 +1,10 @@
-"""Adaptery dla `WebPublisherPort` (feature U3 — statyczny web digest):
-- `FileWebPublisher` — zapisuje HTML raportu na dysk jako bookmarkowalny
-  artefakt (np. plik serwowany przez GitHub Pages / commit workflow).
+"""Adaptery dla `WebPublisherPort` (publiczny scorecard #10):
+- `FileWebPublisher` — zapisuje stronę HTML na dysk jako artefakt serwowany
+  przez GitHub Pages (WIA-16/52).
 - `NullWebPublisher` — no-op gdy feature wyłączony (mirror `NullNotifier`).
+
+Prywatny digest nie idzie już na dysk: web digest U3 zastąpiło prywatne
+archiwum w Supabase Storage (MAIL-24, BEZ-27).
 
 FinOps: zero płatnych wywołań (LLM / rynek / embeddingi). Czysty zapis pliku.
 
@@ -48,17 +51,38 @@ class FileWebPublisher(WebPublisherPort):
             )
             return ""
         resolved = str(target.resolve())
-        logger.info("Web digest published to %s", resolved)
+        logger.info("Web page published to %s", resolved)
+        return resolved
+
+    def publish_asset(self, name: str, content: str, content_type: str) -> str:
+        """Zapisuje `name` w katalogu strony — ten sam katalog idzie na Pages, więc plik
+        trafia obok niej. Nazwa z katalogiem albo `..` to błąd wołającego (`ValueError`):
+        zapis poza katalogiem strony wyszedłby poza artefakt publiczny."""
+        if not name or name in {".", ".."} or Path(name).name != name:
+            raise ValueError(f"publish_asset expects a plain file name, got {name!r}")
+        target = Path(self._output_path).parent / name
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            # Publikacja jest best-effort — błąd nie może przerwać cyklu.
+            logger.warning("Web asset publish failed for %s (%s): %s", target, content_type, exc)
+            return ""
+        resolved = str(target.resolve())
+        logger.info("Web asset published to %s", resolved)
         return resolved
 
 
 class NullWebPublisher(WebPublisherPort):
-    """No-op fallback gdy `WEB_DIGEST_ENABLED=false`.
+    """No-op fallback gdy `public_scorecard_enabled=false`.
 
     Nic nie zapisuje, żadne I/O nie jest dotykane — zwraca "".
-    Pozwala main_agent.py mieć zawsze `web_publisher`, niezależnie od konfiguracji.
     """
 
     def publish(self, html: str) -> str:
-        logger.info("Web digest disabled — skipping publish.")
+        logger.info("Web page publishing disabled — skipping publish.")
+        return ""
+
+    def publish_asset(self, name: str, content: str, content_type: str) -> str:
+        logger.info("Web publisher disabled — skipping %s.", name)
         return ""

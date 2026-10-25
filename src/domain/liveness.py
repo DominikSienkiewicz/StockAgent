@@ -15,8 +15,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from enum import StrEnum
 
 from src.domain.market_calendar import NYSE_TZ, is_trading_day, to_nyse_time
+
+# NIEZ-11: Fast Loop chodzi w dni handlowe przed otwarciem (cron 05:30 UTC = 00:30 EST
+# / 01:30 EDT), więc ślad dnia handlowego liczymy od północy ET tego dnia, a
+# `liveness_fast_loop_max_gap_h` to zapas od tej chwili. Weekend i święto NYSE nie
+# mają terminu. Tę samą regułę stosuje deadman i publiczna strona statusu (NIEZ-33).
+FAST_LOOP_TRADING_DAY_SLOT = time(0, 0)
 
 
 @dataclass(frozen=True)
@@ -95,3 +102,23 @@ def overdue_jobs(
     return tuple(
         e.job for e in expectations if _expectation_overdue(e, last_seen.get(e.job), now)
     )
+
+
+class JobState(StrEnum):
+    """NIEZ-33 — stan jobu na publicznej stronie statusu, z tej samej reguły co deadman."""
+
+    RUNNING = "running"
+    PAUSED = "paused"
+    OVERDUE = "overdue"
+
+
+def job_state(
+    expectation: LivenessExpectation, last_seen: datetime | None, now: datetime
+) -> JobState:
+    """Przerwa ≤ 0 = świadomie wstrzymany; spóźniony dokładnie wtedy, gdy deadman by
+    zaalarmował — strona publiczna nie może mówić „działa”, gdy właściciel dostaje alarm."""
+    if expectation.max_gap_hours <= 0:
+        return JobState.PAUSED
+    if _expectation_overdue(expectation, last_seen, now):
+        return JobState.OVERDUE
+    return JobState.RUNNING

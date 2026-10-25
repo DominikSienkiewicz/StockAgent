@@ -196,3 +196,36 @@ class TestInsiderThresholdFromMarketCap:
         html = render_alpha_html(self._signals(100e9), None)
 
         assert "NVDA — CEO kupił akcje za 1,2 mln USD" in html
+
+
+class TestAnalystRevisionLine:
+    """DAT-13: rewizja konsensusu m/m (z tej samej odpowiedzi Finnhub) dostaje linię
+    pod tabelą alfy; STABLE i jeden okres — bez linii."""
+
+    @staticmethod
+    def _signals(previous: AnalystConsensus | None) -> dict[str, AlphaSignals]:
+        latest = AnalystConsensus("AAPL", strong_buy=3, buy=12, hold=5, previous=previous)
+        return {"AAPL": AlphaSignals(symbol="AAPL", analyst=latest)}
+
+    def test_upgrade_gets_a_line_with_the_bucket_changes(self) -> None:
+        html = render_alpha_html(self._signals(AnalystConsensus("AAPL", buy=10, hold=10)), None)
+
+        line = "⬆️ AAPL — analitycy podnieśli rekomendacje m/m (+3 Strong Buy, +2 Buy, -5 Hold)"
+        assert line in html
+
+    def test_downgrade_gets_a_down_arrow(self) -> None:
+        previous = AnalystConsensus("AAPL", strong_buy=6, buy=14)
+        html = render_alpha_html(self._signals(previous), None)
+
+        line = "⬇️ AAPL — analitycy obniżyli rekomendacje m/m (-3 Strong Buy, -2 Buy, +5 Hold)"
+        assert line in html
+
+    def test_single_period_has_no_line(self) -> None:
+        assert "m/m" not in render_alpha_html(self._signals(None), None)
+
+    def test_label_is_none_when_stable(self) -> None:
+        from src.application.report_alpha import analyst_revision_label
+
+        stable = AnalystConsensus("AAPL", buy=10).revision()
+
+        assert analyst_revision_label(stable) is None

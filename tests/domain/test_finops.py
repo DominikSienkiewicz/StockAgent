@@ -211,6 +211,22 @@ def test_av_budget_multiplies_symbols_requests_and_cycles() -> None:
     assert av_daily_budget(10, 2, 2, 1).worst_case == 40
 
 
+def test_av_budget_adds_requests_made_once_per_cycle() -> None:
+    # FIN-09: kalendarz wyników to jedno zapytanie na cykl, nie na symbol.
+    from src.domain.finops import av_daily_budget
+
+    budget = av_daily_budget(10, 1, 2, 1, requests_per_cycle=1)
+
+    assert budget.worst_case == 22
+
+
+def test_av_budget_rejects_negative_requests_per_cycle() -> None:
+    from src.domain.finops import av_daily_budget
+
+    with pytest.raises(ValueError, match="requests_per_cycle"):
+        av_daily_budget(1, 1, 1, 1, requests_per_cycle=-1)
+
+
 def test_av_budget_at_capacity_is_ok() -> None:
     from src.domain.finops import av_daily_budget
 

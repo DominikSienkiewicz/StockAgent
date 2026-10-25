@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock
 
-from src.application.agent_graph import AgentGraphDeps, create_agent_graph
+import pytest
+from langgraph.graph import StateGraph
+
+from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
 from src.application.ports import (
     LLMPort,
     MarketDataPort,
@@ -25,7 +29,9 @@ from src.application.ports import (
 from src.domain.value_objects import Money, Threshold
 
 
-def _make_graph(sentiment_payload: dict, llm_payload: dict | None = None):
+def _make_graph(
+    sentiment_payload: dict[str, Any], llm_payload: dict[str, Any] | None = None
+) -> tuple[StateGraph[AgentState], Mock]:
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("180.00"))
     sentiment = Mock(spec=SentimentPort)
@@ -61,7 +67,7 @@ def _make_graph(sentiment_payload: dict, llm_payload: dict | None = None):
 
 
 class TestDataQualityFlags:
-    def test_clean_inputs_produce_empty_flag_list(self):
+    def test_clean_inputs_produce_empty_flag_list(self) -> None:
         clean = {
             "av_sentiment_score": 0.5,
             "av_sentiment_label": "Bullish",
@@ -77,7 +83,7 @@ class TestDataQualityFlags:
         assert "data_quality_flags" in record
         assert record["data_quality_flags"] == []
 
-    def test_missing_sentiment_score_produces_flag(self):
+    def test_missing_sentiment_score_produces_flag(self) -> None:
         # None — typowo gdy AlphaVantage zwraca pusty NEWS_SENTIMENT response
         bad = {
             "av_sentiment_score": None,
@@ -94,7 +100,7 @@ class TestDataQualityFlags:
         flags = record["data_quality_flags"]
         assert "av_sentiment_score_missing" in flags
 
-    def test_unparseable_news_volume_produces_flag(self):
+    def test_unparseable_news_volume_produces_flag(self) -> None:
         # AlphaVantage czasem zwraca "N/A" lub "" w polach liczbowych
         bad = {
             "av_sentiment_score": 0.5,
@@ -111,7 +117,7 @@ class TestDataQualityFlags:
         flags = record["data_quality_flags"]
         assert "news_volume_24h_invalid" in flags
 
-    def test_nan_sentiment_score_produces_flag(self):
+    def test_nan_sentiment_score_produces_flag(self) -> None:
         bad = {
             "av_sentiment_score": float("nan"),
             "av_sentiment_label": "Neutral",
@@ -127,7 +133,7 @@ class TestDataQualityFlags:
         flags = record["data_quality_flags"]
         assert "av_sentiment_score_invalid" in flags
 
-    def test_multiple_bad_fields_accumulate_flags(self):
+    def test_multiple_bad_fields_accumulate_flags(self) -> None:
         bad = {
             "av_sentiment_score": None,
             "av_sentiment_label": "Neutral",
@@ -143,7 +149,7 @@ class TestDataQualityFlags:
         flags = record["data_quality_flags"]
         assert len(flags) >= 3
 
-    def test_warning_logged_when_flags_present(self, caplog):
+    def test_warning_logged_when_flags_present(self, caplog: pytest.LogCaptureFixture) -> None:
         bad = {
             "av_sentiment_score": None,
             "av_sentiment_label": "Neutral",
@@ -159,7 +165,7 @@ class TestDataQualityFlags:
         joined = " ".join(rec.message for rec in caplog.records)
         assert "data_quality" in joined.lower() or "av_sentiment_score_missing" in joined
 
-    def test_av_degraded_reason_propagated_as_quality_flag(self):
+    def test_av_degraded_reason_propagated_as_quality_flag(self) -> None:
         # Adapter sentiment dorzucił sentiel `degraded_reason` (np. wszystkie
         # klucze AV wyczerpane). Predict_node przepuszcza to do
         # data_quality_flags, żeby trening filtrował zdegradowane cykle.
@@ -178,7 +184,7 @@ class TestDataQualityFlags:
         record = repo.save_prediction.call_args.args[0]
         assert "av_keys_exhausted" in record["data_quality_flags"]
 
-    def test_no_warning_when_inputs_clean(self, caplog):
+    def test_no_warning_when_inputs_clean(self, caplog: pytest.LogCaptureFixture) -> None:
         clean = {
             "av_sentiment_score": 0.5,
             "av_sentiment_label": "Bullish",

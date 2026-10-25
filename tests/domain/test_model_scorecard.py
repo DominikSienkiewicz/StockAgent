@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta
 
 from src.domain.model_scorecard import (
+    LEGACY_STATUS,
     METRIC_NOTE,
     MODEL_STALE_AFTER_DAYS,
     POOLED_MODEL_SYMBOL,
     RUN_MAX_GAP,
     RunSummary,
     TrainingOutcome,
+    TrainingReport,
     classify_status,
     improvement_pct,
     is_stale,
@@ -14,6 +16,11 @@ from src.domain.model_scorecard import (
     latest_run_indices_by_id,
     summarize_evaluations,
     summarize_run,
+)
+from src.domain.training_provenance import (
+    PROVENANCE_RECORD_KEYS,
+    DatasetDescription,
+    TrainingProvenance,
 )
 
 
@@ -244,3 +251,111 @@ class TestSummarizeEvaluations:
         )
 
         assert POOLED_MODEL_SYMBOL == TRAINER_POOLED_SYMBOL == "ALL"
+
+
+class TestTrainingReport:
+    """ARCH-09: werdykt treningu jako typ domenowy. Do `model_scorecards.status`
+    idzie status z `LEGACY_STATUS`, więc historia tabeli czyta się tak samo."""
+
+    def test_legacy_status_names_every_outcome_with_the_stored_strings(self) -> None:
+        assert dict(LEGACY_STATUS) == {
+            TrainingOutcome.ACCEPTED: "trained_successfully",
+            TrainingOutcome.REJECTED: "skipped_validation_failed",
+            TrainingOutcome.SKIPPED: "skipped",
+            TrainingOutcome.EVALUATION_PASSED: "evaluated_passed_gate",
+            TrainingOutcome.EVALUATION_FAILED: "evaluated_failed_gate",
+        }
+
+    def test_every_stored_status_reads_back_as_its_outcome(self) -> None:
+        # Mapa wstecz: bez niej wiersz „evaluated_passed_gate” po cichu stawał się SKIPPED.
+        for outcome, status in LEGACY_STATUS.items():
+            assert classify_status(status) is outcome
+
+    def test_skipped_report_keeps_the_legacy_keys(self) -> None:
+        report = TrainingReport(
+            TrainingOutcome.SKIPPED,
+            n_samples=12,
+            reason="Not enough samples (12 < 50).",
+            extras={"feature_set_version": 4},
+        )
+
+        assert dict(report) == {
+            "status": "skipped",
+            "reason": "Not enough samples (12 < 50).",
+            "n_samples": 12,
+            "feature_set_version": 4,
+        }
+
+    def test_accepted_report_carries_the_walk_forward_metrics_and_model_path(self) -> None:
+        report = TrainingReport(
+            TrainingOutcome.ACCEPTED,
+            n_samples=200,
+            n_folds=4,
+            n_oos_points=160,
+            rmse=0.010,
+            baseline_rmse=0.012,
+            drift_baseline_rmse=0.0125,
+            llm_baseline_rmse=None,
+            hit_rate=0.55,
+            feature_stats={},
+            metric_note="note",
+            model_path="m.ubj",
+        )
+
+        assert report.status == "trained_successfully"
+        assert dict(report) == {
+            "status": "trained_successfully",
+            "n_samples": 200,
+            "n_folds": 4,
+            "n_oos_points": 160,
+            "candidate_holdout_rmse": 0.010,
+            "baseline_rmse": 0.012,
+            "drift_baseline_rmse": 0.0125,
+            "llm_baseline_rmse": None,
+            "candidate_holdout_directional_hit_rate": 0.55,
+            "feature_stats": {},
+            "metric_note": "note",
+            "model_path": "m.ubj",
+        }
+        assert "validation_rmse" not in report
+
+    def test_provenance_record_joins_the_legacy_view_before_the_extras(self) -> None:
+        # ML-22: odcisk zbioru, parametry i wersje idą do karty i sidecara.
+        provenance = TrainingProvenance(
+            dataset_sha256="cd" * 32,
+            data_start=None,
+            data_end=None,
+            params={"random_state": 0},
+            library_version="xgboost 3.2.0",
+            dataset=DatasetDescription(n_per_symbol={"AAPL": 60}, feature_set_version=4),
+        )
+        report = TrainingReport(
+            TrainingOutcome.EVALUATION_PASSED,
+            n_samples=60,
+            provenance=provenance,
+            extras={"target_unit": "sigma"},
+        )
+
+        assert list(report)[-len(PROVENANCE_RECORD_KEYS) - 1 :] == [
+            *PROVENANCE_RECORD_KEYS,
+            "target_unit",
+        ]
+        assert report["dataset_sha256"] == "cd" * 32
+        assert report["n_per_symbol"] == {"AAPL": 60}
+
+    def test_report_without_provenance_has_no_provenance_keys(self) -> None:
+        report = TrainingReport(TrainingOutcome.SKIPPED, n_samples=3)
+
+        assert not set(PROVENANCE_RECORD_KEYS) & set(report)
+
+    def test_weights_hash_follows_the_model_path_in_the_legacy_view(self) -> None:
+        # CI-13: sha256 pliku wag w karcie modelu; bez zapisu wag klucza nie ma.
+        report = TrainingReport(
+            TrainingOutcome.ACCEPTED,
+            n_samples=200,
+            model_path="m.ubj",
+            weights_sha256="ab" * 32,
+        )
+
+        assert list(report)[-2:] == ["model_path", "weights_sha256"]
+        assert report["weights_sha256"] == "ab" * 32

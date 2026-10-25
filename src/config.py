@@ -42,6 +42,7 @@ from src.domain.finops import (
 from src.domain.insider_flow import INSIDER_LEAD_MAX_AGE_DAYS
 from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.price_levels import LevelDirection, PriceLevel
+from src.domain.promotion import CHAMPION_MODEL_NAME
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
@@ -95,14 +96,26 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "quiet_hours_enabled",
     "quiet_hours_start",
     "quiet_hours_end",
+    # WIA-44: sama kolejność i opis leaderboardu person w mailu; wagi konsensusu
+    # (`persona_weighting_enabled`) liczy osobna ścieżka.
+    "persona_brier_ranking_enabled",
+    # ALR-07: szok portfela w watchu — push poza cyklem, nie prognoza.
+    "portfolio_shock_enabled",
+    "portfolio_shock_threshold",
+    # WIA-45: linia redundancji w recapie i brak odznaki „silny konsensus” w mailu —
+    # sama treść maili, ocena po predykcji.
+    "council_redundancy_enabled",
     # ALR-11: alerty poziomów cenowych watcha — push poza cyklem, nie prognoza.
     "price_level_alerts_enabled",
     "price_alerts",
     "subscriptions_enabled",
-    "web_digest_enabled",
-    "web_digest_path",
+    # MAIL-24: prywatne archiwum digestu i link w mailu — dostarczanie, nie prognoza.
+    "digest_archive_enabled",
     "public_scorecard_enabled",
     "public_scorecard_path",
+    # NIEZ-33: publiczna strona statusu — prezentacja historii przebiegów, nie prognoza.
+    "public_status_page_enabled",
+    "public_status_path",
     "weekly_recap_enabled",
     # Sekcje maila liczone po predykcji (render-only, bez wpływu na prognozę).
     "portfolio_var_enabled",
@@ -113,6 +126,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "calibration_curve_enabled",
     "lessons_enabled",
     "calibrated_confidence_enabled",
+    # ML-28: kalibrator rankingu (mapa izotoniczna zamiast kubełków) — render-only.
+    "isotonic_calibration_enabled",
     # PORT-05: peerzy sekcji 💡 Warte uwagi — sugestie liczone po predykcji.
     "sector_peers",
     "model_scorecard_enabled",
@@ -123,8 +138,6 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "paper_cost_bps",
     "crypto_paper_cost_bps",
     "portfolio_positions_enabled",
-    # PORT-18: waluta i data zakupu pozycji (odczyt + zapis importu) — tylko raport.
-    "positions_currency_enabled",
     # PORT-11: cache kursów NBP z dnia (P/L w zł) — tylko raport.
     "fx_rates_cache_enabled",
     # Flagi samego zapisu i publikacji.
@@ -159,6 +172,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "council_votes_upsert_enabled",
     # ML-21: sam zapis rozkładu cech treningu (biny + PSI) w karcie; prognoza ta sama.
     "model_scorecard_feature_stats_enabled",
+    # CI-13: sam zapis sha256 pliku wag w karcie; prognoza ta sama.
+    "model_scorecard_weights_sha256_enabled",
+    # ML-22: sam zapis proweniencji treningu (odcisk zbioru, parametry, wersje) w karcie.
+    "model_scorecard_provenance_enabled",
     # WIA-57: sam zapis kategorii diagnozy (046) i jej odczyt w panelu lessons.
     "correction_category_enabled",
     # DAT-14: sam zapis znacznika `stale_quote` i odsiew trafności; prognoza ta sama.
@@ -169,9 +186,17 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "insider_lead_max_age_days",
     # WIA-61: druga cena rozliczenia (zamknięcie sesji) obok /quote — pomiar, nie prognoza.
     "session_close_settlement_enabled",
+    # WIA-54: cena wykonalna (otwarcie sesji) obok /quote i druga krzywa w mailu —
+    # pomiar rozliczenia, prognoza i jej ocena bez zmian.
+    "executable_entry_enabled",
+    # WIA-59: append-only paper ledger i krzywa kapitału z niego — zapis i pomiar
+    # tych samych predykcji, prognoza bez zmian.
+    "paper_ledger_enabled",
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
+    # WIA-59: plik głów paper ledgera obok ledgera atestacji — publikacja, nie prognoza.
+    "paper_ledger_heads_path",
     # Inne joby i trening (wagi → `model_version`).
     "shock_alerts_enabled",
     "liveness_fast_loop_max_gap_h",
@@ -182,9 +207,30 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
     "model_probe_enabled",
     "feature_set_filter_enabled",
+    # ML-52: źródło próbki modelu wspólnego (wektory zamiast widoku) — wpływ na
+    # prognozę wyłącznie przez wagi, które łapie `model_version`.
+    "snapshot_training_enabled",
+    # ML-26: purge foldów po `settled_at` zmienia werdykt bramki — wpływ na prognozę
+    # wyłącznie przez wagi, które łapie `model_version`.
+    "ml_settled_purge_enabled",
+    # ML-30: wariant binarny to sama ewaluacja w Slow Loopie z osobnym plikiem wag —
+    # nie zmienia championa ani prognozy.
+    "ml_direction_classifier_enabled",
+    # ML-33: prognozy cienia challengerów idą wyłącznie do `shadow_predictions` —
+    # wynik cyklu, prompt i mail są te same z flagą i bez.
+    "shadow_predictions_enabled",
+    "ml_challengers",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
+    # FIN-11 (decyzja 2026-10-21…23): cache Slow Loopa zmienia źródło tej samej daty
+    # wyników, nie przepis — włączenie nie tnie track recordu na segmenty.
+    "earnings_cache_enabled",
+    # DAT-20: sekcja maila „📅 Ten tydzień” — prezentacja; bramka earnings bez zmian.
+    "finnhub_earnings_calendar_enabled",
+    # DAT-18: DVOL zasila wyłącznie implied edge, sygnał informacyjny bez roli
+    # decyzyjnej (R-18) — sam zapis `edge_sigma` dla krypto; prompt i fuzja bez zmian.
+    "deribit_dvol_enabled",
     # FIN-12: sufit kosztu cyklu decyduje, KTÓRE symbole dostają analizę, nie jaką —
     # prognoza przeanalizowanego symbolu jest identyczna z sufitem i bez.
     "max_paid_llm_calls_per_cycle",
@@ -248,11 +294,16 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "peer_groups",
     "alpha_fusion_enabled",
     "insider_flow_enabled",
+    # DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech.
+    "corporate_events_enabled",
     "earnings_calendar_enabled",
-    # FIN-11: cache Slow Loopa (do 6 dni) zamiast AV w cyklu — inna świeżość wejścia
-    # bramki earnings i alpha fusion; pole niejednoznaczne zostaje w przepisie.
-    "earnings_cache_enabled",
     "options_flow_enabled",
+    # WIA-28: horyzont edge z kalendarza NYSE — inny zapisany `edge_sigma`.
+    "edge_calendar_horizon_enabled",
+    # DAT-23: korekta splitu zmienia deltę bramki, rozliczenie i `price_delta`.
+    "split_detection_enabled",
+    # DAT-15: anomalny odczyt zamyka bramkę i odkłada rozliczenie.
+    "price_outlier_guard_enabled",
     "social_velocity_enabled",
     "yield_curve_enabled",
     # DAT-22: głosy VIX i spreadu HY w reżimie zacieśniają próg bramki.
@@ -261,6 +312,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "vector_memory_enabled",
     "tool_use_enabled",
     "tool_use_volatility_threshold",
+    # FIN-08: osobny próg pętli tool-use dla krypto — steruje płatną ścieżką.
+    "crypto_tool_use_volatility_threshold",
     "tool_use_max_rounds",
     "council_personas_dir",
     "volatility_threshold",
@@ -269,7 +322,7 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "symbols_etf",
     "crypto_symbols",
     "crypto_volatility_threshold",
-    # Risk Watch zasila reżim rynku (#7), który zacieśnia próg.
+    # Risk Watch zasila reżim rynku (R-25), który zacieśnia próg.
     "risk_symbols",
     "risk_symbol_types",
     "nbp_enabled",
@@ -282,13 +335,31 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "reflection_min_age_hours",
     "reflection_max_age_hours",
     "rag_outcome_weight",
+    # ML-23: dokładne KNN zmienia analogi RAG w prompcie predykcji.
+    "rag_exact_search_enabled",
+    # ML-41: analogi RAG tylko rozliczone — inne analogi w prompcie predykcji.
+    "rag_point_in_time_enabled",
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
     # ML-29: prompt prosi o rozkład trzech klas, a trend i pewność idą z argmaxu —
     # inny format odpowiedzi to inny rozkład pewności, więc nowy przepis.
     "trend_probabilities_enabled",
+    # BEZ-14: fence lekcji z reflect i uzasadnień person zmienia tekst promptów.
+    "prompt_taint_fence_enabled",
+    # ML-27: poziom unieważnienia tezy w output_schema promptu predykcji — inny prompt
+    # i nowe pole odpowiedzi, więc nowy przepis.
+    "invalidation_level_enabled",
+    # ML-36: ruch ceny w prompcie predykcji z dwoma miejscami — inny tekst promptu.
+    "prompt_delta_rounding_enabled",
+    # ML-11: prognoza ML = wyjście modelu × σ symbolu (model w jednostkach σ) — inny
+    # przepis serwowania liczby, nawet przy tych samych wagach.
+    "ml_sigma_target_enabled",
 })
+
+
+# ML-33: Fast Loop ładuje championa i najwyżej tylu challengerów nogi ML.
+MAX_ML_CHALLENGERS = 2
 
 
 # FIN-07: jedyny próg volatility, dla którego 0 ma znaczenie ("rada zawsze leci,
@@ -346,6 +417,19 @@ class PriceAlertSettings(BaseModel):
     note: str | None = None
 
 
+class MLChallengerSettings(BaseModel):
+    """ML-33: jeden wpis listy `ml_challengers` z `config.toml` — challenger nogi ML:
+    nazwa (`model_name` w `shadow_predictions`), plik wag (z Release `model-latest`)
+    i rodzaj prognozy: `return` (regresor zwrotu) albo `direction` (klasyfikator
+    P(wzrost) z ML-30). Wejście to zawsze wektor cech championa."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    path: str = Field(min_length=1)
+    kind: Literal["return", "direction"]
+
+
 class ModelPriceSettings(BaseModel):
     """FIN-13: stawki jednego modelu z `config.toml`, USD za 1M tokenów (standard
     tier). Brak stawki = dostawca jej nie nalicza; request z takimi tokenami nie
@@ -397,7 +481,8 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # ARCH-23: `.env` jak `config.toml` — względem roota repo, nie CWD.
+        env_file=str(_REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -461,15 +546,24 @@ class Settings(BaseSettings):
     council_llm_provider: Literal["openai", "anthropic"] | None = None
     council_llm_model: str | None = None
 
-    # ----- Rada: ważenie person (#3) i tryb debaty (#1) -----
+    # ----- Rada: ważenie person (R-21) i tryb debaty (R-19) -----
     persona_weighting_enabled: bool = False
     # WIA-51: wagi person i ich ranking liczy domena z surowych głosów RPC
     # `persona_vote_outcomes` (migracja 045): HOLD na krypto w paśmie ±2.5%, nie
     # akcyjnym ±0.5%. Off: RPC 015/018 — przed migracją 045 funkcji nie ma.
     persona_vote_outcomes_enabled: bool = False
+    # WIA-44: leaderboard person w mailu układa się po Brier Skill pewności (RPC
+    # `persona_scoring_stats`, migracja 065) zamiast po samym hit-rate'cie. Tylko
+    # kolejność i opis w mailu — prognoza ta sama. Off: ranking jak dotąd.
+    persona_brier_ranking_enabled: bool = False
+    # WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
+    # N_eff). Recap tygodniowy dopisuje linię „7 person ≈ 2,1 niezależnego głosu”,
+    # a mail Fast Loopa nie nadaje „SILNY KONSENSUS”, gdy rada mówi jednym głosem
+    # (N_eff < 1,5). Tylko treść maili — prognoza ta sama. Off: maile bez zmian.
+    council_redundancy_enabled: bool = False
     debate_mode_enabled: bool = False
 
-    # ----- Model routing (#2 — tani model + eskalacja do frontier) -----
+    # ----- Model routing (R-20 — tani model + eskalacja do frontier) -----
     model_routing_enabled: bool = False
     routing_floor: float = 0.6
     # NIEZ-17: najwyżej tyle eskalacji do frontiera na cykl (jedna kaskada na cykl).
@@ -478,7 +572,7 @@ class Settings(BaseSettings):
     router_frontier_provider: Literal["openai", "anthropic"] = "anthropic"
     router_frontier_model: str = "claude-sonnet-4-6"
 
-    # ----- Reżim rynku (#7), contagion (#5), kalibracja (#4) -----
+    # ----- Reżim rynku (R-25), contagion (R-23), kalibracja (R-22) -----
     # Regime może tylko ZACIEŚNIĆ próg volatility (mnożnik ≥ 1.0).
     regime_aware_enabled: bool = False
     regime_threshold_max_multiplier: float = 2.0
@@ -532,12 +626,18 @@ class Settings(BaseSettings):
     # (migracja 046) i jej histogram w panelu lessons. Off: nowy klucz przed
     # migracją → PGRST204 i przepadłe rozliczenie predykcji.
     correction_category_enabled: bool = False
-    # #9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
+    # R-9: surowa pewność LLM korygowana historycznym hit-rate'em swojego kubełka
     # kalibracji. Steruje rankingiem "🎯 Najsilniejsze sygnały" (strength =
     # pewność × |Δ|). Niezależna od `calibration_curve_enabled` — tamta flaga
     # rysuje sekcję Track Record, ta zmienia ranking. Render-only, bez zapisu.
     calibrated_confidence_enabled: bool = False
-    # #12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
+    # ML-28: ranking sygnałów kalibruje pewność mapą izotoniczną (PAV) zamiast
+    # shrinkage kubełkowego, gdy mapa dopasowana na [t−60 d, t−30 d) ma niższy Brier
+    # na [t−30 d, t) niż surowa pewność i kubełki (reguła w domenie). Działa tylko
+    # z `calibrated_confidence_enabled`; jeden darmowy odczyt 60 dni rozliczeń.
+    # Render-only, bez migracji. Off.
+    isotonic_calibration_enabled: bool = False
+    # R-12: karta kondycji modelu — jawny scorecard walk-forward (migracja 019).
     # Pokazuje bramkę "nie shipuj modelu gorszego od baseline'u", łącznie
     # z odrzutami. Render-only + insert w Slow Loopie. Off.
     model_scorecard_enabled: bool = False
@@ -553,10 +653,19 @@ class Settings(BaseSettings):
     # i PSI ostatnich 30 dni próbki (kolumna JSONB z migracji 052); karta ostrzega
     # przy PSI > 0.25. Off: nowy klucz przed migracją → PGRST204 i przepadły wiersz.
     model_scorecard_feature_stats_enabled: bool = False
-    # #8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
+    # CI-13: wiersze karty niosą sha256 pliku wag zapisanego w przebiegu (kolumna
+    # z migracji 060) — wiąże metryki przebiegu z wagami z Release i z
+    # `model_version` predykcji. Off: nowy klucz przed migracją → PGRST204.
+    model_scorecard_weights_sha256_enabled: bool = False
+    # ML-22: wiersze karty niosą proweniencję treningu — odcisk zbioru (sha256 po
+    # wierszach), zakres dat, liczności per symbol, parametry z jawnym ziarnem,
+    # wersję XGBoost, wersję zestawu cech i SHA kodu (kolumny z migracji 064).
+    # Sidecar `.json` obok pliku wag powstaje bez flagi. Off: PGRST204 przed 064.
+    model_scorecard_provenance_enabled: bool = False
+    # R-8: sekcja "🔄 Zmiany nastawienia" — flipy rady i skoki sentymentu vs
     # poprzedni cykl. Odczyt z Supabase, zero płatnych. Bez migracji. Off.
     cycle_diff_enabled: bool = False
-    # #13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
+    # R-13: kwity decyzyjne — JSONB `decision_receipts` na `prediction_logs`
     # (migracja 020). Flaga to WARUNEK graceful degradation, nie opcja: nowy
     # klucz przed migracją → PGRST204 i śmierć zapisu całej predykcji. Off.
     receipts_enabled: bool = False
@@ -582,6 +691,38 @@ class Settings(BaseSettings):
     # i backtest filtrują wtedy po 4). Działa tylko z `feature_snapshots_enabled`
     # (migracja 031); nowej migracji nie wymaga. Zero płatnych wywołań. Off.
     market_features_enabled: bool = False
+    # ML-52 (4): model wspólny (jedyne wagi, które serwuje Fast Loop) trenowany
+    # z wektorów `feature_snapshots` w wersji 4 (cykle gated, wektor dokładnie
+    # z servingu) z etykietą 12 h z `price_snapshots`, zamiast z widoku
+    # `ml_feature_store`. Zmienia serwowane wagi, więc off; potrzebuje wektorów
+    # wersji 4 (`market_features_enabled`) — bez nich model wspólny jest pomijany.
+    snapshot_training_enabled: bool = False
+    # ML-11: target modelu wspólnego = zwrot / σ (σ zwrotów symbolu z 20 poprzednich
+    # cykli, `return_sigma`, z podłogą); karty i baseline'y w jednostkach σ, a Fast
+    # Loop mnoży prognozę modelu w jednostkach σ przez σ z tej samej funkcji. Model
+    # niesie jednostkę w pliku wag. Zmienia serwowaną prognozę, więc off.
+    ml_sigma_target_enabled: bool = False
+    # ML-26: foldy walk-forward purgują wiersze treningu po chwili rozliczenia
+    # etykiety (`settled_at` z widoku po migracji 050, chwila etykiety wektora
+    # `feature_snapshots`), nie tylko po stałym horyzoncie 12 h — etykieta piątku
+    # rozliczona w poniedziałek nie trenuje foldu walidowanego w weekend. Zmienia
+    # werdykt bramki, a więc i serwowane wagi; bez kolumny purge zostaje 12 h. Off.
+    ml_settled_purge_enabled: bool = False
+    # ML-30: Slow Loop ewaluuje wariant binarny modelu — klasyfikator P(zwrot 12 h
+    # > +martwa strefa) z protokołu ewaluacji (`directional_dead_zone`, EXP-06),
+    # wiersze w martwej strefie wypadają; Brier i log loss vs stopa bazowa w summary.
+    # Wagi wariantu (po przejściu bramki) idą do osobnego pliku `*_direction.ubj`,
+    # którego Fast Loop nie czyta — champion bez zmian. Off.
+    ml_direction_classifier_enabled: bool = False
+    # ML-33: champion/challenger nogi ML. Fast Loop liczy prognozy cienia challengerów
+    # (`ml_challengers`) z tego samego wektora cech co champion i zapisuje je razem
+    # z prognozą championa do `shadow_predictions` (migracja 075) — wynik cyklu, prompt,
+    # mail i rekord predykcji bez zmian. Slow Loop raportuje w summary werdykt promocji
+    # (domena `should_promote`); podmianę serwowanych wag robi właściciel. Off: przed
+    # migracją tabeli nie ma.
+    shadow_predictions_enabled: bool = False
+    # ML-33: najwyżej `MAX_ML_CHALLENGERS` challengerów; brak pliku wag = pominięty.
+    ml_challengers: list[MLChallengerSettings] = Field(default_factory=list)
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
@@ -608,57 +749,78 @@ class Settings(BaseSettings):
     # więc należy do przepisu. Off: nowy klucz przed migracją → PGRST204 i śmierć
     # zapisu całej predykcji.
     trend_probabilities_enabled: bool = False
+    # ML-27: prompt prosi o poziom unieważnienia tezy {price, reason}; domena go waliduje
+    # (strona ceny, ±15%), zapis idzie do `prediction_logs.invalidation_price` (migracja
+    # 074), mail pokazuje go w bloku uzasadnienia, a watch alarmuje po przekroczeniu.
+    # Zmienia prompt, więc należy do przepisu. Off.
+    invalidation_level_enabled: bool = False
+    # ML-36: ruch ceny w `<current_market_data>` promptu predykcji jako „+3.46” zamiast
+    # pełnej precyzji `Decimal` (kilkanaście tokenów mniej). Zmienia tekst promptu, więc
+    # należy do przepisu. Bez migracji. Off.
+    prompt_delta_rounding_enabled: bool = False
+    # BEZ-14: pola półzaufane (lekcja z reflect w prompcie predykcji, uzasadnienia
+    # person w prompcie przewodniczącego) w fence'u DATA-ONLY. Zmienia tekst promptów,
+    # więc należy do przepisu. Bez migracji. Off.
+    prompt_taint_fence_enabled: bool = False
     # WIA-19: okna „zamknięte predykcje” po chwili ROZLICZENIA (`settled_at`,
     # migracja 029), nie utworzenia — sekcja maila bierze predykcje rozliczone
     # w tym cyklu, recap tygodniowy rozliczone w ostatnich 7 dniach. Off: filtr
     # po kolumnie przed migracją 029 → 400 i mail bez sekcji, tydzień bez recapu.
     settled_at_windows_enabled: bool = False
-    # #11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
+    # R-11: darmowy watch szoku poza cyklem (main_watch.py, cron co godzinę 24/7,
     # migracja 021). Zero płatnych wywołań. Off.
     shock_alerts_enabled: bool = False
+    # ALR-07: szok PORTFELA w watchu — Σ waga × Δ po pozycjach (tabela `positions`,
+    # `portfolio_positions_enabled`) przy |Δ| ≥ `portfolio_shock_threshold`; jeden push
+    # „💼 Portfel -3,4% (NVDA -6,0%, AMD -5,0%)” dziennie, debounce w `shock_alerts`
+    # pod symbolem „__PORTFOLIO__” (nowy zapis, więc osobna flaga). Off: watch bez zmian.
+    portfolio_shock_enabled: bool = False
+    portfolio_shock_threshold: Decimal = Field(default=Decimal("0.03"))
     # NIEZ-11: deadman (main_deadman.py, cron raz dziennie) — maksymalna przerwa
     # między śladami życia jobu w godzinach; 0 = job świadomie wstrzymany. Off.
     # Fast Loop: zapas od północy ET każdego dnia handlowego NYSE (weekend i święto
     # nie alarmują).
     liveness_fast_loop_max_gap_h: float = 0.0
     liveness_slow_loop_max_gap_h: float = 0.0
-    # #14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
+    # R-14: Alpha Fusion Score — ważona fuzja 5 źródeł alfa (migracja 022).
     # Wchodzi do promptu LLM i do ml_feature_store jako KANDYDAT na cechę —
     # XGBoost go nie używa (poza `ML_FEATURE_COLUMNS`). Promocję do cech modelu
     # rozstrzyga porównanie A/B (EXP-19), nie intuicja wag. Off.
     alpha_fusion_enabled: bool = False
-    # #16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
+    # R-16: commit-reveal (migracja 024). W chwili predykcji publikujemy SHA-256
     # commitment; po rozliczeniu sweep ujawnia sól i plaintext. UWAGA: daty
     # commitów Gita są fałszowalne — to tamper-evidence, nie niepodrabialny
     # timestamp. Off (nowe kolumny przed migracją 024 → PGRST204).
     attestation_enabled: bool = False
-    # #15: realne pozycje użytkownika (tabela `positions`, migracja 023).
+    # R-15: realne pozycje użytkownika (tabela `positions`, migracja 023).
     # Nazwa CELOWO nie `portfolio_enabled` — kolidowałaby z `portfolio_var_enabled`
     # i z sekcją watchlisty. Off → Null adapter → dotychczasowe równe wagi.
     portfolio_positions_enabled: bool = False
-    # PORT-18: kolumny `positions.currency` i `purchase_date` (migracja 035) —
-    # adapter czyta z nich walutę i PRAWDZIWĄ datę zakupu (zamiast `as_of`),
-    # a import CSV (`main_tools.py import-positions --apply`) je zapisuje. Off:
-    # nowy klucz w zapisie przed migracją → PGRST204; odczyt zostaje przy USD
-    # i dotychczasowym mapowaniu.
-    positions_currency_enabled: bool = False
     # PORT-11: cache kursów NBP z minionych dni w tabeli `fx_rates` (migracja 036)
     # pod P/L w zł po kursie z dnia zakupu. Same kursy idą z NBP za `nbp_enabled`
     # (darmowe) także bez cache'u. Off: przed migracją tabeli nie ma, więc każdy
     # odczyt i zapis kończyłby się błędem w logu.
     fx_rates_cache_enabled: bool = False
-    # #17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
+    # R-17: niedzielna retrospektywa narracyjna (Slow Loop). JEDYNA pozycja
     # z niezerowym kosztem FinOps: DOKŁADNIE 1 wywołanie LLM tygodniowo
     # (nie per symbol, nie per cykl). Poniżej 5 zamkniętych predykcji mail
     # nie wychodzi — reguła domenowa, nie opcja. Off.
     weekly_recap_enabled: bool = False
-    # #10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
+    # R-10: publiczny scorecard kalibracji (landing page). WYŁĄCZNIE agregaty —
     # zero PII, zero symboli watchlisty, zero kwot. Osobny publisher i osobna
-    # ścieżka niż prywatny `web_digest`. Render-only, zero płatnych. Off.
+    # ścieżka, zero danych z prywatnego maila. Render-only, zero płatnych. Off.
     public_scorecard_enabled: bool = False
     public_scorecard_path: str = "public/scorecard/index.html"
+    # NIEZ-33: publiczna strona statusu (`cycle_runs`, migracja 041) i JSON odznaki shields
+    # „last digest” obok niej. Ścieżka w katalogu scorecardu — ten sam artefakt Pages,
+    # więc strona wychodzi razem ze scorecardem. Same agregaty. Off.
+    public_status_page_enabled: bool = False
+    public_status_path: str = "public/scorecard/status/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
+    # WIA-59: append-only JSONL z głową paper ledgera, raz dziennie (`paper_ledger_enabled`
+    # i `attestation_enabled`) — w katalogu checkoutu gałęzi `attestation-log`.
+    paper_ledger_heads_path: str = "public/attestation/paper_ledger_heads.jsonl"
     # Okno (dni) dla krzywej kapitału / panelu lekcji / krzywej kalibracji.
     track_record_days: int = 30
     # WIA-50: jednostronny koszt transakcyjny (bps od obrotu) w paper-PnL,
@@ -671,11 +833,26 @@ class Settings(BaseSettings):
     # Każde źródło ma adapter (wolne/istniejące API) i Null-fallback. W Fast Loop
     # domyślnie Null; realny adapter włącza dopiero flaga (+ ewentualny klucz).
     insider_flow_enabled: bool = False
+    # DAT-17: świeży raport 8-K (ta sama odpowiedź submissions EDGAR co insider flow,
+    # wspólny adapter) w prompcie predykcji i jako `fresh_8k` w `feature_snapshots`.
+    # Zmiana przepisu. Off do naprawy dostępu do EDGAR (403) i do końca EXP-02/03.
+    corporate_events_enabled: bool = False
     earnings_calendar_enabled: bool = False
     # FIN-11 (wymaga migracji 053): Fast Loop czyta datę raportu z `earnings_cache`
     # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.
     earnings_cache_enabled: bool = False
+    # DAT-20: poniedziałkowa sekcja „📅 Ten tydzień” z kalendarza Finnhub (jedno
+    # zapytanie na watchlistę, darmowe). Bramka earnings bez zmian. Off do przeglądu
+    # ToS Finnhub (BEZ-28) i sondy darmowego planu (docs/configuration.md).
+    finnhub_earnings_calendar_enabled: bool = False
     options_flow_enabled: bool = False
+    # WIA-28: horyzont edge (R-18) akcji i ETF z kalendarza NYSE — godziny do
+    # następnego dnia handlowego (~72 h w piątek) zamiast stałych 24 h. Off.
+    edge_calendar_horizon_enabled: bool = False
+    # DAT-18: port opcji grafu kieruje BTC/ETH do Deribit DVOL (publiczne API, bez
+    # klucza) — implied edge (R-18) i kolumna `edge_sigma` dla krypto. Off; włączenie
+    # dopiero po falsyfikacji hipotezy edge_sigma (WIA-75), docs/configuration.md.
+    deribit_dvol_enabled: bool = False
     social_velocity_enabled: bool = False
     yield_curve_enabled: bool = False
     # DAT-22: zmienne stanu rynku z FRED (VIXCLS, VXNCLS, BAMLH0A0HYM2, T10Y2Y, NFCI),
@@ -697,7 +874,7 @@ class Settings(BaseSettings):
     # FRED API key (darmowy, ale wymagany do pobrań krzywej rentowności) — SEKRET.
     fred_api_key: str | None = None
 
-    # ----- Tool-use research agent (#6) -----
+    # ----- Tool-use research agent (R-24) -----
     # Na NAJWIĘKSZYCH ruchach (osobny, wyższy próg) główna analiza idzie pętlą
     # tool-use: model może dociągnąć read-only toole (fundamenty/makro) przed
     # werdyktem. Domyślnie OFF — to płatna, wielorundowa ścieżka.
@@ -705,6 +882,9 @@ class Settings(BaseSettings):
     # Osobny próg volatility — wyższy niż główny (2%), bo każda runda tool-use to
     # dodatkowe wywołanie LLM. Tylko ruchy ≥ tego progu uruchamiają pętlę.
     tool_use_volatility_threshold: Decimal = Field(default=Decimal("0.05"))
+    # FIN-08: osobny próg tool-use dla krypto (bramka główna rozróżnia je własnym
+    # `crypto_volatility_threshold`). None = krypto bierze `tool_use_volatility_threshold`.
+    crypto_tool_use_volatility_threshold: Decimal | None = None
     # Twardy cap rund tool-call (FinOps). Worst-case wywołań płatnych na analizę
     # = tool_use_max_rounds + 1 (ostatnie wymuszone bez toolów).
     tool_use_max_rounds: int = Field(default=3)
@@ -778,6 +958,22 @@ class Settings(BaseSettings):
     # z datą i źródłem, a mail pokazuje obie trafności (okres przejściowy). Kolumny
     # z migracji 059; off w kodzie i w config.toml, dopóki produkcja jej nie ma.
     session_close_settlement_enabled: bool = False
+    # WIA-54: rozliczenie zapisuje obok ceny /quote cenę wykonalną — otwarcie pierwszej
+    # sesji po predykcji z tego samego notowania — a mail rysuje z niej drugą krzywą
+    # „od otwarcia”. Kolumna z migracji 072; off w kodzie i w config.toml.
+    executable_entry_enabled: bool = False
+    # WIA-59: append-only paper ledger z łańcuchem hashy (`paper_trades`, migracja 073):
+    # save otwiera pozycję, reflect ją zamyka, krzywa kapitału w mailu czyta ledger,
+    # a głowa łańcucha idzie raz dziennie obok atestacji. Off w kodzie i w config.toml.
+    paper_ledger_enabled: bool = False
+    # DAT-23: `pc` z /quote vs ostatni snapshot — stosunek bliski stosunkowi splitu
+    # koryguje referencję bramki, rozliczenie (w jednostkach predykcji) i `price_delta`,
+    # a zdarzenie idzie do `corporate_actions` (migracja 062). Off.
+    split_detection_enabled: bool = False
+    # DAT-15: odczyt ceny dalej niż 8 MAD od mediany zwrotów historii snapshotów (bez
+    # potwierdzenia w `pc`) nie otwiera bramki, nie rozlicza predykcji i nie nadpisuje
+    # snapshotu-referencji. Bez migracji. Off.
+    price_outlier_guard_enabled: bool = False
     # WIA-24: darmowy sygnał referencyjny `reference-v1` raz na przebieg Slow Loopa
     # (odczyt /quote, rozliczenie, wywołanie) do tabeli `reference_predictions`
     # (migracja 042). Off w kodzie i w config.toml, dopóki produkcja nie ma migracji.
@@ -860,7 +1056,7 @@ class Settings(BaseSettings):
     # 1 = sekwencyjnie (wstecznie zgodne). > 1 = ThreadPoolExecutor; uwaga: każdy
     # symbol wewnętrznie rozwija radę do ~7 równoległych callsów OpenAI, więc
     # realny fan-out to ~N×7 — trzymaj zachowawczo (config.toml: 4). Throttle i
-    # contagion (#5) działają tylko w trybie sekwencyjnym (patrz _analyze_symbols).
+    # contagion (R-23) działają tylko w trybie sekwencyjnym (patrz _analyze_symbols).
     symbol_concurrency: int = Field(default=1)
 
     # Minimalny wiek (godziny) predykcji, zanim reflect_node ją oceni. Chroni
@@ -880,10 +1076,19 @@ class Settings(BaseSettings):
     # zapasem. 0 = bez granicy. Musi być większe niż reflection_min_age_hours.
     reflection_max_age_hours: int = Field(default=96)
 
-    # Waga wyniku w outcome-aware reranku analogów RAG (#9). 0.0 = sama
+    # Waga wyniku w outcome-aware reranku analogów RAG (R-27). 0.0 = sama
     # kolejność similarity (zachowanie wsteczne); >0 promuje analogi, których
     # prognoza realnie się sprawdziła. Produkcja: 0.3.
     rag_outcome_weight: float = Field(default=0.0)
+    # ML-23: analogi RAG z dokładnego KNN (`match_news_embeddings_exact`, migracja
+    # 063) zamiast ivfflat z probes = 1. Inne analogi w prompcie (EXP-03). Off.
+    rag_exact_search_enabled: bool = False
+    # ML-41: analogi RAG wyłącznie rozliczone (z wynikiem), z 4× większej puli kandydatów
+    # tej samej RPC — nierozliczony analog (także z TEGO cyklu) nie trafia do promptu ani
+    # do reranku. Z migracją 076 RPC `match_news_embeddings_pit` (rozliczone przed chwilą
+    # predykcji, bez tego samego symbolu z okna horyzontu). Inne analogi w prompcie
+    # (EXP-03), więc w przepisie. Off.
+    rag_point_in_time_enabled: bool = False
 
     # ----- ML -----
     ml_model_path: str = "data/models/price_predictor.ubj"
@@ -902,9 +1107,9 @@ class Settings(BaseSettings):
     # SEKRETY (placeholdery w .env.example): kanał jest budowany, gdy jego
     # sekrety są obecne (analogicznie do Resend). chat_id/webhook to adresy
     # docelowe → traktujemy jak sekret (jak digest_to_email).
-    # #5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
+    # R-5: push (Telegram/Slack) dostaje 5-linijkowy skrót zamiast pełnego
     # plain-textu raportu. Pełny raport przekracza limit 4096 znaków Telegrama →
-    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed #5.
+    # API zwraca 400 i push ginie po cichu. Off = zachowanie sprzed R-5.
     messenger_digest_enabled: bool = False
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -934,13 +1139,15 @@ class Settings(BaseSettings):
     # także wyłączonych po trafieniu, nie rusza).
     price_alerts: list[PriceAlertSettings] = Field(default_factory=list)
 
-    # ----- Dystrybucja (U2/U3 — opcjonalne, niewrażliwe → config.toml) -----
+    # ----- Dystrybucja (U2, MAIL-24 — opcjonalne, niewrażliwe → config.toml) -----
     # U2: personalizowany fan-out — każdy subskrybent (tabela `subscribers`)
     # dostaje raport tnięty do swojej watchlisty. Brak/false → pojedyncza wysyłka.
     subscriptions_enabled: bool = False
-    # U3: publikacja statycznego digestu web (read-only dashboard).
-    web_digest_enabled: bool = False
-    web_digest_path: str = "public/digest/index.html"
+    # MAIL-24: pełny HTML cyklu w PRYWATNYM buckecie Supabase Storage `digests`
+    # i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni) w mailu właściciela
+    # i w pushu; indeks w tabeli `digests` (migracja 061). Zapis do bazy i Storage,
+    # więc działa tylko z `db_writes_enabled`. Off.
+    digest_archive_enabled: bool = False
 
     @field_validator(
         "symbols",
@@ -1060,6 +1267,24 @@ class Settings(BaseSettings):
         """EXP-05: definicja, która nie zadziała zgodnie z zamiarem, zatrzymuje
         start, zamiast po cichu zbierać dane z testu A/A."""
         validate_experiments(self.experiment_definitions())
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ml_challengers(self) -> Settings:
+        """ML-33: wiersz cienia rozpoznaje model po nazwie — dwie takie same nazwy
+        albo nazwa championa skleiłyby różne modele w jedną serię, a plik championa
+        jako challenger porównywałby model z samym sobą."""
+        names = [challenger.name for challenger in self.ml_challengers]
+        if len(names) > MAX_ML_CHALLENGERS:
+            raise ValueError(
+                f"ml_challengers holds at most {MAX_ML_CHALLENGERS} entries, got {len(names)}"
+            )
+        if len(set(names)) != len(names) or CHAMPION_MODEL_NAME in names:
+            raise ValueError(
+                f"ml_challengers names must be unique and not '{CHAMPION_MODEL_NAME}': {names}"
+            )
+        if any(challenger.path == self.ml_model_path for challenger in self.ml_challengers):
+            raise ValueError("ml_challengers must not point at the champion's ml_model_path")
         return self
 
     def price_level_seeds(self) -> tuple[PriceLevel, ...]:
@@ -1185,11 +1410,12 @@ class Settings(BaseSettings):
         "council_volatility_threshold",
         "crypto_volatility_threshold",
         "tool_use_volatility_threshold",
+        "crypto_tool_use_volatility_threshold",
     )
     @classmethod
     def _validate_volatility_threshold(
-        cls, value: Decimal, info: ValidationInfo
-    ) -> Decimal:
+        cls, value: Decimal | None, info: ValidationInfo
+    ) -> Decimal | None:
         """Odrzuca progi volatility, które wyłączają bramkę FinOps.
 
         Ujemny próg sprawia, że `abs(delta) >= threshold` jest ZAWSZE
@@ -1198,7 +1424,10 @@ class Settings(BaseSettings):
         robi to samo (FIN-07), więc progi bramek płatnych portów muszą być > 0.
         Wyjątek: `council_volatility_threshold = 0.0` to udokumentowany
         "always run" disable switch drugiego sita rady — ten próg zostaje ≥ 0.
+        None (tylko opcjonalny próg tool-use krypto, FIN-08) = brak własnego progu.
         """
+        if value is None:
+            return None
         if info.field_name == _ALWAYS_RUN_THRESHOLD_FIELD:
             if value < 0:
                 raise ValueError(f"{info.field_name} must be non-negative (got {value})")
@@ -1207,6 +1436,15 @@ class Settings(BaseSettings):
                 f"{info.field_name} must be positive (got {value}) — "
                 "a threshold of 0 or less lets every move through the volatility gate"
             )
+        return value
+
+    @field_validator("portfolio_shock_threshold")
+    @classmethod
+    def _validate_portfolio_shock_threshold(cls, value: Decimal) -> Decimal:
+        """Próg szoku portfela jest ułamkiem w (0, 1): zero albo ujemny alarmowałby
+        przy każdym przebiegu, 1 i więcej nigdy."""
+        if not Decimal(0) < value < Decimal(1):
+            raise ValueError(f"portfolio_shock_threshold must be in (0, 1) (got {value})")
         return value
 
     @field_validator("risk_symbol_types", mode="before")
@@ -1293,14 +1531,16 @@ class Settings(BaseSettings):
     def av_budget(self) -> AvBudget:
         """FIN-32: worst case doby AV dla pełnej watchlisty Fast Loopa (WIA-11:
         `symbols` + `crypto_symbols` − `symbols_unsupported_price`). Na symbol:
-        jedno NEWS_SENTIMENT i jedno EARNINGS_CALENDAR przy włączonym kalendarzu —
-        chyba że kalendarz idzie z cache Slow Loopa (FIN-11)."""
+        jedno NEWS_SENTIMENT; przy włączonym kalendarzu jedno EARNINGS_CALENDAR na
+        cykl (FIN-09: jedna lista dla wszystkich symboli) — chyba że kalendarz idzie
+        z cache Slow Loopa (FIN-11)."""
         live_calendar = self.earnings_calendar_enabled and not self.earnings_cache_enabled
         return av_daily_budget(
             n_av_symbols=self._eligible_symbol_count(),
-            requests_per_symbol=2 if live_calendar else 1,
+            requests_per_symbol=1,
             cycles_per_day=self.fast_loop_cycles_per_day,
             n_keys=len(self.alpha_vantage_api_keys),
+            requests_per_cycle=1 if live_calendar else 0,
         )
 
     def _eligible_symbol_count(self) -> int:

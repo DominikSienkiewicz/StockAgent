@@ -19,6 +19,7 @@ import main_trainer
 from src.application.ports import ArchiveReceipt, EvidenceSourcePort
 from src.config import SECRET_SETTINGS_FIELDS, Settings
 from src.infrastructure.adapters.age_archive import is_age_recipient
+from tests.settings_kwargs import NO_ENV_FILE
 
 ROOT = Path(__file__).parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "slow_loop_weekly.yml"
@@ -30,7 +31,7 @@ SECRET_REF = "${{ secrets.BACKUP_AGE_RECIPIENT }}"
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        _env_file=None,
+        **NO_ENV_FILE,
         openai_api_key="sk-test",
         finnhub_api_key="fh",
         alpha_vantage_api_keys=["av1"],

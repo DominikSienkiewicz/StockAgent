@@ -5,13 +5,20 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
 
+from src.application.errors import (
+    LLMOutputIncomplete,
+    LLMRefusalError,
+    LLMTruncatedError,
+    MalformedPayload,
+)
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
@@ -66,6 +73,19 @@ def validate_model_id(model: str) -> None:
         )
 
 
+# NIEZ-26: `stop_reason` Messages API, przy którym odpowiedź nie jest kompletna.
+_STOP_MAX_TOKENS = "max_tokens"
+_STOP_REFUSAL = "refusal"
+
+
+class _Completion(NamedTuple):
+    """Tekst odpowiedzi z powodem zakończenia i liczbą tokenów wyjścia (gdy podane)."""
+
+    text: str
+    stop_reason: str | None
+    output_tokens: int | None
+
+
 class AnthropicAdapter(LLMPort):
     """Adapter dla Anthropic Messages API.
 
@@ -118,7 +138,7 @@ class AnthropicAdapter(LLMPort):
         self._quota_monitor = quota_monitor
         self._usage_sink = usage_sink
 
-    def _call(self, prompt: str) -> str:
+    def _call(self, prompt: str) -> _Completion:
         response = self._call_with_retry(
             lambda: self._client.messages.create(
                 model=self._model,
@@ -129,7 +149,39 @@ class AnthropicAdapter(LLMPort):
         )
         if self._usage_sink is not None:
             report_usage(self._usage_sink, anthropic_usage(response, self._model))
-        return self._extract_text(response)
+        completion = _Completion(
+            self._extract_text(response),
+            _str_or_none(getattr(response, "stop_reason", None)),
+            _int_or_none(getattr(getattr(response, "usage", None), "output_tokens", None)),
+        )
+        self._warn_if_incomplete(completion)
+        return completion
+
+    def _warn_if_incomplete(self, completion: _Completion) -> None:
+        """NIEZ-26: ucięcie limitem albo odmowa zawsze widoczne w logu — także gdy
+        odpowiedź da się sparsować (np. ucięty komentarz po kompletnym obiekcie)."""
+        if completion.stop_reason in (_STOP_MAX_TOKENS, _STOP_REFUSAL):
+            logger.warning(
+                "Anthropic %s stopped with stop_reason=%s after %s output tokens "
+                "(max_tokens=%d)",
+                self._model,
+                completion.stop_reason,
+                completion.output_tokens,
+                self._max_tokens,
+            )
+
+    def _incomplete_error(self, completion: _Completion) -> LLMOutputIncomplete | None:
+        """Błąd dla NIEPARSOWALNEJ odpowiedzi, którą tłumaczy `stop_reason`; None,
+        gdy model skończył normalnie (wtedy to zwykły `MalformedPayload`)."""
+        if completion.stop_reason == _STOP_MAX_TOKENS:
+            return LLMTruncatedError(
+                f"Anthropic {self._model} answer truncated at max_tokens="
+                f"{self._max_tokens} ({completion.output_tokens} output tokens).",
+                output_tokens=completion.output_tokens,
+            )
+        if completion.stop_reason == _STOP_REFUSAL:
+            return LLMRefusalError(f"Anthropic {self._model} refused to answer.")
+        return None
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
         """Retry'uje wyłącznie błędy transient (429 / 5xx / connection).
@@ -162,7 +214,7 @@ class AnthropicAdapter(LLMPort):
                 return result
             except (APIStatusError, APIConnectionError) as exc:
                 if not self._is_transient(exc):
-                    raise
+                    raise as_port_error(exc, sdk_error_kind(exc)) from None
                 if attempt >= self._max_retries:
                     self._emit_quota_alert(
                         severity=QuotaSeverity.CRITICAL,
@@ -181,7 +233,7 @@ class AnthropicAdapter(LLMPort):
                             f"({type(exc).__name__}) — call failed."
                         ),
                     )
-                    raise
+                    raise as_port_error(exc, sdk_error_kind(exc)) from None
                 wait = self._compute_wait(exc, attempt)
                 logger.warning(
                     "Anthropic transient error %s (attempt %d/%d) — sleeping %.1fs",
@@ -297,10 +349,16 @@ class AnthropicAdapter(LLMPort):
         return None
 
     def analyze(self, prompt: str) -> dict[str, Any]:
-        text = self._call(prompt)
-        if not text:
-            raise ValueError("Anthropic returned empty content for analyze().")
-        cleaned = self._strip_code_block(text).strip()
+        """NIEZ-26: odpowiedź, którą parser przyjmuje, zostaje przyjęta niezależnie od
+        `stop_reason` (przepis predykcji bez zmian); nieparsowalna ucięta albo
+        odrzucona daje `LLMTruncatedError` / `LLMRefusalError` zamiast „invalid JSON”."""
+        completion = self._call(prompt)
+        incomplete = self._incomplete_error(completion)
+        if not completion.text:
+            if incomplete is not None:
+                raise incomplete
+            raise MalformedPayload("Anthropic returned empty content for analyze().")
+        cleaned = self._strip_code_block(completion.text).strip()
         try:
             return parse_json_object(cleaned)
         except json.JSONDecodeError:
@@ -312,9 +370,21 @@ class AnthropicAdapter(LLMPort):
                     return parse_json_object(candidate)
                 except json.JSONDecodeError:
                     pass
-            raise ValueError(
+            if incomplete is not None:
+                raise incomplete from None
+            raise MalformedPayload(
                 f"Anthropic returned invalid JSON: {cleaned[:200]!r}"
             ) from None
 
     def analyze_mistake(self, prompt: str) -> str:
-        return self._call(prompt).strip()
+        # Diagnoza to wolny tekst, a reflect_node nie ma guardu — ucięta lekcja wraca
+        # jak dotąd (WARNING loguje `_call`).
+        return self._call(prompt).text.strip()
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None

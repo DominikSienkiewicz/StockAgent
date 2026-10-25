@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from src.application.ports import RepositoryPort
 from src.application.report_formatting import plural_pl
@@ -34,6 +35,7 @@ def build_data_coverage(
     crypto_symbols: Sequence[str],
     days: int,
     now: datetime,
+    settled_rows: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
 ) -> CoverageReport:
     """Pokrycie ostatnich `days` dni: sesje NYSE, gdy są akcje, inaczej dni UTC.
 
@@ -51,7 +53,8 @@ def build_data_coverage(
         observed.update(_snapshot_session(stamp, asset) for stamp, _ in history)
     start = (now - timedelta(days=days)).date() + timedelta(days=1)
     report = coverage(expected_sessions(start, _window_end(now, asset), asset), observed)
-    settled = {str(row.get("symbol")) for row in repository.get_resolved_predictions(days)}
+    rows = repository.get_resolved_predictions(days) if settled_rows is None else settled_rows()
+    settled = {str(row.get("symbol")) for row in rows}
     return dataclasses.replace(
         report, unsettled_symbols=unsettled_symbols([*symbols, *crypto_symbols], settled)
     )

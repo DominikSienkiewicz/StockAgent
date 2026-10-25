@@ -1,30 +1,40 @@
-name: 🧪 Integration smoke (manual, live APIs)
+name: 🧪 Integration smoke (live APIs)
 
 on:
   # CI-05: testy `-m integration` (prawdziwe API) nie biegły w żadnym workflowie.
-  # WYŁĄCZNIE ręcznie (decyzja właściciela): przebieg to 3 płatne wywołania LLM
-  # (OpenAI ×2, Anthropic), kilka darmowych zapytań (Alpha Vantage z dziennego limitu
-  # klucza, Finnhub, EDGAR) i jeden prawdziwy mail przez Resend, więc bez crona,
-  # push i PR-ów.
+  # Pełny smoke (job `live-api-smoke`) WYŁĄCZNIE ręcznie (decyzja właściciela): przebieg
+  # to 3 płatne wywołania LLM (OpenAI ×2, Anthropic), kilka darmowych zapytań (Alpha
+  # Vantage z dziennego limitu klucza, Finnhub, EDGAR) i jeden prawdziwy mail przez
+  # Resend, więc bez crona, push i PR-ów.
   # Pilnuje tego tests/test_workflow_policy.py.
   workflow_dispatch:
+  # TEST-16: raz w tygodniu wyłącznie test kształtu dostawców (job `provider-shapes`):
+  # świeże odpowiedzi vs tests/fixtures/providers/. Darmowe źródła + jedno zapytanie
+  # Alpha Vantage z limitu klucza smoke; płatny `live-api-smoke` nie biegnie z crona.
+  # Pilnuje tego tests/test_integration_smoke_schedule.py.
+  schedule:
+    - cron: '41 6 * * 1'   # poniedziałek 06:41 UTC — po niedzielnym Slow Loopie
 
 permissions:
   contents: read       # smoke nic nie zapisuje do repo
 
-# Drugi dispatch anuluje pierwszy — po co płacić dwa razy za ten sam smoke.
+# CI-10: drugi dispatch czeka w kolejce. Run w toku mógł już zapłacić za wywołania LLM,
+# a anulowanie niczego by nie oszczędziło, tylko zgubiło wynik.
 concurrency:
   group: integration-smoke
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   live-api-smoke:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10   # FinOps: twardy limit minut GHA
 
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: 🐍 Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -34,6 +44,7 @@ jobs:
       - name: ⚡ Install uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
+          version: "0.9.22"
           enable-cache: true
 
       - name: 📦 Sync dependencies (incl. dev + anthropic extra)
@@ -51,4 +62,50 @@ jobs:
           ALPHA_VANTAGE_API_KEYS: ${{ secrets.SMOKE_ALPHA_VANTAGE_API_KEY }}
           RESEND_API_KEY:         ${{ secrets.SMOKE_RESEND_API_KEY }}
           DIGEST_TO_EMAIL:        ${{ secrets.SMOKE_DIGEST_TO_EMAIL }}
+          FRED_API_KEY:           ${{ secrets.SMOKE_FRED_API_KEY }}
         run: uv run --frozen --no-build --no-sync pytest -m integration
+
+  provider-shapes:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10   # FinOps: twardy limit minut GHA
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: "0.9.22"
+          enable-cache: true
+
+      - name: 📦 Sync dependencies (incl. dev)
+        run: uv sync --locked --no-build --no-install-project
+
+      - name: 🧬 Provider payload shapes (TEST-16)
+        env:
+          # Te same sekrety SMOKE_* co ręczny smoke; brak sekretu = skip tego dostawcy.
+          FINNHUB_API_KEY:        ${{ secrets.SMOKE_FINNHUB_API_KEY }}
+          ALPHA_VANTAGE_API_KEYS: ${{ secrets.SMOKE_ALPHA_VANTAGE_API_KEY }}
+          FRED_API_KEY:           ${{ secrets.SMOKE_FRED_API_KEY }}
+        run: uv run --frozen --no-build --no-sync pytest -m integration tests/infrastructure/test_provider_shapes.py
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: porażka i timeout crona są inaczej ciche. Kanał smoke'a (CI-05),
+        # nie produkcyjny — alert idzie na adres SMOKE_DIGEST_TO_EMAIL.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.SMOKE_RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.SMOKE_DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

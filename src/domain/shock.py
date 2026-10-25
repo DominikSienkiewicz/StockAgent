@@ -11,8 +11,14 @@ tej warstwy — domena dostarcza jedynie czysty predykat debounce `should_emit`.
 Dwa źródła ruchu (ALR-02): delta wobec snapshotu Fast Loopa (`detect_shock`, z guardem
 wieku) albo dzienna zmiana z darmowego /quote (`DailyChange`, z guardem dnia
 `is_daily_change_fresh`). Oba kończą w tej samej klasyfikacji `classify_shock`.
+
+Szok PORTFELA (ALR-07): próg per symbol nie złapie skoordynowanego spadku pięciu
+spółek po 3%, choć portfel traci 3% — `detect_portfolio_shock` liczy Σ waga × Δ po
+pozycjach i porównuje z progiem portfela. Debounce idzie tym samym `should_emit`
+pod kluczem `PORTFOLIO_ALERT_SYMBOL`.
 """
 
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -41,6 +47,13 @@ SNAPSHOT_MAX_AGE_HOURS = 30.0
 ROLLING_CHANGE_WINDOW = timedelta(hours=24)
 
 
+# ALR-07: klucz debounce szoku portfela w `shock_alerts` (symbol to tekst, bez migracji).
+PORTFOLIO_ALERT_SYMBOL = "__PORTFOLIO__"
+
+# ALR-07: ilu największych kontrybutorów szoku wymienia push portfela.
+PORTFOLIO_SHOCK_TOP_MOVERS = 3
+
+
 class ShockDirection(Enum):
     """Kierunek szoku — spadek albo wzrost ceny."""
 
@@ -55,6 +68,21 @@ class ShockAlert:
     symbol: str
     delta: PriceDelta
     direction: ShockDirection
+
+
+@dataclass(frozen=True)
+class PortfolioShock:
+    """Wykryty szok portfela (ALR-07).
+
+    `delta` — Σ waga × Δ po pozycjach z mierzalnym ruchem (ułamek wartości portfela),
+    `movers` — `(symbol, Δ symbolu)` największych kontrybutorów w kierunku szoku
+    (malejąco po |waga × Δ|), `measured_weight` — jaka część portfela miała policzoną
+    zmianę: poniżej 1 portfel jest oceniany tylko po tej części."""
+
+    delta: PriceDelta
+    direction: ShockDirection
+    movers: tuple[tuple[str, Decimal], ...]
+    measured_weight: Decimal
 
 
 @dataclass(frozen=True)
@@ -162,3 +190,44 @@ def should_emit(
     alertów (odpowiednik `UNIQUE(symbol, alert_date)` w warstwie persystencji).
     """
     return (symbol, alert_date) not in already_sent
+
+
+def detect_portfolio_shock(
+    weights: Mapping[str, Decimal],
+    deltas: Mapping[str, Decimal],
+    threshold: Decimal,
+    *,
+    top: int = PORTFOLIO_SHOCK_TOP_MOVERS,
+) -> PortfolioShock | None:
+    """Szok portfela: |Σ waga × Δ| ≥ `threshold` (ułamki), albo None.
+
+    `weights` to udziały pozycji w wartości portfela PRZED ruchem (suma 1),
+    `deltas` — zmiany cen symboli od ostatnich referencji. Symbol bez zmiany nie
+    wchodzi do sumy i NIE jest zgadywany: portfel liczy się po mierzalnej części
+    (`measured_weight`), więc brak notowań może portfel tylko niedoszacować, nigdy
+    zawyżyć. Skoordynowany spadek pięciu spółek po 3% przy wagach 20% daje −3%,
+    choć żaden symbol nie przekracza własnego progu szoku (2× bramki volatility).
+    """
+    contributions = {
+        symbol: weight * deltas[symbol]
+        for symbol, weight in weights.items()
+        if symbol in deltas and weight > 0
+    }
+    if not contributions:
+        return None
+    total = sum(contributions.values(), Decimal("0"))
+    if abs(total) < threshold:
+        return None
+    direction = ShockDirection.DOWN if total < 0 else ShockDirection.UP
+    in_direction = [
+        (symbol, contribution)
+        for symbol, contribution in contributions.items()
+        if (contribution < 0) == (total < 0) and contribution != 0
+    ]
+    in_direction.sort(key=lambda item: (-abs(item[1]), item[0]))
+    return PortfolioShock(
+        delta=PriceDelta(total),
+        direction=direction,
+        movers=tuple((symbol, deltas[symbol]) for symbol, _ in in_direction[:top]),
+        measured_weight=sum((weights[symbol] for symbol in contributions), Decimal("0")),
+    )

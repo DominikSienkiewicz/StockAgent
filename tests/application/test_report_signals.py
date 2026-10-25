@@ -57,13 +57,13 @@ def _saved_result(
 class TestBuildTradeSignalsSizeBand:
     """Q7 — build_trade_signals dokleja sugerowaną bandę pozycji do sygnału."""
 
-    def test_signal_has_no_band_without_council(self):
+    def test_signal_has_no_band_without_council(self) -> None:
         # Brak werdyktu rady → brak danych do sizingu → size_band None.
         signals = build_trade_signals([_saved_result(council=None)])
         assert len(signals) == 1
         assert signals[0].size_band is None
 
-    def test_strong_consensus_good_hitrate_gives_full_band(self):
+    def test_strong_consensus_good_hitrate_gives_full_band(self) -> None:
         council = _verdict(consensus=0.9, opinions=(_opinion("BUY"), _opinion("BUY")))
         signals = build_trade_signals(
             [_saved_result(council=council)], hit_rate=0.7
@@ -71,7 +71,7 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "full"
 
-    def test_weak_consensus_gives_starter_band(self):
+    def test_weak_consensus_gives_starter_band(self) -> None:
         council = _verdict(consensus=0.4, opinions=(_opinion("BUY"), _opinion("SELL")))
         signals = build_trade_signals(
             [_saved_result(council=council)], hit_rate=0.7
@@ -79,14 +79,14 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
-    def test_unknown_hitrate_is_conservative(self):
+    def test_unknown_hitrate_is_conservative(self) -> None:
         # Cold-start: rada przekonana, ale brak track recordu → nie pełna banda.
         council = _verdict(consensus=0.95, opinions=(_opinion("BUY"), _opinion("BUY")))
         signals = build_trade_signals([_saved_result(council=council)])
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier != "full"
 
-    def test_high_dissent_pulls_band_down(self):
+    def test_high_dissent_pulls_band_down(self) -> None:
         # Werdykt BUY, ale połowa rady głosuje SELL → wysoki dissent → starter.
         council = _verdict(
             final="BUY",
@@ -99,7 +99,7 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
-    def test_default_size_band_is_none_on_dto(self):
+    def test_default_size_band_is_none_on_dto(self) -> None:
         # Wsteczna kompatybilność — ręcznie zbudowany TradeSignal bez bandy.
         sig = TradeSignal(
             symbol="AAPL",
@@ -151,6 +151,7 @@ class TestCalibratedConfidenceInSignalRanking:
 
         # count=100, min_count=10 → waga 100/110 ≈ 0.909 → ~0.577
         assert signal.calibrated_confidence == pytest.approx(0.5773, abs=1e-3)
+        assert signal.calibrated_confidence is not None
         assert signal.strength == pytest.approx(signal.calibrated_confidence * 10.0)
         assert signal.strength < 0.85 * 10.0
 
@@ -188,6 +189,56 @@ class TestCalibratedConfidenceInSignalRanking:
         )
 
         assert signal.strength == pytest.approx(0.85 * 10.0)
+
+
+class TestIsotonicSignalCalibration:
+    """ML-28: mapa izotoniczna, która wygrała poza próbą, zastępuje w rankingu
+    shrinkage kubełkowy — monotonicznie, więc wyższa pewność nie spada niżej."""
+
+    _saved = staticmethod(TestCalibratedConfidenceInSignalRanking._saved)
+
+    def test_isotonic_map_replaces_the_bucket_shrinkage(self) -> None:
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        isotonic = IsotonicMap(knots=(0.6, 0.9), values=(0.55, 0.65))
+
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            calibration_buckets=TestCalibratedConfidenceInSignalRanking._overconfident_bucket(),
+            isotonic_calibration=isotonic,
+        )
+
+        assert signal.calibrated_confidence == pytest.approx(isotonic.apply(0.85))
+        assert signal.strength == pytest.approx(isotonic.apply(0.85) * 10.0)
+
+    def test_isotonic_map_keeps_the_confidence_order(self) -> None:
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        # Kubełki odwracają porządek 0.85 vs 0.65; mapa izotoniczna nie może.
+        buckets = [
+            CalibrationBucket(0.8, 0.9, count=100, mean_confidence=0.85, hit_rate=0.30),
+            CalibrationBucket(0.6, 0.7, count=100, mean_confidence=0.65, hit_rate=0.70),
+        ]
+        results = [self._saved("MSFT", 0.65, "0.10"), self._saved("AAPL", 0.85, "0.10")]
+
+        ranked = build_trade_signals(
+            results,
+            calibration_buckets=buckets,
+            isotonic_calibration=IsotonicMap(knots=(0.65, 0.85), values=(0.5, 0.5)),
+        )
+
+        assert [s.calibrated_confidence for s in ranked] == [0.5, 0.5]
+
+    def test_without_buckets_the_isotonic_map_stays_unused(self) -> None:
+        # WIA-38: bez kubełków (pewność nie odróżnia trafień) ranking idzie na surowej.
+        from src.domain.isotonic_calibration import IsotonicMap
+
+        (signal,) = build_trade_signals(
+            [self._saved("AAPL", 0.85, "0.10")],
+            isotonic_calibration=IsotonicMap(knots=(0.6, 0.9), values=(0.1, 0.2)),
+        )
+
+        assert signal.calibrated_confidence is None
 
 
 class TestColdStartSignalRanking:
@@ -426,6 +477,71 @@ class TestMarketStatusCalendar:
         assert status["detail"] == "Najbliższe otwarcie: wt 20.01 09:30 ET"
 
 
+class TestMarketStatusLocalTime:
+    """MAIL-29: polski odbiorca myśli w godzinach 15:30–22:00, więc obok godzin ET
+    status sesji podaje godzinę w strefie wyświetlania maila (`display_timezone`)."""
+
+    def test_weekend_status_uses_polish_weekday_and_local_open(self) -> None:
+        # Sobota 2026-10-17: oba kraje na czasie letnim, 09:30 EDT = 15:30 CEST.
+        status = market_status(
+            datetime(2026, 10, 17, 12, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Najbliższe otwarcie: pon 19.10 09:30 ET (15:30 czasu PL)"
+
+    def test_premarket_detail_names_the_local_open(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 10, 30, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie za 3h 0min (15:30 czasu PL)"
+
+    def test_open_session_detail_names_the_local_close(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 15, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Zamknięcie za 5h 0min (22:00 czasu PL)"
+
+    def test_early_close_is_converted_too(self) -> None:
+        # Piątek po Thanksgiving: zamknięcie 13:00 EST = 19:00 CET.
+        status = market_status(
+            datetime(2026, 11, 27, 15, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Zamknięcie za 3h 0min (19:00 czasu PL)"
+
+    def test_tomorrow_wording_keeps_the_local_open(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 15, 22, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie jutro 09:30 ET (15:30 czasu PL)"
+
+    def test_dst_gap_between_the_us_and_poland_shifts_the_local_hour(self) -> None:
+        # 28.10.2026: Polska już na CET (od 25.10), USA jeszcze na EDT (do 1.11),
+        # więc 09:30 ET to 14:30 w Warszawie, nie 15:30.
+        status = market_status(
+            datetime(2026, 10, 28, 22, 0, tzinfo=UTC), display_timezone="Europe/Warsaw"
+        )
+
+        assert status["detail"] == "Otwarcie jutro 09:30 ET (14:30 czasu PL)"
+
+    def test_other_display_timezone_is_called_local_not_polish(self) -> None:
+        status = market_status(
+            datetime(2026, 10, 17, 12, 0, tzinfo=UTC), display_timezone="Europe/London"
+        )
+
+        assert status["detail"] == (
+            "Najbliższe otwarcie: pon 19.10 09:30 ET (14:30 czasu lokalnego)"
+        )
+
+    def test_without_a_display_timezone_only_et_is_shown(self) -> None:
+        status = market_status(datetime(2026, 10, 17, 12, 0, tzinfo=UTC))
+
+        assert status["detail"] == "Najbliższe otwarcie: pon 19.10 09:30 ET"
+
+
 class TestForecastHorizonLabel:
     """ALR-15: etykieta horyzontu predykcji nazywa najbliższe zamknięcie sesji NYSE —
     cykl rozlicza prognozę ceną z następnego przebiegu, czyli po tej sesji."""
@@ -444,3 +560,28 @@ class TestForecastHorizonLabel:
         label = forecast_horizon_label(datetime(2026, 10, 17, 10, 30, tzinfo=UTC))
 
         assert label == "najbliższe zamknięcie NYSE: pon 19.10 16:00 ET"
+
+    def test_display_timezone_adds_the_local_close_hour(self) -> None:
+        # Decyzja 2026-10-25: godzina w strefie odbiorcy tym samym helperem co MAIL-29.
+        label = forecast_horizon_label(
+            datetime(2026, 10, 15, 10, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == "najbliższe zamknięcie NYSE: czw 15.10 16:00 ET (22:00 czasu PL)"
+
+    def test_local_close_hour_follows_the_dst_gap(self) -> None:
+        # 26–30.10: Europa już na CET, USA jeszcze na EDT — zamknięcie o 21:00 PL.
+        label = forecast_horizon_label(
+            datetime(2026, 10, 27, 5, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == "najbliższe zamknięcie NYSE: wt 27.10 16:00 ET (21:00 czasu PL)"
+
+    def test_local_hour_follows_the_early_close_note(self) -> None:
+        label = forecast_horizon_label(
+            datetime(2026, 11, 26, 10, 30, tzinfo=UTC), "Europe/Warsaw"
+        )
+
+        assert label == (
+            "najbliższe zamknięcie NYSE: pt 27.11 13:00 ET (skrócona sesja) (19:00 czasu PL)"
+        )

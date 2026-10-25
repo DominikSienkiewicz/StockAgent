@@ -1,0 +1,62 @@
+{
+  "items": "2",
+  "sentiment_score_definition": "x <= -0.35: Bearish; -0.35 < x <= -0.15: Somewhat-Bearish; -0.15 < x < 0.15: Neutral; 0.15 <= x < 0.35: Somewhat_Bullish; x >= 0.35: Bullish",
+  "relevance_score_definition": "0 < x <= 1, with a higher score indicating higher relevance.",
+  "feed": [
+    {
+      "title": "Redacted headline A",
+      "url": "https://example.com/news/a",
+      "time_published": "20261024T134500",
+      "authors": ["Redacted Author"],
+      "summary": "Redacted summary.",
+      "banner_image": "https://example.com/news/a.jpg",
+      "source": "Example Wire",
+      "category_within_source": "News",
+      "source_domain": "example.com",
+      "topics": [
+        {"topic": "Technology", "relevance_score": "1.0"},
+        {"topic": "Earnings", "relevance_score": "0.310843"}
+      ],
+      "overall_sentiment_score": 0.183421,
+      "overall_sentiment_label": "Somewhat-Bullish",
+      "ticker_sentiment": [
+        {
+          "ticker": "AAPL",
+          "relevance_score": "0.712345",
+          "ticker_sentiment_score": "0.251234",
+          "ticker_sentiment_label": "Somewhat-Bullish"
+        }
+      ]
+    },
+    {
+      "title": "Redacted headline B",
+      "url": "https://example.com/news/b",
+      "time_published": "20261024T091500",
+      "authors": [],
+      "summary": "Redacted summary.",
+      "banner_image": "https://example.com/news/b.jpg",
+      "source": "Example Wire",
+      "category_within_source": "Markets",
+      "source_domain": "example.com",
+      "topics": [
+        {"topic": "Financial Markets", "relevance_score": "0.5855"}
+      ],
+      "overall_sentiment_score": -0.021087,
+      "overall_sentiment_label": "Neutral",
+      "ticker_sentiment": [
+        {
+          "ticker": "MSFT",
+          "relevance_score": "0.651177",
+          "ticker_sentiment_score": "-0.104523",
+          "ticker_sentiment_label": "Neutral"
+        },
+        {
+          "ticker": "AAPL",
+          "relevance_score": "0.123456",
+          "ticker_sentiment_score": "0.050211",
+          "ticker_sentiment_label": "Neutral"
+        }
+      ]
+    }
+  ]
+}

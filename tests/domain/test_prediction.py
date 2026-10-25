@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -16,7 +17,7 @@ from src.domain.prediction import (
     normalize_trend,
     sideways_tolerance_for,
 )
-from src.domain.value_objects import AssetType
+from src.domain.value_objects import AssetType, Money, Quote
 
 
 class TestCalibration:
@@ -76,6 +77,69 @@ class TestIsTrendCorrect:
         prediction = _make_prediction(TrendDirection.SIDEWAYS)
         assert prediction.is_trend_correct(Decimal("101.0")) is False
         assert prediction.is_trend_correct(Decimal("99.0")) is False
+
+
+class TestDeadBand:
+    """EXP-06: martwa strefa kierunku — trafienie BULLISH przy +0,01% to szum.
+    Domyślnie (`dead_band=None`) reguła bez zmian; szerokość pasma żyje w protokole
+    ewaluacji (`directional_dead_zone` w evaluation_protocol.toml)."""
+
+    def test_bullish_inside_dead_band_is_not_a_hit(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH)
+
+        assert prediction.is_trend_correct(Decimal("100.01")) is True
+        assert prediction.is_trend_correct(Decimal("100.01"), dead_band=Decimal("0.001")) is False
+
+    def test_bearish_inside_dead_band_is_not_a_hit(self) -> None:
+        prediction = _make_prediction(TrendDirection.BEARISH)
+
+        assert prediction.is_trend_correct(Decimal("99.99"), dead_band=Decimal("0.001")) is False
+
+    def test_moves_beyond_the_dead_band_are_hits(self) -> None:
+        band = Decimal("0.001")
+
+        assert _make_prediction(TrendDirection.BULLISH).is_trend_correct(
+            Decimal("100.2"), dead_band=band
+        )
+        assert _make_prediction(TrendDirection.BEARISH).is_trend_correct(
+            Decimal("99.8"), dead_band=band
+        )
+
+    def test_a_move_exactly_on_the_edge_stays_inside(self) -> None:
+        band = Decimal("0.001")
+
+        assert not _make_prediction(TrendDirection.BULLISH).is_trend_correct(
+            Decimal("100.1"), dead_band=band
+        )
+        assert not _make_prediction(TrendDirection.BEARISH).is_trend_correct(
+            Decimal("99.9"), dead_band=band
+        )
+
+    def test_zero_band_is_todays_rule(self) -> None:
+        for trend in (TrendDirection.BULLISH, TrendDirection.BEARISH):
+            prediction = _make_prediction(trend)
+            for actual in ("99.99", "100.0", "100.01"):
+                price = Decimal(actual)
+                assert prediction.is_trend_correct(
+                    price, dead_band=Decimal("0")
+                ) is prediction.is_trend_correct(price)
+
+    def test_sideways_keeps_its_own_band(self) -> None:
+        prediction = _make_prediction(TrendDirection.SIDEWAYS)
+
+        assert prediction.is_trend_correct(Decimal("100.4"), dead_band=Decimal("0.01")) is True
+        assert prediction.is_trend_correct(Decimal("101.0"), dead_band=Decimal("0.01")) is False
+
+    def test_zero_base_price_falls_back_to_the_raw_move(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH, price_at=Decimal("0"))
+
+        assert prediction.is_trend_correct(Decimal("0.01"), dead_band=Decimal("0.001")) is True
+
+    def test_negative_band_is_rejected(self) -> None:
+        prediction = _make_prediction(TrendDirection.BULLISH)
+
+        with pytest.raises(ValueError, match="dead_band"):
+            prediction.is_trend_correct(Decimal("101"), dead_band=Decimal("-0.001"))
 
 
 class TestAccuracyScore:
@@ -327,3 +391,92 @@ def test_stale_quote_note_is_a_placeholder_not_a_lesson() -> None:
     from src.domain.prediction import STALE_QUOTE_INSIGHT, is_substantive_insight
 
     assert not is_substantive_insight(STALE_QUOTE_INSIGHT)
+
+
+class TestExecutableEntry:
+    """WIA-54: cena, po której predykcję dało się wykonać — otwarcie pierwszej sesji
+    NYSE po niej, z tego samego notowania /quote, którym reflect ją rozlicza.
+
+    Październik 2026 to czas letni (ET = UTC−4): sesja 13:30–20:00 UTC."""
+
+    MONDAY_PRE_OPEN = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
+    MONDAY_CLOSE = datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+    TUESDAY_PRE_OPEN = datetime(2026, 10, 20, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _prediction(created_at: datetime | None) -> Prediction:
+        return Prediction(
+            symbol="NVDA",
+            predicted_trend=TrendDirection.BULLISH,
+            price_at_prediction=Decimal("100"),
+            predicted_target_price=Decimal("103"),
+            created_at=created_at,
+        )
+
+    @staticmethod
+    def _quote(quoted_at: datetime, open_price: str | None = "105") -> Quote:
+        return Quote(
+            price=Money(Decimal("106")),
+            quoted_at=quoted_at,
+            open_price=Money(Decimal(open_price)) if open_price is not None else None,
+        )
+
+    def test_pre_open_prediction_enters_at_the_next_session_open(self) -> None:
+        # Predykcja przed sesją: cena wejścia to piątkowe zamknięcie, a wykonać da się
+        # dopiero otwarcie poniedziałku — `o` notowania z wtorkowego rozliczenia.
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry == Decimal("105")
+
+    def test_backlogged_settlement_has_no_executable_entry(self) -> None:
+        # Rozliczenie dwie sesje później: `o` to otwarcie wtorku, nie poniedziałku.
+        quote = self._quote(datetime(2026, 10, 20, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=datetime(2026, 10, 21, 5, 30, tzinfo=UTC)
+        )
+
+        assert entry is None
+
+    def test_settlement_before_the_next_session_has_no_executable_entry(self) -> None:
+        # Drugi przebieg przed otwarciem (albo święto): sesji po predykcji jeszcze nie było.
+        quote = self._quote(datetime(2026, 10, 16, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+        )
+
+        assert entry is None
+
+    def test_quote_from_before_the_session_open_has_no_executable_entry(self) -> None:
+        quote = self._quote(datetime(2026, 10, 16, 20, 0, tzinfo=UTC))
+
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            quote, now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None
+
+    def test_quote_without_an_open_has_no_executable_entry(self) -> None:
+        entry = self._prediction(self.MONDAY_PRE_OPEN).executable_entry(
+            self._quote(self.MONDAY_CLOSE, open_price=None), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None
+
+    def test_prediction_during_the_session_enters_at_its_own_price(self) -> None:
+        # W trakcie sesji cena z chwili predykcji była do kupienia od razu.
+        entry = self._prediction(datetime(2026, 10, 19, 15, 0, tzinfo=UTC)).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry == Decimal("100")
+
+    def test_prediction_without_a_timestamp_has_no_executable_entry(self) -> None:
+        entry = self._prediction(None).executable_entry(
+            self._quote(self.MONDAY_CLOSE), now=self.TUESDAY_PRE_OPEN
+        )
+
+        assert entry is None

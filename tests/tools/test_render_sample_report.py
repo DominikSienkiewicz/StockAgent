@@ -16,7 +16,7 @@ def test_sample_report_is_deterministic_and_has_no_pii() -> None:
 
     assert first == second
     for body in (first.html, first.text):
-        assert "@" not in body
+        # MAIL-23: arkusz stylów niesie regułę `@media`, więc PII = adres e-mail, nie sam „@”.
         assert not _EMAIL_ADDRESS.search(body)
     assert "Krypto" in first.html
 

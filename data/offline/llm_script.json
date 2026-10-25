@@ -1,0 +1,83 @@
+{
+  "description": "DX-04: odpowiedzi ScriptedLLM. Pierwsza reguła, której wszystkie znaczniki `when` są w prompcie, odpowiada; prompt bez reguły to MalformedPayload. Kolejność: przewodniczący rady, persony, predykcja.",
+  "replies": [
+    {
+      "when": ["\"final_recommendation\"", "Symbol: NVDA"],
+      "reply": {
+        "summary": "(skrypt offline) Rada za kupnem NVDA: popyt na akceleratory przeważa nad wyceną.",
+        "dissenting_views": ["Benjamin Graham: cena wyprzedza zyski."]
+      }
+    },
+    {
+      "when": ["\"final_recommendation\""],
+      "reply": {
+        "summary": "(skrypt offline) Rada podzielona — część person czeka na potwierdzenie ruchu.",
+        "dissenting_views": ["Howard Marks: po ostrym ruchu ryzyko odwrócenia."]
+      }
+    },
+    {
+      "when": ["\"recommendation\"", "Benjamin Graham"],
+      "reply": {
+        "recommendation": "SELL",
+        "confidence": 0.6,
+        "reasoning": "(skrypt offline) Margines bezpieczeństwa zniknął po wzroście.",
+        "key_factors": ["wycena", "margines bezpieczeństwa"]
+      }
+    },
+    {
+      "when": ["\"recommendation\"", "Howard Marks"],
+      "reply": {
+        "recommendation": "HOLD",
+        "confidence": 0.55,
+        "reasoning": "(skrypt offline) Cykl rynku nie daje przewagi żadnej stronie.",
+        "key_factors": ["cykl rynku", "ryzyko"]
+      }
+    },
+    {
+      "when": ["\"recommendation\""],
+      "reply": {
+        "recommendation": "BUY",
+        "confidence": 0.65,
+        "reasoning": "(skrypt offline) Ruch ceny potwierdza tezę wzrostową.",
+        "key_factors": ["momentum", "popyt"]
+      }
+    },
+    {
+      "when": ["\"trend_direction\"", "aktywa: NVDA"],
+      "reply": {
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.72,
+        "av_agreement": 0.5,
+        "reasoning": "(skrypt offline) Wzrost przy rosnącym popycie na akceleratory."
+      }
+    },
+    {
+      "when": ["\"trend_direction\"", "aktywa: MSFT"],
+      "reply": {
+        "trend_direction": "BEARISH",
+        "confidence_score": 0.6,
+        "av_agreement": 0.5,
+        "reasoning": "(skrypt offline) Spadek po słabszej prognozie chmury."
+      }
+    },
+    {
+      "when": ["\"trend_direction\"", "aktywa: BTC"],
+      "reply": {
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.58,
+        "av_agreement": 0.5,
+        "reasoning": "(skrypt offline) Wybicie ponad zakres z ostatnich dni."
+      }
+    },
+    {
+      "when": ["\"trend_direction\""],
+      "reply": {
+        "trend_direction": "SIDEWAYS",
+        "confidence_score": 0.5,
+        "av_agreement": 0.5,
+        "reasoning": "(skrypt offline) Brak przewagi kierunkowej."
+      }
+    }
+  ],
+  "mistake": "{\"category\": \"SECTOR_ROTATION\", \"insight\": \"(skrypt offline) Spadek był rotacją sektorową, nie zmianą trendu — kapitał wrócił do spółek chmurowych.\"}"
+}

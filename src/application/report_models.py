@@ -9,10 +9,11 @@ from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
 from src.domain.feature_attribution import FeatureContribution
+from src.domain.invalidation import Invalidation
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.provenance import ProvenanceBadge
 from src.domain.sizing import PositionAction, SizeBand
-from src.domain.value_objects import ValuationVerdict
+from src.domain.value_objects import Ratio, ValuationVerdict
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,16 @@ class SymbolResult:
     # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI). None = cykl
     # bez przedziału (brak okna kalibracyjnego) → renderer pomija linię.
     move_interval: MoveInterval | None = None
+    # MAIL-18: próg EFEKTYWNY bramki (ułamek) dla wyniku 'ignored' i mnożniki,
+    # które go podniosły (reżim #7, earnings #6). None = wynik spoza bramki.
+    effective_threshold: Decimal | None = None
+    regime_multiplier: float = 1.0
+    earnings_multiplier: float = 1.0
+    # MAIL-21: flagi jakości danych symbolu z grafu (`data_quality_flags`) —
+    # z nich linijka stanu źródeł przypisuje awarie dostawcom.
+    data_quality_flags: tuple[str, ...] = ()
+    # ML-27: poziom unieważnienia tezy (za `invalidation_level_enabled`). None = brak.
+    invalidation: Invalidation | None = None
 
     @property
     def expected_change(self) -> Decimal | None:
@@ -147,7 +158,7 @@ class TradeSignal:
 
 @dataclass(frozen=True)
 class PortfolioMood:
-    """📊 Nastroje portfela — agregaty sentymentu jednego cyklu (MAIL-10).
+    """📊 Nastroje watchlisty — agregaty sentymentu jednego cyklu (MAIL-10, MAIL-31).
 
     `avg_sentiment` i `avg_sentiment_label` są None, gdy cykl nie ma ani jednego
     sentymentu: brak danych to nie neutralny nastrój „+0,00”."""
@@ -197,12 +208,24 @@ class ResolvedPrediction:
     # WIA-57: kategoria przyczyny błędu (`correction_category`, migracja 046);
     # None = brak kategorii (wiersz sprzed migracji albo odczyt bez flagi).
     correction_category: MistakeCategory | None = None
+    # WIA-54: cena wykonalna — otwarcie pierwszej sesji po predykcji (`entry_price`,
+    # migracja 072). None = brak (krypto, zaległe rozliczenie, odczyt bez flagi).
+    entry_price: Decimal | None = None
 
     @property
-    def actual_change_pct(self) -> Decimal | None:
-        """Faktyczna procentowa zmiana ceny od momentu predykcji do zamknięcia."""
+    def executable_change(self) -> Ratio | None:
+        """WIA-54: zmiana ceny od ceny wykonalnej do rozliczenia (ułamek) — bez luki
+        na otwarciu, której przed sesją nie da się kupić. None bez ceny wykonalnej."""
+        if self.entry_price is None or self.actual_price is None or self.entry_price <= 0:
+            return None
+        return Ratio((self.actual_price - self.entry_price) / self.entry_price)
+
+    @property
+    def actual_change_ratio(self) -> Ratio | None:
+        """Faktyczna zmiana ceny od momentu predykcji do zamknięcia jako UŁAMEK
+        (`Ratio`: 0.02 = +2%) — formatery raportu mnożą go przez 100 (ARCH-04)."""
         if self.price_at_prediction is None or self.actual_price is None:
             return None
         if self.price_at_prediction == 0:
             return None
-        return (self.actual_price - self.price_at_prediction) / self.price_at_prediction
+        return Ratio((self.actual_price - self.price_at_prediction) / self.price_at_prediction)

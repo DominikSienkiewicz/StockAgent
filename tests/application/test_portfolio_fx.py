@@ -6,10 +6,15 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import Mock, call
 
-from src.application.portfolio_fx import collect_pln_rates, nbp_today
+from src.application.portfolio_fx import (
+    collect_current_pln_rates,
+    collect_pln_rates,
+    nbp_today,
+)
 from src.application.ports import FxRatePort
 from src.domain.fx import FxRate
 from src.domain.portfolio import PlnRates, Portfolio, Position
+from src.domain.value_objects import Ratio
 
 TODAY = date(2026, 10, 19)
 
@@ -110,7 +115,7 @@ def test_rates_collected_for_the_portfolio_win_over_risk_watch() -> None:
     collected = PlnRates(current={"USD": Decimal("3.70")})
     macro = PolishMacroSnapshot(
         eur_pln=Decimal("4.27"), usd_pln=Decimal("3.68"),
-        eur_pln_30d_change_pct=Decimal("0"), usd_pln_30d_change_pct=Decimal("0"),
+        eur_pln_30d_change_ratio=Ratio(Decimal("0")), usd_pln_30d_change_ratio=Ratio(Decimal("0")),
         fetched_at=datetime(2026, 10, 19, tzinfo=UTC),
     )
 
@@ -119,3 +124,32 @@ def test_rates_collected_for_the_portfolio_win_over_risk_watch() -> None:
         current={"USD": Decimal("3.68"), "EUR": Decimal("4.27")}
     )
     assert effective_pln_rates(None, None) is None
+
+
+def test_current_rates_ask_only_for_today_not_for_purchase_days() -> None:
+    """ALR-08: wagi w złotych potrzebują samych kursów bieżących — kursy z dni zakupu
+    to dodatkowe zapytania do NBP bez wpływu na udział pozycji."""
+    portfolio = Portfolio(
+        positions=(
+            _lot("NVDA", "USD", date(2025, 3, 3)),
+            _lot("SAP.DE", "EUR", date(2024, 6, 3)),
+            _lot("PKN.WA", "PLN", date(2024, 1, 2)),
+        ),
+        as_of=datetime(2026, 10, 18, tzinfo=UTC),
+    )
+    port = _port({("USD", TODAY): "3.70", ("EUR", TODAY): "4.25"})
+
+    rates = collect_current_pln_rates(portfolio, port, today=TODAY)
+
+    assert rates == PlnRates(current={"EUR": Decimal("4.25"), "USD": Decimal("3.70")})
+    assert port.get_rate.call_args_list == [call("EUR", TODAY), call("USD", TODAY)]
+
+
+def test_current_rates_survive_a_failing_source() -> None:
+    portfolio = Portfolio(
+        positions=(_lot("NVDA", "USD", None),), as_of=datetime(2026, 10, 18, tzinfo=UTC)
+    )
+    port = Mock(spec=FxRatePort)
+    port.get_rate.side_effect = RuntimeError("NBP down")
+
+    assert collect_current_pln_rates(portfolio, port, today=TODAY) == PlnRates()

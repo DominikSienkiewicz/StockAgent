@@ -156,12 +156,12 @@ def test_unrealized_pnl_per_position_and_total() -> None:
     assert isinstance(result, PortfolioPnL)
     by_symbol = {p.symbol: p for p in result.positions}
     assert by_symbol["NVDA"].unrealized_pnl == Decimal("500")
-    assert by_symbol["NVDA"].return_pct == Decimal("0.5")
+    assert by_symbol["NVDA"].return_ratio == Decimal("0.5")
     assert by_symbol["AAPL"].unrealized_pnl == Decimal("-100")
     assert result.total_cost_basis == Decimal("2000")
     assert result.total_market_value == Decimal("2400")
     assert result.total_unrealized_pnl == Decimal("400")
-    assert result.total_return_pct == Decimal("0.2")
+    assert result.total_return_ratio == Decimal("0.2")
 
 
 def test_unrealized_pnl_skips_positions_without_price() -> None:
@@ -181,7 +181,7 @@ def test_unrealized_pnl_empty_portfolio_is_zero_not_none() -> None:
     assert result.total_cost_basis == Decimal("0")
     assert result.total_market_value == Decimal("0")
     assert result.total_unrealized_pnl == Decimal("0")
-    assert result.total_return_pct is None
+    assert result.total_return_ratio is None
 
 
 # --- cluster_exposure --------------------------------------------------------
@@ -344,7 +344,7 @@ class TestChangeSince:
         assert change.previous_value == Decimal("1000")
         assert change.current_value == Decimal("1075")
         assert change.change == Decimal("75")
-        assert change.change_pct == Decimal("0.075")
+        assert change.change_ratio == Decimal("0.075")
         assert change.top_contributors[0] == SymbolChange(
             symbol="NVDA", change=Decimal("75"), contribution=Decimal("0.075")
         )
@@ -390,7 +390,7 @@ class TestChangeSince:
 
         assert change is not None
         assert change.previous_value == Decimal("100")
-        assert change.change_pct == Decimal("0.1")
+        assert change.change_ratio == Decimal("0.1")
         assert change.unmeasured_symbols == ("NEW", "XDWD.DE")
 
     def test_lots_of_one_symbol_are_aggregated(self) -> None:

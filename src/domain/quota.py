@@ -19,7 +19,7 @@ class QuotaSeverity(Enum):
       sukcesem). Banner żółty, brak prefiksu subjectu.
     - `CRITICAL` — operacja nie powiodła się i dane są stracone w cyklu
       (np. wszystkie klucze AV exhausted, email nie poszedł). Banner
-      czerwony, subject prefix `⚠️ [QUOTA]`.
+      czerwony, subject prefix `⚠️ [LIMIT]` (`polish_labels`, MAIL-61).
     """
 
     WARNING = "WARNING"

@@ -1,4 +1,4 @@
-"""Render sekcji "💼 Twój portfel" w raporcie e-mail (roadmap #15).
+"""Render sekcji "💼 Twój portfel" w raporcie e-mail (R-15).
 
 Moment "to jest O MNIE": realny P/L per pozycja i łącznie, realne wagi kapitału,
 opcjonalnie kwoty w PLN po kursie USD/PLN oraz ostrzeżenie o koncentracji
@@ -51,13 +51,18 @@ dostaje walutę od wołającego (`change_currency`, w zł gdy znane są kursy).
 
 from __future__ import annotations
 
+import dataclasses
 import html as _html
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
-from src.application.report_formatting import format_local_date, number_exact
+from src.application.report_formatting import PALETTE, format_local_date, number_exact
+from src.application.report_models import SymbolResult
+from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.asset import is_reference_stale
+from src.domain.cycle_maturity import SkipReason
 from src.domain.number_format import format_money_pl, format_pct_pl
 from src.domain.portfolio import (
     DEFAULT_MAX_POSITION_AGE_DAYS,
@@ -82,8 +87,8 @@ from src.domain.portfolio import (
 _CLUSTER_CONCENTRATION_THRESHOLD = Decimal("0.40")
 
 # Kolory zysku/straty — spójne z resztą raportu (report_persona_leaderboard).
-_COLOR_GAIN = "#16a34a"
-_COLOR_LOSS = "#dc2626"
+_COLOR_GAIN = PALETTE.positive
+_COLOR_LOSS = PALETTE.negative
 
 
 def _pnl_color(value: Decimal) -> str:
@@ -170,11 +175,11 @@ def _format_pct(value: Decimal, *, signed: bool = False) -> str:
     return format_pct_pl(value * 100, signed, 1)
 
 
-def _format_return_pct(return_pct: Decimal | None) -> str:
+def _format_return_pct(return_ratio: Decimal | None) -> str:
     """Zwrot procentowy pozycji lub "—" gdy nie da się policzyć (koszt 0)."""
-    if return_pct is None:
+    if return_ratio is None:
         return "—"
-    return _format_pct(return_pct, signed=True)
+    return _format_pct(return_ratio, signed=True)
 
 
 def _row_weight(row: PositionPnL, total_market_value: Decimal) -> Decimal:
@@ -239,7 +244,7 @@ def portfolio_change_label(
 def _change_amount(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
     """„+$70,00 (+7,0%)” albo „+280,00 zł (+7,0%)” — kwota i procent zmiany."""
     amount = _format_money(change.change, currency, signed=True)
-    return f"{amount} ({_format_pct(change.change_pct, signed=True)})"
+    return f"{amount} ({_format_pct(change.change_ratio, signed=True)})"
 
 
 def _contributors(change: PortfolioChange, currency: str = DEFAULT_POSITION_CURRENCY) -> str:
@@ -323,14 +328,14 @@ def render_portfolio_change_box_html(
     color = _pnl_color(change.change)
     amounts = _change_amounts(change, usd_pln, currency)
     return (
-        '<div style="flex: 1; padding: 12px; background: #f9fafb; '
-        f'border-left: 3px solid {color}; border-radius: 4px;">'
+        '<td style="width: 33%; padding: 12px; background: #f9fafb; '
+        f'border-left: 3px solid {color}; border-radius: 4px; vertical-align: top;">'
         '<div style="font-size: 11px; color: #4b5563; text-transform: uppercase;">'
         f"Twój portfel {_html.escape(label)}</div>"
         f'<div style="font-size: 24px; font-weight: 600; color: {color};">'
-        f"{_format_pct(change.change_pct, signed=True)}</div>"
+        f"{_format_pct(change.change_ratio, signed=True)}</div>"
         f'<div style="font-size: 12px; color: {color};">{" · ".join(amounts)}</div>'
-        "</div>"
+        "</td>"
     )
 
 
@@ -345,7 +350,7 @@ def render_portfolio_change_text_line(
     „Twój portfel od ostatniego maila: +7,0% (+$70,00)”."""
     amounts = _change_amounts(change, usd_pln, currency)
     return (
-        f"Twój portfel {label}: {_format_pct(change.change_pct, signed=True)} "
+        f"Twój portfel {label}: {_format_pct(change.change_ratio, signed=True)} "
         f"({' · '.join(amounts)})"
     )
 
@@ -460,7 +465,7 @@ def _render_row_html(
     color = _pnl_color(row.unrealized_pnl)
     pnl_cell = (
         f"{_format_money(row.unrealized_pnl, row.currency, signed=True)} "
-        f"({_format_return_pct(row.return_pct)})"
+        f"({_format_return_pct(row.return_ratio)})"
     )
     if pln_row is not None:
         pln_cell = _render_pln_cells_html(pln_row)
@@ -547,7 +552,7 @@ def _render_totals_html(
             f"<strong>{_format_money(pnl.total_market_value, currency)}</strong> · "
             f"P/L <strong style='color: {color};'>"
             f"{_format_money(pnl.total_unrealized_pnl, currency, signed=True)} "
-            f"({_format_return_pct(pnl.total_return_pct)})</strong>"
+            f"({_format_return_pct(pnl.total_return_ratio)})</strong>"
         )
     pln_line = ""
     if pln is not None and pln_rates is not None:
@@ -643,7 +648,7 @@ def render_user_portfolio_text(
             f"waga {weight:>6s} "
             f"wart. {_format_money(row.market_value, row.currency):>14s} "
             f"P/L {_format_money(row.unrealized_pnl, row.currency, signed=True):>12s} "
-            f"({_format_return_pct(row.return_pct)})"
+            f"({_format_return_pct(row.return_ratio)})"
         )
         if pln_row is not None:
             line += f" | P/L zł {_pln_pnl_cell(pln_row)} ({_fx_text(pln_row)})"
@@ -694,5 +699,135 @@ def _totals_text(pnl: PortfolioPnL, *, partial: bool) -> str:
     return (
         f"  {_totals_label(partial)}: {_format_money(pnl.total_market_value, currency)} · "
         f"P/L {_format_money(pnl.total_unrealized_pnl, currency, signed=True)} "
-        f"({_format_return_pct(pnl.total_return_pct)})"
+        f"({_format_return_pct(pnl.total_return_ratio)})"
     )
+
+
+# ---------------------------------------------------------------------------
+# PORT-06: zmiana portfela od ostatniego maila — sekcja 💼 i pierwszy ekran
+# ---------------------------------------------------------------------------
+
+
+def _previous_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
+    """PORT-06: cena referencji odtworzona z delty cyklu: prev = current / (1 + Δ).
+
+    Działa dla każdego symbolu z ceną i deltą — także pominiętego bramką albo
+    z referencją sprzed pauzy (FIN-14). Cold-start nie ma referencji (Δ = 0 to
+    brak punktu odniesienia, nie „bez zmian”), więc nie wchodzi."""
+    previous: dict[str, Decimal] = {}
+    for r in results:
+        if r.current_price is None or r.delta is None:
+            continue
+        if r.skip_reason is SkipReason.COLD_START or r.delta == -1:
+            continue
+        previous[r.symbol] = r.current_price / (1 + r.delta)
+    return previous
+
+
+@dataclasses.dataclass(frozen=True)
+class PortfolioChangeView:
+    """PORT-06: zmiana portfela z domeny + podpis okna („od ostatniego maila”)."""
+
+    change: PortfolioChange
+    label: str
+    currency: str = DEFAULT_POSITION_CURRENCY
+
+
+def portfolio_change_view(
+    results: list[SymbolResult],
+    portfolio: Portfolio | None,
+    current_prices: Mapping[str, Decimal],
+    *,
+    now: datetime,
+    display_timezone: str,
+    rates: PlnRates | None = None,
+) -> PortfolioChangeView | None:
+    """PORT-06: Δ portfela od referencji cyklu. Okno zaczyna się od NAJSTARSZEJ
+    referencji zmierzonych pozycji — po pauzie podpis mówi „od <data>”.
+    Brak portfela (np. obcy subskrybent, BEZ-01) → None, sekcje się chowają.
+
+    Z kursami NBP zmiana jest w złotych: obie ceny po BIEŻĄCYM kursie waluty
+    pozycji (ruch kursu między mailami nie wchodzi), a pozycja bez kursu wypada
+    z obu stron — sekcja 💼 wymienia ją w nocie „Bez kursu NBP”."""
+    if portfolio is None:
+        return None
+    previous = _previous_prices_of(results)
+    currency = DEFAULT_POSITION_CURRENCY
+    if rates is not None:
+        valuation = portfolio.pln_prices(current_prices, rates)
+        portfolio = portfolio.excluding(valuation.unrated_symbols)
+        previous = dict(portfolio.pln_prices(previous, rates).prices)
+        current_prices = valuation.prices
+        currency = HOME_CURRENCY
+    change = portfolio.change_since(previous, current_prices)
+    if change is None:
+        return None
+    measured = {p.symbol for p in portfolio.positions} - set(change.unmeasured_symbols)
+    references = [
+        r.reference_at for r in results if r.symbol in measured and r.reference_at is not None
+    ]
+    since = min(references) if references else None
+    return PortfolioChangeView(
+        change=change,
+        label=portfolio_change_label(since, now, display_timezone),
+        currency=currency,
+    )
+
+
+def _change_kwargs(change: PortfolioChangeView | None) -> dict[str, Any]:
+    """PORT-06: opcjonalne argumenty linii zmiany dla rendererów sekcji 💼."""
+    if change is None:
+        return {}
+    return {
+        "change": change.change,
+        "change_label": change.label,
+        "change_currency": change.currency,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sekcja 💼 Twój portfel (ARCH-12)
+# ---------------------------------------------------------------------------
+
+
+def _section_html(data: SectionInput) -> str:
+    """#15: sekcja realnego portfela. Kursy przychodzą jako wartości (PORT-11:
+    `pln_rates`, inaczej USD/PLN z `MacroRiskReport`), nie z portu. Brak
+    portfela → "" (sekcja sama się chowa). PORT-06: linia zmiany od ostatniego
+    maila, gdy da się ją policzyć."""
+    context = data.context
+    if context.user_portfolio is None:
+        return ""
+    return render_user_portfolio_html(
+        context.user_portfolio,
+        data.current_prices,
+        clusters=context.portfolio_clusters,
+        now=data.started_at,
+        usd_pln=data.usd_pln,
+        pln_rates=data.pln_rates,
+        **_change_kwargs(data.portfolio_change),
+    )
+
+
+def _section_text(data: SectionInput) -> list[str]:
+    """Wariant plain-text sekcji portfela (decyzja 2026-10-19) — te same dane co
+    HTML. Bez `user_portfolio_in_text` (stary push) tekst nie ma kwot portfela."""
+    context = data.context
+    if context.user_portfolio is None or not context.user_portfolio_in_text:
+        return []
+    text = render_user_portfolio_text(
+        context.user_portfolio,
+        data.current_prices,
+        clusters=context.portfolio_clusters,
+        now=data.started_at,
+        usd_pln=data.usd_pln,
+        pln_rates=data.pln_rates,
+        **_change_kwargs(data.portfolio_change),
+    )
+    return text_block(text, spaced=True)
+
+
+# #15: 💼 realny portfel (wagi, P/L, sektor, PLN) — zaraz za pierwszym ekranem.
+USER_PORTFOLIO_SECTION = ReportSection(
+    key="user_portfolio", render_html=_section_html, render_text=_section_text
+)

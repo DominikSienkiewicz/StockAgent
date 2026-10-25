@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+import requests
+
+from src.application.errors import MalformedPayload, NotFound
 from src.application.ports import DailyChangePort, MarketDataPort, QuotePort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
@@ -15,12 +18,20 @@ from src.infrastructure.adapters._http import (
     build_session,
     raise_for_status_redacted,
     safe_get,
+    translate_http_error,
+    translate_request_error,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_TIMEOUT = 10  # sekundy
+
+
+class FinnhubSymbolNotFound(NotFound, ValueError):
+    """Finnhub nie notuje symbolu: 403 planu darmowego albo `c` = 0 (ticker
+    nieznany lub wycofany). `ValueError` zostaje bazą dla dotychczasowych
+    wywołujących (ARCH-33, przejście przyrostowe)."""
 
 
 class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
@@ -55,7 +66,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
             # niedeterministyczne i mogą zawierać dane diagnostyczne kontekstu
             # konta. Wystarczy boolowski status pól, których brakuje.
             has_change = "d" in payload
-            raise ValueError(
+            raise FinnhubSymbolNotFound(
                 f"Finnhub returned no price for symbol '{symbol}' "
                 f"(has_change_field={has_change}). Ticker may be invalid or delisted."
             )
@@ -68,7 +79,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
         payload = self._fetch_quote(symbol)
         percent, stamp = payload.get("dp"), payload.get("t")
         if not payload.get("c") or percent is None or not stamp:
-            raise ValueError(
+            raise _missing_fields_error(payload)(
                 f"Finnhub returned no daily change for symbol '{symbol}' "
                 f"(has_dp={percent is not None}, has_t={bool(stamp)})."
             )
@@ -83,7 +94,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
         payload = self._fetch_quote(symbol)
         price, stamp = payload.get("c"), payload.get("t")
         if not price or not stamp:
-            raise ValueError(
+            raise _missing_fields_error(payload)(
                 f"Finnhub returned no quote for symbol '{symbol}' "
                 f"(has_price={bool(price)}, has_t={bool(stamp)})."
             )
@@ -97,14 +108,17 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
     def _fetch_quote(self, symbol: str) -> dict[str, Any]:
         if self._rate_limiter is not None:
             self._rate_limiter.acquire()
-        response = safe_get(
-            self._session,
-            f"{self._base_url}/quote",
-            params={"symbol": symbol, "token": self._api_key},
-            timeout=self._timeout,
-        )
+        try:
+            response = safe_get(
+                self._session,
+                f"{self._base_url}/quote",
+                params={"symbol": symbol, "token": self._api_key},
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            raise translate_request_error(exc) from None
         if response.status_code == 403:
-            raise ValueError(
+            raise FinnhubSymbolNotFound(
                 f"Ticker '{symbol}' is not supported by Finnhub free tier (403 Forbidden). "
                 "LSE tickers with dot notation (e.g. CSPX.L) require a paid plan."
             )
@@ -125,7 +139,10 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                     "limit (60 req/min) exhausted."
                 ),
             )
-        raise_for_status_redacted(response)
+        try:
+            raise_for_status_redacted(response)
+        except requests.HTTPError as exc:
+            raise translate_http_error(exc, response.status_code) from None
         payload: dict[str, Any] = response.json()
         return payload
 
@@ -147,6 +164,11 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                 occurred_at=datetime.now(UTC),
             )
         )
+
+
+def _missing_fields_error(payload: dict[str, Any]) -> type[ValueError]:
+    """Brak ceny `c` to nieznany ticker; cena bez reszty pól to niepełny payload."""
+    return FinnhubSymbolNotFound if not payload.get("c") else MalformedPayload
 
 
 def _optional_money(value: Any) -> Money | None:
