@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any
 
-from src.application.ports import LLM_ROUTED_MODEL_KEY, LLMPort
+from src.application.ports import LLM_ESCALATION_FAILED_KEY, LLM_ROUTED_MODEL_KEY, LLMPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
@@ -39,8 +39,10 @@ class CascadingLLMAdapter(LLMPort):
 
     NIEZ-17: gdy frontier padnie, zwracamy opłacony już wynik taniego modelu
     (WARNING przy każdej awarii, alert do `quota_monitor` raz na instancję —
-    niedziałający routing nie może się schować). Rezerwacja eskalacji idzie pod
-    lockiem: symbole cyklu biegną równolegle, a sufit jest wspólny.
+    niedziałający routing nie może się schować). FIN-21 (G50): taki wynik niesie
+    `LLM_ESCALATION_FAILED_KEY`, z którego graf robi flagę jakości predykcji.
+    Rezerwacja eskalacji idzie pod lockiem: symbole cyklu biegną równolegle, a sufit
+    jest wspólny.
 
     FIN-21: z tożsamościami `cheap_model` / `frontier_model` (`dostawca:model`)
     każdy wynik `analyze` niesie `LLM_ROUTED_MODEL_KEY` — model, który faktycznie
@@ -99,7 +101,7 @@ class CascadingLLMAdapter(LLMPort):
             frontier_result = self._frontier.analyze(prompt)
         except Exception as exc:
             self._report_frontier_failure(exc)
-            return _marked(cheap_result, self._cheap_model)
+            return {**_marked(cheap_result, self._cheap_model), LLM_ESCALATION_FAILED_KEY: True}
         return _marked(frontier_result, self._frontier_model)
 
     def analyze_mistake(self, prompt: str) -> str:

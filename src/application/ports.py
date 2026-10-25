@@ -1180,6 +1180,9 @@ LLM_FAILOVER_MODEL_KEY = "_llm_model"
 # modelem, który faktycznie odpowiedział (`dostawca:model`). Graf zdejmuje go przed
 # normalizacją analizy i zapisuje jako `model_used` w kwicie v2.
 LLM_ROUTED_MODEL_KEY = "_llm_routed_model"
+# FIN-21 (G50): znacznik kaskady, że eskalacja do frontiera padła i wynik to opłacona
+# odpowiedź taniego modelu. Graf zdejmuje go i dopisuje flagę jakości `escalation_failed`.
+LLM_ESCALATION_FAILED_KEY = "_llm_escalation_failed"
 
 
 class LLMPort(ABC):

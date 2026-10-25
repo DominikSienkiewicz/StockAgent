@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.application.ports import LLM_ROUTED_MODEL_KEY, LLMPort
+from src.application.ports import LLM_ESCALATION_FAILED_KEY, LLM_ROUTED_MODEL_KEY, LLMPort
 from src.infrastructure.llm.cascading import CascadingLLMAdapter
 
 
@@ -245,10 +245,37 @@ class TestFrontierFailure:
         with caplog.at_level(logging.WARNING):
             result = adapter.analyze("p")
 
-        assert result == _result(0.2, "cheap")
+        assert result == {**_result(0.2, "cheap"), LLM_ESCALATION_FAILED_KEY: True}
         frontier.analyze.assert_called_once_with("p")
         assert any("RuntimeError" in r.getMessage() for r in caplog.records)
         assert [alert.severity for alert in monitor.alerts] == [QuotaSeverity.WARNING]
+
+    def test_paid_cheap_answer_after_a_failed_escalation_is_marked(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        # FIN-21 (G50): tani model zwraca confidence 0.4, frontier rzuca wyjątek →
+        # odpowiedź taniego ze znacznikiem `escalation_failed`, żeby predykcja niosła
+        # flagę jakości zamiast udawać zwykłą odpowiedź taniego modelu.
+        cheap.analyze.return_value = _result(0.4, "cheap")
+        frontier.analyze.side_effect = RuntimeError("frontier 500")
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier)
+
+        result = adapter.analyze("p")
+
+        assert result.get(LLM_ESCALATION_FAILED_KEY) is True
+        assert result["_source"] == "cheap"
+
+    def test_answers_without_a_failed_escalation_carry_no_marker(
+        self, cheap: Mock, frontier: Mock
+    ) -> None:
+        cheap.analyze.return_value = _result(0.1, "cheap")
+        frontier.analyze.return_value = _result(0.9, "frontier")
+        adapter = CascadingLLMAdapter(cheap=cheap, frontier=frontier, max_escalations=1)
+
+        escalated, capped = adapter.analyze("p1"), adapter.analyze("p2")
+
+        assert LLM_ESCALATION_FAILED_KEY not in escalated
+        assert LLM_ESCALATION_FAILED_KEY not in capped
 
     def test_repeated_frontier_failures_alert_once_per_instance(
         self, cheap: Mock, frontier: Mock

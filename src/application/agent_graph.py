@@ -25,6 +25,7 @@ from src.application.ml_features import (
     feature_set_version,
 )
 from src.application.ports import (
+    LLM_ESCALATION_FAILED_KEY,
     LLM_FAILOVER_MODEL_KEY,
     LLM_FAILOVER_PROVIDER_KEY,
     LLM_ROUTED_MODEL_KEY,
@@ -566,6 +567,9 @@ COUNCIL_UNAVAILABLE_FLAG = "council_unavailable"
 # NIEZ-26: odpowiedź LLM ucięta limitem tokenów albo odrzucona przez model — obok
 # `llm_analysis_failed` (atrapa dalej poza track recordem), odróżnia to od awarii dostawcy.
 LLM_OUTPUT_TRUNCATED_FLAG = "llm_output_truncated"
+# FIN-21 (G50): odpowiedź taniego modelu po nieudanej eskalacji do frontiera w kaskadzie
+# routingu — opłacona i zapisana, ale z flagą, żeby segment per model ją odsiał.
+ESCALATION_FAILED_FLAG = "escalation_failed"
 # Znacznik failovera bez modelu — przepis i tak nie może udawać głównego modelu.
 _UNKNOWN_FAILOVER_MODEL = "unknown"
 
@@ -588,15 +592,32 @@ def _split_failover_marker(
     return (str(provider), str(model) if model else _UNKNOWN_FAILOVER_MODEL), analysis
 
 
-def _split_routed_model(raw: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-    """FIN-21: zdejmuje znacznik kaskady routingu z wyniku LLM, zanim ktokolwiek go
-    przeczyta. Zwraca model, który odpowiedział (None = bez routingu), i analizę bez
-    znacznika."""
-    if LLM_ROUTED_MODEL_KEY not in raw:
-        return None, raw
-    analysis = {key: value for key, value in raw.items() if key != LLM_ROUTED_MODEL_KEY}
-    model = raw[LLM_ROUTED_MODEL_KEY]
-    return (str(model) if model else None), analysis
+@dataclasses.dataclass(frozen=True)
+class _RoutingMarkers:
+    """FIN-21: znaczniki kaskady routingu modeli zdjęte z wyniku LLM."""
+
+    model_used: str | None = None
+    escalation_failed: bool = False
+
+
+_ROUTING_MARKER_KEYS = (LLM_ROUTED_MODEL_KEY, LLM_ESCALATION_FAILED_KEY)
+
+
+def _split_routing_markers(raw: dict[str, Any]) -> tuple[_RoutingMarkers, dict[str, Any]]:
+    """FIN-21: zdejmuje znaczniki kaskady routingu z wyniku LLM, zanim ktokolwiek je
+    przeczyta: model, który odpowiedział (None = bez routingu), i nieudaną eskalację
+    do frontiera (G50). Zwraca znaczniki i analizę bez nich."""
+    if not any(key in raw for key in _ROUTING_MARKER_KEYS):
+        return _RoutingMarkers(), raw
+    analysis = {key: value for key, value in raw.items() if key not in _ROUTING_MARKER_KEYS}
+    model = raw.get(LLM_ROUTED_MODEL_KEY)
+    return (
+        _RoutingMarkers(
+            model_used=str(model) if model else None,
+            escalation_failed=raw.get(LLM_ESCALATION_FAILED_KEY) is True,
+        ),
+        analysis,
+    )
 
 
 def _effective_recipe(deps: AgentGraphDeps, state: AgentState) -> PredictionRecipe | None:
@@ -2368,7 +2389,7 @@ def _shadow_trend_forecast(
 ) -> ShadowTrendForecast:
     """Trend i pewność wariantu po tej samej normalizacji co odpowiedź produkcji."""
     _, raw = _split_failover_marker(raw)
-    _, raw = _split_routed_model(raw)
+    _, raw = _split_routing_markers(raw)
     analysis, _ = _normalize_llm_analysis(raw)
     if options.include_probabilities:
         analysis, _ = _apply_probability_forecast(analysis, symbol)
@@ -2416,7 +2437,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     prompt = prompt_for(prompt_options)
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
-    model_used, raw_analysis = _split_routed_model(raw_analysis)
+    routing, raw_analysis = _split_routing_markers(raw_analysis)
     # ML-07: kanonizacja PRZED pierwszym odczytem — rada, zapis i raport
     # czytają już ten sam znormalizowany dict, nie surowy tekst modelu.
     llm_analysis, analysis_flags = _normalize_llm_analysis(raw_analysis)
@@ -2444,6 +2465,8 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     flags: list[str] = list(llm_flags)
     if failover is not None:
         flags.append(LLM_FAILOVER_FLAG)
+    if routing.escalation_failed:
+        flags.append(ESCALATION_FAILED_FLAG)
     flags.extend(analysis_flags)
     # Adapter sentymentu (AV) może oznaczyć cały feed jako zdegradowany
     # (np. wszystkie klucze wyczerpane). Wtedy 0.0 we wszystkich polach
@@ -2555,7 +2578,9 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     )
 
     failover_state: AgentState = {} if failover is None else {"llm_failover": failover}
-    routing_state: AgentState = {} if model_used is None else {"llm_model_used": model_used}
+    routing_state: AgentState = (
+        {} if routing.model_used is None else {"llm_model_used": routing.model_used}
+    )
     return {
         **failover_state,
         **routing_state,

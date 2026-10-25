@@ -3383,6 +3383,62 @@ class TestDecisionReceipts:
         assert "model_used" not in record["decision_receipts"]
 
 
+class TestFailedEscalationFlag:
+    """FIN-21 (G50): odpowiedź taniego modelu po nieudanej eskalacji do frontiera
+    trafia do zapisu z flagą jakości `escalation_failed`; znacznik kaskady nie
+    dociera do analizy."""
+
+    def test_failed_escalation_is_a_quality_flag_of_the_prediction(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        from src.application.ports import LLM_ESCALATION_FAILED_KEY, LLM_ROUTED_MODEL_KEY
+
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        llm_port.analyze.return_value = {
+            **llm_port.analyze.return_value,
+            LLM_ROUTED_MODEL_KEY: "openai:gpt-5-mini",
+            LLM_ESCALATION_FAILED_KEY: True,
+        }
+
+        final = create_agent_graph(make_deps(**graph_ports)).compile().invoke(
+            _initial_state("100.0")
+        )
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "escalation_failed" in record["data_quality_flags"]
+        assert LLM_ESCALATION_FAILED_KEY not in final["llm_analysis"]
+
+    def test_answer_without_the_marker_has_no_flag(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+
+        create_agent_graph(make_deps(**graph_ports)).compile().invoke(_initial_state("100.0"))
+
+        record = repository_port.save_prediction.call_args.args[0]
+        assert "escalation_failed" not in record["data_quality_flags"]
+
+
 class TestRecipeVersionColumn:
     """WIA-20: kolumna `recipe_version` (migracja 030) za flagą
     `recipe_version_enabled` — nowy klucz przed migracją to PGRST204 i śmierć
