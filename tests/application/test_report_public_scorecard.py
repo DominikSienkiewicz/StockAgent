@@ -22,6 +22,7 @@ from src.application.report_public_scorecard import (
     render_public_scorecard_html,
     render_public_scorecard_json,
 )
+from src.domain.benchmark import BenchmarkComparison
 from src.domain.equity_curve import equity_curve
 from src.domain.evaluation_protocol import EvaluationProtocol
 
@@ -393,7 +394,7 @@ class TestBenchmarkDisclosure:
     nazywa się „S&P 500”, nie tickerem IVV (który też jest w watchliście)."""
 
     @staticmethod
-    def _comparison(*, with_index: bool = True):
+    def _comparison(*, with_index: bool = True) -> BenchmarkComparison:
         from src.domain.benchmark import compare_with_benchmarks
         from src.domain.equity_curve import PaperTrade
 
@@ -462,7 +463,7 @@ class TestEvaluationProtocolSection:
     ten sam sha256, który niesie każdy commitment v2."""
 
     @staticmethod
-    def _protocol() -> object:
+    def _protocol() -> EvaluationProtocol:
         from src.config import load_evaluation_protocol
 
         return load_evaluation_protocol()

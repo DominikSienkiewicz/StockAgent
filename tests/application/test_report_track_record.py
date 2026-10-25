@@ -21,6 +21,7 @@ from src.domain.track_record import (
     ScoredCall,
     assess_directional_hit_rate,
 )
+from src.domain.value_objects import Ratio
 
 
 def _curve() -> EquityCurve:
@@ -101,7 +102,7 @@ class TestLessons:
                     symbol="AAPL",
                     predicted_trend="BULLISH",
                     insight="rynek wycenił słabszy popyt",
-                    actual_change_ratio=Decimal("-0.08"),
+                    actual_change_ratio=Ratio(Decimal("-0.08")),
                 ),
             ),
             total_mistakes=1,
@@ -183,7 +184,7 @@ class TestComposition:
                     symbol="MSFT",
                     predicted_trend="BEARISH",
                     insight="zaskoczenie wynikami",
-                    actual_change_ratio=Decimal("0.05"),
+                    actual_change_ratio=Ratio(Decimal("0.05")),
                 ),
             ),
             total_mistakes=1,
@@ -388,7 +389,7 @@ class TestCompactTrackRecord:
                     symbol="MSFT",
                     predicted_trend="BEARISH",
                     insight="zaskoczenie wynikami",
-                    actual_change_ratio=Decimal("0.05"),
+                    actual_change_ratio=Ratio(Decimal("0.05")),
                 ),
             ),
             total_mistakes=1,

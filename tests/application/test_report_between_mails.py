@@ -50,7 +50,8 @@ def test_shock_section_lists_alerts_since_last_digest() -> None:
 
 
 def test_shock_section_hides_without_alerts() -> None:
-    for alerts in (None, []):
+    scenarios: tuple[list[StoredShockAlert] | None, ...] = (None, [])
+    for alerts in scenarios:
         html, text = _report(alerts)
 
         assert "Między mailami" not in html

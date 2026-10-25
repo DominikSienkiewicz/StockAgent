@@ -14,17 +14,17 @@ from __future__ import annotations
 from src.application.report_templates import get_template, render_template
 
 
-def test_get_template_loads_council_section():
+def test_get_template_loads_council_section() -> None:
     template = get_template("council_section.html.j2")
     assert template is not None
 
 
-def test_get_template_loads_valuation_section():
+def test_get_template_loads_valuation_section() -> None:
     template = get_template("valuation_section.html.j2")
     assert template is not None
 
 
-def test_render_template_returns_str():
+def test_render_template_returns_str() -> None:
     result = render_template(
         "council_section.html.j2",
         {
@@ -34,7 +34,7 @@ def test_render_template_returns_str():
     assert isinstance(result, str)
 
 
-def test_autoescape_html_attacks():
+def test_autoescape_html_attacks() -> None:
     # Jinja2 environment musi mieć włączony autoescape dla .html.j2.
     # Mały smoke test: złośliwy input z <script> ma być zamieniony na encje.
     from src.application.report_templates import _env

@@ -19,6 +19,7 @@ from src.application.report_track_record import TrackRecordStats
 from src.domain.benchmark import compare_with_benchmarks
 from src.domain.council import CouncilVerdict, InvestorOpinion
 from src.domain.equity_curve import PaperTrade
+from src.domain.value_objects import Ratio
 
 PERSONAS = ("Buffett", "Graham", "Lynch", "Dalio", "Soros", "Wood", "Marks")
 STARTED = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
@@ -352,7 +353,7 @@ def _full_track_record_context() -> ReportContext:
                     symbol=f"SYM{i}",
                     predicted_trend="BULLISH",
                     insight="Rynek wycenił słabszy popyt w segmencie klienckim. " * 2,
-                    actual_change_ratio=Decimal("-0.0247"),
+                    actual_change_ratio=Ratio(Decimal("-0.0247")),
                 )
                 for i in range(5)
             ),

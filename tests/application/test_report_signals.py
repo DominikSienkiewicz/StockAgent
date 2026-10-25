@@ -57,13 +57,13 @@ def _saved_result(
 class TestBuildTradeSignalsSizeBand:
     """Q7 — build_trade_signals dokleja sugerowaną bandę pozycji do sygnału."""
 
-    def test_signal_has_no_band_without_council(self):
+    def test_signal_has_no_band_without_council(self) -> None:
         # Brak werdyktu rady → brak danych do sizingu → size_band None.
         signals = build_trade_signals([_saved_result(council=None)])
         assert len(signals) == 1
         assert signals[0].size_band is None
 
-    def test_strong_consensus_good_hitrate_gives_full_band(self):
+    def test_strong_consensus_good_hitrate_gives_full_band(self) -> None:
         council = _verdict(consensus=0.9, opinions=(_opinion("BUY"), _opinion("BUY")))
         signals = build_trade_signals(
             [_saved_result(council=council)], hit_rate=0.7
@@ -71,7 +71,7 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "full"
 
-    def test_weak_consensus_gives_starter_band(self):
+    def test_weak_consensus_gives_starter_band(self) -> None:
         council = _verdict(consensus=0.4, opinions=(_opinion("BUY"), _opinion("SELL")))
         signals = build_trade_signals(
             [_saved_result(council=council)], hit_rate=0.7
@@ -79,14 +79,14 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
-    def test_unknown_hitrate_is_conservative(self):
+    def test_unknown_hitrate_is_conservative(self) -> None:
         # Cold-start: rada przekonana, ale brak track recordu → nie pełna banda.
         council = _verdict(consensus=0.95, opinions=(_opinion("BUY"), _opinion("BUY")))
         signals = build_trade_signals([_saved_result(council=council)])
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier != "full"
 
-    def test_high_dissent_pulls_band_down(self):
+    def test_high_dissent_pulls_band_down(self) -> None:
         # Werdykt BUY, ale połowa rady głosuje SELL → wysoki dissent → starter.
         council = _verdict(
             final="BUY",
@@ -99,7 +99,7 @@ class TestBuildTradeSignalsSizeBand:
         assert signals[0].size_band is not None
         assert signals[0].size_band.tier == "starter"
 
-    def test_default_size_band_is_none_on_dto(self):
+    def test_default_size_band_is_none_on_dto(self) -> None:
         # Wsteczna kompatybilność — ręcznie zbudowany TradeSignal bez bandy.
         sig = TradeSignal(
             symbol="AAPL",
@@ -151,6 +151,7 @@ class TestCalibratedConfidenceInSignalRanking:
 
         # count=100, min_count=10 → waga 100/110 ≈ 0.909 → ~0.577
         assert signal.calibrated_confidence == pytest.approx(0.5773, abs=1e-3)
+        assert signal.calibrated_confidence is not None
         assert signal.strength == pytest.approx(signal.calibrated_confidence * 10.0)
         assert signal.strength < 0.85 * 10.0
 

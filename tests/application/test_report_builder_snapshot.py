@@ -55,7 +55,7 @@ from src.domain.benchmark import BenchmarkComparison
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.conformal import MoveInterval
 from src.domain.consensus_shift import ConsensusShift, ShiftKind
-from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.council import CouncilVerdict, InvestorOpinion, Recommendation
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.drawdown import DrawdownSignal
 from src.domain.equity_curve import DirectionalHitRate, EquityCurve, EquityPoint
@@ -70,7 +70,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.track_record import ScoredCall, assess_directional_hit_rate
-from src.domain.value_objects import AssetType, Fundamentals, Money, ValuationVerdict
+from src.domain.value_objects import AssetType, Fundamentals, Money, Ratio, ValuationVerdict
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 UPDATE_COMMAND = "uv run pytest tests/application/test_report_builder_snapshot.py --update-golden"
@@ -135,7 +135,9 @@ def _fundamentals(age_hours: int) -> Fundamentals:
     )
 
 
-def _council(recommendation: str, consensus: float, dissent: tuple[str, ...]) -> CouncilVerdict:
+def _council(
+    recommendation: Recommendation, consensus: float, dissent: tuple[str, ...]
+) -> CouncilVerdict:
     return CouncilVerdict(
         final_recommendation=recommendation,
         consensus_strength=consensus,
@@ -337,8 +339,8 @@ def _macro_risk_report() -> MacroRiskReport:
         polish_macro=PolishMacroSnapshot(
             eur_pln=Decimal("4.2710"),
             usd_pln=Decimal("3.6820"),
-            eur_pln_30d_change_ratio=Decimal("0.012"),
-            usd_pln_30d_change_ratio=Decimal("0.021"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.012")),
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.021")),
             fetched_at=STARTED - timedelta(hours=2),
         ),
         overall_alert=MacroAlertLevel.ELEVATED,
@@ -534,7 +536,7 @@ def _full_context() -> ReportContext:
                     symbol="AMD",
                     predicted_trend="BULLISH",
                     insight="Rynek wycenił słabszy popyt w segmencie klienckim.",
-                    actual_change_ratio=Decimal("-0.0247"),
+                    actual_change_ratio=Ratio(Decimal("-0.0247")),
                 ),
             ),
             total_mistakes=1,

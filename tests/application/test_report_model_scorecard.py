@@ -8,6 +8,7 @@ baseline persystencji — albo uczciwie przyznać, że kandydat został odrzucon
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from src.application.report_model_scorecard import (
     build_scorecard_view,
@@ -176,7 +177,7 @@ class TestBuildScorecardView:
         assert build_scorecard_view([]) is None
 
     def test_aggregates_run_and_takes_latest_metrics(self) -> None:
-        rows = [
+        rows: list[dict[str, Any]] = [
             {
                 "symbol": "AAPL",
                 "status": "trained_successfully",
@@ -379,7 +380,7 @@ class TestPooledVerdict:
     def test_snapshot_model_cards_are_not_per_symbol_evaluations(self) -> None:
         # ML-52: karty modeli z `feature_snapshots` (ALL_FREE, ALL_LLM) to osobne
         # modele ewaluacyjne — nie mogą zmieniać werdyktu ani liczby ewaluacji.
-        rows = [
+        rows: list[dict[str, Any]] = [
             *_pooled_run_rows("trained_successfully"),
             {"symbol": "ALL_FREE", "status": "evaluated_failed_gate",
              "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.5},

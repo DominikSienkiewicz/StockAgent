@@ -11,7 +11,7 @@ from src.application.report_finops import (
     render_finops_html,
     render_finops_text,
 )
-from src.domain.finops import estimate_cycle_cost
+from src.domain.finops import CycleCost, estimate_cycle_cost
 
 
 def test_none_suppresses_section_html() -> None:
@@ -84,7 +84,7 @@ def test_unknown_source_html_is_escaped() -> None:
 # --- FIN-13: koszt z tokenów obok szacunku ze stałej ----------------------------
 
 
-def _mixed_cost():
+def _mixed_cost() -> CycleCost:
     from datetime import date
 
     return estimate_cycle_cost(

@@ -28,6 +28,7 @@ from src.application.report_evidence import (
 from src.application.report_formatting import DOT_NUMBERS
 from src.application.report_models import ResolvedPrediction
 from src.domain.benchmark import BenchmarkComparison
+from src.domain.paper_ledger import LedgerTrade
 
 COSTS = PaperCosts(cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC"}))
 
@@ -242,7 +243,7 @@ def _ledger_trade(
     day: int = 19,
     reason: str = "settled",
     cost_bps: str = "0",
-):
+) -> LedgerTrade:
     from src.domain.paper_ledger import (
         ExitReason,
         LedgerRow,

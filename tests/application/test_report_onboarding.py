@@ -115,25 +115,25 @@ class TestInstrumentPluralization:
     """Polska odmiana "instrument" przez liczebnik — po końcówce liczby."""
 
     def test_singular(self) -> None:
-        assert "1 instrument" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=1
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=1)
+        assert subject is not None
+        assert "1 instrument" in subject
 
     def test_few(self) -> None:
-        assert "3 instrumenty" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=3
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=3)
+        assert subject is not None
+        assert "3 instrumenty" in subject
 
     def test_many(self) -> None:
-        assert "5 instrumentów" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=5
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=5)
+        assert subject is not None
+        assert "5 instrumentów" in subject
 
     def test_teens_are_genitive(self) -> None:
         # 12-14 to wyjątek: mimo końcówki 2-4 → "instrumentów", nie "instrumenty".
-        assert "13 instrumentów" in onboarding_subject(
-            CycleMaturity.FIRST_RUN, instrument_count=13
-        )
+        subject = onboarding_subject(CycleMaturity.FIRST_RUN, instrument_count=13)
+        assert subject is not None
+        assert "13 instrumentów" in subject
 
 
 def test_sectors_follow_the_config_order() -> None:
