@@ -486,6 +486,12 @@ The earnings calendar works the same way. With `earnings_calendar_enabled = true
 
 **Where the verifiable track record starts (WIA-27).** The predictions of 2026-07-10 to 2026-08-17 cannot be attested: nothing about them was public before their outcome was known, so a hash computed today would prove nothing about when they were made. The track record is verifiable only from the first push of the commitment ledger onwards. Rows written before that push are never published as attested: they stay in the database and in the email's Track Record as unattested history, and no claim of tamper-evidence covers them.
 
+<a id="flag-attestation-rekor"></a>
+
+### `attestation_rekor_enabled`: an independent clock for the cycle roots
+
+The git ledger proves tamper-evidence under branch protection, not time: commit dates are forgeable, and an OpenTimestamps stamp (WIA-76) confirms time only hours later. WIA-73 (decided 2026-10-24) anchors each cycle root in Sigstore Rekor instead: an append-only public log whose `integratedTime` is set by the log at the moment of the write, signed keyless with the job's GitHub Actions OIDC identity, so the entry is bound to the public workflow run and not to a key someone keeps. Built after the durable ledger (WIA-14/15) and the per-cycle Merkle root (WIA-60), because one root per cycle is one entry to anchor. The client is plain REST plus `cryptography`, which was already installed through `supabase-auth[crypto]`, rather than the `sigstore` package and its own dependency tree; verification of the certificate chain to the Fulcio root and of Rekor's signed checkpoint is left to the standard Sigstore tooling, so `verify-attestation` stays offline. Off by default: Rekor entries are public forever, the service is external, and `id-token: write` on the job that holds the API keys is a security decision the owner takes when switching it on.
+
 <a id="flag-portfolio"></a>
 
 ### `portfolio_positions_enabled`, the position currency and the risk flags

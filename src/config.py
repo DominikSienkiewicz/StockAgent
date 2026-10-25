@@ -197,6 +197,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "attestation_enabled",
     "attestation_commitments_path",
     "attestation_reveals_path",
+    # WIA-73: kotwica rootu cyklu w Sigstore Rekor — publikacja po predykcjach, nie prognoza.
+    "attestation_rekor_enabled",
     # WIA-59: plik głów paper ledgera obok ledgera atestacji — publikacja, nie prognoza.
     "paper_ledger_heads_path",
     # Inne joby i trening (wagi → `model_version`).
@@ -825,6 +827,11 @@ class Settings(BaseSettings):
     public_status_path: str = "public/scorecard/status/index.html"
     attestation_commitments_path: str = "public/attestation/commitments.jsonl"
     attestation_reveals_path: str = "public/attestation/reveals.jsonl"
+    # WIA-73: root cyklu z predykcjami logowany w publicznym Sigstore Rekor (podpis keyless
+    # tokenem OIDC joba GitHub Actions), wpis Rekora w polu `rekor` linii ledgera. Działa
+    # tylko z `attestation_enabled` i zapisem do bazy; wymaga `id-token: write` na jobie
+    # agenta. Wpisy są publiczne na zawsze. Off.
+    attestation_rekor_enabled: bool = False
     # WIA-59: append-only JSONL z głową paper ledgera, raz dziennie (`paper_ledger_enabled`
     # i `attestation_enabled`) — w katalogu checkoutu gałęzi `attestation-log`.
     paper_ledger_heads_path: str = "public/attestation/paper_ledger_heads.jsonl"

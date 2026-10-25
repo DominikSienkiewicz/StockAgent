@@ -764,7 +764,9 @@ def _portfolio_clusters(settings: Settings) -> dict[str, str]:
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
     """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
-    tylko do odczytu bez `db_writes_enabled` (BEZ-08)."""
+    tylko do odczytu bez `db_writes_enabled` (BEZ-08). WIA-73: z
+    `attestation_rekor_enabled` root cyklu idzie najpierw do Sigstore Rekor
+    (token OIDC z env joba GitHub Actions)."""
     from src.infrastructure.adapters.attestation_publisher import (
         FileAttestationPublisher,
         NullAttestationPublisher,
@@ -772,10 +774,14 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
 
     if not settings.attestation_enabled:
         return NullAttestationPublisher()
-    publisher = FileAttestationPublisher(
+    publisher: AttestationPublisherPort = FileAttestationPublisher(
         commitment_path=settings.attestation_commitments_path,
         reveal_path=settings.attestation_reveals_path,
     )
+    if settings.attestation_rekor_enabled:
+        from src.infrastructure.adapters.rekor_publisher import keyless_rekor_publisher
+
+        publisher = keyless_rekor_publisher(publisher, os.environ)
     if settings.db_writes_enabled:
         return publisher
     # BEZ-08: predykcja z runu tylko do odczytu ma id `dry-run-…` i nie istnieje

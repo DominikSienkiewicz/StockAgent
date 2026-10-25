@@ -5031,6 +5031,29 @@ def test_attestation_publisher_follows_db_writes_flag(settings: Settings, enable
     assert type(publisher) is expected
 
 
+@pytest.mark.parametrize("db_writes", [False, True])
+def test_rekor_flag_anchors_cycle_roots_of_the_ledger_publisher(
+    settings: Settings, db_writes: bool
+) -> None:
+    # WIA-73: Rekor owija publisher pliku (graf dalej ma jedno pole), a run tylko do
+    # odczytu nie loguje niczego — wpis w Rekorze jest publiczny na zawsze.
+    from src.infrastructure.adapters.rekor_publisher import RekorAttestationPublisher
+    from src.infrastructure.adapters.write_guard import ReadOnlyAttestationPublisher
+
+    settings = settings.model_copy(
+        update={
+            "attestation_enabled": True,
+            "attestation_rekor_enabled": True,
+            "db_writes_enabled": db_writes,
+        }
+    )
+
+    publisher = main_agent.build_attestation_publisher(settings)
+
+    expected = RekorAttestationPublisher if db_writes else ReadOnlyAttestationPublisher
+    assert type(publisher) is expected
+
+
 @pytest.mark.parametrize("available", [False, True])
 def test_attestation_needs_the_commitment_columns(
     settings: Settings, mock_external_clients: None, mocker: Any, available: bool

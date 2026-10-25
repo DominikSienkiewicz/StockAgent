@@ -296,6 +296,12 @@ public_status_page_enabled = false
 public_status_path = "public/scorecard/status/index.html"
 attestation_commitments_path = "public/attestation/commitments.jsonl"
 attestation_reveals_path = "public/attestation/reveals.jsonl"
+# WIA-73: root cyklu z predykcjami logowany w publicznym Sigstore Rekor (wpis hashedrekord,
+# podpis keyless tokenem OIDC joba), a wpis Rekora trafia do linii ledgera (pole `rekor`).
+# Darmowe, wpisy publiczne NA ZAWSZE. Działa tylko z `attestation_enabled`. UWAGA: włącz
+# DOPIERO po nadaniu jobowi agenta `id-token: write` (decyzja bezpieczeństwa właściciela,
+# docs/configuration.md) — bez niego każdy cykl kończy się WARNING-iem i linią bez wpisu.
+attestation_rekor_enabled = false
 # WIA-59: głowa paper ledgera (`paper_ledger_enabled`) raz dziennie, obok ledgera atestacji.
 paper_ledger_heads_path = "public/attestation/paper_ledger_heads.jsonl"
 track_record_days = 30
