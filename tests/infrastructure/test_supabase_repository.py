@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -10,7 +10,9 @@ import pytest
 
 from src.application.errors import NotFound, ProviderUnavailable
 from src.application.ports import RepositoryPort, StoredShockAlert
+from src.domain.paper_ledger import PaperTradeEntry
 from src.domain.prediction import TrendDirection
+from src.domain.session_close import SessionCloseSettlement
 from src.domain.value_objects import FUNDAMENTALS_CACHE_TTL_HOURS, Fundamentals, Money
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
@@ -1702,14 +1704,14 @@ class TestSaveCouncilVotes:
                 recommendation="BUY",
                 confidence=0.9,
                 reasoning="Silna fosa.",
-                key_factors=["moat"],
+                key_factors=("moat",),
             ),
             InvestorOpinion(
                 investor_name="Michael Burry",
                 recommendation="SELL",
                 confidence=0.7,
                 reasoning="Zawyżone P/E.",
-                key_factors=["bubble"],
+                key_factors=("bubble",),
             ),
         ]
 
@@ -1744,7 +1746,7 @@ class TestSaveCouncilVotes:
             recommendation="BUY",
             confidence=0.9,
             reasoning="Silna fosa.",
-            key_factors=["moat"],
+            key_factors=("moat",),
         )
 
         repo.save_council_votes(prediction_id="uuid-pred-1", symbol="AAPL", votes=[vote])
@@ -1989,7 +1991,7 @@ class TestGetAccuracyStats:
         """WIA-29 (c): mail pokazuje trafność kierunkową obok łącznej. Liczby
         łączne (sizing, kalibracja) bez zmian; kierunkowe pomijają SIDEWAYS
         i nieznany trend — ta sama reguła co `directional_hit_rate`."""
-        rows = [
+        rows: list[dict[str, Any]] = [
             {"is_trend_correct": True, "predicted_trend": "BULLISH"},
             {"is_trend_correct": False, "predicted_trend": "BEARISH"},
             {"is_trend_correct": True, "predicted_trend": "SIDEWAYS"},
@@ -2581,12 +2583,15 @@ class TestLlmFallbackRowsExcludedFromTrackRecord:
     @staticmethod
     def _order_builder(mock_client: MagicMock) -> MagicMock:
         chain = mock_client.table.return_value
-        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        return cast(
+            MagicMock,
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+        )
 
     def test_accuracy_stats_skip_llm_fallback_rows(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        rows = [
+        rows: list[dict[str, Any]] = [
             {"is_trend_correct": True, "data_quality_flags": []},
             {"is_trend_correct": True, **self._FALLBACK},
             {"is_trend_correct": False, "data_quality_flags": None},
@@ -2616,7 +2621,7 @@ class TestLlmFallbackRowsExcludedFromTrackRecord:
     def test_recently_resolved_predictions_skip_llm_fallback_rows(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        rows = [{"symbol": "AAPL"}, {"symbol": "NVDA", **self._FALLBACK}]
+        rows: list[dict[str, Any]] = [{"symbol": "AAPL"}, {"symbol": "NVDA", **self._FALLBACK}]
         _set_paginated_response(self._order_builder(mock_client), [rows])
 
         out = repo.get_recently_resolved_predictions(24)
@@ -3056,7 +3061,7 @@ class TestResolvedForEvalRecipeColumn:
         )
         _set_paginated_response(order_builder, [[]])
         repo.get_resolved_predictions_for_eval(30, **kwargs)
-        return chain.select.call_args.args[0]
+        return cast(str, chain.select.call_args.args[0])
 
     def test_default_select_has_no_recipe_column(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3082,7 +3087,7 @@ class TestResolvedForEvalUniverse:
         )
         _set_paginated_response(order_builder, [[]])
         repo.get_resolved_predictions_for_eval(30, **kwargs)
-        return chain.select.call_args.args[0]
+        return cast(str, chain.select.call_args.args[0])
 
     def test_default_select_has_no_universe(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3284,7 +3289,7 @@ class TestResolvedForEvalExtraFields:
         )
         _set_paginated_response(order_builder, [[]])
         repo.get_resolved_predictions_for_eval(30, **kwargs)
-        return chain.select.call_args.args[0]
+        return cast(str, chain.select.call_args.args[0])
 
     def test_default_select_reads_no_segment_column(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3320,7 +3325,10 @@ class TestResolvedForEvalGateDelta:
 
     def _order_builder(self, mock_client: MagicMock) -> MagicMock:
         chain = mock_client.table.return_value
-        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        return cast(
+            MagicMock,
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+        )
 
     def test_gate_delta_is_an_eval_field(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3366,7 +3374,10 @@ class TestResolvedForEvalExperimentArms:
 
     def _order_builder(self, mock_client: MagicMock) -> MagicMock:
         chain = mock_client.table.return_value
-        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        return cast(
+            MagicMock,
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+        )
 
     def test_arms_and_consensus_are_eval_fields(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3407,7 +3418,10 @@ class TestResolvedForEvalSkipsLlmFallback:
 
     def _order_builder(self, mock_client: MagicMock) -> MagicMock:
         chain = mock_client.table.return_value
-        return chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
+        return cast(
+            MagicMock,
+            chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value,
+        )
 
     def test_select_reads_the_quality_flags(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -3581,7 +3595,7 @@ class TestGetCycleRunsSince:
     @staticmethod
     def _order_builder(mock_client: MagicMock) -> MagicMock:
         chain = mock_client.table.return_value.select.return_value.gte.return_value
-        return chain.order.return_value.order.return_value
+        return cast(MagicMock, chain.order.return_value.order.return_value)
 
     def test_reads_the_runs_since_a_moment_into_cycle_runs(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -4285,7 +4299,9 @@ class TestMissingPredictionColumns:
 
     @staticmethod
     def _execute(client: MagicMock) -> MagicMock:
-        return client.table.return_value.select.return_value.limit.return_value.execute
+        return cast(
+            MagicMock, client.table.return_value.select.return_value.limit.return_value.execute
+        )
 
     def test_no_missing_columns_on_a_migrated_database(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -4354,7 +4370,7 @@ class TestSchemaVersion:
 
     @staticmethod
     def _execute(client: MagicMock) -> MagicMock:
-        return client.rpc.return_value.execute
+        return cast(MagicMock, client.rpc.return_value.execute)
 
     def test_returns_the_applied_migration_number(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -4471,10 +4487,11 @@ class TestEarningsCache:
 def _expiry_select_builder(mock_client: MagicMock) -> MagicMock:
     """Builder, na którym `_paginate` woła `.range(...)` w odczycie kandydatów."""
     chain = mock_client.table.return_value
-    return (
+    builder = (
         chain.select.return_value.eq.return_value.is_.return_value.lt.return_value
         .order.return_value.order.return_value
     )
+    return cast(MagicMock, builder)
 
 
 def test_expire_unverified_predictions_updates_only_older_rows(
@@ -4549,10 +4566,11 @@ def test_expire_without_stale_rows_writes_nothing(
 
 def _expired_count_builder(mock_client: MagicMock) -> MagicMock:
     chain = mock_client.table.return_value
-    return (
+    builder = (
         chain.select.return_value.gte.return_value.is_.return_value.contains.return_value
         .order.return_value
     )
+    return cast(MagicMock, builder)
 
 
 class TestCountExpiredUnverified:
@@ -4786,7 +4804,7 @@ class TestStaleQuote:
     ) -> None:
         repo = self._repo(mock_client)
         chain = mock_client.table.return_value
-        rows = [
+        rows: list[dict[str, Any]] = [
             {"is_trend_correct": True, "stale_quote": None},
             {"is_trend_correct": False, "stale_quote": True},
             {"is_trend_correct": False, "stale_quote": False},
@@ -4875,10 +4893,9 @@ class TestSessionCloseSettlement:
     przed migracją 059 SELECT kolumny dałby 400."""
 
     @staticmethod
-    def _settlement():
+    def _settlement() -> SessionCloseSettlement:
         from src.domain.session_close import (
             SessionClose,
-            SessionCloseSettlement,
             SessionCloseSource,
         )
 
@@ -4891,7 +4908,7 @@ class TestSessionCloseSettlement:
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
         _set_chain_response(mock_client, ["table", "update", "eq", "is_"], [{"id": "uuid-1"}])
-        settle = {
+        settle: dict[str, Any] = {
             "prediction_id": "uuid-1",
             "actual_price": Decimal("105.0"),
             "accuracy_score": 0.96,
@@ -4919,7 +4936,7 @@ class TestSessionCloseSettlement:
             url="https://test.supabase.co", key="anon-key", session_close_settlement_enabled=True
         )
         chain = mock_client.table.return_value
-        rows = [
+        rows: list[dict[str, Any]] = [
             {"is_trend_correct": True, "is_trend_correct_session_close": True},
             {"is_trend_correct": False, "is_trend_correct_session_close": True},
             {"is_trend_correct": False, "is_trend_correct_session_close": False},
@@ -4964,7 +4981,7 @@ class TestExecutableEntryPrice:
     track recordu wybiera kolumnę wyłącznie za flagą repozytorium — przed migracją
     072 SELECT kolumny dałby 400, a klucz w UPDATE — PGRST204."""
 
-    _SETTLE = {
+    _SETTLE: dict[str, Any] = {
         "prediction_id": "uuid-1",
         "actual_price": Decimal("106.0"),
         "accuracy_score": 0.96,
@@ -5649,12 +5666,12 @@ class TestShadowPredictions:
             SettledShadowForecast(
                 "pred-1",
                 ShadowForecast("champion", self.CHAMPION, predicted_return=0.012),
-                pytest.approx(0.01),
+                cast(float, pytest.approx(0.01)),
             ),
             SettledShadowForecast(
                 "pred-1",
                 ShadowForecast("direction", self.DIRECTION, proba=0.64),
-                pytest.approx(0.01),
+                cast(float, pytest.approx(0.01)),
             ),
         ]
         mock_client.table.assert_called_with("shadow_predictions")
@@ -5714,8 +5731,10 @@ class TestPaperLedger:
     MONDAY = datetime(2026, 10, 19, 5, 30, tzinfo=UTC)
 
     @classmethod
-    def _entry(cls, prediction_id: str = "11111111-1111-1111-1111-111111111111"):
-        from src.domain.paper_ledger import PaperTradeEntry, TradeSide
+    def _entry(
+        cls, prediction_id: str = "11111111-1111-1111-1111-111111111111"
+    ) -> PaperTradeEntry:
+        from src.domain.paper_ledger import TradeSide
 
         return PaperTradeEntry(
             prediction_id=prediction_id,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import tomllib
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
@@ -34,7 +35,7 @@ USER_AGENT = "StockAgent test test@example.com"
 CONFIG_TOML = Path(__file__).resolve().parents[2] / "config.toml"
 
 
-def _ok_json(payload: dict) -> Mock:
+def _ok_json(payload: dict[str, Any]) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload
@@ -57,7 +58,7 @@ def _error_response(status_code: int) -> Mock:
     return response
 
 
-def _company_tickers() -> dict:
+def _company_tickers() -> dict[str, Any]:
     return {
         "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
         "1": {"cik_str": 789019, "ticker": "MSFT", "title": "Microsoft Corp"},
@@ -74,7 +75,7 @@ def _submissions(
     dates: list[str],
     accessions: list[str],
     primary_docs: list[str],
-) -> dict:
+) -> dict[str, Any]:
     return {
         "cik": "320193",
         "filings": {
@@ -110,7 +111,7 @@ def _form4_xml(*, code: str, shares: float) -> str:
 </ownershipDocument>"""
 
 
-def _two_form4_submissions() -> dict:
+def _two_form4_submissions() -> dict[str, Any]:
     # Dwa Form 4 w oknie + jeden inny formularz (10-K) który należy pominąć.
     return _submissions(
         forms=["4", "10-K", "4"],
@@ -535,7 +536,7 @@ class TestTickerMapAndPacing:
     per symbol, a requesty do sec.gov mają minimalny odstęp (limit SEC 10/s)."""
 
     @staticmethod
-    def _get(tickers_status: list[int]) -> tuple[list[str], object]:
+    def _get(tickers_status: list[int]) -> tuple[list[str], Callable[..., Mock]]:
         urls: list[str] = []
         statuses = iter(tickers_status)
 
@@ -920,7 +921,7 @@ class TestEdgarLive:
     przez XSL (`xslF345X05/...`), pod URL-em jest HTML i żaden Form 4 się nie
     sparsuje — adapter po cichu zwraca NEUTRAL dla każdej spółki."""
 
-    def test_live_form4_primary_document_parses(self) -> None:
+    def test_live_form4_primary_document_parses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         adapter = EdgarInsiderAdapter(
             user_agent=_configured_user_agent(), window_days=180, max_form4=5
         )
@@ -937,13 +938,13 @@ class TestEdgarLive:
         archive_bodies: list[str] = []
         real_get = adapter._session.get
 
-        def recording_get(url: str, **kwargs: object) -> requests.Response:
+        def recording_get(url: str, **kwargs: Any) -> requests.Response:
             response = real_get(url, **kwargs)
             if "/Archives/" in url:
                 archive_bodies.append(response.text)
             return response
 
-        adapter._session.get = recording_get  # type: ignore[method-assign]
+        monkeypatch.setattr(adapter._session, "get", recording_get)
 
         parsed = [adapter._parse_form4(cik, acc, doc) for acc, doc in filings]
 
@@ -1024,7 +1025,7 @@ class TestCorporateEvents:
     dzień filingu i link, bez nowego requestu."""
 
     @staticmethod
-    def _submissions_with_8k() -> dict:
+    def _submissions_with_8k() -> dict[str, Any]:
         payload = _submissions(
             forms=["8-K", "4", "8-K", "8-K"],
             dates=[_recent_date(1), _recent_date(2), _recent_date(5), _recent_date(40)],
