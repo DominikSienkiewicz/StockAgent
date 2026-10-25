@@ -20,7 +20,11 @@ from src.domain.calibration_curve import (
     calibrated_confidence,
     find_bucket,
 )
-from src.domain.isotonic_calibration import IsotonicMap
+from src.domain.isotonic_calibration import (
+    CalibrationClass,
+    ClassIsotonicSelection,
+    IsotonicMap,
+)
 from src.domain.market_calendar import (
     TradingSession,
     holiday_name,
@@ -31,6 +35,7 @@ from src.domain.market_calendar import (
 )
 from src.domain.mistake_taxonomy import parse_mistake_category
 from src.domain.sizing import PositionAction, SizeBand, position_action, suggest_band
+from src.domain.value_objects import AssetType
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
 DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
@@ -54,6 +59,7 @@ def build_trade_signals(
     drawdown: float | None = None,
     hedge_effective: bool | None = None,
     isotonic_calibration: IsotonicMap | None = None,
+    isotonic_class_calibration: ClassIsotonicSelection | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -84,6 +90,9 @@ def build_trade_signals(
     kubełkach shrinkage kubełkowy — monotonicznie; bez kubełków (WIA-38: pewność
     nie odróżnia trafień) nie jest używana.
 
+    ML-54: `isotonic_class_calibration` (decyzje per klasa aktywa) wybiera mapę
+    według klasy symbolu (`asset_class` z grafu) i zastępuje wtedy mapę globalną.
+
     PORT-08: gdy znamy portfel (`portfolio_weights` nie None), sygnał niesie
     kierunek w kontekście pozycji — spadek na trzymanym symbolu to ZREDUKUJ,
     poza portfelem UNIKAJ, wzrost na nasyconej pozycji TRZYMAJ. Ranking bez zmian."""
@@ -93,7 +102,8 @@ def build_trade_signals(
             continue
         if r.confidence_score is None or r.expected_change is None:
             continue
-        calibrated = _calibrated(r.confidence_score, calibration_buckets, isotonic_calibration)
+        isotonic = _isotonic_for(r, isotonic_calibration, isotonic_class_calibration)
+        calibrated = _calibrated(r.confidence_score, calibration_buckets, isotonic)
         bucket_count = _calibration_bucket_count(r.confidence_score, calibration_buckets)
         effective = r.confidence_score if calibrated is None else calibrated
         strength = effective if r.ml_cold_start else effective * float(abs(r.expected_change)) * 100
@@ -123,6 +133,28 @@ def build_trade_signals(
         ))
     signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
+
+
+def _isotonic_for(
+    r: SymbolResult,
+    isotonic: IsotonicMap | None,
+    class_selection: ClassIsotonicSelection | None,
+) -> IsotonicMap | None:
+    """ML-54: mapa klasy aktywa symbolu, gdy ranking ma decyzje per klasa; inaczej
+    mapa globalna (ML-28)."""
+    if class_selection is None:
+        return isotonic
+    return class_selection.calibrator_for(_calibration_class_of(r))
+
+
+def _calibration_class_of(r: SymbolResult) -> CalibrationClass | None:
+    """Klasa mapy z `asset_class` wyniku — Asset z grafu sklasyfikowany przez
+    `run_cycle.classify_asset`; brak klasy → None (mapa globalna)."""
+    if r.asset_class is None:
+        return None
+    if r.asset_class == AssetType.CRYPTO.value:
+        return CalibrationClass.CRYPTO
+    return CalibrationClass.NON_CRYPTO
 
 
 def _calibrated(

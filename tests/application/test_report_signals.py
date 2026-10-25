@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -11,6 +12,12 @@ from src.application.report_signals import (
 )
 from src.domain.calibration_curve import CalibrationBucket
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.isotonic_calibration import (
+    CalibrationClass,
+    ClassIsotonicSelection,
+    IsotonicMap,
+    IsotonicSelection,
+)
 
 
 def _opinion(rec: str, confidence: float = 0.8) -> InvestorOpinion:
@@ -239,6 +246,68 @@ class TestIsotonicSignalCalibration:
         )
 
         assert signal.calibrated_confidence is None
+
+
+class TestClassIsotonicSignalCalibration:
+    """ML-54: sygnał krypto kalibruje mapa krypto, reszta mapa reszty; symbol bez
+    klasy aktywa dostaje mapę globalną."""
+
+    _CRYPTO_MAP = IsotonicMap(knots=(0.6, 0.9), values=(0.3, 0.4))
+    _REST_MAP = IsotonicMap(knots=(0.6, 0.9), values=(0.6, 0.7))
+    _GLOBAL_MAP = IsotonicMap(knots=(0.6, 0.9), values=(0.5, 0.5))
+
+    @staticmethod
+    def _decision(calibrator: IsotonicMap | None) -> IsotonicSelection:
+        return IsotonicSelection(
+            use_isotonic=calibrator is not None,
+            calibrator=calibrator,
+            brier_isotonic=None,
+            brier_raw=None,
+            brier_buckets=None,
+            n_fit=40,
+            n_eval=40,
+            reason="test",
+        )
+
+    def _selection(self) -> ClassIsotonicSelection:
+        return ClassIsotonicSelection(
+            global_selection=self._decision(self._GLOBAL_MAP),
+            class_selections={
+                CalibrationClass.CRYPTO: self._decision(self._CRYPTO_MAP),
+                CalibrationClass.NON_CRYPTO: self._decision(self._REST_MAP),
+            },
+        )
+
+    @staticmethod
+    def _saved_in_class(symbol: str, asset_class: str | None) -> SymbolResult:
+        return dataclasses.replace(
+            TestCalibratedConfidenceInSignalRanking._saved(symbol, 0.85, "0.10"),
+            asset_class=asset_class,
+        )
+
+    def _calibrated_by_symbol(self, results: list[SymbolResult]) -> dict[str, float | None]:
+        signals = build_trade_signals(
+            results,
+            calibration_buckets=TestCalibratedConfidenceInSignalRanking._overconfident_bucket(),
+            isotonic_calibration=self._GLOBAL_MAP,
+            isotonic_class_calibration=self._selection(),
+        )
+        return {signal.symbol: signal.calibrated_confidence for signal in signals}
+
+    def test_each_signal_is_calibrated_with_the_map_of_its_asset_class(self) -> None:
+        calibrated = self._calibrated_by_symbol(
+            [self._saved_in_class("BTC", "CRYPTO"), self._saved_in_class("SPY", "ETF")]
+        )
+
+        assert calibrated == {
+            "BTC": pytest.approx(self._CRYPTO_MAP.apply(0.85)),
+            "SPY": pytest.approx(self._REST_MAP.apply(0.85)),
+        }
+
+    def test_signal_without_asset_class_takes_the_global_map(self) -> None:
+        calibrated = self._calibrated_by_symbol([self._saved_in_class("AAPL", None)])
+
+        assert calibrated == {"AAPL": pytest.approx(self._GLOBAL_MAP.apply(0.85))}
 
 
 class TestColdStartSignalRanking:
