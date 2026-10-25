@@ -115,7 +115,7 @@ jobs:
         # całego `src` i entry-pointów; ten job raportuje do Sonara, bramkuje quality.
         run: >-
           uv run --frozen --no-build --no-sync pytest -m "not integration"
-          --cov=src --cov=main_agent --cov=main_backtest --cov=main_deadman --cov=main_scorecard
+          --cov=src --cov=main_agent --cov=main_backtest --cov=main_bot --cov=main_deadman --cov=main_scorecard
           --cov=main_tools --cov=main_trainer --cov=main_watch --cov-report=xml
           --cov-fail-under=0
 

@@ -141,4 +141,4 @@ ignore_missing_imports = true
 # katalogach domknięty 2026-10-25): katalogi wymienione z nazwy + `tests/*.py` dla
 # top-levelu. Samo "tests" daje duplikaty modułów obok katalogów. Wpisu nie wolno
 # zdjąć, a nowy katalog testów trzeba dopisać — pilnuje tego tests/test_quality_gate_sync.py.
-files = ["src", "main_agent.py", "main_backtest.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain", "tests/tools", "tests/infrastructure", "tests/application", "tests/*.py"]
+files = ["src", "main_agent.py", "main_backtest.py", "main_bot.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain", "tests/tools", "tests/infrastructure", "tests/application", "tests/*.py"]

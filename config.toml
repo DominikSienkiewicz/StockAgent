@@ -579,6 +579,17 @@ digest_archive_enabled = false
 # "skip_when_quiet" (bez maila) czeka na tygodniowy heartbeat MAIL-28.
 digest_quiet_policy = "compact_when_quiet"
 
+# MAIL-48: bot właściciela w Telegramie (`main_bot.py`, cron `bot_poll.yml` co 15 min):
+# /why, /last, /pos, /watch, /mute, /unmute, /help z czatu TELEGRAM_CHAT_ID — tylko
+# odczyty bazy, zero płatnych API. Sekrety: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+# UWAGA: włącz DOPIERO po migracji 079.
+telegram_bot_enabled = false
+# MAIL-45: wyciszenia z bota (`/mute NVDA 14`): Fast Loop pomija wyciszony symbol w płatnej
+# analizie i w sekcjach maila, ale zapisuje jego snapshot ceny; w mailu linia „watchlista:
+# N z config − K wyciszone”. Symbole dodaje wyłącznie ten plik (decyzja 2026-10-23).
+# UWAGA: włącz DOPIERO po migracji 080.
+symbol_mutes_enabled = false
+
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true
 

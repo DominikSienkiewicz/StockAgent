@@ -114,6 +114,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "digest_archive_enabled",
     # MAIL-35: postać maila w cichy dzień — prezentacja, nie prognoza.
     "digest_quiet_policy",
+    # MAIL-48: bot właściciela w Telegramie — osobny job z odczytami bazy, nie prognoza.
+    "telegram_bot_enabled",
+    # MAIL-45: wyciszenie decyduje, CZY symbol idzie do grafu, nie jak (jak FIN-34).
+    "symbol_mutes_enabled",
     "public_scorecard_enabled",
     "public_scorecard_path",
     # NIEZ-33: publiczna strona statusu — prezentacja historii przebiegów, nie prognoza.
@@ -1216,6 +1220,17 @@ class Settings(BaseSettings):
     # „skip_when_quiet”, ale Settings go nie przyjmuje: bez tygodniowego heartbeatu
     # (MAIL-28) brak maila wygląda jak awaria.
     digest_quiet_policy: Literal["always", "compact_when_quiet"] = "always"
+
+    # ----- Bot właściciela (MAIL-48, MAIL-45 — niewrażliwe → config.toml) -----
+    # MAIL-48: `main_bot.py` (cron `bot_poll.yml` co 15 min) odpowiada na komendy
+    # z czatu TELEGRAM_CHAT_ID (allowlista); offset `getUpdates` w `bot_state`
+    # (migracja 079). Zero płatnych wywołań. Off = przebieg kończy się od razu.
+    telegram_bot_enabled: bool = False
+    # MAIL-45: wyciszenia z `/mute` (tabela `symbol_mutes`, migracja 080): Fast Loop
+    # pomija wyciszony symbol w płatnej analizie i w sekcjach maila, ale zapisuje jego
+    # snapshot ceny; symbole dodaje wyłącznie config.toml (decyzja 2026-10-23, opcja b).
+    # Off = zero odczytów i zapisów tabeli, mail bajt w bajt jak przed MAIL-45.
+    symbol_mutes_enabled: bool = False
 
     @field_validator(
         "symbols",

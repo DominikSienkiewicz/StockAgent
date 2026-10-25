@@ -708,3 +708,11 @@ def test_real_config_toml_ships_the_corporate_events_off() -> None:
     """DAT-17: 8-K w prompcie to zmiana przepisu, a EDGAR odpowiada 403 — off."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["corporate_events_enabled"] is False
+
+
+def test_real_config_toml_ships_the_owner_bot_and_mutes_off_until_migration() -> None:
+    """MAIL-48 / MAIL-45: offset bota żyje w `bot_state` (079), wyciszenia w
+    `symbol_mutes` (080) — obie flagi wyłączone, dopóki produkcja nie ma migracji."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data.get("telegram_bot_enabled") is False
+    assert data.get("symbol_mutes_enabled") is False

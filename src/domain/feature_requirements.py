@@ -72,6 +72,8 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "invalidation_level_enabled": 74,
         "shadow_predictions_enabled": 75,
         "rag_point_in_time_enabled": 76,
+        "telegram_bot_enabled": 79,
+        "symbol_mutes_enabled": 80,
         "shadow_prompt_variant_enabled": 83,
     }
 )
