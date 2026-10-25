@@ -8,15 +8,17 @@
 
 ## Quality gate — przed zgłoszeniem pracy jako gotowej
 
-Każda zmiana w kodzie musi przejść **wszystkie trzy**:
+Każda zmiana w kodzie musi przejść **wszystkie cztery**:
 
 ```bash
 uv run ruff check .
+uv run ruff format --check .   # CI-17: repo jest sformatowane; przed commitem `uv run ruff format <pliki>`
 uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + cały tests/, TEST-13)
 uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
-Nie zgłaszaj pracy jako ukończonej, dopóki te trzy nie są zielone.
+Nie zgłaszaj pracy jako ukończonej, dopóki te cztery nie są zielone. Commit samego
+formatowania dopisz do `.git-blame-ignore-revs`.
 CI (job `quality`) uruchamia pytest dodatkowo z `--cov=src/domain --cov-branch --cov-fail-under=98`
 (CI-03). Próg tylko rośnie: ten sam numer w `[tool.coverage.report].fail_under` i w
 `COVERAGE_RATCHET` (`tests/test_quality_gate_sync.py`).

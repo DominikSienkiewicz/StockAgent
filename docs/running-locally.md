@@ -285,6 +285,7 @@ uv run pytest -m integration                   # live API tests (requires real k
 uv run pytest tests/application/test_report_builder_snapshot.py --update-golden  # rewrite the email golden snapshots after an intended email change
 uv run pytest tests/application/test_prompt_golden.py --update-golden  # rewrite the prompt golden files after an intended prompt change
 uv run ruff check .                # lint (same command as CI)
+uv run ruff format --check .       # formatting (same command as CI, CI-17); without --check it rewrites the files
 uv run mypy                        # type check (strict) on [tool.mypy].files: src + every main_*.py + tests/domain (tests/ joins directory by directory)
 ```
 

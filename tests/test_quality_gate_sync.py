@@ -63,6 +63,13 @@ def _ci_commands() -> dict[str, list[str]]:
     return commands
 
 
+def _ci_tool_commands(tool: str) -> set[str]:
+    """Wszystkie komendy narzędzia w jobie `quality` (CI-17: ruff check i ruff format --check)."""
+    steps = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["quality"]["steps"]
+    runs = (_from_tool(str(step.get("run", "")), tool) for step in steps)
+    return {" ".join(tokens) for tokens in runs if tokens}
+
+
 def _mypy_files() -> list[str]:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     files: list[str] = config["tool"]["mypy"]["files"]
@@ -98,15 +105,15 @@ def test_bare_mypy_config_does_not_cover_untyped_tests() -> None:
 @pytest.mark.parametrize("doc", GATE_DOCS)
 @pytest.mark.parametrize("tool", GATE_TOOLS)
 def test_agent_docs_quote_the_ci_gate(doc: str, tool: str) -> None:
-    ci_command = _ci_commands()[tool]
-    quoted = [
-        _from_tool(line, tool)
+    ci_commands = _ci_tool_commands(tool)
+    quoted = {
+        " ".join(_from_tool(line, tool))
         for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
         if line.lstrip().startswith(f"uv run {tool}")
-    ]
+    }
     assert quoted, f"{doc} nie cytuje komendy `{tool}` z bramki"
-    assert all(tokens == ci_command for tokens in quoted), (
-        f"{doc} cytuje {[' '.join(t) for t in quoted]}, a CI uruchamia `{' '.join(ci_command)}`."
+    assert quoted == ci_commands, (
+        f"{doc} cytuje {sorted(quoted)}, a CI uruchamia {sorted(ci_commands)}."
     )
 
 
