@@ -1,7 +1,7 @@
 """ARCH-06: `ReportAssembler` składa kontekst raportu z portów i `ReportFlags`.
 
 Wiring z `Settings` (aliasy w `main_agent`) pilnują testy w
-`tests/test_main_entrypoints.py`; tu use case bez composition root.
+`tests/test_main_agent.py`; tu use case bez composition root.
 """
 
 from __future__ import annotations

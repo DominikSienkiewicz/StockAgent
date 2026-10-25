@@ -1,6 +1,6 @@
 """Wiring statystyki i kalibracji track recordu (W2-1) w entry pointach.
 
-Osobny plik zamiast dopisywania do `test_main_entrypoints.py`: te same
+Osobny plik zamiast dopisywania do `test_main_agent.py`: te same
 mocki I/O, ale bez dotykania wspólnego, długiego modułu testów.
 """
 

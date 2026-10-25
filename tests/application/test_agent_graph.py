@@ -1701,7 +1701,7 @@ class TestVolatilityGateIsSystemic:
     Każdy opcjonalny port Fast Loopa jest podpięty jako `Mock(spec=...)`, a ruch
     +0.5% leży pod progiem 2%. Wyjątkiem jest `fundamentals_port`: z założenia
     idzie przed bramką i czyta wyłącznie cache (fabryka przypięta w
-    tests/test_main_entrypoints.py)."""
+    tests/test_main_agent.py)."""
 
     def test_no_optional_paid_port_touched_when_gated(
         self, market_port: Mock, repository_port: Mock

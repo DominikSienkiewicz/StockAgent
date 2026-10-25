@@ -3,7 +3,7 @@
 Use case zna tylko porty (repozytorium i publisher strony); konfigurację okna
 i protokół ewaluacji dostaje w `PublicScorecardOptions` od composition root.
 Wiring z `Settings` (flaga, druga instancja publishera) pilnuje
-`tests/test_main_entrypoints.py::TestPublicScorecard`.
+`tests/test_main_agent.py::TestPublicScorecard`.
 """
 
 from __future__ import annotations

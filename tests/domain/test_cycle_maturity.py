@@ -104,7 +104,7 @@ def test_empty_cycle_is_steady_state() -> None:
 # ("cold-start + unsupported → FIRST_RUN", "sam unsupported → STEADY_STATE")
 # po usunięciu martwego kwarga stały się dosłownymi duplikatami sąsiadów obok.
 # Filtrowanie robi orkiestrator, więc kontrakt weryfikuje `TestCycleMaturityWiring`
-# w tests/test_main_entrypoints.py — na realnych `SymbolResult`, nie na liczbach.
+# w tests/test_main_agent.py — na realnych `SymbolResult`, nie na liczbach.
 
 
 def test_stale_reference_is_a_skip_reason() -> None:

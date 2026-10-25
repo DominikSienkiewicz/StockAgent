@@ -1,7 +1,7 @@
 """ARCH-07: przebieg symboli Fast Loopa jako use case z `CycleOptions`.
 
 Wiring z `Settings` (aliasy `main_agent._analyze_symbols` i
-`_process_one_symbol`) pilnują testy w `tests/test_main_entrypoints.py`.
+`_process_one_symbol`) pilnują testy w `tests/test_main_agent.py`.
 """
 
 from __future__ import annotations
