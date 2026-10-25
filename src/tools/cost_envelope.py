@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.domain.finops import (
+    EXPERIMENT_UNIT_COST_USD,
     TRADING_DAYS_PER_WEEK,
     UNIT_COST_USD,
     WeeklyCostBudget,
@@ -23,13 +24,16 @@ from src.domain.finops import (
 @dataclass(frozen=True)
 class EnvelopeInputs:
     """Wejście najgorszego przypadku: ile symboli przechodzi bramkę, ile tickerów
-    ma feed AV, skład rady i tryby, które mnożą wywołania LLM."""
+    ma feed AV, skład rady i tryby, które mnożą wywołania LLM. WIA-11: sufit
+    eskalacji routingu (FIN-21) i limit wariantu w cieniu (EXP-26); 0 = flaga off."""
 
     n_gated: int
     n_av_symbols: int
     personas: int
     debate: bool
     tool_rounds: int
+    max_escalations: int = 0
+    max_shadow_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,15 +57,23 @@ class CostEnvelope:
 
 
 def cost_envelope(inputs: EnvelopeInputs) -> CostEnvelope:
-    """Tabela min/max per źródło cennika; suma maksimum = `estimate_cycle_cost`."""
+    """Tabela min/max per źródło cennika; suma maksimum = `estimate_cycle_cost`.
+    Źródło eksperymentu (EXP-26) dostaje wiersz tylko, gdy granica go liczy."""
     bound = cycle_call_upper_bound(
         n_gated=inputs.n_gated,
         n_av_symbols=inputs.n_av_symbols,
         personas=inputs.personas,
         debate=inputs.debate,
         tool_rounds=inputs.tool_rounds,
+        max_escalations=inputs.max_escalations,
+        max_shadow_calls=inputs.max_shadow_calls,
     )
     worst = estimate_cycle_cost(bound.calls)
+    experiments = {
+        source: unit_cost
+        for source, unit_cost in EXPERIMENT_UNIT_COST_USD.items()
+        if bound.calls.get(source, 0) > 0
+    }
     rows = tuple(
         EnvelopeRow(
             source=source,
@@ -71,7 +83,7 @@ def cost_envelope(inputs: EnvelopeInputs) -> CostEnvelope:
             min_usd=0.0,
             max_usd=bound.calls[source] * unit_cost,
         )
-        for source, unit_cost in UNIT_COST_USD.items()
+        for source, unit_cost in {**UNIT_COST_USD, **experiments}.items()
     )
     return CostEnvelope(
         inputs=inputs,
@@ -96,9 +108,14 @@ def _scenario(inputs: EnvelopeInputs) -> str:
     tool_use = (
         f"tool use up to {inputs.tool_rounds} rounds" if inputs.tool_rounds > 0 else "tool use off"
     )
+    modes = [debate, tool_use]
+    if inputs.max_escalations > 0:
+        modes.append(f"model routing up to {inputs.max_escalations} frontier escalations")
+    if inputs.max_shadow_calls > 0:
+        modes.append(f"shadow prompt variant up to {inputs.max_shadow_calls} calls")
     return (
         f"Worst case: {inputs.n_gated} symbols past the volatility gate, "
-        f"{inputs.personas} council personas, {debate}, {tool_use}. "
+        f"{inputs.personas} council personas, {', '.join(modes)}. "
         "Minimum: every symbol below the gate."
     )
 

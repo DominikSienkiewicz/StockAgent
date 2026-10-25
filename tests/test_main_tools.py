@@ -197,6 +197,8 @@ def test_cost_envelope_prints_the_bound_for_the_configured_watchlist(
     settings.debate_mode_enabled = False
     settings.tool_use_enabled = True
     settings.tool_use_max_rounds = 3
+    settings.frontier_escalations_per_cycle.return_value = 0
+    settings.shadow_calls_per_cycle.return_value = 0
     from src.domain.finops import WeeklyCostBudget
 
     settings.fast_loop_weekly_budget.return_value = WeeklyCostBudget(
@@ -243,6 +245,45 @@ def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
     assert "Weekly worst case at the FIN-12 ceiling: 5 cycles" in out
     assert "1.2112 USD = 6.0559 USD" in out
     assert "`fast_loop_weekly_budget_usd` = 7.00 USD, within the budget." in out
+
+
+def test_cost_envelope_counts_frontier_escalations_and_shadow_calls(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # WIA-11: routing modeli (FIN-21) i wariant w cieniu (EXP-26) z config.toml trafiają
+    # do tabeli cyklu i do wiersza tygodniowego.
+    from src.config import Settings, ShadowPromptVariantSettings
+
+    real = Settings(
+        **NO_ENV_FILE,
+        openai_api_key="sk-test",
+        anthropic_api_key="sk-ant-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1"],
+        supabase_url="https://t.supabase.co",
+        supabase_key="anon",
+        symbols=[f"S{i:02d}" for i in range(42)],
+        crypto_symbols=[],
+        model_routing_enabled=True,
+        routing_max_escalations=5,
+        shadow_prompt_variant_enabled=True,
+        shadow_prompt_variant=ShadowPromptVariantSettings(
+            name="mini_rounded", max_calls_per_cycle=3
+        ),
+        max_paid_llm_calls_per_cycle=100,
+        symbol_concurrency=4,
+        fast_loop_weekly_budget_usd=7.0,
+    )
+    mocker.patch("src.config.Settings.from_env", return_value=real)
+
+    code = main_tools.main(["cost-envelope"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "| `llm` | 0 | 89 |" in out
+    assert "| `shadow_llm` | 0 | 3 |" in out
+    # Cykl przy suficie: 1.2112 + 5 eskalacji i 3 wywołania cienia po 0.01 USD.
+    assert "1.2912 USD = 6.4559 USD" in out
 
 
 # --- DX-01: render-sample-report ----------------------------------------------

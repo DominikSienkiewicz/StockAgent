@@ -1824,6 +1824,52 @@ class TestFastLoopWeeklyBudget:
             > base.fast_loop_weekly_budget(personas=7).cycle_worst_usd
         )
 
+    def test_frontier_escalations_raise_the_worst_case(self, env: pytest.MonkeyPatch) -> None:
+        # FIN-21: każda eskalacja kaskady to jeszcze jedno płatne wywołanie `llm`.
+        from src.domain.finops import UNIT_COST_USD
+
+        base = self._settings(symbols=["AAPL", "MSFT", "NVDA"], crypto_symbols=[])
+        routed = base.model_copy(
+            update={"model_routing_enabled": True, "routing_max_escalations": 2}
+        )
+
+        assert routed.fast_loop_weekly_budget(personas=7).cycle_worst_usd == pytest.approx(
+            base.fast_loop_weekly_budget(personas=7).cycle_worst_usd + 2 * UNIT_COST_USD["llm"]
+        )
+
+    def test_shadow_variant_calls_raise_the_worst_case(self, env: pytest.MonkeyPatch) -> None:
+        # EXP-26: wariant w cieniu kosztuje jak predykcja, najwyżej `max_calls_per_cycle`.
+        from src.config import ShadowPromptVariantSettings
+        from src.domain.finops import UNIT_COST_USD
+
+        base = self._settings(symbols=["AAPL", "MSFT", "NVDA"], crypto_symbols=[])
+        shadow = base.model_copy(
+            update={
+                "shadow_prompt_variant_enabled": True,
+                "shadow_prompt_variant": ShadowPromptVariantSettings(
+                    name="mini_rounded", max_calls_per_cycle=2
+                ),
+            }
+        )
+
+        assert shadow.fast_loop_weekly_budget(personas=7).cycle_worst_usd == pytest.approx(
+            base.fast_loop_weekly_budget(personas=7).cycle_worst_usd + 2 * UNIT_COST_USD["llm"]
+        )
+
+    def test_flags_without_their_settings_add_nothing(self, env: pytest.MonkeyPatch) -> None:
+        # Routing wyłączony mimo sufitu eskalacji; flaga cienia bez wariantu nie woła LLM.
+        base = self._settings(symbols=["AAPL"], crypto_symbols=[])
+        idle = base.model_copy(
+            update={"routing_max_escalations": 5, "shadow_prompt_variant_enabled": True}
+        )
+
+        assert idle.frontier_escalations_per_cycle() == 0
+        assert idle.shadow_calls_per_cycle() == 0
+        assert (
+            idle.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+            == base.fast_loop_weekly_budget(personas=7).cycle_worst_usd
+        )
+
 
 class TestPersonaVoteOutcomesFlag:
     """WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny —

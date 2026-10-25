@@ -423,6 +423,8 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
         personas=min(len(personas), COUNCIL_MAX_PERSONAS),
         debate=settings.debate_mode_enabled,
         tool_rounds=settings.tool_use_max_rounds if settings.tool_use_enabled else 0,
+        max_escalations=settings.frontier_escalations_per_cycle(),
+        max_shadow_calls=settings.shadow_calls_per_cycle(),
     )
     print(render_cost_envelope(cost_envelope(inputs)))
     # WIA-11: tydzień przy suficie FIN-12 — ta sama reguła co kontrola startu Fast Loopa.

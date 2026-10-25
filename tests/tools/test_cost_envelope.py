@@ -50,6 +50,64 @@ def test_render_prints_an_estimated_markdown_table() -> None:
     assert "41 symbols" in text
 
 
+# Wynik `cost-envelope` dla `config.toml` z 2026-10-20 (docs/configuration.md):
+# bez routingu modeli i bez wariantu w cieniu tabela ma zostać bajt w bajt ta sama.
+_TABLE_WITHOUT_ROUTING_AND_SHADOW = "\n".join([
+    "Estimated cost envelope of one Fast Loop cycle (`UNIT_COST_USD`, "
+    "an order-of-magnitude model, not an invoice).",
+    "Worst case: 42 symbols past the volatility gate, 7 council personas, debate off, "
+    "tool use off. Minimum: every symbol below the gate.",
+    "",
+    "| Source | Calls min | Calls max | Unit cost (USD) | USD min | USD max |",
+    "|---|---:|---:|---:|---:|---:|",
+    "| `llm` | 0 | 84 | 0.01 | 0.0000 | 0.8400 |",
+    "| `council_llm` | 0 | 336 | 0.0025 | 0.0000 | 0.8400 |",
+    "| `sentiment` | 0 | 42 | 0.0005 | 0.0000 | 0.0210 |",
+    "| `news` | 0 | 42 | 0.0005 | 0.0000 | 0.0210 |",
+    "| `embedding` | 0 | 84 | 0.00002 | 0.0000 | 0.0017 |",
+    "| **Total** | 0 | 588 |  | 0.0000 | 1.7237 |",
+    "",
+    "Alpha Vantage NEWS_SENTIMENT requests: 0–42 per cycle (key quota, not priced).",
+])
+
+_DOCS_INPUTS = EnvelopeInputs(
+    n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0
+)
+
+
+def test_envelope_without_routing_and_shadow_renders_as_before() -> None:
+    explicit_zeros = EnvelopeInputs(
+        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
+        max_escalations=0, max_shadow_calls=0,
+    )
+
+    assert render_cost_envelope(cost_envelope(_DOCS_INPUTS)) == _TABLE_WITHOUT_ROUTING_AND_SHADOW
+    assert render_cost_envelope(cost_envelope(explicit_zeros)) == (
+        _TABLE_WITHOUT_ROUTING_AND_SHADOW
+    )
+
+
+def test_frontier_escalations_and_shadow_calls_join_the_envelope() -> None:
+    # WIA-11: eskalacje FIN-21 dokładają do `llm`, cień EXP-26 to osobny wiersz
+    # wyceniony stałą predykcji; suma i opis scenariusza je obejmują.
+    inputs = EnvelopeInputs(
+        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
+        max_escalations=5, max_shadow_calls=3,
+    )
+
+    text = render_cost_envelope(cost_envelope(inputs))
+
+    assert "| `llm` | 0 | 89 | 0.01 | 0.0000 | 0.8900 |" in text
+    # Wiersz cienia idzie po wierszach cennika produkcji.
+    assert (
+        "| `embedding` | 0 | 84 | 0.00002 | 0.0000 | 0.0017 |\n"
+        "| `shadow_llm` | 0 | 3 | 0.01 | 0.0000 | 0.0300 |"
+    ) in text
+    assert "| **Total** | 0 | 596 |  | 0.0000 | 1.8037 |" in text
+    assert "model routing up to 5 frontier escalations" in text
+    assert "shadow prompt variant up to 3 calls" in text
+
+
 def test_render_names_debate_and_tool_use_when_on() -> None:
     inputs = EnvelopeInputs(n_gated=2, n_av_symbols=2, personas=7, debate=True, tool_rounds=3)
 

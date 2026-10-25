@@ -1692,13 +1692,26 @@ class Settings(BaseSettings):
         watchlist = [*self.symbols, *self.crypto_symbols]
         return sum(1 for symbol in watchlist if symbol not in unsupported)
 
+    def frontier_escalations_per_cycle(self) -> int:
+        """FIN-21: sufit eskalacji kaskady do frontiera na cykl; 0 bez routingu modeli."""
+        return self.routing_max_escalations if self.model_routing_enabled else 0
+
+    def shadow_calls_per_cycle(self) -> int:
+        """EXP-26: limit wywołań wariantu w cieniu na cykl; 0, gdy flaga jest wyłączona
+        albo nie ma `shadow_prompt_variant` (Fast Loop nie składa wtedy wariantu)."""
+        variant = self.shadow_prompt_variant
+        if not self.shadow_prompt_variant_enabled or variant is None:
+            return 0
+        return variant.max_calls_per_cycle
+
     def fast_loop_weekly_budget(self, personas: int) -> WeeklyCostBudget:
         """WIA-11: najgorszy tydzień Fast Loopa vs `fast_loop_weekly_budget_usd`.
 
         Cała watchlista za bramką przy suficie FIN-12; równolegle idzie
         `symbol_concurrency` symboli, contagion wymusza jeden. `personas` to skład
         rady z plików person — czyta je entry point, nie konfiguracja. Requesty AV
-        nie mają ceny, więc liczba tickerów AV nie zmienia kosztu."""
+        nie mają ceny, więc liczba tickerów AV nie zmienia kosztu. Eskalacje
+        routingu (FIN-21) i wariant w cieniu (EXP-26) wchodzą tylko przy swoich flagach."""
         n_gated = self._eligible_symbol_count()
         bound = capped_cycle_call_upper_bound(
             n_gated=n_gated,
@@ -1708,6 +1721,8 @@ class Settings(BaseSettings):
             tool_rounds=self.tool_use_max_rounds if self.tool_use_enabled else 0,
             cap=self.max_paid_llm_calls_per_cycle,
             concurrency=1 if self.contagion_enabled else self.symbol_concurrency,
+            max_escalations=self.frontier_escalations_per_cycle(),
+            max_shadow_calls=self.shadow_calls_per_cycle(),
         )
         return weekly_cost_budget(
             bound,
