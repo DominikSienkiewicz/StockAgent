@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import Any
 
 from src.domain.attestation import canonicalize
 from src.domain.equity_curve import signal_of
@@ -109,7 +108,7 @@ class PaperTradeEntry:
     cost_bps: Decimal
     weight: Decimal = Decimal(1)
 
-    def payload(self) -> dict[str, Any]:
+    def payload(self) -> dict[str, str | int]:
         """Treść hashowana w łańcuchu — w skali kolumn bazy (patrz docstring modułu)."""
         return {
             "ledger_version": LEDGER_VERSION,
@@ -215,7 +214,7 @@ class LedgerHead:
 LEDGER_HEAD_KIND = "paper_ledger_head"
 
 
-def head_record(head: LedgerHead, published_on: date) -> dict[str, Any]:
+def head_record(head: LedgerHead, published_on: date) -> dict[str, str | int]:
     """Linia publikacji głowy: dzień, pozycja w łańcuchu i hash. Opublikowana głowa
     kotwiczy każdy wiersz przed nią — podmiana któregokolwiek zmieniłaby ten hash."""
     return {

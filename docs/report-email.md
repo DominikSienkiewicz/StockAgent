@@ -31,20 +31,21 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | 21 | `portfolio_radar` | `🎯 Portfolio Radar — koncentracja i ryzyko` | Zaplecze | correlation clusters of `peer_groups` (derived from `sectors`); VaR/CVaR with `portfolio_var_enabled`, the stress test with `stress_test_enabled` | clusters on; `portfolio_var_enabled = false`, `stress_test_enabled = false` | yes |
 | 22 | `alpha` | `🛰️ Alpha Signals — dodatkowe źródła danych` | Zaplecze | any alpha source flag | `yield_curve_enabled`, `analyst_consensus_enabled` = `true`; `insider_flow_enabled`, `social_velocity_enabled`, `earnings_calendar_enabled`, `options_flow_enabled` = `false` | no |
 | 23 | `track_record` | `📈 Track Record — skuteczność i kalibracja` (equity curve, benchmark, hit rate with its verdict, Brier, calibration, lessons) | Zaplecze | `equity_curve_enabled`, `calibration_curve_enabled`, `lessons_enabled`; interval coverage with `interval_coverage_enabled` | the three `true`; `interval_coverage_enabled = false` (needs migration `032`) | no |
-| 24 | `accuracy_history` | Accuracy history (`Trafność kierunkowa` next to `Trafność łączna`) | Zaplecze | the accuracy statistics have a sample | no flag | yes |
-| 25 | `model_scorecard` | `🩺 Karta kondycji modelu`, with one line for the `feature_snapshots` model cards (ALL_FREE, ALL_LLM) | Zaplecze | `model_scorecard_enabled` and a scorecard row in the last 42 days | `model_scorecard_enabled = true`, `model_scorecard_baselines_enabled = false` (needs migration `028`) | no |
-| 26 | `persona_leaderboard` | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`); with `persona_brier_ranking_enabled` the order is the Brier skill of the personas' confidence and each row adds `Brier` / `BSS` (migration `065`) | `persona_brier_ranking_enabled = false` | no |
-| 27 | `council_history` | `🗳️ Rada — historia głosów` | Zaplecze | stored council votes | no flag | no |
-| 28 | `mood` | Watchlist mood (`📊 Nastroje watchlisty`) | Zaplecze | a saved prediction | no flag | yes |
-| 29 | `delta_chart` | Δ chart | Zaplecze | a symbol with a price change | no flag | no |
-| 30 | `reflections` | `🧠 Wnioski z poprzednich cykli (Self-Reflection)` | Zaplecze | a saved prediction with a substantive lesson | no flag | yes |
-| 31 | `suggestions` | `💡 Warte uwagi (sektory w ruchu)` | Zaplecze | a hot sector with peers in `sector_peers` | `sector_peers` set for 8 sectors | yes |
-| 32 | `correlation_chart` | `📈 Korelacja sentymentu z ruchem ceny` | Zaplecze | at least 3 points | no flag | no |
-| 33 | `finops` | `💸 Koszt cyklu` | Zaplecze | always; a free cycle says so | `llm_pricing` set (as of `llm_pricing_as_of`) | no |
-| 34 | `budget_exhausted` | `💸 Pominięte — wyczerpany budżet cyklu` | Zaplecze | a symbol cut by `max_paid_llm_calls_per_cycle` | `max_paid_llm_calls_per_cycle = 100` | yes |
-| 35 | `ignored` | `⏸ Pominięte (poniżej progu zmienności)` — chips `AAPL ▲ +1,20% / próg 2,0%` and a `Blisko progu (≥ 75%)` row; a symbol in its first cycle goes to its own group `⏸ Pominięte (brak punktu odniesienia — pierwszy cykl)` (symbols only, MAIL-60) | Zaplecze | a symbol below the volatility gate, or one without a previous price | no flag | yes |
-| 36 | `errors` | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
-| 37 | `footer` | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
+| 24 | `open_entry` | `📈 Od otwarcia sesji (cena wykonalna)` — the same paper trades valued from the open of the first NYSE session after the prediction, next to the curve from the prediction price (WIA-54) | Zaplecze | `executable_entry_enabled` and settled predictions with a recorded executable entry (migration `072`) | `executable_entry_enabled = false` | yes |
+| 25 | `accuracy_history` | Accuracy history (`Trafność kierunkowa` next to `Trafność łączna`) | Zaplecze | the accuracy statistics have a sample | no flag | yes |
+| 26 | `model_scorecard` | `🩺 Karta kondycji modelu`, with one line for the `feature_snapshots` model cards (ALL_FREE, ALL_LLM) | Zaplecze | `model_scorecard_enabled` and a scorecard row in the last 42 days | `model_scorecard_enabled = true`, `model_scorecard_baselines_enabled = false` (needs migration `028`) | no |
+| 27 | `persona_leaderboard` | `🏆 Rada — ranking wiarygodności` | Zaplecze | a persona with at least 5 settled votes in 90 days (migration `018`); with `persona_brier_ranking_enabled` the order is the Brier skill of the personas' confidence and each row adds `Brier` / `BSS` (migration `065`) | `persona_brier_ranking_enabled = false` | no |
+| 28 | `council_history` | `🗳️ Rada — historia głosów` | Zaplecze | stored council votes | no flag | no |
+| 29 | `mood` | Watchlist mood (`📊 Nastroje watchlisty`) | Zaplecze | a saved prediction | no flag | yes |
+| 30 | `delta_chart` | Δ chart | Zaplecze | a symbol with a price change | no flag | no |
+| 31 | `reflections` | `🧠 Wnioski z poprzednich cykli (Self-Reflection)` | Zaplecze | a saved prediction with a substantive lesson | no flag | yes |
+| 32 | `suggestions` | `💡 Warte uwagi (sektory w ruchu)` | Zaplecze | a hot sector with peers in `sector_peers` | `sector_peers` set for 8 sectors | yes |
+| 33 | `correlation_chart` | `📈 Korelacja sentymentu z ruchem ceny` | Zaplecze | at least 3 points | no flag | no |
+| 34 | `finops` | `💸 Koszt cyklu` | Zaplecze | always; a free cycle says so | `llm_pricing` set (as of `llm_pricing_as_of`) | no |
+| 35 | `budget_exhausted` | `💸 Pominięte — wyczerpany budżet cyklu` | Zaplecze | a symbol cut by `max_paid_llm_calls_per_cycle` | `max_paid_llm_calls_per_cycle = 100` | yes |
+| 36 | `ignored` | `⏸ Pominięte (poniżej progu zmienności)` — chips `AAPL ▲ +1,20% / próg 2,0%` and a `Blisko progu (≥ 75%)` row; a symbol in its first cycle goes to its own group `⏸ Pominięte (brak punktu odniesienia — pierwszy cykl)` (symbols only, MAIL-60) | Zaplecze | a symbol below the volatility gate, or one without a previous price | no flag | yes |
+| 37 | `errors` | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
+| 38 | `footer` | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
 
 A separate email goes out after the Sunday Slow Loop: `📅 Tydzień StockAgenta`, the weekly recap with its `🛡️ Wybronieni dysydenci rady` block, with `weekly_recap_enabled` (`true` in `config.toml`) and at least 5 closed predictions in the week; it costs one LLM call ([configuration](configuration.md)). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45).
 

@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from src.application.report_evidence import PaperCosts, executable_change, paper_cycles
-from src.application.report_formatting import pct
+from src.application.report_formatting import PALETTE, pct
 from src.application.report_models import ResolvedPrediction
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.equity_curve import EquityCurve, paper_portfolio_curve
@@ -84,12 +84,12 @@ def render_open_entry_html(curve: OpenEntryCurve | None) -> str:
     """Fragment HTML sekcji; "" bez krzywej."""
     if curve is None:
         return ""
-    total_color = "#059669" if curve.from_open.total_return >= 0 else "#dc2626"
+    total_color = PALETTE.positive if curve.from_open.total_return >= 0 else PALETTE.negative
     summary = _html.escape(_summary(curve))
     head, _, numbers = summary.partition(": ")
     return (
         "<div style='padding: 10px 14px; background: #f0fdf4; "
-        "border-left: 3px solid #059669; border-radius: 4px; "
+        f"border-left: 3px solid {PALETTE.positive}; border-radius: 4px; "
         "margin-bottom: 6px; font-size: 13px;'>"
         f"<strong>📈 {head}:</strong> <span style='color: {total_color};'>{numbers}</span>"
         "</div>"
