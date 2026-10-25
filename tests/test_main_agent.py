@@ -5139,6 +5139,124 @@ class TestPaidCallCapWiring:
         assert use_case_cls.call_args.args[0].paid_call_cap is None
 
 
+class TestLlmLedgerBudgetWiring:
+    """FIN-25: limit USD doby i miesiąca z ledgera `llm_calls` czytany raz przed
+    budową grafu. Wyczerpany → `AgentGraphDeps.llm_budget_spent` (graf nie płaci
+    za nic) i banner w mailu; odczyt nieudany → cykl płaci dalej (fail-open)."""
+
+    NOW = datetime(2026, 10, 22, 5, 30, tzinfo=UTC)
+
+    def _ledger(self, *costs: float) -> RepositoryPort:
+        from src.domain.finops import LLMCallEntry, LLMUsage
+        from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
+
+        repository = InMemoryRepository(clock=lambda: self.NOW - timedelta(hours=1))
+        repository.save_llm_calls([
+            LLMCallEntry(
+                run_id="earlier",
+                node="predict",
+                symbol="NVDA",
+                usage=LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1),
+                cost_usd=cost,
+                price_as_of=None,
+            )
+            for cost in costs
+        ])
+        return repository
+
+    def _run(
+        self, settings: Settings, repository: RepositoryPort, mocker: Any
+    ) -> tuple[MagicMock, MagicMock]:
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build_use_case = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings, clock=lambda: self.NOW)
+
+        return build_use_case, dispatch
+
+    def _capped(self, settings: Settings, *, ledger: bool = True) -> Settings:
+        return settings.model_copy(update={
+            "daily_llm_budget_usd": 2.0,
+            "monthly_llm_budget_usd": 30.0,
+            "cost_ledger_enabled": ledger,
+        })
+
+    def test_cycle_skips_paid_ports_when_daily_budget_spent(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        from src.domain.finops import BudgetBreach, BudgetWindow
+
+        build_use_case, dispatch = self._run(
+            self._capped(settings), self._ledger(1.5, 0.75), mocker
+        )
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is True
+        context: ReportContext = dispatch.call_args.kwargs["context"]
+        assert context.llm_budget_breach == BudgetBreach(
+            BudgetWindow.DAY, spent_usd=2.25, cap_usd=2.0
+        )
+
+    def test_spend_within_the_caps_keeps_the_paid_calls(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        build_use_case, dispatch = self._run(self._capped(settings), self._ledger(0.5), mocker)
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        assert dispatch.call_args.kwargs["context"].llm_budget_breach is None
+
+    def test_failed_ledger_read_keeps_the_paid_calls(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        repository = self._ledger(5.0)
+        mocker.patch.object(
+            repository, "get_llm_cost_since", side_effect=ProviderUnavailable("timeout")
+        )
+
+        build_use_case, dispatch = self._run(self._capped(settings), repository, mocker)
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        assert dispatch.call_args.kwargs["context"].llm_budget_breach is None
+
+    def test_caps_without_the_cost_ledger_are_not_enforced(
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        # Bez zapisu ledgera suma stoi w miejscu — limit nic by nie mierzył.
+        repository = self._ledger(5.0)
+        read = mocker.spy(repository, "get_llm_cost_since")
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            build_use_case, _ = self._run(
+                self._capped(settings, ledger=False), repository, mocker
+            )
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        read.assert_not_called()
+        assert "cost_ledger_enabled" in caplog.text
+
+    def test_build_use_case_passes_the_spent_budget_to_graph_deps(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings, llm_budget_spent=True)
+        spent = use_case_cls.call_args.args[0].llm_budget_spent
+        main_agent.build_use_case(settings)
+
+        assert spent is True
+        assert use_case_cls.call_args.args[0].llm_budget_spent is False
+
+
 class TestNyseClosedDay:
     """FIN-34: w dzień zamknięcia NYSE (święto, weekend) Fast Loop pomija akcje
     z jawnym logiem. Krypto handluje w święta, więc idzie normalnie; bez krypto

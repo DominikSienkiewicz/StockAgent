@@ -34,6 +34,7 @@ from src.application.circuit_alerts import record_open_circuit_alerts
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.errors import PortError
 from src.application.http_metering import HttpCallMeter
+from src.application.llm_budget import find_budget_breach
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
@@ -174,7 +175,7 @@ from src.domain.digest_lead import LeadItem, lead_headline
 from src.domain.earnings import EarningsEvent, earnings_due_within, earnings_this_week
 from src.domain.equity_curve import EquityCurve
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
-from src.domain.finops import CycleCost, estimate_cycle_cost
+from src.domain.finops import BudgetBreach, BudgetWindow, CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.liveness import FAST_LOOP_TRADING_DAY_SLOT, LivenessExpectation
@@ -1594,10 +1595,20 @@ def build_use_case(
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
+    *,
+    llm_budget_spent: bool = False,
 ) -> AnalyzeMarketUseCase:
-    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`."""
+    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`.
+    `llm_budget_spent` (FIN-25): limit USD doby albo miesiąca wyczerpany przed cyklem."""
     return AnalyzeMarketUseCase(
-        build_agent_graph_deps(settings, repository, quota_monitor, run_context, usage_ledger)
+        build_agent_graph_deps(
+            settings,
+            repository,
+            quota_monitor,
+            run_context,
+            usage_ledger,
+            llm_budget_spent=llm_budget_spent,
+        )
     )
 
 
@@ -1607,6 +1618,8 @@ def build_agent_graph_deps(
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
+    *,
+    llm_budget_spent: bool = False,
 ) -> AgentGraphDeps:
     """Buduje wszystkie adaptery Fast Loopa w jeden obiekt `AgentGraphDeps`.
 
@@ -1783,7 +1796,32 @@ def build_agent_graph_deps(
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,
+        # FIN-25: wyczerpany limit USD doby albo miesiąca — cykl bez płatnych wywołań.
+        llm_budget_spent=llm_budget_spent,
     )
+
+
+def llm_budget_breach(
+    settings: Settings, repository: RepositoryPort, *, now: datetime
+) -> BudgetBreach | None:
+    """FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls`.
+
+    Czytany raz, przed budową grafu (przed pierwszym płatnym wywołaniem). Bez
+    `cost_ledger_enabled` ledger nie przybywa, więc limit niczego by nie mierzył —
+    WARNING i bez odczytu. Odczyt, który padł, też nie zamyka cyklu (fail-open)."""
+    caps = {
+        BudgetWindow.DAY: settings.daily_llm_budget_usd,
+        BudgetWindow.MONTH: settings.monthly_llm_budget_usd,
+    }
+    if all(cap is None for cap in caps.values()):
+        return None
+    if not settings.cost_ledger_enabled:
+        logger.warning(
+            "LLM budget caps set but cost_ledger_enabled is off — the llm_calls ledger "
+            "is not written, so the daily and monthly caps are not enforced"
+        )
+        return None
+    return find_budget_breach(repository, now=now, caps=caps)
 
 
 def cycle_cost(
@@ -3188,6 +3226,9 @@ def _run_fast_loop(
     settings, repository = gate_flags_by_schema(
         settings, repository, quota_monitor, now=clock(), rebuild=build_repository
     )
+    # FIN-25: limit USD doby i miesiąca z ledgera — raz, przed pierwszym płatnym
+    # wywołaniem; wyczerpany zamyka płatne wywołania całego cyklu.
+    budget_breach = llm_budget_breach(settings, repository, now=clock())
     # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
     usage_ledger = UsageLedger()
     use_case = build_use_case(
@@ -3196,6 +3237,7 @@ def _run_fast_loop(
         quota_monitor=quota_monitor,
         run_context=run_context,
         usage_ledger=usage_ledger,
+        llm_budget_spent=budget_breach is not None,
     )
     if http_meter is not None:
         use_case.telemetry.bind_http_meter(http_meter)
@@ -3363,6 +3405,7 @@ def _run_fast_loop(
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
             cycle_cost=cost,
+            llm_budget_breach=budget_breach,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
             expired_unverified=expired_unverified,
