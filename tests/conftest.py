@@ -12,9 +12,12 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 
 import os
 from collections.abc import Iterator
+from decimal import Decimal
 
 import pytest
 from hypothesis import settings as hypothesis_settings
+
+from src.config import Settings
 
 os.environ["STOCKAGENT_DISABLE_TOML"] = "1"
 # NIEZ-22: w CI (GitHub Actions) zmienna wskazuje summary jobu testów — testy
@@ -75,3 +78,30 @@ def _closed_http_circuits() -> Iterator[None]:
     process_circuits().reset()
     yield
     process_circuits().reset()
+
+
+@pytest.fixture
+def settings() -> Settings:
+    # _env_file=None odcina pydantic-settings od loadowania .env (developerzy
+    # mają w nim klucze, risk_symbols itp. — testy muszą być deterministyczne).
+    return Settings(
+        _env_file=None,
+        openai_api_key="sk-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1", "av2"],
+        supabase_url="https://test.supabase.co",
+        supabase_key="anon",
+        symbols=["AAPL", "VOO"],
+        volatility_threshold=Decimal("0.02"),
+        ml_model_path="data/models/missing.ubj",
+        db_writes_enabled=True,  # BEZ-08: smoke testy odwzorowują workflowy GHA
+        paid_calls_enabled=True,  # FIN-35: jak wyżej — workflowy GHA płacą jawnie
+    )
+
+
+@pytest.fixture
+def mock_external_clients(mocker):
+    """Mockuje wszystkie I/O na poziomie bibliotek zewnętrznych — żaden test
+    entry pointa nie strzela do sieci ani na dysk po model XGBoost."""
+    mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
