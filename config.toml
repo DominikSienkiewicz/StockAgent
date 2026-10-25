@@ -93,10 +93,15 @@ diagnosis_backfill_max_calls = 5
 batch_diagnosis_enabled = false
 # EXP-10: sędzia diagnoz z rubryką (czynnik w dowodach, falsyfikowalność, konkret) —
 # co tydzień losowo ≤ 10 diagnoz, 1 LLM na diagnozę w budżecie Slow Loopa (ostatni
-# w kolejce). Diagnoza poniżej 2/3 wypada z lessons i RAG → nowy przepis; włącz po
-# EXP-02/03 (po 2027-01-29) i po kalibracji sędziego na 20 ocenach właściciela.
+# w kolejce). Ocena 0–3 trafia do `diagnosis_judge_score`; bez flagi niżej to tryb
+# cienia (tylko ocena, lessons i RAG bez zmian). Włącz po EXP-02/03 (po 2027-01-29).
 # UWAGA: włącz DOPIERO po migracji 078.
 diagnosis_judge_enabled = false
+# EXP-10 (decyzja 2026-10-25): odrzucanie — diagnoza poniżej 2/3 wypada z lessons i RAG
+# (tekst zostaje w `rejected_diagnosis`) → nowy przepis. Włącz DOPIERO po kalibracji:
+# tryb cienia, porównanie ocen sędziego z 20 własnymi ocenami, potem ta flaga.
+# Działa tylko z `diagnosis_judge_enabled`. UWAGA: włącz DOPIERO po migracji 078.
+diagnosis_judge_rejects_enabled = false
 # Tool-use research agent (R-24): na największych ruchach model dociąga read-only
 # toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
 tool_use_enabled = false

@@ -716,6 +716,13 @@ def test_real_config_toml_ships_the_diagnosis_judge_off_until_migration() -> Non
     assert data["diagnosis_judge_enabled"] is False
 
 
+def test_real_config_toml_ships_the_diagnosis_judge_in_shadow_mode() -> None:
+    """EXP-10 (decyzja 2026-10-25): sędzia najpierw tylko ocenia; odrzucanie właściciel
+    włącza po kalibracji na 20 własnych ocenach."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data.get("diagnosis_judge_rejects_enabled") is False
+
+
 def test_real_config_toml_budgets_the_free_supabase_plan() -> None:
     """NIEZ-37: darmowy plan Supabase ma 500 MB — WARNING od 70%."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

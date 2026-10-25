@@ -546,9 +546,9 @@ Rows written by the LLM fallback (`data_quality_flags` contains `llm_analysis_fa
 
 <a id="flag-diagnosis-judge"></a>
 
-### `diagnosis_judge_enabled`: a rubric judge for the lessons
+### `diagnosis_judge_enabled` / `diagnosis_judge_rejects_enabled`: a rubric judge for the lessons, shadow first
 
-The diagnoses of wrong predictions come back into later prompts as lessons (reflection and the RAG analogues), so a fluent but empty diagnosis would poison them without anyone noticing. EXP-10 grades a random weekly sample of at most 10 with three yes/no criteria — a factor present in the saved news or prices, a falsifiable claim, not a platitude — and keeps a diagnosis below 2 of 3 out of the lessons and the RAG analogues, while its text stays in `rejected_diagnosis` (migration `078`), so a rejection can be undone. It runs in the Slow Loop's weekly LLM ceiling (FIN-30), last in the order. An LLM judging an LLM shares its bias, so the score means something only after the owner has compared it with 20 of their own grades; until then, and until EXP-02/03 end, the flag stays off.
+The diagnoses of wrong predictions come back into later prompts as lessons (reflection and the RAG analogues), so a fluent but empty diagnosis would poison them without anyone noticing. EXP-10 grades a random weekly sample of at most 10 with three yes/no criteria — a factor present in the saved news or prices, a falsifiable claim, not a platitude — and, with `diagnosis_judge_rejects_enabled`, keeps a diagnosis below 2 of 3 out of the lessons and the RAG analogues, while its text stays in `rejected_diagnosis` (migration `078`), so a rejection can be undone. It runs in the Slow Loop's weekly LLM ceiling (FIN-30), last in the order. An LLM judging an LLM shares its bias, so the score means something only after the owner has compared it with 20 of their own grades. The owner decided on 2026-10-25 that the judge first runs in shadow mode: `diagnosis_judge_enabled` alone always stores the grade and rejects nothing, the owner compares those grades with their own, and only then turns on the rejection. A graded diagnosis never returns to the sample, so the rejection applies only to diagnoses graded after it is turned on. Until EXP-02/03 end both flags stay off.
 
 <a id="flag-weekly-recap"></a>
 

@@ -75,6 +75,7 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "calibration_judge_enabled": 77,
         # EXP-10: ocena i odrzucone diagnozy w `prediction_logs`.
         "diagnosis_judge_enabled": 78,
+        "diagnosis_judge_rejects_enabled": 78,
         "telegram_bot_enabled": 79,
         "symbol_mutes_enabled": 80,
         "shock_escalation_enabled": 81,

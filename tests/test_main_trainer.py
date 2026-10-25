@@ -967,7 +967,8 @@ class TestBatchDiagnosisJob:
 
 class TestDiagnosisJudgeJob:
     """EXP-10: sędzia diagnoz z rubryką — za flagą, najwyżej 10 wywołań przez
-    przydział tygodniowego budżetu FIN-30, ostatni w kolejce (przycinany pierwszy)."""
+    przydział tygodniowego budżetu FIN-30, ostatni w kolejce (przycinany pierwszy).
+    Odrzuca diagnozy tylko z `diagnosis_judge_rejects_enabled`, bez niej tryb cienia."""
 
     def _trainer(self, settings: Settings, mocker: Any) -> MagicMock:
         from src.application.ports import LLMPort
@@ -1027,6 +1028,27 @@ class TestDiagnosisJudgeJob:
 
         # Sufit 9: recap 1 + spłata diagnoz 5 → sędzia dostaje 3.
         assert judge_cls.call_args.kwargs["max_samples"] == 3
+
+    def test_judge_runs_in_shadow_mode_by_default(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        judge_cls = self._trainer(settings, mocker)
+        settings.diagnosis_judge_enabled = True
+
+        main_trainer.main(settings)
+
+        assert judge_cls.call_args.kwargs.get("rejects_enabled") is False
+
+    def test_rejects_setting_lets_the_judge_reject(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        judge_cls = self._trainer(settings, mocker)
+        settings.diagnosis_judge_enabled = True
+        settings.diagnosis_judge_rejects_enabled = True
+
+        main_trainer.main(settings)
+
+        assert judge_cls.call_args.kwargs.get("rejects_enabled") is True
 
 
 class TestSlowLoopCostLedger:

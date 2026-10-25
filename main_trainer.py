@@ -899,11 +899,12 @@ def _run_diagnosis_backfill(
 
 
 def _run_diagnosis_judge(
-    repository: RepositoryPort, llm_port: LLMPort, max_samples: int
+    repository: RepositoryPort, llm_port: LLMPort, max_samples: int, *, rejects_enabled: bool
 ) -> None:
     """EXP-10: losowa próbka najwyżej `max_samples` diagnoz tygodnia oceniona rubryką;
-    diagnoza poniżej progu wypada z lessons i RAG. Po diagnozach przebiegu, w
-    tygodniowym budżecie Slow Loopa. Best-effort: błąd kroku nie zmienia exit code'u."""
+    z `rejects_enabled` diagnoza poniżej progu wypada z lessons i RAG, bez niego tryb
+    cienia (tylko ocena). Po diagnozach przebiegu, w tygodniowym budżecie Slow Loopa.
+    Best-effort: błąd kroku nie zmienia exit code'u."""
     try:
         result = JudgeDiagnosesUseCase(
             repository_port=repository,
@@ -911,6 +912,7 @@ def _run_diagnosis_judge(
             clock=lambda: datetime.now(UTC),
             rng=random.Random(),
             max_samples=max_samples,
+            rejects_enabled=rejects_enabled,
         ).run()
     except PortError:
         logger.warning("Diagnosis judge failed — pomijam", exc_info=True)
@@ -1042,6 +1044,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
             repository,
             paid_llm.port_for(DIAGNOSIS_JUDGE_JOB),
             min(MAX_JUDGED_PER_RUN, paid_llm.allowed(DIAGNOSIS_JUDGE_JOB)),
+            rejects_enabled=settings.diagnosis_judge_rejects_enabled,
         )
     paid_llm.log_spend()
     persist_llm_calls(

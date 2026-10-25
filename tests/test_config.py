@@ -816,6 +816,19 @@ class TestDiagnosisJudgeFlag:
         assert "diagnosis_judge_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestDiagnosisJudgeRejectsFlag:
+    """EXP-10: odrzucanie diagnoz przez sędziego (decyzja 2026-10-25) — domyślnie off
+    (tryb cienia) i w przepisie, bo odrzucona diagnoza wypada z analogów RAG."""
+
+    def test_defaults_off_and_in_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        assert "diagnosis_judge_rejects_enabled" in RECIPE_SETTINGS_FIELDS
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
+
+        assert settings.diagnosis_judge_rejects_enabled is False
+
+
 class TestDbSizeBudget:
     """NIEZ-37: budżet rozmiaru bazy — operacje (poza przepisem), dodatni albo brak."""
 

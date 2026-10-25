@@ -367,6 +367,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "batch_diagnosis_enabled",
     # EXP-10: odrzucone diagnozy wypadają z analogów RAG w prompcie predykcji.
     "diagnosis_judge_enabled",
+    # EXP-10 (decyzja 2026-10-25): bez tej flagi sędzia tylko ocenia (tryb cienia);
+    # z nią diagnoza poniżej progu wypada z lessons i analogów RAG.
+    "diagnosis_judge_rejects_enabled",
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
@@ -663,9 +666,13 @@ class Settings(BaseSettings):
     # (przepis); włączenie po EXP-02/03 (po 2027-01-29). Bez migracji. Off.
     batch_diagnosis_enabled: bool = False
     # EXP-10: sędzia diagnoz z rubryką — co tydzień ≤ 10 diagnoz (Slow Loop, budżet FIN-30);
-    # diagnoza poniżej progu wypada z lessons i RAG (przepis). Wymaga migracji 078.
-    # Włączenie po EXP-02/03 (po 2027-01-29) i po kalibracji na ocenach właściciela. Off.
+    # ocena trafia do `diagnosis_judge_score`. Wymaga migracji 078. Włączenie po
+    # EXP-02/03 (po 2027-01-29). Off.
     diagnosis_judge_enabled: bool = False
+    # EXP-10 (decyzja 2026-10-25): diagnoza poniżej progu wypada z lessons i RAG
+    # (przepis). Off = tryb cienia: sędzia tylko ocenia, a właściciel porównuje oceny
+    # z 20 własnymi przed włączeniem. Działa tylko z `diagnosis_judge_enabled`. Off.
+    diagnosis_judge_rejects_enabled: bool = False
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),
