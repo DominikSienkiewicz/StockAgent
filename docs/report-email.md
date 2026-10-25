@@ -44,8 +44,9 @@ Every section of the cycle email, in the order `build_html_report` renders it (t
 | 34 | `finops` | `💸 Koszt cyklu` | Zaplecze | always; a free cycle says so | `llm_pricing` set (as of `llm_pricing_as_of`) | no |
 | 35 | `budget_exhausted` | `💸 Pominięte — wyczerpany budżet cyklu` | Zaplecze | a symbol cut by `max_paid_llm_calls_per_cycle` | `max_paid_llm_calls_per_cycle = 100` | yes |
 | 36 | `ignored` | `⏸ Pominięte (poniżej progu zmienności)` — chips `AAPL ▲ +1,20% / próg 2,0%` and a `Blisko progu (≥ 75%)` row; a symbol in its first cycle goes to its own group `⏸ Pominięte (brak punktu odniesienia — pierwszy cykl)` (symbols only, MAIL-60) | Zaplecze | a symbol below the volatility gate, or one without a previous price | no flag | yes |
-| 37 | `errors` | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
-| 38 | `footer` | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
+| 37 | `watchlist_mutes` | `🔇 Wyciszone z bota` — the line `watchlista: 45 z config − 2 wyciszone` and chips `NVDA do 01.11.2026` (MAIL-45): a muted symbol gets no paid analysis and no section, only its price snapshot | Zaplecze | an active `/mute` from the owner's bot | `symbol_mutes_enabled = false` | yes |
+| 38 | `errors` | `⚠️ Błędy` | Zaplecze | a symbol that failed | no flag | yes |
+| 39 | `footer` | Footer: disclaimer, pipeline counters, run line | — | always | — | yes |
 
 A separate email goes out after the Sunday Slow Loop: `📅 Tydzień StockAgenta`, the weekly recap with its `🛡️ Wybronieni dysydenci rady` block, with `weekly_recap_enabled` (`true` in `config.toml`) and at least 5 closed predictions in the week; it costs one LLM call ([configuration](configuration.md)). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45). With `council_redundancy_enabled` it adds a `🧮 Rada: 7 person ≈ 2,1 niezależnego głosu` line (Cohen's kappa between the personas, N_eff, the most agreeing pair); the daily email then drops the `SILNY KONSENSUS` badge of the council section when N_eff < 1.5 (WIA-45).
 

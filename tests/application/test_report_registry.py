@@ -81,6 +81,7 @@ MAIL_ORDER = (
     "finops",
     "budget_exhausted",
     "ignored",
+    "watchlist_mutes",
     "errors",
     "footer",
 )

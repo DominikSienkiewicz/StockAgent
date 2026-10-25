@@ -93,6 +93,7 @@ from src.domain.value_objects import (
     ValuationVerdict,
     to_percent,
 )
+from src.domain.watchlist import EffectiveWatchlist
 
 __all__ = [
     "PortfolioMood",
@@ -546,6 +547,10 @@ class ReportContext:
     # sama flaga) — kandydat leadu na pozycji z portfela. None = flaga off albo brak
     # portfela.
     earnings_soon: tuple[EarningsEvent, ...] | None = None
+    # MAIL-45: efektywna watchlista cyklu (config.toml minus wyciszenia z bota) —
+    # linia „watchlista: N z config − K wyciszone” w Zapleczu. None = flaga
+    # `symbol_mutes_enabled` off, mail bajt w bajt jak przed MAIL-45.
+    watchlist_mutes: EffectiveWatchlist | None = None
 
 
 def _section_input(

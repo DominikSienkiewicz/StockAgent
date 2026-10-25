@@ -47,6 +47,7 @@ from src.application.report_this_week import THIS_WEEK_SECTION
 from src.application.report_track_record import TRACK_RECORD_SECTION
 from src.application.report_trade_signals import TRADE_SIGNALS_SECTION
 from src.application.report_user_portfolio import USER_PORTFOLIO_SECTION
+from src.application.report_watchlist_mutes import WATCHLIST_MUTES_SECTION
 from src.application.reporting.section import ReportSection
 
 REPORT_SECTIONS: tuple[ReportSection, ...] = (
@@ -86,6 +87,7 @@ REPORT_SECTIONS: tuple[ReportSection, ...] = (
     FINOPS_SECTION,
     BUDGET_EXHAUSTED_SECTION,
     IGNORED_SECTION,
+    WATCHLIST_MUTES_SECTION,
     ERRORS_SECTION,
     FOOTER_SECTION,
 )
