@@ -242,3 +242,28 @@ def test_previous_verdict_reads_the_latest_saved_council_verdict() -> None:
     assert previous.verdict == verdict
     assert previous.sentiment_score == pytest.approx(0.25)
     assert previous.timestamp == START
+
+
+def test_llm_cost_since_sums_priced_calls_saved_in_the_window() -> None:
+    """FIN-25: okno limitu liczy wiersze ledgera po chwili zapisu (jak
+    `llm_calls.created_at`); wiersz bez wyceny nie wchodzi do sumy."""
+    from src.domain.finops import LLMCallEntry, LLMUsage
+
+    def entry(cost: float | None) -> LLMCallEntry:
+        return LLMCallEntry(
+            run_id="local",
+            node="predict",
+            symbol="NVDA",
+            usage=LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1),
+            cost_usd=cost,
+            price_as_of=None,
+        )
+
+    clock = _Clock()
+    repo = _repo(clock)
+    repo.save_llm_calls([entry(0.5)])
+    clock.advance(hours=2)
+    repo.save_llm_calls([entry(0.25), entry(None)])
+
+    assert repo.get_llm_cost_since(START + timedelta(hours=1)) == pytest.approx(0.25)
+    assert repo.get_llm_cost_since(START) == pytest.approx(0.75)

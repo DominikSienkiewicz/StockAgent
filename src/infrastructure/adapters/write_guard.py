@@ -155,6 +155,7 @@ class ReadOnlyRepository(RepositoryPort):
         "get_reference_reads",
         "get_open_reference_calls",
         "get_cycle_runs_since",
+        "get_llm_cost_since",
         "get_settled_shadow_predictions",
     })
     WRITE_METHODS: ClassVar[frozenset[str]] = frozenset({
@@ -376,6 +377,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
         return self._delegate.get_cycle_runs_since(since)
+
+    def get_llm_cost_since(self, since: datetime) -> float:
+        return self._delegate.get_llm_cost_since(since)
 
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:

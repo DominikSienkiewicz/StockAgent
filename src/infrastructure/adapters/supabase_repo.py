@@ -2408,6 +2408,21 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         ]
         self._client.table(LLM_CALLS_TABLE).insert(rows).execute()
 
+    def get_llm_cost_since(self, since: datetime) -> float:
+        # Paginacja (#8): miesiąc ledgera to tysiące wierszy. Suma po stronie klienta,
+        # bo hosted PostgREST nie ma włączonych agregatów; NULL (model spoza cennika)
+        # pomijamy — kosztu nie zgadujemy.
+        query = (
+            self._client.table(LLM_CALLS_TABLE)
+            .select("cost_usd")
+            .gte("created_at", since.isoformat())
+            .order("id", desc=False)
+        )
+        return sum(
+            (float(cost) for row in _paginate(query) if (cost := row.get("cost_usd")) is not None),
+            0.0,
+        )
+
     def save_cycle_run(self, run: CycleRun) -> None:
         # Jeden insert na przebieg; `paid_calls` idzie jako JSONB (dict, nie string).
         row = {

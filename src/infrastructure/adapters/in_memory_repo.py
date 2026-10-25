@@ -155,7 +155,8 @@ class InMemoryRepository(RepositoryPort):
         self._shock_alerts: dict[tuple[str, date], StoredShockAlert] = {}
         self._price_levels: dict[str, Row] = {}
         self._scorecards: list[Row] = []
-        self._llm_calls: list[LLMCallEntry] = []
+        # FIN-25: chwila zapisu przy wierszu — jak `llm_calls.created_at`.
+        self._llm_calls: list[tuple[datetime, LLMCallEntry]] = []
         self._cycle_runs: list[CycleRun] = []
         self._reference: dict[str, Row] = {}
         self._corporate_actions: dict[tuple[str, str, date], SplitSuspicion] = {}
@@ -845,7 +846,18 @@ class InMemoryRepository(RepositoryPort):
 
     def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
         with self._lock:
-            self._llm_calls.extend(calls)
+            saved_at = self._now()
+            self._llm_calls.extend((saved_at, call) for call in calls)
+
+    def get_llm_cost_since(self, since: datetime) -> float:
+        return sum(
+            (
+                call.cost_usd
+                for saved_at, call in self._llm_calls
+                if saved_at >= since and call.cost_usd is not None
+            ),
+            0.0,
+        )
 
     def save_cycle_run(self, run: CycleRun) -> None:
         with self._lock:

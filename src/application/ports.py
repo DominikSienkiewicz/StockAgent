@@ -839,6 +839,14 @@ class RepositoryPort(ABC):
         zapis kończyłby się błędem PostgREST)."""
 
     @abstractmethod
+    def get_llm_cost_since(self, since: datetime) -> float:
+        """FIN-25 — suma `llm_calls.cost_usd` z wierszy od `since` (włącznie), w USD.
+
+        Wiersz bez wyceny (`cost_usd` NULL, model spoza cennika) nie wchodzi do sumy,
+        więc wynik jest dolną granicą wydatku. Bez migracji 040 → `PortError`;
+        wołający decyduje, czy błąd odczytu zamyka płatne wywołania (FIN-25: nie)."""
+
+    @abstractmethod
     def save_cycle_run(self, run: CycleRun) -> None:
         """NIEZ-29 — jeden wiersz `cycle_runs` (migracja 041) na przebieg pętli,
         jednym insertem na końcu przebiegu. Wołający pilnuje flagi

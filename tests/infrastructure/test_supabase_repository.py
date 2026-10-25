@@ -3655,6 +3655,45 @@ class TestGetCycleRunsSince:
             repo.get_cycle_runs_since(datetime(2026, 7, 27, tzinfo=UTC))
 
 
+class TestGetLlmCostSince:
+    """FIN-25: suma wycenionych wierszy ledgera `llm_calls` od początku okna limitu."""
+
+    @staticmethod
+    def _order_builder(mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value.select.return_value.gte.return_value
+        return cast(MagicMock, chain.order.return_value)
+
+    def test_sums_priced_rows_since_the_window_start(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(
+            self._order_builder(mock_client),
+            [[{"cost_usd": 0.25}, {"cost_usd": None}, {"cost_usd": 1.5}]],
+        )
+
+        spent = repo.get_llm_cost_since(datetime(2026, 10, 25, tzinfo=UTC))
+
+        mock_client.table.assert_called_once_with("llm_calls")
+        mock_client.table.return_value.select.assert_called_once_with("cost_usd")
+        gte = mock_client.table.return_value.select.return_value.gte
+        assert gte.call_args.args == ("created_at", "2026-10-25T00:00:00+00:00")
+        assert spent == pytest.approx(1.75)
+
+    def test_postgrest_error_is_a_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import PortError
+
+        self._order_builder(mock_client).range.side_effect = APIError(
+            {"code": "PGRST205", "message": "relation llm_calls does not exist"}
+        )
+
+        with pytest.raises(PortError):
+            repo.get_llm_cost_since(datetime(2026, 10, 25, tzinfo=UTC))
+
+
 class TestShockAlertTimes:
     """ALR-02, decyzja 2: chwila ostatniego alertu per symbol (`created_at` z 021)."""
 

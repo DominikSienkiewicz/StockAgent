@@ -399,6 +399,39 @@ class TestPagination:
         assert stamps == sorted(stamps)
 
 
+class TestLlmCostLedger:
+    def test_llm_cost_since_sums_priced_rows_of_the_window_past_the_row_cap(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # FIN-25: suma okna limitu z wierszy `llm_calls` (040) — także ponad limit
+        # 1000 wierszy PostgREST; wiersz bez wyceny i wiersz sprzed okna poza sumą.
+        since = datetime(2026, 10, 25, tzinfo=UTC)
+        in_window = POSTGREST_MAX_ROWS + 205
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) "
+                "SELECT 't17-fin25', 'predict', 'anthropic', 'm', 1, 1, 0.002, "
+                "%s::timestamptz + g * interval '1 second' "
+                "FROM generate_series(1, %s) AS g",
+                (since.isoformat(), in_window),
+            )
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) VALUES "
+                "('t17-fin25', 'predict', 'anthropic', 'm', 1, 1, NULL, %s), "
+                "('t17-fin25', 'predict', 'anthropic', 'm', 1, 1, 5.0, %s)",
+                (
+                    (since + timedelta(hours=1)).isoformat(),
+                    (since - timedelta(seconds=1)).isoformat(),
+                ),
+            )
+
+        spent = repository.get_llm_cost_since(since)
+
+        assert spent == pytest.approx(in_window * 0.002)
+
+
 class TestSchemaAndRoles:
     def test_unknown_column_is_rejected_as_not_found(
         self, repository: SupabaseRepository
