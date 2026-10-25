@@ -475,6 +475,55 @@ def test_verify_attestation_defaults_to_the_published_ledger_paths() -> None:
     assert str(args.reveals) == "public/attestation/reveals.jsonl"
 
 
+def test_verify_attestation_checks_rekor_entries_against_the_fast_loop_by_default() -> None:
+    # WIA-73: tożsamość workflowu, którą musi nazywać certyfikat wpisu Rekora.
+    args = main_tools.build_parser().parse_args(["verify-attestation"])
+
+    assert (getattr(args, "rekor_repository", None), getattr(args, "rekor_workflow", None)) == (
+        "DominikSienkiewicz/StockAgent",
+        ".github/workflows/fast_loop_12h.yml",
+    )
+
+
+def test_verify_attestation_takes_the_rekor_identity_of_a_fork(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from src.domain import attestation
+    from tests.sigstore_support import rekor_entry_for
+
+    committed_at = datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC)
+    line = attestation.cycle_root_record(
+        cycle_id="1.1.20261026T053000Z", committed_at=committed_at, commitments=["aa" * 32]
+    )
+    fork = "https://github.com/someone/fork/.github/workflows/agent.yml@refs/heads/main"
+    line["rekor"] = rekor_entry_for(
+        str(line["root"]), integrated_at=committed_at + timedelta(seconds=3), uri=fork
+    )
+    commitments = tmp_path / "commitments.jsonl"
+    commitments.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    (tmp_path / "reveals.jsonl").write_text("", encoding="utf-8")
+    base = [
+        "verify-attestation",
+        "--commitments", str(commitments),
+        "--reveals", str(tmp_path / "reveals.jsonl"),
+    ]
+
+    default_code = main_tools.main(base)
+    fork_code = main_tools.main(
+        [
+            *base,
+            "--rekor-repository", "someone/fork",
+            "--rekor-workflow", ".github/workflows/agent.yml",
+        ]
+    )
+
+    assert (default_code, fork_code) == (1, 0)
+    assert "Cycle roots logged in Rekor: 1" in capsys.readouterr().out
+
+
 # --- ML-22: reproduce-training ---------------------------------------------------
 
 
