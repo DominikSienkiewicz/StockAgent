@@ -513,6 +513,18 @@ def paid_budget_allows(spent_calls: int, cap: int | None) -> bool:
     return cap is None or spent_calls < cap
 
 
+def budget_exceeded(spent_usd: float, cap_usd: float | None) -> bool:
+    """FIN-25: czy limit USD okna (doba, miesiąc) jest wyczerpany.
+
+    Wyczerpany już przy wydanych == limit: sprawdzenie idzie raz przed cyklem, więc
+    wpuszczony cykl przebiłby limit o swój koszt. Ten sam powód sprawia, że limit
+    jest twardy dopiero od następnego cyklu — ostatni wpuszczony może go przekroczyć
+    o własny koszt. `cap_usd` None = bez limitu, 0 = okno bez płatnych wywołań."""
+    if spent_usd < 0:
+        raise ValueError(f"spent_usd must be non-negative (got {spent_usd})")
+    return cap_usd is not None and spent_usd >= cap_usd
+
+
 def rank_by_magnitude(deltas: Mapping[str, Decimal]) -> list[str]:
     """Symbole malejąco po |Δ|; remis rozstrzyga alfabet.
 

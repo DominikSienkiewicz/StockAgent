@@ -638,3 +638,26 @@ def test_weekly_budget_rejects_invalid_inputs(
 
     with pytest.raises(ValueError, match=field):
         weekly_cost_budget(bound, cycles_per_day=cycles_per_day, budget_usd=budget_usd)
+
+
+# ---------------------------------------------------------------------------
+# FIN-25: dzienny i miesięczny limit USD z ledgera `llm_calls`
+# ---------------------------------------------------------------------------
+
+
+def test_budget_exceeded_at_cap() -> None:
+    """Limit jest wyczerpany od chwili, gdy wydane dorówna limitowi — następny
+    cykl przebiłby go o swój koszt. Brak limitu nigdy nie zamyka cyklu."""
+    from src.domain.finops import budget_exceeded
+
+    assert budget_exceeded(5.01, 5.0) is True
+    assert budget_exceeded(5.0, 5.0) is True
+    assert budget_exceeded(4.99, 5.0) is False
+    assert budget_exceeded(1000.0, None) is False
+
+
+def test_budget_exceeded_rejects_negative_spend() -> None:
+    from src.domain.finops import budget_exceeded
+
+    with pytest.raises(ValueError, match="spent_usd"):
+        budget_exceeded(-0.01, 5.0)
