@@ -178,6 +178,59 @@ PAID_CALLS_ENABLED=true uv run python main_agent.py
 
 `PAID_CALLS_ENABLED=false` together with `DB_WRITES_ENABLED=true` is refused: `main_agent.py` and `main_trainer.py` log an `ERROR` naming both variables and exit with code 2 before they build any adapter, because the stubs' neutral predictions would land in the production track record (code 1 stays "every symbol failed"). The check lives in the entry points, not in `Settings`; Shock Watch and the deadman make no paid call and start as usual. Like `DB_WRITES_ENABLED`, the switch is read from the environment or `.env` only and is kept out of `config.toml` by a test. The workflows that pay — Fast Loop and Slow Loop — set `PAID_CALLS_ENABLED: "true"` in the step that runs the entry point; Shock Watch and the deadman make no paid call and do not set it. `tests/test_paid_calls_wiring.py` checks both and fails when a new `main_*.py` is not classified as paying or free.
 
+### Trial runs of the sections that are off (PORT-15, EXP-09)
+
+Some features are built, rendered only and off in `config.toml`, and the owner judges them on a real cycle before any default changes. The decision for these trials is a **local, read-only run**: `DB_WRITES_ENABLED=false` and `PAID_CALLS_ENABLED=false`, the flags switched on for that one command only, the email written to a file instead of being sent. Nothing is committed, nothing is written to the database, no push goes out and no paid API is called.
+
+**How a flag is overridden for one run.** Every `Settings` field can be set by an environment variable named like the field in capitals (precedence: env → `.env` → `config.toml` → code defaults, see above), so `PORTFOLIO_VAR_ENABLED=true uv run python main_agent.py` turns `portfolio_var_enabled` on for that process and leaves `config.toml` as it is.
+
+**How the email gets to a file.** `main_agent.py` always sends through the channels that `build_notifier` builds from the settings, and has no option to write the email to disk. The offline cycle uses `FileReportNotifier` ([`src/infrastructure/adapters/file_notifier.py`](../src/infrastructure/adapters/file_notifier.py)) for that, and the same notifier can stand in for the real channel: the function below replaces `build_notifier` for the one process, exactly as `tests/test_main_agent.py` does (`TestNyseClosedDay`), and then runs the real `main_agent.main()`. Paste it into the shell once. It also blanks the secrets of every other outgoing channel: `HEARTBEAT_URL` (otherwise the trial would ping the production heartbeat and hide a missed cron), Telegram, Slack and Resend.
+
+```bash
+trial_run() {   # usage: TRIAL_REPORT_DIR=<dir> [FLAG_NAME=true ...] trial_run
+  DB_WRITES_ENABLED=false PAID_CALLS_ENABLED=false \
+  HEARTBEAT_URL= TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= SLACK_WEBHOOK_URL= RESEND_API_KEY= \
+  uv run python - <<'PY'
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import main_agent
+from src.infrastructure.adapters.file_notifier import FileReportNotifier
+
+notifier = FileReportNotifier(Path(os.environ["TRIAL_REPORT_DIR"]))
+with patch.object(main_agent, "build_notifier", return_value=notifier):
+    raise SystemExit(main_agent.main())
+PY
+}
+```
+
+The run needs the `.env` of the owner (`SUPABASE_URL`, `SUPABASE_KEY`, `FINNHUB_API_KEY`), reads the shared database and the free Finnhub, CoinGecko, NBP and FRED sources as any local run does, and writes `report-email.html` and `report-email.txt` (the latter starts with `Temat:` and the subject) into `TRIAL_REPORT_DIR`. `build/` is git-ignored; the file carries the owner's positions, so keep it out of the repository and out of anything shared. Run it on a NYSE trading day: on a weekend or holiday the Fast Loop analyses only the crypto symbols (FIN-34) and the stock-based sections have little to show. With paid calls off the analysis is the fixed stub (neutral `SIDEWAYS`, 50%) and the email says so, which is fine for judging the layout and the free numbers below, not the quality of a forecast. Combining `PAID_CALLS_ENABLED=false` with `DB_WRITES_ENABLED=true` is refused, so a mistake in the command cannot put stub predictions into the track record.
+
+**PORT-15: the risk sections** (`portfolio_var_enabled`, `stress_test_enabled`, `hedge_effectiveness_enabled`). A baseline with the three flags off and the same data, then the run with them on:
+
+```bash
+mkdir -p build/trial-runs
+TRIAL_REPORT_DIR=build/trial-runs/port-15-baseline trial_run
+TRIAL_REPORT_DIR=build/trial-runs/port-15-risk \
+  PORTFOLIO_VAR_ENABLED=true STRESS_TEST_ENABLED=true HEDGE_EFFECTIVENESS_ENABLED=true trial_run
+wc -c build/trial-runs/port-15-*/report-email.html
+diff build/trial-runs/port-15-baseline/report-email.txt build/trial-runs/port-15-risk/report-email.txt
+open build/trial-runs/port-15-risk/report-email.html
+```
+
+The flags add to two sections of [the report email](report-email.md): VaR/CVaR and the stress test in `🎯 Portfolio Radar`, and the hedges in `🚨 Risk Watch`. What to judge: the length the three add to the email (`wc -c`, the `diff` of the text versions, the number of sections); whether the numbers are plausible; whether the Radar's VaR/CVaR and stress test, which describe the **watchlist at equal weights** (the text says "watchlisty (równe wagi)"), not what you hold, are worth their space; and whether the three belong in one "portfolio risk" section. With `portfolio_positions_enabled` (on in `config.toml`) and positions loaded, `portfolio_var_enabled` also measures the VaR of the positions you actually hold, but that number is not printed: it only lowers the size band of a signal one step when the 1-day VaR95 is at least 3% (see `portfolio_positions_enabled` in [configuration](configuration.md#feature-flags)), so look in the `diff` for a band that moved. A statistic whose `price_snapshots` history is too short is replaced by a "za mało historii (n/wymagane)" note, which is a data finding, not a bug.
+
+**EXP-09: contagion** (`contagion_enabled`). With the flag on, the prompt carries the verdicts of the same-group tickers from this cycle, so the symbols have to be processed one after another and `symbol_concurrency` (4 in `config.toml`) is ignored. Time the run with and without it:
+
+```bash
+mkdir -p build/trial-runs
+time TRIAL_REPORT_DIR=build/trial-runs/exp-09-baseline trial_run
+time TRIAL_REPORT_DIR=build/trial-runs/exp-09-contagion CONTAGION_ENABLED=true trial_run
+```
+
+The difference in wall time is the cost of the sequential path. Two limits of a stub run: the verdicts that contagion hands to the prompt are all the same neutral stub, so the effect of contagion on the decisions cannot be seen (only that the block is built and what the sequential path costs), and the stub makes no LLM or council request, so the real cycle, where every symbol past the gate waits for the model one after another, would be slower than this measurement. The first symbol of each group also sees no peers. Contagion is only as good as the order of processing: reading the peers' verdicts from the previous cycle instead (so the symbols could run in parallel again) is not built; it is the follow-up (ML-43) that this measurement is meant to justify or drop.
+
 ### Offline cycle (DX-04)
 
 `uv run python main_tools.py offline` runs whole Fast Loop cycles with no key, no database and no network: the real graph (check price → reflect → fundamentals → volatility gate → sentiment → news → predict → council → save), `RunFastLoopCycle` and `ReportAssembler`, with fakes in place of the outside world:
