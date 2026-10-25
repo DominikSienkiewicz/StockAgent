@@ -109,6 +109,7 @@ MIGRATION_FILES = [
     "074_invalidation_price.sql",
     "075_shadow_predictions.sql",
     "076_rag_point_in_time.sql",
+    "079_bot_state.sql",
     "083_shadow_prediction_trend.sql",
 ]
 
@@ -4526,6 +4527,62 @@ class TestMigration076RagPointInTime:
             "match_news_embeddings_exact",
             "match_news_embeddings_pit",
         ]
+
+
+@pytest.mark.containers
+class TestMigration079BotState:
+    """MAIL-48: offset pollingu `getUpdates` bota — jeden wiersz na kanał, upsert."""
+
+    def test_bot_state_keeps_one_offset_per_channel(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        assert {"channel", "update_offset", "updated_at"} <= _columns(
+            migrated_pg_conn, "bot_state"
+        )
+        with _rolled_back(migrated_pg_conn) as cur:
+            for offset in (100, 105):
+                cur.execute(
+                    "INSERT INTO bot_state (channel, update_offset) VALUES ('telegram', %s) "
+                    "ON CONFLICT (channel) DO UPDATE SET update_offset = EXCLUDED.update_offset",
+                    (offset,),
+                )
+            cur.execute("SELECT channel, update_offset FROM bot_state")
+            assert cur.fetchall() == [("telegram", 105)]
+
+    @pytest.mark.parametrize(
+        ("channel", "offset"), [("slack", 1), ("telegram", -1)], ids=["channel", "offset"]
+    )
+    def test_bot_state_rejects_an_unknown_channel_or_a_negative_offset(
+        self, migrated_pg_conn: psycopg2.extensions.connection, channel: str, offset: int
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(psycopg2.errors.CheckViolation):
+            cur.execute(
+                "INSERT INTO bot_state (channel, update_offset) VALUES (%s, %s)",
+                (channel, offset),
+            )
+
+    def test_bot_state_is_closed_to_public_roles_and_open_to_service_role(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SELECT relrowsecurity FROM pg_class WHERE oid = 'bot_state'::regclass")
+            assert cur.fetchone() == (True,)
+            public = [_has_table_privilege(cur, role, "bot_state") for role in PUBLIC_API_ROLES]
+            _set_role(cur, "service_role")
+            cur.execute(
+                "INSERT INTO bot_state (channel, update_offset) VALUES ('telegram', 7) "
+                "RETURNING update_offset"
+            )
+            assert cur.fetchone() == (7,)
+
+        assert public == [False, False]
+
+    def test_079_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "079_bot_state.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+        assert "update_offset" in _columns(migrated_pg_conn, "bot_state")
 
 
 @pytest.mark.containers

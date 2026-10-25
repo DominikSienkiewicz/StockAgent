@@ -107,6 +107,7 @@ MIGRATION_PROBES="017 column prediction_logs regime
 074 column prediction_logs invalidation_price
 075 table shadow_predictions -
 076 function match_news_embeddings_pit -
+079 table bot_state -
 083 column shadow_predictions predicted_trend"
 
 # Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.
