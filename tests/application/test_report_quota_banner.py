@@ -122,3 +122,53 @@ class TestPlainText:
         a = _a("OpenAI", msg="TPM")
         text = render_quota_banner_text([a, a, a])
         assert text.count("TPM") == 1
+
+
+class TestLlmBudgetBanner:
+    """FIN-25: wyczerpany limit USD doby albo miesiąca — banner limitów na górze maila
+    mówi, który limit, ile wydano i co to znaczy dla cyklu."""
+
+    STARTED = datetime(2026, 10, 25, 5, 30, tzinfo=UTC)
+
+    def _mail(self, breach: object) -> tuple[str, str]:
+        from src.application.report_builder import ReportContext, build_html_report
+        from src.domain.finops import BudgetBreach
+
+        assert breach is None or isinstance(breach, BudgetBreach)
+        return build_html_report(
+            [], self.STARTED, 1.0, ReportContext(llm_budget_breach=breach)
+        )
+
+    def test_daily_breach_names_the_cap_and_the_spend(self) -> None:
+        from src.domain.finops import BudgetBreach, BudgetWindow
+
+        html, text = self._mail(BudgetBreach(BudgetWindow.DAY, spent_usd=2.134, cap_usd=2.0))
+
+        for body in (html, text):
+            assert "LIMIT LLM WYCZERPANY" in body
+            assert "Dzienny limit" in body
+            assert "$2,13 z $2,00" in body
+            assert "bez płatnych wywołań" in body
+
+    def test_monthly_breach_names_the_month(self) -> None:
+        from src.domain.finops import BudgetBreach, BudgetWindow
+
+        html, text = self._mail(
+            BudgetBreach(BudgetWindow.MONTH, spent_usd=30.5, cap_usd=30.0)
+        )
+
+        assert "Miesięczny limit" in html
+        assert "$30,50 z $30,00" in text
+
+    def test_banner_comes_before_the_session_block(self) -> None:
+        from src.domain.finops import BudgetBreach, BudgetWindow
+
+        _, text = self._mail(BudgetBreach(BudgetWindow.DAY, spent_usd=2.5, cap_usd=2.0))
+
+        assert text.index("LIMIT LLM WYCZERPANY") < text.index("STOCKAGENT — RAPORT CYKLU")
+
+    def test_no_breach_no_banner(self) -> None:
+        html, text = self._mail(None)
+
+        assert "LIMIT LLM" not in html
+        assert "LIMIT LLM" not in text

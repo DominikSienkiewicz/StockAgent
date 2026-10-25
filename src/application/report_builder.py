@@ -73,7 +73,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.earnings import EarningsEvent
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import CycleCost
+from src.domain.finops import BudgetBreach, CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.invalidation import Invalidation
 from src.domain.isotonic_calibration import ClassIsotonicSelection, IsotonicMap
@@ -504,6 +504,10 @@ class ReportContext:
     # `user_portfolio` jest ignorowane (nigdy VaR na równych wagach).
     position_risk: PositionRisk | None = None
     cycle_cost: CycleCost | None = None
+    # FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls` — cykl bez
+    # płatnych wywołań, banner limitów na górze maila. None = limit nie wyczerpany
+    # (albo wyłączony, albo odczyt ledgera padł — fail-open), mail jak przed FIN-25.
+    llm_budget_breach: BudgetBreach | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
     # WIA-54: krzywa „od otwarcia” obok krzywej od ceny predykcji (te same transakcje).

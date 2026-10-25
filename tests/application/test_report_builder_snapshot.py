@@ -60,7 +60,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.drawdown import DrawdownSignal
 from src.domain.equity_curve import DirectionalHitRate, EquityCurve, EquityPoint
 from src.domain.feature_attribution import FeatureContribution
-from src.domain.finops import estimate_cycle_cost
+from src.domain.finops import BudgetBreach, BudgetWindow, estimate_cycle_cost
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel, MacroRiskInstrumentType, MacroRiskSignal
@@ -727,11 +727,35 @@ def _degraded_sources_cycle() -> tuple[str, str]:
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 
 
+def _llm_budget_spent_cycle() -> tuple[str, str]:
+    """FIN-25: dzienny limit USD z ledgera wyczerpany przed cyklem — banner limitu
+    na górze, ruch ponad progiem w „wyczerpany budżet” (bez analizy), cykl darmowy."""
+    results = [
+        _mapped(
+            "NVDA",
+            {**_ignored_raw("NVDA", AssetType.STOCK, "140.00", "-0.035"), "budget_exhausted": True},
+        ),
+        _mapped("AMD", _ignored_raw("AMD", AssetType.STOCK, "160.00", "0.004")),
+        _mapped("ETH", _ignored_raw("ETH", AssetType.CRYPTO, "3200", "-0.011")),
+    ]
+    context = ReportContext(
+        cycle_maturity=CycleMaturity.STEADY_STATE,
+        cycle_cost=estimate_cycle_cost({}),
+        display_timezone=DISPLAY_TIMEZONE,
+        run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
+        llm_budget_breach=BudgetBreach(BudgetWindow.DAY, spent_usd=2.134, cap_usd=2.0),
+    )
+    return build_html_report(results, STARTED, DURATION_SECONDS, context)
+
+
 SCENARIOS: dict[str, Callable[[], tuple[str, str]]] = {
     "full_cycle": _full_cycle,
     "all_ignored": _all_ignored_cycle,
     "first_run": _first_run_cycle,
     "degraded_sources": _degraded_sources_cycle,
+    "llm_budget_spent": _llm_budget_spent_cycle,
 }
 
 
