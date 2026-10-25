@@ -66,8 +66,9 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
   nie zostawia snapshotu, więc retry liczy Δ od ostatniego ukończonego cyklu (#6).
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
-- **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
-  zwraca exit 1 tylko gdy **wszystkie** symbole padły. Niedostarczenie raportu (mail
+- **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. Entry-pointy per symbol
+  (`main_agent`, `main_trainer`, `main_watch`, `main_backtest`) zwracają exit 1 tylko gdy
+  **wszystkie** symbole padły (`src/domain/exit_policy.run_exit_code`, NIEZ-38). Niedostarczenie raportu (mail
   Fast Loopa albo recap Slow Loopa, gdy kanał jest skonfigurowany) też zostawia exit 0,
   ale nie jest ciche: `flag_undelivered_report` (`main_agent.py`) drukuje adnotację
   `::error title=StockAgent::Raport nie został dostarczony` i zapisuje alert CRITICAL

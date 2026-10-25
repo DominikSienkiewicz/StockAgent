@@ -309,6 +309,27 @@ from publishing anything but the scorecard and ledger directories.
 
 **Guards** [`tests/infrastructure/test_supabase_storage_archive.py`](../tests/infrastructure/test_supabase_storage_archive.py) `test_store_uploads_private_and_returns_signed_url`, `test_object_path_is_the_cycle_id_without_personal_data` · [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py) `test_workflows_publish_only_the_public_artifact_dirs`
 
+### D-13 · Cycle roots may also go to Sigstore Rekor, through our own small client
+
+**Date** 2026-10-25 · **Status** in force, flag off · **Commits** `e5b19cb`, `0b6ef5f`, `a907321`, `dbb4c23`, `cdcd77a`, `38b96aa`
+
+The attestation ledger (D-4) proves order and content, but its timestamps come from a git
+branch the owner controls. Behind `attestation_rekor_enabled` the Fast Loop also logs the
+SHA-256 of each cycle root in the public Sigstore Rekor transparency log as a `hashedrekord`,
+signed keyless with the GitHub Actions OIDC identity of the workflow, and `verify-attestation`
+checks the entry offline: binding to the root, inclusion proof, entry time and workflow
+identity (owner decisions of 2026-10-24 and 2026-10-25). The client is about 290 lines of REST
+over `cryptography`, already in the dependency tree, instead of `sigstore-python` and its ~16
+extra packages. A Rekor outage only logs a `WARNING`; a root without an entry is counted, not a
+failure.
+
+*Costs:* our own client can drift from the Sigstore API, the verifier does not check the Fulcio
+chain or the checkpoint signature (confirm with `rekor-cli`), and turning the flag on means
+`id-token: write` on the agent job. *Gains:* an append-only public timestamp bound to a public
+job, with no new dependency, while the flag stays off.
+
+**Guards** [`tests/infrastructure/test_rekor_publisher.py`](../tests/infrastructure/test_rekor_publisher.py) `test_posts_hashedrekord_with_sha256_of_root` · [`tests/tools/test_verify_attestation.py`](../tests/tools/test_verify_attestation.py) `test_a_cycle_root_logged_by_another_workflow_fails_the_verdict` · [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py) `test_rekor_flag_needs_oidc_on_every_agent_job`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:

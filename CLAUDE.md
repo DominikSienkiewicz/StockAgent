@@ -34,13 +34,16 @@ domain  ←  application  ←  infrastructure
 - **`src/application/`** — porty (interfejsy ABC w `ports.py`), use cases, graf
   LangGraph, prompty, report builder. Zna `domain`, **nie zna** konkretnych adapterów.
 - **`src/infrastructure/`** — adaptery implementujące porty. Jedyne miejsce z I/O.
-- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py` / `main_scorecard.py`** — DI Container.
+- **`main_agent.py` / `main_trainer.py` / `main_watch.py` / `main_deadman.py` / `main_tools.py` / `main_scorecard.py` / `main_bot.py`** — DI Container.
   Jedyne miejsce, gdzie konkretne adaptery są łączone z use case'ami. `main_watch.py` (R-11)
   i `main_deadman.py` (NIEZ-11) reużywają fabryk z `main_agent` i NIE WOŁAJĄ żadnego
   płatnego portu ani `save_price_snapshot`; watch zapisuje do bazy wyłącznie stemple swoich
   alarmów (`shock_alerts`, `price_level_alerts`, `prediction_logs.invalidation_alerted_at`).
   `main_scorecard.py` (WIA-52) tylko czyta bazę i zapisuje pliki strony (scorecard,
   `scorecard.json`, strona statusu NIEZ-33) — bez płatnych portów i bez zapisu do bazy.
+  `main_bot.py` (MAIL-48) reużywa fabryk z `main_agent`, nie woła żadnego płatnego portu ani
+  `save_price_snapshot`; zapisuje do bazy wyłącznie offset `bot_state` i wyciszenia
+  `symbol_mutes`, odpowiada tylko czatowi `TELEGRAM_CHAT_ID` i nie pinguje heartbeatu.
   Każde narzędzie jednorazowe to podkomenda `main_tools.py`, które jako jedyne składa dla niego
   `Settings` i adaptery, a `src/tools/` trzyma wyłącznie czyste funkcje — osobny `main_<x>.py`
   dostaje tylko entry-point z własnym workflow (ARCH-39, bez wyjątków).
@@ -70,7 +73,8 @@ z równych wag to „watchlista”; etykiety rekomendacji i prefiks tematu są w
 `src/domain/polish_labels.py`. Pole z odczytów repozytorium wypełnia
 `ReportAssembler.assemble` (`application/use_cases/assemble_report.py`) przez
 `dataclasses.replace`; pole z adaptera (np. portfel właściciela) dokłada
-`main_agent._report_inputs`.
+`main_agent._report_inputs`. Zwarty mail cichego dnia (MAIL-35) = `COMPACT_REPORT_SECTIONS`;
+stopka ze źródłami danych i warunkami jest w każdej postaci maila.
 
 `main_agent.py` zostaje DI rootem Fast Loopa: mapuje `Settings` na opcje use case'ów
 (`ReportFlags`, `CycleOptions`, `PublicScorecardOptions`), buduje adaptery i kanały
@@ -97,8 +101,8 @@ symboli publikuje jedną linię rootu Merkle'a na cykl (WIA-60). `main_agent.del
 - Ułamek zmienia się w procent wyłącznie przez `to_percent` — NewType nie chroni
   arytmetyki (`Ratio * 100` to goły `Decimal`). Ręczne `* 100` tylko w formaterach
   prezentacji (`report_formatting.pct`, `format_pct_pl`).
-- Stan grafu (`AgentState.delta`, `drift`) i `PriceDelta.fraction` to ułamki;
-  `PriceDelta.percentage` to zdeprecjonowany alias ułamka (do usunięcia, ARCH-14).
+- Stan grafu (`AgentState.delta`, `drift`) i `PriceDelta.fraction` to ułamki; procent do
+  prezentacji daje `PriceDelta.percent` (alias `percentage` usunięty, ARCH-14).
 - Pole z ułamkiem nosi typ `Ratio` i nazwę `*_ratio` (np. `actual_change_ratio`,
   `return_ratio`, `change_ratio`, `eur_pln_30d_change_ratio`); progi alertów to
   `elevated_threshold` / `critical_threshold` typu `Ratio`. Sufiks `_pct` zostaje tylko przy
@@ -127,6 +131,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `tests/entrypoint_support.py` (rzuca na nieznane pole) albo `Settings(**NO_ENV_FILE, ...)`
   z `tests/settings_kwargs.py` — mypy nie zna `_env_file`, więc bez `# type: ignore`.
   Wspólne fixture'y `settings` i `mock_external_clients` żyją w `tests/conftest.py`.
+- Stan bota i wyciszenia to osobne porty `BotStatePort` i `SymbolMutePort` (adapter
+  `bot_store.py`, nie `RepositoryPort`); kontrakt w
+  `test_supabase_repo_postgrest.py::TestBotStoreContract`.
 - Payloady dostawców: `tests/fixtures/providers/` (TEST-16). Nowy parser adaptera = plik w
   kształcie prawdziwej odpowiedzi (bez kluczy i treści newsów) + test w
   `tests/infrastructure/test_provider_shapes.py`.
@@ -142,12 +149,17 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - **Bramka volatility**: płatne porty (LLM, Alpha Vantage, embeddingi) **nie mogą**
   być wołane, gdy zmiana ceny < `volatility_threshold`. Logika progu żyje w domenie
   (`Asset.evaluate_volatility`) — graf jest tylko wykonawcą.
-  Wyjątek (FIN-30): Slow Loop (recap tygodniowy, sędzia kalibracji, przyszłe joby
-  diagnoz) woła LLM poza bramką, ale tylko w tygodniowym budżecie
+  Wyjątek (FIN-30): Slow Loop (recap tygodniowy, diagnoza zbiorcza EXP-17, spłata diagnoz
+  WIA-53, sędzia diagnoz EXP-10; kalibracja pewności jest arytmetyczna i nie woła LLM,
+  WIA-65) woła LLM poza bramką, ale tylko w tygodniowym budżecie
   `slow_loop_max_paid_llm_calls_per_week` (config.toml: 15). Przydział liczy domena
   (`slow_loop_paid_budget`), wywołanie ponad przydział odrzuca `BudgetedLLMPort`
   przed dostawcą, a licznikiem jest ten sam `MeteredLLMPort` + `CycleTelemetry`
-  co w Fast Loopie.
+  co w Fast Loopie. Prompt joba Slow Loopa żyje w module jego use case'u, nie w
+  `prompts.py` — bajty modułów promptów wchodzą do `prompt_sha256` przepisu.
+  Twardy limit USD doby i miesiąca UTC (FIN-25, `daily_llm_budget_usd`,
+  `monthly_llm_budget_usd`) czyta `llm_calls` raz przed grafem (fail-open) i ustawia
+  `AgentGraphDeps.llm_budget_spent`.
 - **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
   ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
   `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
@@ -158,12 +170,19 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   progiem zniknąłby bez analizy. Drugi wyjątek (DAT-15, za `price_outlier_guard_enabled`):
   odczyt ceny, który detektor MAD uznał za anomalię, a `pc` notowania jej nie potwierdził,
   kończy jako 'ignored' BEZ snapshotu i bez rozliczenia; stęchła referencja wyłącza strażnika.
+  Wyczerpany limit USD (FIN-25) prowadzi każdy symbol za bramką do `budget_exhausted` — bez
+  snapshotu, jak FIN-12. Symbol wyciszony z bota (MAIL-45, za `symbol_mutes_enabled`) nie
+  idzie do grafu, a jego snapshot zapisuje `main_agent.snapshot_muted_symbols` z darmowego
+  `/quote` — inaczej pierwszy cykl po wyciszeniu liczyłby Δ od ceny sprzed tygodni.
 - **Self-Reflection**: `reflect_node` działa PRZED bramką volatility — ocena
   przeszłej predykcji jest niezależna od tego, czy bieżący cykl robi nową prognozę.
   Po podejrzanym splicie (DAT-23, za `split_detection_enabled`) reflect rozlicza ceną
   w jednostkach predykcji (`to_pre_split_price`), a bramka liczy ruch od skorygowanej referencji.
-- **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. `main_agent.main()`
-  zwraca exit 1 tylko gdy **wszystkie** symbole padły. Niedostarczenie raportu (mail
+- **Resilience**: pojedynczy błąd per-symbol nie wywala cyklu. Entry-pointy per symbol
+  (`main_agent`, `main_trainer`, `main_watch`, `main_backtest`) zwracają exit 1 tylko gdy
+  **wszystkie** symbole padły (`src/domain/exit_policy.run_exit_code`, NIEZ-38); częściowa
+  porażka to exit 0 i WARNING `PARTIAL_FAILURE_LOG`, w Slow Loopie także sam padnięty
+  model wspólny. Niedostarczenie raportu (mail
   Fast Loopa albo recap Slow Loopa, gdy kanał jest skonfigurowany) też zostawia exit 0,
   ale nie jest ciche: `flag_undelivered_report` (`main_agent.py`) drukuje adnotację
   `::error title=StockAgent::Raport nie został dostarczony` i zapisuje alert CRITICAL
@@ -191,6 +210,27 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `TrainingProvenance` (odcisk zbioru, parametry z jawnym `random_state`, wersja XGBoost, SHA
   kodu), zapis wag pisze sidecar `.json`, a `main_tools.py reproduce-training` sprawdza
   odtworzenie (ML-22).
+- **Shadow mode wariantu promptu/modelu (EXP-26)**: wariant (`shadow_prompt_variant`, flaga
+  `shadow_prompt_variant_enabled`, migracja 083) wołany tylko dla stałej podpróbki
+  (`in_shadow_sample`) za bramką; wynik wyłącznie do `shadow_predictions`
+  (`save_shadow_trend_prediction`). Wywołanie liczy się pod `shadow_llm` (poza
+  `PAID_LLM_SOURCES`) i idzie tylko w luzie sufitu cyklu (`shadow_call_allowed`,
+  `CycleTelemetry.reserve_paid_call`), twardo ≤ 5 na cykl — nigdy nie tnie symbolu produkcji.
+  Znaczniki wyniku `LLMPort.analyze` (`LLM_ROUTED_MODEL_KEY`, `LLM_ESCALATION_FAILED_KEY` i
+  tożsamość dostawcy) zdejmuje graf przed normalizacją; routing daje `model_used` w kwicie v2
+  i flagę jakości `escalation_failed`, a eskalacja frontiera liczy się pod `llm` (FIN-21).
+- **Rundy rady (ML-40)**: `council_votes.round` (082) — 1 = niezależny głos, 2 = rewizja
+  debaty; trafność person (RPC i odczyty z Pythona od 082) liczy rundę 1.
+- **Persony publicznie (MAIL-38)**: nazwiska tylko w mailu, publiczne wyjścia biorą archetyp z
+  `data/council_personas/archetypes.toml` (poza hashem przepisu); strażnik
+  `tests/test_public_persona_guard.py`.
+- **Sędzia diagnoz (EXP-10)**: `diagnosis_judge_enabled` sam tylko ocenia (tryb cienia,
+  `diagnosis_judge_score`); odrzucenie (`rejected_diagnosis` i placeholder) wymaga
+  `diagnosis_judge_rejects_enabled`, które właściciel włącza po kalibracji na 20 własnych ocenach.
+- **Rekor (WIA-73)**: `RekorAttestationPublisher` owija publisher pliku (jedno pole
+  `attestation_publisher`); root cyklu idzie jako `hashedrekord` z SHA-256 rootu
+  (`root_artifact_sha256`), wpis Rekora trafia do pola `rekor` linii ledgera, awaria daje tylko
+  WARNING. `id-token: write` dostaje wyłącznie job, który podpisuje.
 - **Archiwum digestów (MAIL-24)**: `DigestArchivePort` i prywatny bucket Supabase Storage
   `digests`; podpisany link (TTL 7 dni) dostaje wyłącznie mail i push właściciela (BEZ-01).
 
