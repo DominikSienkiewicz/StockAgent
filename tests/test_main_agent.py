@@ -15,6 +15,7 @@ import main_backtest
 import main_trainer
 from src.application.agent_graph import AgentGraphDeps
 from src.application.alpha_signals import AlphaSignals
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
@@ -32,6 +33,7 @@ from src.domain.council import CouncilVerdict, Recommendation
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
+from src.domain.finops import PAID_LLM_SOURCES
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
@@ -123,6 +125,52 @@ class TestModelRoutingWiring:
         answer = main_agent.build_llm_adapter(settings).analyze("prompt")
 
         assert answer.get(LLM_ROUTED_MODEL_KEY) == "openai:gpt-5-mini"
+
+    @staticmethod
+    def _routed_cycle_telemetry(
+        settings: Settings, mocker: Any, cheap_confidence: float
+    ) -> CycleTelemetry:
+        """Fast Loop z routingiem: jedno `llm_port.analyze` przez deps z DI i telemetria
+        cyklu, którą czyta sufit FIN-12."""
+        mocker.patch(
+            "src.infrastructure.llm.openai_client.OpenAIAdapter.analyze",
+            return_value={"trend_direction": "BULLISH", "confidence_score": cheap_confidence},
+        )
+        mocker.patch(
+            "src.infrastructure.llm.anthropic_client.AnthropicAdapter.analyze",
+            return_value={"trend_direction": "BEARISH", "confidence_score": 0.8},
+        )
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        main_agent.build_use_case(settings)
+        deps: AgentGraphDeps = use_case_cls.call_args.args[0]
+
+        deps.llm_port.analyze("prompt")
+
+        return deps.telemetry
+
+    def test_frontier_escalation_counts_towards_the_cycle_ceiling(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        # FIN-12 / FIN-21: eskalacja to drugi płatny request; wywołanie taniego modelu
+        # liczy graf (`_log_paid_call`), więc telemetria z DI widzi tylko frontiera.
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+
+        telemetry = self._routed_cycle_telemetry(settings, mocker, cheap_confidence=0.1)
+
+        assert dict(telemetry.snapshot().paid_calls) == {"llm": 1}
+        assert telemetry.paid_calls_of(PAID_LLM_SOURCES) == 1
+
+    def test_confident_cheap_answer_adds_no_paid_call(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        # Bez eskalacji nic ponad wywołanie taniego modelu (liczone w grafie).
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+
+        telemetry = self._routed_cycle_telemetry(settings, mocker, cheap_confidence=0.9)
+
+        assert dict(telemetry.snapshot().paid_calls) == {}
 
 
 class TestCouncilLLMFactory:

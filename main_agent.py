@@ -327,8 +327,9 @@ def build_llm_adapter(
     NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
     (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`,
     a `fallback_allowance` (Slow Loop) odrzuca go ponad przydział joba.
+    FIN-21: `telemetry` liczy pod `llm` także eskalację kaskady do frontiera.
     """
-    primary = _build_primary_llm(settings, quota_monitor, usage_sink)
+    primary = _build_primary_llm(settings, quota_monitor, usage_sink, telemetry)
     return _with_llm_fallback(
         settings, primary, quota_monitor, usage_sink, telemetry, fallback_allowance
     )
@@ -390,8 +391,13 @@ def _build_primary_llm(
     settings: Settings,
     quota_monitor: QuotaMonitor | None,
     usage_sink: UsageSink | None,
+    telemetry: CycleTelemetry | None = None,
 ) -> LLMPort:
-    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`."""
+    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`.
+
+    FIN-12 / FIN-21: eskalacja do frontiera to drugi płatny request jednego
+    `analyze`, którego graf nie widzi (liczy tylko wywołanie kaskady), więc
+    `MeteredLLMPort` liczy go w `telemetry` pod `llm` — widzi go sufit cyklu."""
     if settings.model_routing_enabled:
         from src.infrastructure.llm.cascading import CascadingLLMAdapter
         from src.infrastructure.llm.openai_client import OpenAIAdapter
@@ -409,6 +415,8 @@ def _build_primary_llm(
             quota_monitor,
             usage_sink,
         )
+        if telemetry is not None:
+            frontier = MeteredLLMPort(frontier, telemetry, "llm")
         # FIN-21: tożsamości w notacji przepisu — kwit dostaje `model_used`, czyli
         # połówkę `llm_model`, która faktycznie odpowiedziała.
         cheap_model, frontier_model = _routing_identities(settings)
