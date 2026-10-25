@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import AdvisoryCouncilPort, LLMPort
 from src.domain.council import (
     CouncilInput,
@@ -16,7 +18,7 @@ from src.domain.council import (
     CouncilVerdict,
     InvestorPersona,
 )
-from src.domain.value_objects import AssetType
+from src.domain.value_objects import AssetType, Percent
 from src.infrastructure.adapters.advisory_council import (
     COUNCIL_MAX_PERSONAS,
     LLMAdvisoryCouncil,
@@ -42,16 +44,16 @@ def _make_input() -> CouncilInput:
     return CouncilInput(
         symbol="AAPL",
         current_price=Decimal("180.00"),
-        price_delta_pct=Decimal("3.5"),
+        price_delta_pct=Percent(Decimal("3.5")),
         sentiment_score=0.6,
-        news_articles=["Apple beats earnings"],
+        news_articles=("Apple beats earnings",),
         llm_trend="BULLISH",
         llm_confidence=0.82,
         ml_price_target=Decimal("185.00"),
     )
 
 
-def _opinion_json(rec: str = "BUY") -> dict:
+def _opinion_json(rec: str = "BUY") -> dict[str, Any]:
     return {
         "recommendation": rec,
         "confidence": 0.8,
@@ -60,7 +62,7 @@ def _opinion_json(rec: str = "BUY") -> dict:
     }
 
 
-def _verdict_json() -> dict:
+def _verdict_json() -> dict[str, Any]:
     return {
         "final_recommendation": "BUY",
         "consensus_strength": 0.73,
@@ -95,7 +97,7 @@ class TestLLMAdvisoryCouncilIsPort:
 class TestAnalyzeCallCount:
     def _side_effect_factory(self, llm_port: Mock) -> None:
         call_count = 0
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return _opinion_json() if call_count <= COUNCIL_SIZE else _verdict_json()
@@ -135,7 +137,7 @@ class TestFallbacks:
         self, council: LLMAdvisoryCouncil, llm_port: Mock
     ) -> None:
         call_count = 0
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= COUNCIL_SIZE:
@@ -150,7 +152,7 @@ class TestFallbacks:
         self, council: LLMAdvisoryCouncil, llm_port: Mock
     ) -> None:
         call_count = 0
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= COUNCIL_SIZE:
@@ -201,7 +203,7 @@ class TestConsensusDerivedFromVotes:
         n_personas = 4
         call_count = 0
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= n_personas:
@@ -221,7 +223,7 @@ class TestConsensusDerivedFromVotes:
         n_personas = 4
         call_count = 0
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= n_personas:
@@ -245,7 +247,7 @@ class TestConsensusDerivedFromVotes:
         n_personas = 4
         call_count = 0
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= n_personas:
@@ -382,7 +384,7 @@ class TestAdaptivePersonaWeighting:
     """Feature #3: weights_provider waży głosy person ich historyczną
     trafnością. Brak providera → werdykt jak dziś (wagi 1.0)."""
 
-    def _opinion(self, rec: str, conf: float = 0.5) -> dict:
+    def _opinion(self, rec: str, conf: float = 0.5) -> dict[str, Any]:
         return {
             "recommendation": rec,
             "confidence": conf,
@@ -405,9 +407,9 @@ class TestAdaptivePersonaWeighting:
         data = CouncilInput(
             symbol="BTC",
             current_price=Decimal("60000"),
-            price_delta_pct=Decimal("3.5"),
+            price_delta_pct=Percent(Decimal("3.5")),
             sentiment_score=0.6,
-            news_articles=["x"],
+            news_articles=("x",),
             llm_trend="BULLISH",
             llm_confidence=0.82,
             ml_price_target=Decimal("61000"),
@@ -419,7 +421,7 @@ class TestAdaptivePersonaWeighting:
     def test_heavy_persona_swings_verdict(self, llm_port: Mock) -> None:
         # Round-1: "Star" → BUY, dwie inne → SELL, równe confidence 0.5.
         # Bez wag: SELL (headcount/masa). Z 5× wagą dla Star: BUY wygrywa.
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "Star" in prompt:
                 return self._opinion("BUY")
             if "B persona" in prompt or "C persona" in prompt:
@@ -441,7 +443,7 @@ class TestAdaptivePersonaWeighting:
 
     def test_no_provider_unchanged(self, llm_port: Mock) -> None:
         # Bez weights_provider werdykt wynika z czystej masy confidence.
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "Star" in prompt:
                 return self._opinion("BUY")
             if "B persona" in prompt or "C persona" in prompt:
@@ -457,7 +459,7 @@ class TestAdaptivePersonaWeighting:
 
     def test_provider_exception_falls_back_to_unweighted(self, llm_port: Mock) -> None:
         # Wyjątek w providerze nie może wywalić rady — degradujemy do wag None.
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "Star" in prompt:
                 return self._opinion("BUY")
             if "B persona" in prompt or "C persona" in prompt:
@@ -487,7 +489,7 @@ class TestDebateMode:
         Po rewizji wszyscy → BUY. Chairman na końcu."""
         round1_calls = {"n": 0}
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             # Rewizja rozpoznawana po bloku peerów (unikalny marker).
             if "<opinie_peerow>" in prompt:
                 return _opinion_json("BUY")
@@ -533,7 +535,7 @@ class TestDebateMode:
         # Round-1 jednomyślne BUY (brak SELL) → brak rewizji: N + 1.
         n = 3
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "final_recommendation" in prompt:
                 return _verdict_json()
             return _opinion_json("BUY")
@@ -551,7 +553,7 @@ class TestDebateMode:
         n = 3
         round1_calls = {"n": 0}
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "<opinie_peerow>" in prompt:
                 raise AssertionError("revision must not run when debate is off")
             if "final_recommendation" in prompt:
@@ -578,7 +580,7 @@ class TestDebateMode:
         n = 3
         round1_calls = {"n": 0}
 
-        def side_effect(prompt: str) -> dict:
+        def side_effect(prompt: str) -> dict[str, Any]:
             if "<opinie_peerow>" in prompt:
                 raise AssertionError("revision must not run by default")
             if "final_recommendation" in prompt:
@@ -604,10 +606,10 @@ def _routed(
     failing: set[str] | None = None,
     slow: set[str] | None = None,
     everyone_fails: bool = False,
-):
+) -> Callable[[str], dict[str, Any]]:
     """side_effect LLM: chairman zawsze odpowiada, persony wg scenariusza."""
 
-    def side_effect(prompt: str) -> dict:
+    def side_effect(prompt: str) -> dict[str, Any]:
         if "final_recommendation" in prompt:
             return _verdict_json()
         name = next(n for n in ALL_INVESTORS if f"Wcielasz się w {n}" in prompt)
@@ -691,8 +693,9 @@ class TestBlindCouncilCallCount:
 _SEVEN_PERSONAS = _TEST_PERSONAS[:7]
 
 
-def _metered_council(llm_port: Mock, *, debate_mode: bool = False):
-    from src.application.cycle_telemetry import CycleTelemetry
+def _metered_council(
+    llm_port: Mock, *, debate_mode: bool = False
+) -> tuple[LLMAdvisoryCouncil, CycleTelemetry]:
     from src.application.metering import MeteredLLMPort
 
     telemetry = CycleTelemetry()
@@ -718,7 +721,7 @@ def test_analyze_records_one_paid_call_per_llm_request(llm_port: Mock) -> None:
 def test_debate_round_counts_every_revision_request(llm_port: Mock) -> None:
     round1 = {"n": 0}
 
-    def split_then_converge(prompt: str) -> dict:
+    def split_then_converge(prompt: str) -> dict[str, Any]:
         if "<opinie_peerow>" in prompt:
             return _opinion_json("BUY")
         if "final_recommendation" in prompt:
@@ -772,7 +775,7 @@ def test_persona_threads_inherit_the_usage_scope_of_the_caller() -> None:
     usage = LLMUsage(provider="openai", model="gpt-5-mini", input_tokens=1, output_tokens=1)
     port = Mock(spec=LLMPort)
 
-    def analyze(_prompt: str) -> dict:
+    def analyze(_prompt: str) -> dict[str, Any]:
         ledger.record(usage)
         return _opinion_json()
 

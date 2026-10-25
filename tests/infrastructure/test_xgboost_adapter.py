@@ -1,6 +1,8 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -88,7 +90,7 @@ class TestTrain:
 
     def test_returns_validation_metrics(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset()
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
 
@@ -99,7 +101,7 @@ class TestTrain:
         # jest re-walidowany, więc raportowane RMSE/hit-rate dotyczą KANDYDATA na
         # holdoucie — nazwy kluczy muszą to mówić wprost, plus `metric_note`.
         features, target = _synthetic_dataset()
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert "candidate_holdout_rmse" in result
         assert "candidate_holdout_directional_hit_rate" in result
@@ -148,9 +150,9 @@ class TestTrain:
         self, adapter: XGBoostAdapter
     ) -> None:
         features, target = _synthetic_dataset()
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
-        hit_rate = result["candidate_holdout_directional_hit_rate"]
+        hit_rate = cast(float, result["candidate_holdout_directional_hit_rate"])
         assert 0.0 <= hit_rate <= 1.0
         # Sygnał jest realny → kierunek trafiony częściej niż losowo.
         assert hit_rate > 0.5
@@ -163,7 +165,7 @@ class TestWalkForwardValidation:
 
     def test_strong_signal_ships_across_folds(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert result["status"] == "trained_successfully"
         # Wystarczająco duża próbka → realne foldy walk-forward.
@@ -200,7 +202,7 @@ class TestWalkForwardValidation:
         self, adapter: XGBoostAdapter
     ) -> None:
         features, target = _synthetic_dataset(n=200)
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
         assert result["n_folds"] > 1
 
     def test_small_sample_falls_back_to_single_split(
@@ -217,9 +219,9 @@ class TestWalkForwardValidation:
         # Drift-detection: per-feature mean/std w wyniku, żeby porównać z
         # poprzednim runem i wykryć dryf rozkładu cech wejściowych.
         features, target = _synthetic_dataset(n=120)
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
-        stats = result["feature_stats"]
+        stats = cast(dict[str, Any], result["feature_stats"])
         assert set(stats.keys()) == set(FEATURE_NAMES)
         for name in FEATURE_NAMES:
             assert "mean" in stats[name]
@@ -233,7 +235,7 @@ class TestWalkForwardValidation:
         # Dryf cech jest obserwowalny niezależnie od werdyktu bramki.
         features, _ = _synthetic_dataset(n=200)
         target = pd.Series([0.0] * 200)
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert result["status"] == "skipped_validation_failed"
         assert set(result["feature_stats"].keys()) == set(FEATURE_NAMES)
@@ -606,7 +608,7 @@ class TestPooledTrainingSupport:
     ) -> None:
         features, target = _synthetic_dataset(n=200)
 
-        result = adapter.train(features, target, persist=False)
+        result: Mapping[str, Any] = adapter.train(features, target, persist=False)
 
         assert result["status"] == "evaluated_passed_gate"
         assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
@@ -730,7 +732,7 @@ class TestStrongerBaselines:
         # sygnał LLM ma niższe RMSE — „hybryda" nic by nie dodała.
         features, target = self._llm_driven_dataset()
 
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert result["candidate_holdout_rmse"] < result["baseline_rmse"]
         assert result["llm_baseline_rmse"] < result["candidate_holdout_rmse"]
@@ -741,7 +743,7 @@ class TestStrongerBaselines:
     def test_result_reports_all_three_baselines(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=200)
 
-        result = adapter.train(features, target)
+        result: Mapping[str, Any] = adapter.train(features, target)
 
         assert result["status"] == "trained_successfully"
         for key in ("baseline_rmse", "drift_baseline_rmse", "llm_baseline_rmse"):
@@ -782,7 +784,7 @@ class TestFeatureStatsBins:
     def test_stats_carry_quantile_bins_summing_to_one(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=120)
 
-        stats = adapter.train(features, target)["feature_stats"]
+        stats = cast(dict[str, Any], adapter.train(features, target)["feature_stats"])
 
         for name in FEATURE_NAMES:
             assert {"mean", "std", "edges", "fractions", "psi_recent_30d"} <= set(stats[name])
@@ -799,7 +801,9 @@ class TestFeatureStatsBins:
         # Ostatnie 30 dni: rozkład price_delta przesunięty o +0.2 (dryf).
         features.loc[170:, "price_delta"] += 0.2
 
-        stats = adapter.train(features, target, timestamps=stamps)["feature_stats"]
+        stats = cast(
+            dict[str, Any], adapter.train(features, target, timestamps=stamps)["feature_stats"]
+        )
 
         assert stats["price_delta"]["psi_recent_30d"] > 0.25
         assert stats["av_relevance_avg"]["psi_recent_30d"] < 0.25
@@ -807,7 +811,7 @@ class TestFeatureStatsBins:
     def test_psi_is_none_without_timestamps(self, adapter: XGBoostAdapter) -> None:
         features, target = _synthetic_dataset(n=120)
 
-        stats = adapter.train(features, target)["feature_stats"]
+        stats = cast(dict[str, Any], adapter.train(features, target)["feature_stats"])
 
         assert stats["price_delta"]["psi_recent_30d"] is None
 

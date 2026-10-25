@@ -287,6 +287,12 @@ class _RendezvousCap(int):
     przeplot: bez locka wszystkie wątki porównują stary licznik i każdy eskaluje;
     z lockiem porównania idą po kolei, a każde czeka najwyżej `patience`."""
 
+    _parties: int
+    _patience: float
+    _arrived: int
+    _guard: threading.Lock
+    _everyone_here: threading.Event
+
     def __new__(cls, value: int, *, parties: int, patience: float) -> _RendezvousCap:
         cap = super().__new__(cls, value)
         cap._parties = parties

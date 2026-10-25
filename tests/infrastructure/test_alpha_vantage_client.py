@@ -10,7 +10,7 @@ import requests
 from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
 
 
-def _ok_response(payload: dict) -> MagicMock:
+def _ok_response(payload: dict[str, Any]) -> MagicMock:
     response = MagicMock(spec=requests.Response)
     response.status_code = 200
     response.json.return_value = payload
@@ -223,7 +223,7 @@ class TestBatching:
 class TestApiKeyRotation:
     """Wiele kluczy → klient rotuje gdy AV zwraca rate-limit info."""
 
-    def _rate_limit_response(self):
+    def _rate_limit_response(self) -> MagicMock:
         return _ok_response({"Information": "rate limit reached for key X"})
 
     def test_rotates_to_next_key_when_first_is_rate_limited(self, mocker: Any) -> None:
@@ -344,7 +344,7 @@ class TestApiKeyRotation:
         assert len(client._cached_feed) > 0
 
     @staticmethod
-    def _note_response():
+    def _note_response() -> MagicMock:
         # Historyczny kształt limitu częstotliwości AV: pole `Note` zamiast `Information`.
         return _ok_response({
             "Note": "Thank you for using Alpha Vantage! Our standard API call "
@@ -746,7 +746,7 @@ class TestRateLimitRotationDoesNotSleep:
     klucza nie idzie żaden request, więc pacing 1 req/sec go nie dotyczy.
     Na wyczerpany dzień to oszczędza re-chodzenie po martwych kluczach."""
 
-    def _rate_limit_response(self):
+    def _rate_limit_response(self) -> MagicMock:
         return _ok_response({"Information": "rate limit reached"})
 
     def test_no_sleep_between_dead_keys_on_rotation(self, mocker: Any) -> None:
@@ -816,7 +816,7 @@ class TestNewsWindow:
     _NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
     @staticmethod
-    def _article(url: str, published: str) -> dict:
+    def _article(url: str, published: str) -> dict[str, Any]:
         return {
             "title": f"AAPL news {url}",
             "url": url,
@@ -920,7 +920,7 @@ def test_exhausted_keys_alert_is_polish_and_logged_in_english(
     ids=["error_message", "empty"],
 )
 def test_error_message_payload_sets_degraded_reason(
-    mocker: Any, caplog: pytest.LogCaptureFixture, payload
+    mocker: Any, caplog: pytest.LogCaptureFixture, payload: dict[str, str]
 ) -> None:
     # DAT-07: payload bez `feed` i bez markera limitu to nie „spokojny dzień” —
     # sentyment niesie `degraded_reason`, ale TYLKO symbol z tym payloadem.
@@ -1029,7 +1029,7 @@ def test_supported_tickers_drops_symbols_alpha_vantage_rejects() -> None:
     assert supported_tickers(["AAPL", "CSPX.L", "BTC", "XDWD.DE"]) == ["AAPL", "BTC"]
 
 
-def _article(url: str, tickers: dict[str, str]) -> dict:
+def _article(url: str, tickers: dict[str, str]) -> dict[str, Any]:
     """Artykuł z `ticker_sentiment` dla podanych tickerów (ticker → relevance)."""
     return {
         "title": f"News {url}",
@@ -1161,7 +1161,7 @@ class TestLazyPerSymbol:
         import threading
         import time as real_time
 
-        def slow_get(*_args: Any, **_kwargs: Any):
+        def slow_get(*_args: Any, **_kwargs: Any) -> MagicMock:
             real_time.sleep(0.02)  # poszerza okno race'a
             return _ok_response({"feed": []})
 
@@ -1189,7 +1189,7 @@ class TestLazyPerSymbol:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         both_in_flight = threading.Barrier(2, timeout=5)
 
-        def get(*_args: Any, **kwargs: Any):
+        def get(*_args: Any, **kwargs: Any) -> MagicMock:
             if kwargs["params"]["apikey"] == "k1":
                 both_in_flight.wait()
                 return _ok_response({"Information": "rate limit reached"})
@@ -1197,7 +1197,7 @@ class TestLazyPerSymbol:
 
         mock_get = mocker.patch("requests.Session.get", side_effect=get)
         client = self._client()
-        results: dict[str, dict] = {}
+        results: dict[str, dict[str, Any]] = {}
 
         def worker(symbol: str) -> None:
             results[symbol] = client.sentiment_for(symbol)
