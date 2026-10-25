@@ -60,6 +60,11 @@ def effective(
     )
 
 
+def watchlist_summary(watchlist: EffectiveWatchlist) -> str:
+    """Jedna linia dla maila i bota: „watchlista: 45 z config − 2 wyciszone”."""
+    return f"watchlista: {watchlist.config_count} z config − {len(watchlist.muted)} wyciszone"
+
+
 def mute_until(now: datetime, days: int) -> datetime:
     """Koniec wyciszenia na `days` pełnych dób od `now` (co najmniej jedna)."""
     _require_aware(now)

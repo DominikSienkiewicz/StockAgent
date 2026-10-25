@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.domain.watchlist import SymbolMute, effective, mute_until
+from src.domain.watchlist import SymbolMute, effective, mute_until, watchlist_summary
 
 NOW = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
 CONFIG = ("AAPL", "NVDA", "TSLA", "BTC")
@@ -79,3 +79,9 @@ def test_mute_until_counts_whole_days_from_now() -> None:
     assert mute_until(NOW, 7) == NOW + timedelta(days=7)
     with pytest.raises(ValueError):
         mute_until(NOW, 0)
+
+
+def test_summary_names_config_count_and_muted_count() -> None:
+    watchlist = effective(CONFIG, [SymbolMute("NVDA", NOW + timedelta(days=1))], NOW)
+
+    assert watchlist_summary(watchlist) == "watchlista: 4 z config − 1 wyciszone"
