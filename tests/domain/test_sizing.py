@@ -56,8 +56,19 @@ class TestSuggestBand:
         assert band.max_pct == pytest.approx(3.0)
 
     def test_clamps_consensus_above_one(self) -> None:
-        # Wejście poza [0,1] nie może wysadzić reguły — clamp do sensownego zakresu.
+        # Wejście poza [0,1] nie może wysadzić reguły — konsensus i dissent clampujemy,
+        # a hit-rate spoza [0,1] to nieznany track record (PORT-14), więc bez pełnej bandy.
         band = suggest_band(consensus_strength=5.0, dissent_ratio=-2.0, hit_rate=2.0)
+        assert band.tier == "standard"
+
+    @pytest.mark.parametrize("hit_rate", [1.0001, 2.0, 55.0])
+    def test_hit_rate_above_one_is_treated_as_cold_start(self, hit_rate: float) -> None:
+        # PORT-14: hit-rate > 1 to błąd skali albo danych, nie „trafia zawsze”.
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=hit_rate)
+        assert band.tier == "standard"
+
+    def test_hit_rate_of_exactly_one_still_allows_full_band(self) -> None:
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=1.0)
         assert band.tier == "full"
 
     def test_clamps_negative_inputs_to_conservative(self) -> None:

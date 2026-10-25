@@ -87,10 +87,11 @@ def suggest_band(
 
     Reguła Kelly-lite, deterministyczna i czysta (stdlib only):
 
-    - Wejścia są clampowane do sensownych zakresów (consensus/dissent ∈ [0,1],
-      hit_rate ∈ [0,1] gdy podany) — żadne ekstremum nie wysadza klasyfikacji.
-      Wartość niefinitna (NaN, ±inf) w consensus/dissent daje `starter`, a w
-      hit_rate znaczy „nieznany” (PORT-12).
+    - consensus/dissent są clampowane do [0,1] — żadne ekstremum nie wysadza
+      klasyfikacji. Wartość niefinitna (NaN, ±inf) w consensus/dissent daje
+      `starter`, a w hit_rate znaczy „nieznany” (PORT-12). hit_rate spoza [0,1]
+      też znaczy „nieznany” (PORT-14, fail-closed): 2.0 to błąd skali albo danych,
+      nie track record uprawniający do pełnej bandy.
     - `full` (4-5%) wymaga JEDNOCZEŚNIE: mocnego konsensusu, niskiego dissentu
       ORAZ znanego, przyzwoitego hit-rate. Brak track recordu (cold-start) lub
       słaby hit-rate nigdy nie sięgają po pełną bandę.
@@ -128,13 +129,13 @@ def suggest_band(
     # (`_clamp` zamieniał NaN i +inf na 1.0, czyli na pełną bandę).
     if hit_rate is not None and not math.isfinite(hit_rate):
         hit_rate = None
-    clamped_hit_rate = _clamp(hit_rate, 0.0, 1.0) if hit_rate is not None else None
+    # PORT-14: hit-rate spoza [0, 1] to cold-start (fail-closed), nie clamp do 1.0.
+    if hit_rate is not None and not 0.0 <= hit_rate <= 1.0:
+        hit_rate = None
 
     strong_consensus = consensus >= STRONG_CONSENSUS_THRESHOLD
     low_dissent = dissent <= LOW_DISSENT_THRESHOLD
-    good_hit_rate = (
-        clamped_hit_rate is not None and clamped_hit_rate >= GOOD_HIT_RATE_THRESHOLD
-    )
+    good_hit_rate = hit_rate is not None and hit_rate >= GOOD_HIT_RATE_THRESHOLD
 
     if not (strong_consensus and low_dissent):
         # Rada niepewna albo rozłam — zostajemy przy bandzie startowej.
