@@ -1884,6 +1884,127 @@ class TestGetCouncilVotesForPrediction:
         mock_client.table.assert_called_with("council_votes")
 
 
+class TestCouncilVoteRoundsFromSchema:
+    """ML-40: od migracji 082 odczyty głosów biorą rundę 1 ZAWSZE — wyłączenie debaty
+    po okresie z nią nie może przywrócić rewizji (runda 2) do historii person,
+    redundancji i dissent-replay. Bez flagi debaty o kolumnie `round` mówi
+    `schema_version()` (raz na instancję); wersja nieznana = bez filtra, jak bramka
+    schematu (fail-open). Sondę włączają entry-pointy (`council_vote_rounds_from_schema`);
+    repozytorium złożone wprost (narzędzia, testy) czyta jak dotąd."""
+
+    @staticmethod
+    def _repo() -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co", key="k", council_vote_rounds_from_schema=True
+        )
+
+    @staticmethod
+    def _schema(client: MagicMock, version: object) -> None:
+        client.rpc.return_value.execute.return_value = MagicMock(data=version)
+
+    @staticmethod
+    def _history_gte(client: MagicMock) -> MagicMock:
+        return cast(MagicMock, client.table.return_value.select.return_value.in_.return_value.gte)
+
+    def test_history_reads_the_first_round_once_the_database_has_082(
+        self, mock_client: MagicMock
+    ) -> None:
+        self._schema(mock_client, 82)
+        _set_chain_response(
+            mock_client, ["table", "select", "in_", "gte", "eq", "order", "order", "range"], []
+        )
+
+        self._repo().get_council_vote_history(["NVDA"])
+
+        self._history_gte(mock_client).return_value.eq.assert_called_once_with("round", 1)
+
+    def test_samples_read_the_first_round_once_the_database_has_082(
+        self, mock_client: MagicMock
+    ) -> None:
+        self._schema(mock_client, 83)
+        _set_chain_response(
+            mock_client, ["table", "select", "gte", "eq", "order", "order", "range"], []
+        )
+
+        self._repo().get_council_vote_samples()
+
+        gte = mock_client.table.return_value.select.return_value.gte
+        gte.return_value.eq.assert_called_once_with("round", 1)
+
+    def test_dissent_replay_reads_the_first_round_once_the_database_has_082(
+        self, mock_client: MagicMock
+    ) -> None:
+        self._schema(mock_client, 82)
+        _set_chain_response(mock_client, ["table", "select", "eq", "eq"], [])
+
+        self._repo().get_council_votes_for_prediction("pred-9")
+
+        eq = mock_client.table.return_value.select.return_value.eq
+        eq.return_value.eq.assert_called_with("round", 1)
+
+    @pytest.mark.parametrize("version", [81, None])
+    def test_no_filter_before_082_or_with_an_unknown_version(
+        self, mock_client: MagicMock, version: int | None
+    ) -> None:
+        # Przed 082 kolumny nie ma (filtr dałby 42703); bez rejestru migracji — jak dotąd.
+        self._schema(mock_client, version)
+        _set_chain_response(mock_client, ["table", "select", "in_", "gte", "order"], [])
+
+        self._repo().get_council_vote_history(["NVDA"])
+
+        self._history_gte(mock_client).return_value.eq.assert_not_called()
+
+    def test_unanswered_probe_reads_as_before(
+        self, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        mock_client.rpc.return_value.execute.side_effect = APIError(
+            {"code": "PGRST202", "message": "function schema_version does not exist"}
+        )
+        _set_chain_response(mock_client, ["table", "select", "in_", "gte", "order"], [])
+
+        self._repo().get_council_vote_history(["NVDA"])
+
+        self._history_gte(mock_client).return_value.eq.assert_not_called()
+
+    def test_the_schema_is_asked_once_per_repository(
+        self, mock_client: MagicMock
+    ) -> None:
+        self._schema(mock_client, 82)
+        repo = self._repo()
+
+        repo.get_council_vote_history(["NVDA"])
+        repo.get_council_votes_for_prediction("pred-9")
+
+        mock_client.rpc.assert_called_once_with("schema_version")
+
+    def test_debate_flag_filters_without_asking_the_schema(
+        self, mock_client: MagicMock
+    ) -> None:
+        rounds_repo = SupabaseRepository(
+            url="https://test.supabase.co",
+            key="k",
+            council_vote_rounds_enabled=True,
+            council_vote_rounds_from_schema=True,
+        )
+
+        rounds_repo.get_council_votes_for_prediction("pred-9")
+
+        mock_client.rpc.assert_not_called()
+
+    def test_a_repository_built_directly_never_asks_the_schema(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._schema(mock_client, 82)
+
+        repo.get_council_votes_for_prediction("pred-9")
+
+        mock_client.rpc.assert_not_called()
+        eq = mock_client.table.return_value.select.return_value.eq
+        eq.return_value.eq.assert_not_called()
+
+
 class TestSaveCouncilVotes:
     def test_batch_inserts_one_row_per_investor(
         self, repo: SupabaseRepository, mock_client: MagicMock

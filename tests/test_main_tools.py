@@ -335,6 +335,18 @@ def test_explain_by_symbol_and_date_reads_that_utc_day(
     assert "brak predykcji NVDA z 2026-08-14 (UTC)" in capsys.readouterr().out
 
 
+def test_explain_reads_the_council_votes_of_the_first_round(mocker: Any) -> None:
+    # ML-40: kwit z głosami rady pokazuje niezależną rundę 1 — po 082 także wtedy,
+    # gdy debata (rewizja w rundzie 2) jest już wyłączona.
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_receipt.return_value = None
+
+    main_tools.main(["explain", "pred-404"])
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_from_schema"] is True
+
+
 @pytest.mark.parametrize(
     "argv",
     [

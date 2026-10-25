@@ -43,6 +43,7 @@ from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
+from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
 from src.domain.finops import LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
@@ -223,6 +224,10 @@ _EVAL_EXTRA_FIELDS: dict[str, _EvalField] = {
 
 # Kody PostgREST/Postgres dla kolumny, której nie ma w bazie (select → 42703).
 _MISSING_COLUMN_CODES = frozenset({"42703", "PGRST204"})
+
+# ML-40: migracja, od której `council_votes` ma kolumnę `round` — ta sama, na którą
+# czeka debata (`FLAG_REQUIRED_MIGRATION`), więc numer ma jedno źródło.
+_COUNCIL_VOTE_ROUNDS_MIGRATION = FLAG_REQUIRED_MIGRATION["debate_mode_enabled"]
 
 # WIA-70 (migracja 043): dosłowny plaintext commitmentu.
 _COMMITMENT_PAYLOAD_COLUMN = "commitment_payload"
@@ -793,6 +798,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         scorecard_provenance_enabled: bool = False,
         executable_entry_enabled: bool = False,
         council_vote_rounds_enabled: bool = False,
+        council_vote_rounds_from_schema: bool = False,
     ) -> None:
         self._client = create_client(url, key)
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
@@ -838,9 +844,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # flaga czeka na 082 (`FLAG_REQUIRED_MIGRATION`), a cel upsertu niesie rundę.
         self._council_votes_upsert_enabled = council_votes_upsert_enabled
         # ML-40: z debatą `council_votes` ma też rundę rewizji (kolumna `round`,
-        # migracja 082); odczyty głosów biorą wtedy niezależną rundę 1. Bez flagi
-        # filtr by padł przed 082 (42703), a bez debaty i tak jest tylko runda 1.
+        # migracja 082); odczyty głosów biorą wtedy niezależną rundę 1. Bez flagi,
+        # z `council_vote_rounds_from_schema` (entry-pointy), o filtrze decyduje
+        # `schema_version()`: wiersze rundy 2 z okresu z debatą zostają w tabeli, a
+        # przed 082 filtr padłby (42703). Złożone wprost — bez sondy, jak dotąd.
         self._council_vote_rounds_enabled = council_vote_rounds_enabled
+        self._council_vote_rounds_from_schema = council_vote_rounds_from_schema
+        self._vote_rounds_in_schema: bool | None = None
         # ML-21: kolumna JSONB `feature_stats` istnieje od migracji 052 — ta sama zasada.
         self._scorecard_feature_stats_enabled = scorecard_feature_stats_enabled
         # WIA-51: wagi i ranking person z surowych głosów RPC 045 regułą domeny
@@ -2381,10 +2391,30 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         return list(_rows(response))
 
     def _first_round_only(self, query: Any) -> Any:
-        """ML-40: odczyt głosów zawęża do rundy 1, gdy debata zapisuje też rewizję."""
-        if self._council_vote_rounds_enabled:
+        """ML-40: odczyt głosów zawęża do rundy 1, gdy tabela ma rundy — z debatą albo
+        po migracji 082 bez niej, bo wyłączenie debaty nie usuwa zapisanych rewizji."""
+        if self._has_vote_rounds():
             return query.eq("round", FIRST_COUNCIL_ROUND)
         return query
+
+    def _has_vote_rounds(self) -> bool:
+        """Flaga debaty przesądza bez zapytania (czeka na 082 w bramce schematu); bez
+        niej, przy włączonej sondzie, `schema_version()` raz na instancję. Wersja
+        nieznana albo RPC bez odpowiedzi = bez filtra, jak bramka schematu (fail-open);
+        przed 082 kolumny nie ma."""
+        if self._council_vote_rounds_enabled:
+            return True
+        if not self._council_vote_rounds_from_schema:
+            return False
+        if self._vote_rounds_in_schema is None:
+            try:
+                version = self.schema_version()
+            except PortError:
+                version = None
+            self._vote_rounds_in_schema = (
+                version is not None and version >= _COUNCIL_VOTE_ROUNDS_MIGRATION
+            )
+        return self._vote_rounds_in_schema
 
     def get_council_vote_history(
         self,

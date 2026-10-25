@@ -161,8 +161,10 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         correction_category_enabled=settings.correction_category_enabled,
         # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
         fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
-        # ML-40: redundancja rady w recapie z rundy 1, gdy debata zapisuje rewizję (082).
+        # ML-40: redundancja rady w recapie z rundy 1, gdy debata zapisuje rewizję (082);
+        # bez debaty rundę 1 wymusza baza z 082 (rewizje z okresu debaty zostają).
         council_vote_rounds_enabled=settings.debate_mode_enabled,
+        council_vote_rounds_from_schema=True,
     )
 
 

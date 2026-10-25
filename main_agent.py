@@ -1026,8 +1026,10 @@ def build_repository(settings: Settings) -> RepositoryPort:
         rag_point_in_time_enabled=settings.rag_point_in_time_enabled,
         receipts_enabled=settings.receipts_enabled,
         executable_entry_enabled=settings.executable_entry_enabled,
-        # ML-40: z debatą głosy rady mają rundy (migracja 082) — odczyty biorą rundę 1.
+        # ML-40: z debatą głosy rady mają rundy (migracja 082) — odczyty biorą rundę 1;
+        # bez debaty rundę 1 wymusza baza z 082 (rewizje z okresu debaty zostają).
         council_vote_rounds_enabled=settings.debate_mode_enabled,
+        council_vote_rounds_from_schema=True,
     )
     if settings.db_writes_enabled:
         return repository

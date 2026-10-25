@@ -722,6 +722,18 @@ def test_trainer_repository_records_council_rounds_with_debate_mode(
     assert repo_cls.call_args.kwargs["council_vote_rounds_enabled"] is enabled
 
 
+def test_trainer_repository_reads_council_rounds_from_the_schema(
+    settings: Settings, mocker: Any
+) -> None:
+    # ML-40: redundancja w recapie z rundy 1 po 082, także po wyłączeniu debaty.
+    repo_cls = mocker.patch("main_trainer.SupabaseRepository")
+    settings.debate_mode_enabled = False
+
+    main_trainer.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_from_schema"] is True
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_trainer_repository_follows_db_writes_flag(
     settings: Settings, mocker: Any, enabled: bool

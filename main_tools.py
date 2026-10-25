@@ -890,7 +890,10 @@ def _run_explain(args: argparse.Namespace) -> int:
         parser: argparse.ArgumentParser = args.explain_parser
         parser.error("podaj <prediction_id> albo --symbol X razem z --date RRRR-MM-DD")
     settings = _load_settings()
-    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    # ML-40: głosy rady w kwicie z rundy 1, gdy baza ma rundy (migracja 082).
+    repo = SupabaseRepository(
+        url=settings.supabase_url, key=settings.supabase_key, council_vote_rounds_from_schema=True
+    )
     if by_id:
         print(explain_prediction(repo, args.prediction_id))
     else:

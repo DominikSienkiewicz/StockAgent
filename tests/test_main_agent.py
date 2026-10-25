@@ -5100,6 +5100,19 @@ def test_build_repository_records_council_rounds_with_debate_mode(
     assert repo_cls.call_args.kwargs["council_vote_rounds_enabled"] is enabled
 
 
+def test_build_repository_reads_council_rounds_from_the_schema(
+    settings: Settings, mocker: Any
+) -> None:
+    # ML-40: po 082 odczyty głosów biorą rundę 1 także bez debaty — wyłączenie debaty
+    # nie przywraca rewizji do historii person, redundancji i dissent-replay.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.debate_mode_enabled = False
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_from_schema"] is True
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_build_repository_passes_the_persona_vote_outcomes_flag(
     settings: Settings, mocker: Any, enabled: bool
