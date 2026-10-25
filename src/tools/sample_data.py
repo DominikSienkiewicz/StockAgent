@@ -94,11 +94,30 @@ def _council(recommendation: Recommendation, consensus: float) -> CouncilVerdict
         final_recommendation=recommendation,
         consensus_strength=consensus,
         summary=f"Przykładowa rada skłania się ku {recommendation}.",
-        dissenting_views=("Soros: część dobrych wiadomości jest już w cenie.",),
+        dissenting_views=(
+            "Makro i refleksyjność: część dobrych wiadomości jest już w cenie.",
+        ),
+        # MAIL-38: przykład trafia do publicznych docs, więc persony jako archetypy
+        # (`data/council_personas/archetypes.toml`), nie nazwiska.
         investor_opinions=(
-            _opinion("Buffett", recommendation, 0.72, "Przewaga skali i stabilne przepływy."),
-            _opinion("Lynch", recommendation, 0.66, "Wzrost zysków szybszy niż wycena."),
-            _opinion("Soros", "HOLD", 0.54, "Rynek wycenia już większość dobrych wiadomości."),
+            _opinion(
+                "Jakość i przewaga konkurencyjna",
+                recommendation,
+                0.72,
+                "Przewaga skali i stabilne przepływy.",
+            ),
+            _opinion(
+                "Wzrost w rozsądnej cenie",
+                recommendation,
+                0.66,
+                "Wzrost zysków szybszy niż wycena.",
+            ),
+            _opinion(
+                "Makro i refleksyjność",
+                "HOLD",
+                0.54,
+                "Rynek wycenia już większość dobrych wiadomości.",
+            ),
         ),
     )
 

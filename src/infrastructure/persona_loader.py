@@ -4,13 +4,15 @@ Każdy persona = jeden plik JSON `{"name": str, "style": str}` w katalogu
 `data/council_personas/` (konfigurowalne przez `COUNCIL_PERSONAS_DIR` env).
 
 Dodanie / usunięcie członka rady = dodanie / usunięcie pliku JSON. Nie wymaga
-zmian w kodzie. Walidator CLI `python -m src.tools.validate_personas` łapie
+zmian w kodzie. Archetyp persony do publicznych wyjść (MAIL-38) to wpis w
+`archetypes.toml` w tym samym katalogu. Walidator CLI `python -m src.tools.validate_personas` łapie
 literówki przed runtime'em.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import tomllib
 from pathlib import Path
 
 from src.domain.council import InvestorPersona
@@ -18,6 +20,10 @@ from src.domain.council import InvestorPersona
 # Domyślna lokalizacja katalogu z plikami JSON. Override przez Settings
 # (`council_personas_dir`) → main_agent.py.
 DEFAULT_PERSONAS_DIR = Path("data/council_personas")
+
+# MAIL-38: archetypy person do publicznych wyjść. Plik leży obok person, ale poza
+# wzorcem `*.json`: nie jest personą i nie wchodzi do `personas_sha256`.
+ARCHETYPES_FILE_NAME = "archetypes.toml"
 
 # Minimalna długość pola `style` — niżej to prawie na pewno literówka, nie
 # persona. Powyżej 20 znaków = sensowne zdanie po polsku/angielsku.
@@ -63,6 +69,31 @@ def load_council_personas(directory: Path) -> tuple[InvestorPersona, ...]:
         personas.append(persona)
 
     return tuple(sorted(personas, key=lambda p: p.name))
+
+
+def load_persona_archetypes(directory: Path) -> dict[str, str]:
+    """MAIL-38: archetyp (polska etykieta stylu) każdej persony — `{name: archetyp}`.
+
+    Nazwiska person zostają w prywatnym mailu; publiczne wyjścia pokazują archetyp,
+    żeby nie przypisywać żyjącym osobom rekomendacji. Kluczem jest `name` persony, ten
+    sam co w `council_votes` i rankingu, więc mapa nie wymaga migracji kluczy. Etykieta
+    to prezentacja, nie przepis predykcji: plik nie zmienia promptu ani
+    `personas_sha256`. Brak pliku → {}; wartość nie-tekstowa albo pusta →
+    `PersonaSchemaError`.
+    """
+    path = directory / ARCHETYPES_FILE_NAME
+    if not path.is_file():
+        return {}
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise PersonaSchemaError(f"malformed TOML in {path.name}: {exc}") from exc
+    archetypes: dict[str, str] = {}
+    for name, label in raw.items():
+        if not isinstance(label, str) or not label.strip():
+            raise PersonaSchemaError(f"{path.name}: empty archetype for {name!r}")
+        archetypes[name] = label.strip()
+    return archetypes
 
 
 def personas_sha256(directory: Path) -> str:
