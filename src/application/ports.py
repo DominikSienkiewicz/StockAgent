@@ -48,6 +48,7 @@ from src.domain.subscriber import Subscriber
 from src.domain.training_labels import FeatureSnapshot
 from src.domain.training_provenance import DatasetDescription
 from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
+from src.domain.watchlist import SymbolMute
 
 
 class MarketDataPort(ABC):
@@ -1358,6 +1359,74 @@ class DigestArchivePort(ABC):
 
     @abstractmethod
     def record(self, entry: DigestRecord) -> None: ...
+
+
+@dataclass(frozen=True)
+class UserMessage:
+    """MAIL-48 — wiadomość właściciela z czatu bota: `update_id` dostawcy, czat, treść."""
+
+    update_id: int
+    chat_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class UserMessageBatch:
+    """MAIL-48 — paczka nowych wiadomości z dozwolonych czatów.
+
+    `next_offset` to offset, od którego pobrać następną paczkę (ostatni widziany
+    `update_id` + 1, także gdy wiadomość odpadła na allowliście albo nie miała
+    tekstu); None = nic nowego, offset bez zmian."""
+
+    messages: tuple[UserMessage, ...]
+    next_offset: int | None
+
+
+class UserCommandSourcePort(ABC):
+    """MAIL-48 — źródło komend właściciela (Telegram `getUpdates`).
+
+    Adapter przepuszcza wyłącznie czaty z allowlisty — obcy czat nie dociera do
+    use case'u. Błąd dostawcy leci jako `PortError`."""
+
+    @abstractmethod
+    def fetch_messages(self, offset: int | None) -> UserMessageBatch: ...
+
+
+class CommandReplyPort(ABC):
+    """MAIL-48 — odpowiedź bota na komendę (czysty tekst). Błąd → `PortError`."""
+
+    @abstractmethod
+    def reply(self, chat_id: str, text: str) -> None: ...
+
+
+class BotStatePort(ABC):
+    """MAIL-48 — offset pollingu bota (tabela `bot_state`, migracja 079)."""
+
+    @abstractmethod
+    def get_update_offset(self) -> int | None:
+        """Zapisany offset; None = bot jeszcze niczego nie obsłużył."""
+
+    @abstractmethod
+    def save_update_offset(self, offset: int) -> None: ...
+
+
+class SymbolMutePort(ABC):
+    """MAIL-45 — wyciszenia symboli z bota (tabela `symbol_mutes`, migracja 080).
+
+    Decyzja 2026-10-23 (opcja b): baza trzyma tylko wyciszenia, symbole dodaje
+    wyłącznie config.toml. Błąd odczytu i zapisu leci jako `PortError`."""
+
+    @abstractmethod
+    def get_symbol_mutes(self) -> list[SymbolMute]:
+        """Wszystkie zapisane wyciszenia, także wygasłe — aktywność ocenia domena."""
+
+    @abstractmethod
+    def mute_symbol(self, symbol: str, muted_until: datetime, *, muted_at: datetime) -> None:
+        """Wycisza symbol do `muted_until`; ponowne wyciszenie nadpisuje poprzednie."""
+
+    @abstractmethod
+    def unmute_symbol(self, symbol: str) -> None:
+        """Usuwa wyciszenie symbolu; brak wyciszenia to nie błąd."""
 
 
 @dataclass(frozen=True)

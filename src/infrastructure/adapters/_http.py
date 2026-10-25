@@ -424,6 +424,15 @@ def safe_get(session: requests.Session, url: str, **kwargs: Any) -> requests.Res
         raise _redacted_copy(exc) from None
 
 
+def safe_post(session: requests.Session, url: str, **kwargs: Any) -> requests.Response:
+    """`session.post(url, **kwargs)` z komunikatem błędu sieci bez sekretów — jak
+    `safe_get`, dla API z tokenem w ścieżce (Telegram `sendMessage`)."""
+    try:
+        return session.post(url, **kwargs)
+    except requests.RequestException as exc:
+        raise _redacted_copy(exc) from None
+
+
 def _redacted_copy[E: requests.RequestException](exc: E) -> E:
     return type(exc)(redact_secrets(str(exc)), request=exc.request, response=exc.response)
 
@@ -458,6 +467,14 @@ def translated_get(session: requests.Session, url: str, **kwargs: Any) -> reques
     """`safe_get`, którego błąd sieci wychodzi w taksonomii (ARCH-33)."""
     try:
         return safe_get(session, url, **kwargs)
+    except requests.RequestException as exc:
+        raise translate_request_error(exc) from None
+
+
+def translated_post(session: requests.Session, url: str, **kwargs: Any) -> requests.Response:
+    """`safe_post`, którego błąd sieci wychodzi w taksonomii (ARCH-33)."""
+    try:
+        return safe_post(session, url, **kwargs)
     except requests.RequestException as exc:
         raise translate_request_error(exc) from None
 

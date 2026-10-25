@@ -28,6 +28,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
+from src.application.ports import UserMessage
 from src.domain.macro_series import SeriesObservation
 from src.infrastructure.adapters import (
     alpha_vantage_client,
@@ -49,6 +50,7 @@ from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
 from src.infrastructure.adapters.fred_client import FredClient
 from src.infrastructure.adapters.nbp_client import NbpClient, NbpFxRateClient
 from src.infrastructure.adapters.rekor_publisher import RekorClient, SigstoreKeylessSigner
+from src.infrastructure.adapters.telegram_command_source import TelegramCommandSource
 from tests.infrastructure.provider_fixtures import (
     PROVIDERS_DIR,
     JsonValue,
@@ -82,6 +84,9 @@ NOT_LIVE_CHECKABLE_FIXTURES = {
     "rekor_log_entry.json": (
         "odpowiedź POST-a, który tworzy publiczny na zawsze wpis — test niczego nie loguje"
     ),
+    # MAIL-48: `getUpdates` z offsetem potwierdza aktualizacje bota właściciela —
+    # żywe wywołanie ze smoke'u zjadłoby jego komendy, a bez offsetu i tak zwraca [].
+    "telegram_get_updates.json": "żywe getUpdates potwierdziłoby komendy właściciela",
 }
 
 # Elementy Form 4, które czyta `EdgarInsiderAdapter` (transakcje, cena, rola, plan
@@ -414,6 +419,25 @@ class TestSigstoreFixtures:
 
         assert logged == {"uuid": uuid, **entry}
         assert isinstance(logged["integratedTime"], int)
+
+
+class TestTelegramGetUpdatesFixture:
+    def test_updates_fixture_passes_only_owner_text_messages(self, mocker: Any) -> None:
+        payload = _object("telegram_get_updates.json")
+        updates = payload["result"]
+        owner = str(updates[0]["message"]["chat"]["id"])
+        mocker.patch("requests.Session.get", return_value=_json_response(payload))
+
+        source = TelegramCommandSource(bot_token="1:x", allowed_chat_ids=[owner])
+
+        batch = source.fetch_messages(None)
+
+        assert batch.messages == tuple(
+            UserMessage(update["update_id"], owner, update["message"]["text"])
+            for update in updates
+            if str(update["message"]["chat"]["id"]) == owner and "text" in update["message"]
+        )
+        assert batch.next_offset == max(update["update_id"] for update in updates) + 1
 
 
 # ---------------------------------------------------------------------------

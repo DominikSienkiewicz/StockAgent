@@ -1,0 +1,86 @@
+{
+  "ok": true,
+  "result": [
+    {
+      "update_id": 870000001,
+      "message": {
+        "message_id": 11,
+        "from": {
+          "id": 100000001,
+          "is_bot": false,
+          "first_name": "Owner",
+          "language_code": "pl"
+        },
+        "chat": {
+          "id": 100000001,
+          "first_name": "Owner",
+          "type": "private"
+        },
+        "date": 1792915200,
+        "text": "/why nvda",
+        "entities": [
+          {
+            "offset": 0,
+            "length": 4,
+            "type": "bot_command"
+          }
+        ]
+      }
+    },
+    {
+      "update_id": 870000002,
+      "message": {
+        "message_id": 3,
+        "from": {
+          "id": 200000002,
+          "is_bot": false,
+          "first_name": "Stranger",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": 200000002,
+          "first_name": "Stranger",
+          "type": "private"
+        },
+        "date": 1792915260,
+        "text": "/pos",
+        "entities": [
+          {
+            "offset": 0,
+            "length": 4,
+            "type": "bot_command"
+          }
+        ]
+      }
+    },
+    {
+      "update_id": 870000003,
+      "message": {
+        "message_id": 12,
+        "from": {
+          "id": 100000001,
+          "is_bot": false,
+          "first_name": "Owner",
+          "language_code": "pl"
+        },
+        "chat": {
+          "id": 100000001,
+          "first_name": "Owner",
+          "type": "private"
+        },
+        "date": 1792915320,
+        "sticker": {
+          "width": 512,
+          "height": 512,
+          "emoji": "👍",
+          "is_animated": false,
+          "is_video": false,
+          "type": "regular",
+          "file_id": "CAACAgIAAxkBAAEXAMPLE",
+          "file_unique_id": "AgADEXAMPLE",
+          "file_size": 12345
+        }
+      }
+    }
+  ]
+}
