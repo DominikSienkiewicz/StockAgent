@@ -15,7 +15,7 @@ import os
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -108,6 +108,7 @@ MIGRATION_FILES = [
     "073_paper_trades.sql",
     "074_invalidation_price.sql",
     "075_shadow_predictions.sql",
+    "076_rag_point_in_time.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -3546,7 +3547,12 @@ class TestMigration063RagExactSearch:
             )
             names = [row[0] for row in cur.fetchall()]
 
-        assert names == ["match_news_embeddings", "match_news_embeddings_exact"]
+        # ML-41: 076 dokłada `match_news_embeddings_pit` (ten sam prefiks nazwy).
+        assert names == [
+            "match_news_embeddings",
+            "match_news_embeddings_exact",
+            "match_news_embeddings_pit",
+        ]
         assert "idx_prediction_logs_embedding" in _indexes(migrated_pg_conn, "prediction_logs")
 
 
@@ -4127,6 +4133,122 @@ class TestMigration075ShadowPredictions:
                 "WHERE conrelid = 'shadow_predictions'::regclass AND contype = 'u'"
             )
             assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration076RagPointInTime:
+    """ML-41: `match_news_embeddings_pit` — tylko analogi rozliczone przed `before_ts`,
+    bez tego samego symbolu z okna horyzontu, z `timestamp` w wyniku; stare RPC bez
+    zmian (EXP-03 porównuje analogi z nich)."""
+
+    BEFORE = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+    SIGNATURE = (
+        "match_news_embeddings_pit(vector,integer,text,timestamp with time zone,text,integer)"
+    )
+    _VECTOR = "[" + ",".join(["0.1"] * 1536) + "]"
+
+    def _insert(
+        self,
+        cur: psycopg2.extensions.cursor,
+        symbol: str,
+        created: timedelta,
+        *,
+        settled: timedelta | None,
+        correct: bool | None = True,
+    ) -> None:
+        cur.execute(
+            "INSERT INTO prediction_logs "
+            "(symbol, news_summary, embedding, is_trend_correct, timestamp, settled_at) "
+            "VALUES (%s, 'news', %s::vector, %s, %s, %s)",
+            (
+                symbol,
+                self._VECTOR,
+                correct,
+                self.BEFORE + created,
+                None if settled is None else self.BEFORE + settled,
+            ),
+        )
+
+    def _rows(self, cur: psycopg2.extensions.cursor) -> None:
+        cur.execute("DELETE FROM prediction_logs WHERE embedding IS NOT NULL")
+        day = timedelta(days=1)
+        hour = timedelta(hours=1)
+        self._insert(cur, "OLD", -10 * day, settled=-9 * day)
+        self._insert(cur, "OPEN", -10 * day, settled=None, correct=None)
+        self._insert(cur, "FUT", hour, settled=25 * hour)
+        self._insert(cur, "LATE", -20 * hour, settled=hour)
+        self._insert(cur, "AAPL", -24 * hour, settled=-hour)
+        self._insert(cur, "AAPL", -5 * day, settled=-4 * day)
+        self._insert(cur, "MSFT", -24 * hour, settled=-hour)
+
+    def test_match_news_embeddings_excludes_unresolved_and_future_rows(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._rows(cur)
+            cur.execute(
+                'SELECT symbol, "timestamp" FROM match_news_embeddings_pit('
+                "%s::vector, 10, NULL, %s, 'AAPL', 72) ORDER BY symbol",
+                (self._VECTOR, self.BEFORE),
+            )
+            rows = cur.fetchall()
+
+        assert rows == [
+            ("AAPL", self.BEFORE - timedelta(days=5)),
+            ("MSFT", self.BEFORE - timedelta(hours=24)),
+            ("OLD", self.BEFORE - timedelta(days=10)),
+        ]
+
+    def test_without_cutoff_and_symbol_only_unsettled_rows_drop_out(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._rows(cur)
+            cur.execute(
+                "SELECT symbol FROM match_news_embeddings_pit(%s::vector, 10) ORDER BY symbol",
+                (self._VECTOR,),
+            )
+            symbols = [row[0] for row in cur.fetchall()]
+
+        assert symbols == ["AAPL", "AAPL", "FUT", "LATE", "MSFT", "OLD"]
+
+    def test_only_the_service_role_executes_it_and_its_search_path_is_pinned(
+        self, supabase_like_conn
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (self.SIGNATURE,)
+            )
+            (config,) = cur.fetchone()
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, self.SIGNATURE),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert any(item.startswith("search_path=") for item in config or [])
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
+    def test_076_is_idempotent_and_keeps_the_older_searches(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "076_rag_point_in_time.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT proname FROM pg_proc "
+                "WHERE proname LIKE 'match_news_embeddings%%' ORDER BY proname"
+            )
+            names = [row[0] for row in cur.fetchall()]
+
+        assert names == [
+            "match_news_embeddings",
+            "match_news_embeddings_exact",
+            "match_news_embeddings_pit",
+        ]
 
 
 @pytest.mark.containers

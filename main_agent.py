@@ -991,6 +991,8 @@ def build_repository(settings: Settings) -> RepositoryPort:
         stale_quote_enabled=settings.stale_quote_enabled,
         session_close_settlement_enabled=settings.session_close_settlement_enabled,
         rag_exact_search_enabled=settings.rag_exact_search_enabled,
+        # ML-41: analogi RAG z `match_news_embeddings_pit` (migracja 076) za flagą.
+        rag_point_in_time_enabled=settings.rag_point_in_time_enabled,
         receipts_enabled=settings.receipts_enabled,
         executable_entry_enabled=settings.executable_entry_enabled,
     )

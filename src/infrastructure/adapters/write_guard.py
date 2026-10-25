@@ -249,9 +249,17 @@ class ReadOnlyRepository(RepositoryPort):
         return self._delegate.get_recent_quota_alerts(hours)
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        return self._delegate.find_similar_predictions(embedding, limit=limit, regime=regime)
+        return self._delegate.find_similar_predictions(
+            embedding, limit=limit, regime=regime, symbol=symbol, before=before
+        )
 
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         return self._delegate.get_council_votes_for_prediction(prediction_id)

@@ -77,6 +77,7 @@ Each of these flags is off in `config.toml` only because its column or table did
 | `073` | `paper_ledger_enabled` | Every real prediction opens a paper position in the append-only, hash-chained `paper_trades` and its settlement closes it (WIA-59); the email's equity curve reads the ledger, and with `attestation_enabled` the chain head is published once a day. A record and a measurement, not part of `config_hash`. |
 | `074` | `invalidation_level_enabled` | Each prediction carries the price level that breaks its thesis, validated by the domain (right side of the price, at most 15% away); the email shows it under the reasoning and the Shock Watch alerts once when it is crossed (ML-27). It changes the prediction prompt and is part of `config_hash`, so turn it on after EXP-02/03 end (2027-01-29). |
 | `075` | `shadow_predictions_enabled` | The Fast Loop stores the champion's and the challengers' forecasts of the ML leg and the Slow Loop reports the promotion verdict in its step summary (ML-33). |
+| `076` | `rag_point_in_time_enabled` | RAG analogs come only from predictions settled before the moment of the prediction, without the same symbol's last 72 hours (`match_news_embeddings_pit`, ML-41); it changes the analogs in the prediction prompt and is part of `config_hash`, so turn it on after EXP-03 ends (2027-01-29). |
 
 ### 5. Add the `HEARTBEAT_URL` secret
 

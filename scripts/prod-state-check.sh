@@ -105,7 +105,8 @@ MIGRATION_PROBES="017 column prediction_logs regime
 072 column prediction_logs entry_price
 073 table paper_trades -
 074 column prediction_logs invalidation_price
-075 table shadow_predictions -"
+075 table shadow_predictions -
+076 function match_news_embeddings_pit -"
 
 # Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.
 PROBE_RANGE="$(awk 'NR == 1 {first = $1} {last = $1} END {print first "–" last}' <<<"$MIGRATION_PROBES")"

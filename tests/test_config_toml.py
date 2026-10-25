@@ -670,3 +670,16 @@ def test_real_config_toml_ships_the_prompt_taint_fence_off() -> None:
     """BEZ-14: fence zmienia tekst promptów predykcji i przewodniczącego (EXP-02/03)."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["prompt_taint_fence_enabled"] is False
+
+
+def test_real_config_toml_ships_the_point_in_time_rag_off_until_migration() -> None:
+    """ML-41: `match_news_embeddings_pit` powstaje w migracji 076, a analogi w prompcie
+    to wejście EXP-03 — czeka do końca eksperymentu."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["rag_point_in_time_enabled"] is False
+
+
+def test_real_config_toml_ships_the_corporate_events_off() -> None:
+    """DAT-17: 8-K w prompcie to zmiana przepisu, a EDGAR odpowiada 403 — off."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["corporate_events_enabled"] is False

@@ -71,6 +71,7 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "paper_ledger_enabled": 73,
         "invalidation_level_enabled": 74,
         "shadow_predictions_enabled": 75,
+        "rag_point_in_time_enabled": 76,
     }
 )
 

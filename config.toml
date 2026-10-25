@@ -520,7 +520,10 @@ rag_exact_search_enabled = false
 # ML-41: RAG „punkt w czasie” — do promptu idą wyłącznie analogi rozliczone (z wynikiem),
 # wybrane z 4× większej puli tej samej RPC; analog bez wyniku (także zapisany chwilę
 # wcześniej w tym samym cyklu, echo bieżących newsów) nie zajmuje miejsca w top-3.
-# Zmienia analogi w prompcie (EXP-03) → nowy przepis; czeka do końca EXP-02/03. Bez migracji.
+# Z migracją 076 RPC `match_news_embeddings_pit` bierze tylko analogi rozliczone przed
+# chwilą predykcji i pomija ten sam symbol z ostatnich 72 h (okno horyzontu).
+# Zmienia analogi w prompcie (EXP-03) → nowy przepis; czeka do końca EXP-02/03.
+# UWAGA: włącz DOPIERO po migracji 076.
 rag_point_in_time_enabled = false
 
 # --- Powiadomienia (sam nadawca; ODBIORCA = sekret w .env) ---

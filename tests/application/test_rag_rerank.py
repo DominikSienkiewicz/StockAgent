@@ -1,9 +1,24 @@
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock
 
-from src.application.agent_graph import _build_similar_context
-from src.application.ports import RepositoryPort
+from src.application.agent_graph import (
+    AgentGraphDeps,
+    _build_similar_context,
+    _compute_rag_context,
+)
+from src.application.ports import (
+    EmbeddingPort,
+    LLMPort,
+    MarketDataPort,
+    MLPredictionPort,
+    NewsPort,
+    RepositoryPort,
+    SentimentPort,
+)
 from src.application.rag_rerank import rerank_analogs
+from src.domain.value_objects import Threshold
 
 
 class TestBuildSimilarContextRerank:
@@ -145,3 +160,45 @@ class TestPointInTimeAnalogs:
 
         assert "ECHO" not in context
         assert repo.find_similar_predictions.call_args.kwargs["limit"] == 12
+
+
+class TestPointInTimeCutoff:
+    """ML-41 (reszta): z flagą retrieval podaje repozytorium symbol i chwilę predykcji
+    (`deps.clock()`) — RPC 076 bierze analogi rozliczone przed nią i pomija ten sam
+    symbol w oknie horyzontu. Bez flagi wywołanie jest dokładnie takie jak dziś."""
+
+    _NOW = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+
+    def _deps(self, repo: Mock, *, enabled: bool) -> AgentGraphDeps:
+        embedding = Mock(spec=EmbeddingPort)
+        embedding.embed.return_value = [0.1]
+        return AgentGraphDeps(
+            market_port=Mock(spec=MarketDataPort),
+            sentiment_port=Mock(spec=SentimentPort),
+            news_port=Mock(spec=NewsPort),
+            repository_port=repo,
+            ml_port=Mock(spec=MLPredictionPort),
+            llm_port=Mock(spec=LLMPort),
+            threshold=Threshold(Decimal("0.02")),
+            embedding_port=embedding,
+            rag_point_in_time_enabled=enabled,
+            clock=lambda: self._NOW,
+        )
+
+    def test_flag_hands_the_symbol_and_the_prediction_time_to_the_repository(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.find_similar_predictions.return_value = []
+
+        _compute_rag_context(self._deps(repo, enabled=True), {"symbol": "AAPL"}, "news")
+
+        kwargs = repo.find_similar_predictions.call_args.kwargs
+        assert kwargs["symbol"] == "AAPL"
+        assert kwargs["before"] == self._NOW
+
+    def test_flag_off_keeps_the_call_as_it_was(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.find_similar_predictions.return_value = []
+
+        _compute_rag_context(self._deps(repo, enabled=False), {"symbol": "AAPL"}, "news")
+
+        repo.find_similar_predictions.assert_called_once_with([0.1], limit=3, regime=None)

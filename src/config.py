@@ -1085,7 +1085,9 @@ class Settings(BaseSettings):
     rag_exact_search_enabled: bool = False
     # ML-41: analogi RAG wyłącznie rozliczone (z wynikiem), z 4× większej puli kandydatów
     # tej samej RPC — nierozliczony analog (także z TEGO cyklu) nie trafia do promptu ani
-    # do reranku. Inne analogi w prompcie (EXP-03), więc w przepisie. Bez migracji. Off.
+    # do reranku. Z migracją 076 RPC `match_news_embeddings_pit` (rozliczone przed chwilą
+    # predykcji, bez tego samego symbolu z okna horyzontu). Inne analogi w prompcie
+    # (EXP-03), więc w przepisie. Off.
     rag_point_in_time_enabled: bool = False
 
     # ----- ML -----

@@ -5399,6 +5399,69 @@ class TestCorporateActions:
 
 
 
+class TestPointInTimeRagSearch:
+    """ML-41 (reszta): za `rag_point_in_time_enabled` RAG woła
+    `match_news_embeddings_pit` (migracja 076) — tylko analogi rozliczone przed
+    `before_ts`, bez tego samego symbolu w oknie horyzontu; bez flagi RPC jak dziś."""
+
+    _BEFORE = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+
+    @staticmethod
+    def _repo(enabled: bool) -> SupabaseRepository:
+        return SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", rag_point_in_time_enabled=enabled
+        )
+
+    def test_flag_calls_the_point_in_time_function_with_cutoff_and_symbol(
+        self, mock_client: MagicMock
+    ) -> None:
+        mock_client.rpc.return_value.execute.return_value.data = [{"symbol": "MSFT"}]
+
+        rows = self._repo(True).find_similar_predictions(
+            [0.1, 0.2], limit=12, regime="RISK_OFF", symbol="AAPL", before=self._BEFORE
+        )
+
+        assert rows == [{"symbol": "MSFT"}]
+        mock_client.rpc.assert_called_once_with(
+            "match_news_embeddings_pit",
+            {
+                "query_embedding": [0.1, 0.2],
+                "match_count": 12,
+                "filter_regime": "RISK_OFF",
+                "before_ts": "2026-10-27T05:30:00+00:00",
+                "exclude_symbol": "AAPL",
+                "exclude_window_hours": 72,
+            },
+        )
+
+    def test_without_the_flag_the_cutoff_and_symbol_change_nothing(
+        self, mock_client: MagicMock
+    ) -> None:
+        mock_client.rpc.return_value.execute.return_value.data = []
+
+        self._repo(False).find_similar_predictions(
+            [0.1], limit=3, symbol="AAPL", before=self._BEFORE
+        )
+
+        mock_client.rpc.assert_called_once_with(
+            "match_news_embeddings", {"query_embedding": [0.1], "match_count": 3}
+        )
+
+    def test_missing_point_in_time_function_points_at_migration_076(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        mock_client.rpc.return_value.execute.side_effect = APIError(
+            {"code": "PGRST202", "message": "Could not find the function"}
+        )
+
+        rows = self._repo(True).find_similar_predictions([0.1], limit=3, symbol="AAPL")
+
+        assert rows == []
+        assert "076" in caplog.text
+
+
 class TestExactRagSearch:
     """ML-23: za flagą RAG woła `match_news_embeddings_exact` (migracja 063, dokładne
     KNN) z tymi samymi parametrami; bez flagi zostaje przybliżone ivfflat."""

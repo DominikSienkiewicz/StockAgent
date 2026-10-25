@@ -480,7 +480,13 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Wyszukuje historyczne predykcje o najbardziej podobnym kontekście
         newsowym (similarity search nad `prediction_logs.embedding`, pgvector).
@@ -493,7 +499,12 @@ class RepositoryPort(ABC):
 
         `regime` (Cross-Asset Vector Memory): gdy podany, retrieval preferuje
         analogi z tego samego reżimu rynku (tag zapisany przy embeddingu,
-        migracja 017). None = bez filtra (zachowanie wsteczne)."""
+        migracja 017). None = bez filtra (zachowanie wsteczne).
+
+        `symbol` i `before` (ML-41, RAG point-in-time): implementacja z włączonym
+        point-in-time zwraca tylko analogi rozliczone przed `before` i pomija `symbol`
+        w oknie horyzontu (`SAME_SYMBOL_ANALOG_EXCLUSION_HOURS`); bez niego oba
+        parametry nic nie zmieniają."""
 
     @abstractmethod
     def get_council_votes_for_prediction(

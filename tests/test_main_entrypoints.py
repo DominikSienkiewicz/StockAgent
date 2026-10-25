@@ -5757,6 +5757,19 @@ def test_build_repository_passes_the_exact_rag_search_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_passes_the_point_in_time_rag_flag(
+    settings, mocker, enabled: bool
+) -> None:
+    # ML-41: analogi z `match_news_embeddings_pit` (migracja 076) za flagą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.rag_point_in_time_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["rag_point_in_time_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_trainer_repository_passes_the_correction_category_flag(
     settings, mocker, enabled: bool
 ) -> None:

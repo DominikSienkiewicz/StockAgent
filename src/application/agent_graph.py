@@ -405,6 +405,7 @@ def _build_similar_context(
     regime: str | None = None,
     *,
     point_in_time: bool = False,
+    before: datetime | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Buduje blok 'podobne historyczne sytuacje' do promptu (RAG) ORAZ zwraca
     rerankowane rekordy do reużycia jako precedent receipts (Q5).
@@ -419,13 +420,23 @@ def _build_similar_context(
     bez RAG i bez receipts). Jeden retrieval + jeden rerank — zero dodatkowych
     płatnych wywołań ponad to, co RAG już robił. `outcome_weight` (#9): rerank
     analogów po realnym wyniku; 0.0 = sama kolejność RPC. `point_in_time` (ML-41,
-    `rag_point_in_time_enabled`): tylko analogi rozliczone, z większej puli kandydatów.
+    `rag_point_in_time_enabled`): tylko analogi rozliczone, z większej puli kandydatów;
+    repozytorium dostaje symbol i `before` (chwila predykcji) — RPC 076 bierze analogi
+    rozliczone przed nią i pomija ten sam symbol w oknie horyzontu.
     """
     try:
-        limit = _ANALOG_LIMIT * _POINT_IN_TIME_OVERFETCH if point_in_time else _ANALOG_LIMIT
-        similar = repository_port.find_similar_predictions(
-            embedding, limit=limit, regime=regime
-        )
+        if point_in_time:
+            similar = repository_port.find_similar_predictions(
+                embedding,
+                limit=_ANALOG_LIMIT * _POINT_IN_TIME_OVERFETCH,
+                regime=regime,
+                symbol=symbol,
+                before=before,
+            )
+        else:
+            similar = repository_port.find_similar_predictions(
+                embedding, limit=_ANALOG_LIMIT, regime=regime
+            )
         candidates = list(similar or [])
         if point_in_time:
             # ML-41: tylko analogi z wynikiem — nierozliczony (także zapisany w TYM
@@ -1714,6 +1725,7 @@ def _compute_rag_context(
                 deps.rag_outcome_weight,
                 regime=regime_filter,
                 point_in_time=deps.rag_point_in_time_enabled,
+                before=deps.clock() if deps.rag_point_in_time_enabled else None,
             )
     return news_embedding, similar_context, similar_precedents
 

@@ -125,6 +125,11 @@ def normalize_trend(value: object) -> tuple[TrendDirection, bool]:
 # etykieta modelu ML). Wchodzi do commitmentu v2 i do protokołu ewaluacji.
 PREDICTION_HORIZON_HOURS = 12
 
+# ML-41: analog RAG tego samego symbolu sprzed mniej niż tylu godzin to echo bieżących
+# newsów, nie historia — prognoza z piątku rozlicza się dopiero w poniedziałek (WIA-28),
+# więc okno obejmuje horyzont przez weekend. RAG point-in-time (migracja 076) go pomija.
+SAME_SYMBOL_ANALOG_EXCLUSION_HOURS = 72
+
 SIDEWAYS_TOLERANCE = Decimal("0.005")  # ±0.5% — pasmo FLAT dla akcji/ETF
 # Krypto natywnie rusza się 3–5% dziennie, więc pasmo ±0.5% uznawałoby niemal
 # każdy dzień za "ruch" i systematycznie zaniżało trafność predykcji SIDEWAYS

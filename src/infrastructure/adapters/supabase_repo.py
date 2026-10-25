@@ -61,6 +61,7 @@ from src.domain.persona_track_record import (
     persona_hit_stats,
 )
 from src.domain.prediction import (
+    SAME_SYMBOL_ANALOG_EXCLUSION_HOURS,
     UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
     Prediction,
     TrendDirection,
@@ -764,6 +765,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         fundamentals_market_cap_enabled: bool = False,
         session_close_settlement_enabled: bool = False,
         rag_exact_search_enabled: bool = False,
+        rag_point_in_time_enabled: bool = False,
         receipts_enabled: bool = True,
         scorecard_weights_sha256_enabled: bool = False,
         scorecard_provenance_enabled: bool = False,
@@ -777,6 +779,10 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if rag_exact_search_enabled
             else ("match_news_embeddings", "011")
         )
+        # ML-41: analogi rozliczone przed chwilą predykcji, bez tego samego symbolu
+        # w oknie horyzontu (funkcja z migracji 076, dokładne KNN). Ma pierwszeństwo
+        # przed ML-23. Bez flagi RPC jak wyżej.
+        self._rag_point_in_time_enabled = rag_point_in_time_enabled
         # WIA-56: odczyt rozliczeń niesie kwit (`decision_receipts`, 020) do linii pod
         # chybieniem tylko przy włączonych kwitach. Domyślnie true — bezpośrednia
         # konstrukcja (narzędzia, testy) czyta jak dotąd; Fast Loop podaje flagę z configu.
@@ -1542,7 +1548,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         return out
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Similarity search nad `prediction_logs.embedding` (pgvector) przez
         RPC `match_news_embeddings` (migracja 011; filtr reżimu z migracji 017),
@@ -1553,19 +1565,29 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         wzbogaceniem, a nie twardą zależnością predykcji.
 
         `regime`: gdy podany, dokłada parametr `filter_regime` do RPC (migracja
-        017 filtruje analogi po reżimie; NULL/UNKNOWN w bazie przepuszcza)."""
+        017 filtruje analogi po reżimie; NULL/UNKNOWN w bazie przepuszcza).
+
+        ML-41: z `rag_point_in_time_enabled` RPC `match_news_embeddings_pit` (076) —
+        `before` jako `before_ts` (tylko analogi rozliczone wcześniej), `symbol` jako
+        `exclude_symbol` z oknem `SAME_SYMBOL_ANALOG_EXCLUSION_HOURS`."""
         params: dict[str, Any] = {
             "query_embedding": embedding,
             "match_count": limit,
         }
         if regime is not None:
             params["filter_regime"] = canonical_regime_key(regime)
+        function, migration = self._rag_function, self._rag_migration
+        if self._rag_point_in_time_enabled:
+            function, migration = "match_news_embeddings_pit", "076"
+            if before is not None:
+                params["before_ts"] = before.isoformat()
+            if symbol is not None:
+                params["exclude_symbol"] = symbol
+                params["exclude_window_hours"] = SAME_SYMBOL_ANALOG_EXCLUSION_HOURS
         try:
-            response = self._client.rpc(self._rag_function, params).execute()
+            response = self._client.rpc(function, params).execute()
         except Exception as exc:
-            _log_degraded_read(
-                f"{self._rag_function} RPC", "RAG retrieval skipped", self._rag_migration, exc
-            )
+            _log_degraded_read(f"{function} RPC", "RAG retrieval skipped", migration, exc)
             return []
         return _rows(response)
 
