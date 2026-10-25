@@ -1663,23 +1663,6 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         )
         return _countable(_paginate(query))
 
-    def save_calibration(
-        self,
-        prediction_id: str,
-        score: float,
-        insight: str,
-        *,
-        score_version: int | None = None,
-    ) -> None:
-        payload: dict[str, Any] = {
-            "confidence_calibration": score,
-            "calibration_insight": insight,
-        }
-        # WIA-37: kolumna z migracji 044 — klucz tylko z wersją (flaga), inaczej PGRST204.
-        if score_version is not None:
-            payload["calibration_score_version"] = score_version
-        self._client.table(self._table).update(payload).eq("id", prediction_id).execute()
-
     def save_calibration_scores(
         self, scores: Mapping[str, float], *, score_version: int
     ) -> int:

@@ -1008,22 +1008,6 @@ class TestAdapterImplementsPort:
 # ---------------------------------------------------------------------------
 
 
-class TestSaveCalibration:
-    def test_updates_prediction_with_calibration(
-        self, repo: SupabaseRepository, mock_client: MagicMock
-    ) -> None:
-        _set_chain_response(
-            mock_client, ["table", "update", "eq"], [{"id": "pred-1"}]
-        )
-
-        repo.save_calibration("pred-1", 0.72, "Przepewna na krypto.")
-
-        mock_client.table.assert_called_with("prediction_logs")
-        payload = mock_client.table.return_value.update.call_args.args[0]
-        assert payload["confidence_calibration"] == pytest.approx(0.72)
-        assert payload["calibration_insight"] == "Przepewna na krypto."
-
-
 class TestSaveCalibrationScores:
     """WIA-65: arytmetyczne oceny kalibracji jednym wywołaniem RPC (migracja 077)."""
 
@@ -4478,35 +4462,6 @@ class TestCurrentHourCommitment:
         builder.execute.side_effect = Exception("column commitment_payload does not exist")
 
         assert repo.get_current_hour_commitment("AAPL") is None
-
-
-class TestSaveCalibrationScoreVersion:
-    """WIA-37: kolumna `calibration_score_version` (migracja 044) idzie do zapisu
-    tylko z wersją; bez niej payload nie ma nowego klucza (PGRST204 przed 044)."""
-
-    def test_versioned_calibration_writes_the_version_column(
-        self, repo: SupabaseRepository, mock_client: MagicMock
-    ) -> None:
-        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "pred-1"}])
-
-        repo.save_calibration("pred-1", 0.19, "Przepewna.", score_version=2)
-
-        payload = mock_client.table.return_value.update.call_args.args[0]
-        assert payload == {
-            "confidence_calibration": 0.19,
-            "calibration_insight": "Przepewna.",
-            "calibration_score_version": 2,
-        }
-
-    def test_unversioned_calibration_payload_has_no_version_key(
-        self, repo: SupabaseRepository, mock_client: MagicMock
-    ) -> None:
-        _set_chain_response(mock_client, ["table", "update", "eq"], [{"id": "pred-1"}])
-
-        repo.save_calibration("pred-1", 0.1, "Przepewna.")
-
-        payload = mock_client.table.return_value.update.call_args.args[0]
-        assert "calibration_score_version" not in payload
 
 
 class TestResolvedForCalibrationTrendAndCycle:

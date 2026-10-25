@@ -179,7 +179,6 @@ class ReadOnlyRepository(RepositoryPort):
         "save_fundamentals",
         "save_earnings",
         "save_quota_alert",
-        "save_calibration",
         "save_calibration_scores",
         "save_backfilled_diagnosis",
         "save_diagnosis_judgement",
@@ -486,16 +485,6 @@ class ReadOnlyRepository(RepositoryPort):
 
     def save_quota_alert(self, alert: QuotaAlert) -> None:
         self._skipped.skip("save_quota_alert")
-
-    def save_calibration(
-        self,
-        prediction_id: str,
-        score: float,
-        insight: str,
-        *,
-        score_version: int | None = None,
-    ) -> None:
-        self._skipped.skip("save_calibration")
 
     def save_calibration_scores(
         self, scores: Mapping[str, float], *, score_version: int

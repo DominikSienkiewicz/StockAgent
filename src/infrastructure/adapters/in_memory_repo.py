@@ -481,23 +481,6 @@ class InMemoryRepository(RepositoryPort):
         ]
         return [_stored_receipt(row) for row in _oldest_first(rows)]
 
-    def save_calibration(
-        self,
-        prediction_id: str,
-        score: float,
-        insight: str,
-        *,
-        score_version: int | None = None,
-    ) -> None:
-        with self._lock:
-            row = self._predictions.get(prediction_id)
-            if row is None:
-                return
-            row["confidence_calibration"] = score
-            row["calibration_insight"] = insight
-            if score_version is not None:
-                row["calibration_score_version"] = score_version
-
     def save_calibration_scores(
         self, scores: Mapping[str, float], *, score_version: int
     ) -> int:
