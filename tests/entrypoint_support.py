@@ -1,12 +1,18 @@
 """Pomocniki wspólne dla testów entry pointów: test_main_agent, test_main_trainer,
 test_main_backtest."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from src.config import Settings
+from src.domain.finops import LLMUsage
 from src.domain.quota import QuotaAlert, QuotaSeverity
+
+# mypy zna z pydantica tylko syntetyczny `__init__` z polami modelu, bez kwargs
+# pydantic-settings (`_env_file`), więc konstruktor przechodzi przez `Callable`.
+_SETTINGS_FACTORY: Callable[..., Settings] = Settings
 
 _BASE_SETTINGS: dict[str, Any] = {
     "openai_api_key": "sk-test",
@@ -22,17 +28,23 @@ _BASE_SETTINGS: dict[str, Any] = {
 }
 
 
+def isolated_settings(**values: Any) -> Settings:
+    """`Settings(_env_file=None, **values)`: bez `.env`, ale z env i TOML jak w produkcji.
+
+    `_env_file=None` odcina pydantic-settings od `.env` (developerzy mają w nim
+    klucze, risk_symbols itp. — testy muszą być deterministyczne)."""
+    return _SETTINGS_FACTORY(_env_file=None, **values)
+
+
 def build_settings(**overrides: Any) -> Settings:
     """Prawdziwe `Settings` testów entry pointów: workflowy GHA plus nadpisania.
 
-    `_env_file=None` odcina pydantic-settings od `.env` (developerzy mają w nim
-    klucze, risk_symbols itp. — testy muszą być deterministyczne). Nieznana nazwa
-    pola jest błędem, bo `Settings` ignoruje nadmiarowe kwargs (`extra="ignore"`)
-    i literówka w fladze po cichu zostawiałaby domyślną wartość."""
+    Nieznana nazwa pola jest błędem, bo `Settings` ignoruje nadmiarowe kwargs
+    (`extra="ignore"`) i literówka w fladze po cichu zostawiałaby domyślną wartość."""
     unknown = overrides.keys() - Settings.model_fields.keys()
     if unknown:
         raise AttributeError(f"Settings has no field(s): {sorted(unknown)}")
-    return Settings(_env_file=None, **{**_BASE_SETTINGS, **overrides})
+    return isolated_settings(**{**_BASE_SETTINGS, **overrides})
 
 
 def build_quota_alert(source: str = "Resend") -> QuotaAlert:
@@ -45,9 +57,7 @@ def build_quota_alert(source: str = "Resend") -> QuotaAlert:
     )
 
 
-def build_usage(model: str = "claude-sonnet-4-6") -> "object":
-    from src.domain.finops import LLMUsage
-
+def build_usage(model: str = "claude-sonnet-4-6") -> LLMUsage:
     return LLMUsage(provider="anthropic", model=model, input_tokens=1000, output_tokens=200)
 
 

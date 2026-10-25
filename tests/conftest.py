@@ -12,6 +12,7 @@ zdejmują ją lokalnie przez `monkeypatch.delenv`.
 
 import os
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from hypothesis import settings as hypothesis_settings
@@ -86,7 +87,7 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def mock_external_clients(mocker):
+def mock_external_clients(mocker: Any) -> None:
     """Mockuje wszystkie I/O na poziomie bibliotek zewnętrznych — żaden test
     entry pointa nie strzela do sieci ani na dysk po model XGBoost."""
     mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")

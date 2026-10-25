@@ -1,25 +1,28 @@
 """Smoke testy entry pointu backtestu (`main_backtest`) — DI wiring oraz top-level
 main() z mockami sieci."""
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 import main_backtest
+from src.config import Settings
+from src.domain.backtest import BacktestSummary
 
 
 class TestMainBacktest:
     """Offline walk-forward backtest harness (T3) — DI + top-level main()."""
 
     def test_build_use_case_builds_without_error(
-        self, settings, mock_external_clients
-    ):
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
         use_case = main_backtest.build_use_case(settings)
         assert use_case is not None
 
     def test_main_runs_backtest_per_symbol(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         from src.domain.backtest import BacktestSummary
 
         fake_uc = MagicMock()
@@ -42,8 +45,8 @@ class TestMainBacktest:
         assert fake_uc.run.call_args_list[0].kwargs == {"refresh_view": False}
 
     def test_main_survives_single_symbol_failure(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         from src.domain.backtest import BacktestSummary
 
         fake_uc = MagicMock()
@@ -65,8 +68,8 @@ class TestMainBacktest:
         assert main_backtest.main(settings) == 0
 
     def test_backtest_builds_no_paid_adapter(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         # DOC-21: „no retroactive LLM replays” — backtest odtwarza zebrane cechy
         # XGBoostem i nigdy nie pyta LLM o historię, której model mógł się nauczyć.
         import anthropic
@@ -92,7 +95,7 @@ class TestMainBacktest:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_backtest_follows_the_feature_set_filter(
-        self, settings, mock_external_clients, mocker, enabled: bool
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
     ) -> None:
         # ML-51: offline werdykt na tej samej próbce co trening (`main_trainer`).
         from src.application.ml_features import FEATURE_SET_VERSION
@@ -109,8 +112,8 @@ class TestMainBacktest:
         assert versions == [expected, expected]
 
     def test_main_returns_one_when_all_symbols_fail(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
         fake_uc = MagicMock()
         fake_uc.run.side_effect = RuntimeError("XGBoost boom")
@@ -125,9 +128,7 @@ class TestBacktestCoverage:
     krypto (WIA-50)."""
 
     @staticmethod
-    def _summary():
-        from src.domain.backtest import BacktestSummary
-
+    def _summary() -> BacktestSummary:
         return BacktestSummary(
             n_folds=4,
             mean_candidate_rmse=0.03,
@@ -139,7 +140,7 @@ class TestBacktestCoverage:
         )
 
     def test_backtest_covers_crypto_symbols(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.crypto_symbols = ["BTC"]
         by_cost: dict[float, MagicMock] = {}
@@ -159,7 +160,7 @@ class TestBacktestCoverage:
         assert [c.args[0] for c in crypto.run.call_args_list] == ["BTC"]
 
     def test_main_builds_the_backtest_through_build_use_case(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         build = mocker.patch("main_backtest.build_use_case")
         build.return_value.run.return_value = self._summary()
@@ -170,7 +171,9 @@ class TestBacktestCoverage:
         assert build.call_args.args == (settings,)
 
 
-def test_backtest_log_reports_ic_next_to_rmse(settings, mock_external_clients, mocker, caplog):
+def test_backtest_log_reports_ic_next_to_rmse(
+    settings: Settings, mock_external_clients: None, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # ML-20: IC i jego t-stat obok RMSE, zawsze z liczbą foldów (4 foldy = mało).
     from src.domain.backtest import BacktestSummary
 
@@ -199,8 +202,8 @@ def test_backtest_log_reports_ic_next_to_rmse(settings, mock_external_clients, m
 
 
 def test_backtest_log_reports_the_drift_and_llm_baselines(
-    settings, mock_external_clients, mocker, caplog
-):
+    settings: Settings, mock_external_clients: None, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     # ML-10: werdykt offline harnessa liczy się wobec najsilniejszego baseline'u,
     # więc log pokazuje wszystkie trzy RMSE obok kandydata.
     from src.domain.backtest import BacktestSummary
@@ -229,8 +232,8 @@ def test_backtest_log_reports_the_drift_and_llm_baselines(
 
 
 def test_backtest_uses_the_paper_cost_and_logs_net_return(
-    settings, mock_external_clients, mocker, caplog
-):
+    settings: Settings, mock_external_clients: None, mocker: Any, caplog: pytest.LogCaptureFixture
+) -> None:
     from src.domain.backtest import BacktestSummary
 
     fake_uc = MagicMock()

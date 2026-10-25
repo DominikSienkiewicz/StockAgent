@@ -2,22 +2,26 @@
 z mockami sieci."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
 import main_trainer
 from src.application.ports import RepositoryPort
+from src.config import Settings
 from src.domain.quota import QuotaSeverity
 from tests.entrypoint_support import UNDELIVERED_ANNOTATION, build_quota_alert, build_usage
 
 
 class TestMainTrainer:
-    def test_build_use_case_builds_without_error(self, settings, mock_external_clients):
+    def test_build_use_case_builds_without_error(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
         use_case = main_trainer.build_use_case(settings)
         assert use_case is not None
 
-    def test_refresh_fetches_only_selected_batch(self, settings, mocker) -> None:
+    def test_refresh_fetches_only_selected_batch(self, settings: Settings, mocker: Any) -> None:
         # DAT-19: przy 1 kluczu (budżet 12 spółek) refresh bierze spółki bez wpisu
         # w cache i najstarsze, a nie zawsze pierwsze 12 z listy.
         from src.application.quota_monitor import QuotaMonitor
@@ -39,7 +43,7 @@ class TestMainTrainer:
         assert fetched == ["S01", "S02", *[f"S{i:02d}" for i in range(15, 5, -1)]]
         repository.get_fundamentals_fetched_at.assert_called_once_with(settings.symbols)
 
-    def test_refresh_without_cache_ages_falls_back_to_list_order(self, settings) -> None:
+    def test_refresh_without_cache_ages_falls_back_to_list_order(self, settings: Settings) -> None:
         # ARCH-33: nieosiągalna baza (taksonomia z repozytorium) → partia bez rotacji.
         from src.application.errors import ProviderUnavailable
 
@@ -57,7 +61,9 @@ class TestMainTrainer:
         with pytest.raises(TypeError, match="bug in the read"):
             main_trainer._fundamentals_fetched_at(repository, ["AAPL"])
 
-    def test_main_returns_zero_on_success(self, settings, mock_external_clients, mocker):
+    def test_main_returns_zero_on_success(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "skipped", "reason": "not enough data"}
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
@@ -71,8 +77,8 @@ class TestMainTrainer:
         assert fake_uc.run.call_args_list[1].kwargs == {"refresh_view": False}
 
     def test_main_returns_one_on_training_failure(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.side_effect = RuntimeError("DB down")
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
@@ -82,8 +88,8 @@ class TestMainTrainer:
         assert exit_code == 1
 
     def test_main_returns_one_when_feature_store_refresh_fails(
-        self, settings, mock_external_clients, mocker
-    ):
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         fake_uc = MagicMock()
         fake_uc.refresh_feature_store.side_effect = RuntimeError("DB down")
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
@@ -97,7 +103,9 @@ class TestMainTrainer:
 class TestModelScorecardPersistence:
     """#12 — każdy przebieg treningu zapisuje scorecard per symbol, best-effort."""
 
-    def test_scorecard_saved_per_symbol(self, settings, mock_external_clients, mocker) -> None:
+    def test_scorecard_saved_per_symbol(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         settings.model_scorecard_enabled = True
         settings.symbols = ["AAPL", "MSFT"]
         fake_uc = MagicMock()
@@ -119,7 +127,7 @@ class TestModelScorecardPersistence:
         assert saved == ["AAPL", "MSFT"]
 
     def test_scorecard_write_failure_does_not_fail_the_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.model_scorecard_enabled = True
         settings.symbols = ["AAPL"]
@@ -132,7 +140,9 @@ class TestModelScorecardPersistence:
 
         assert main_trainer.main(settings) == 0
 
-    def test_flag_off_writes_nothing(self, settings, mock_external_clients, mocker) -> None:
+    def test_flag_off_writes_nothing(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         settings.model_scorecard_enabled = False
         settings.symbols = ["AAPL"]
         fake_uc = MagicMock()
@@ -151,7 +161,7 @@ class TestModelScorecardRunId:
     karty (per symbol i model wspólny), więc re-run tego samego dnia to osobny przebieg."""
 
     def test_one_run_id_for_every_scorecard_row_of_a_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         import uuid
 
@@ -175,7 +185,7 @@ class TestModelScorecardRunId:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_trainer_repository_follows_the_run_id_flag(
-        self, settings, mocker, enabled: bool
+        self, settings: Settings, mocker: Any, enabled: bool
     ) -> None:
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
         settings = settings.model_copy(update={"model_scorecard_run_id_enabled": enabled})
@@ -186,7 +196,7 @@ class TestModelScorecardRunId:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_trainer_repository_follows_the_feature_stats_flag(
-        self, settings, mocker, enabled: bool
+        self, settings: Settings, mocker: Any, enabled: bool
     ) -> None:
         # ML-21: kolumna `feature_stats` (migracja 052) tylko za flagą.
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
@@ -200,7 +210,7 @@ class TestModelScorecardRunId:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_trainer_repository_follows_the_weights_sha256_flag(
-        self, settings, mocker, enabled: bool
+        self, settings: Settings, mocker: Any, enabled: bool
     ) -> None:
         # CI-13: kolumna `weights_sha256` (migracja 060) tylko za flagą.
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
@@ -214,7 +224,7 @@ class TestModelScorecardRunId:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_trainer_repository_follows_the_provenance_flag(
-        self, settings, mocker, enabled: bool
+        self, settings: Settings, mocker: Any, enabled: bool
     ) -> None:
         # ML-22: kolumny proweniencji treningu (migracja 064) tylko za flagą.
         supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
@@ -225,7 +235,7 @@ class TestModelScorecardRunId:
         assert supabase_cls.call_args.kwargs["scorecard_provenance_enabled"] is enabled
 
     def test_build_use_case_hands_the_commit_sha_to_the_use_case(
-        self, settings, mocker, monkeypatch
+        self, settings: Settings, mocker: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # ML-22: SHA kodu przebiegu trafia do proweniencji treningu (karta i sidecar).
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
@@ -239,7 +249,7 @@ class TestModelScorecardRunId:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_build_use_case_follows_the_settled_purge_flag(
-        self, settings, mocker, enabled: bool
+        self, settings: Settings, mocker: Any, enabled: bool
     ) -> None:
         # ML-26: purge foldów po `settled_at` tylko za flagą.
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
@@ -250,7 +260,9 @@ class TestModelScorecardRunId:
 
         assert use_case_cls.call_args.kwargs["settled_purge"] is enabled
 
-    def test_build_use_case_hands_the_run_id_to_the_use_case(self, settings, mocker) -> None:
+    def test_build_use_case_hands_the_run_id_to_the_use_case(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         use_case_cls = mocker.patch("main_trainer.TrainModelUseCase")
 
@@ -263,7 +275,9 @@ class TestWeeklyRecapWiring:
     """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
     użytkownikowi NIC. Koszt: dokładnie 1 wywołanie LLM tygodniowo."""
 
-    def _trainer(self, settings, mocker, recap_status: str) -> tuple[MagicMock, MagicMock]:
+    def _trainer(
+        self, settings: Settings, mocker: Any, recap_status: str
+    ) -> tuple[MagicMock, MagicMock]:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
@@ -283,7 +297,9 @@ class TestWeeklyRecapWiring:
         mocker.patch("main_trainer.render_weekly_recap_text", return_value="ok")
         return recap_uc, notifier
 
-    def test_recap_email_is_sent_when_ready(self, settings, mock_external_clients, mocker) -> None:
+    def test_recap_email_is_sent_when_ready(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         settings.weekly_recap_enabled = True
         settings.symbols = ["AAPL"]
         _, notifier = self._trainer(settings, mocker, "recap_ready")
@@ -293,7 +309,7 @@ class TestWeeklyRecapWiring:
         notifier.send_report.assert_called_once()
 
     def test_below_threshold_no_email_goes_out(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # Twardy próg próbki: przy chudym tygodniu recap robiłby dramat z szumu.
         settings.weekly_recap_enabled = True
@@ -305,7 +321,7 @@ class TestWeeklyRecapWiring:
         notifier.send_report.assert_not_called()
 
     def test_recap_knows_the_crypto_symbols(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # Decyzja 2026-10-19 (a): pasmo FLAT recapu zależy od klasy aktywa.
         settings.weekly_recap_enabled = True
@@ -315,12 +331,12 @@ class TestWeeklyRecapWiring:
 
         main_trainer.main(settings)
 
-        call = main_trainer.WeeklyRecapUseCase.call_args
+        call = cast(Any, main_trainer).WeeklyRecapUseCase.call_args
         assert list(call.kwargs["crypto_symbols"]) == ["BTC", "ETH"]
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_recap_gets_the_council_redundancy_flag(
-        self, settings, mock_external_clients, mocker, enabled: bool
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
     ) -> None:
         # WIA-45: linia redundancji w recapie tygodniowym tylko za flagą.
         settings.weekly_recap_enabled = True
@@ -330,10 +346,12 @@ class TestWeeklyRecapWiring:
 
         main_trainer.main(settings)
 
-        call = main_trainer.WeeklyRecapUseCase.call_args
+        call = cast(Any, main_trainer).WeeklyRecapUseCase.call_args
         assert call.kwargs["council_redundancy_enabled"] is enabled
 
-    def test_flag_off_never_builds_the_recap(self, settings, mock_external_clients, mocker) -> None:
+    def test_flag_off_never_builds_the_recap(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         settings.weekly_recap_enabled = False
         settings.symbols = ["AAPL"]
         recap_uc, notifier = self._trainer(settings, mocker, "recap_ready")
@@ -344,7 +362,7 @@ class TestWeeklyRecapWiring:
         notifier.send_report.assert_not_called()
 
     def test_recap_failure_does_not_fail_the_slow_loop(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.weekly_recap_enabled = True
         settings.symbols = ["AAPL"]
@@ -354,7 +372,11 @@ class TestWeeklyRecapWiring:
         assert main_trainer.main(settings) == 0
 
     def test_recap_that_could_not_be_sent_is_annotated_and_persisted(
-        self, settings, mock_external_clients, mocker, capsys
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         # NIEZ-12: niedostarczony raport widać w UI Actions, a exit code zostaje 0.
         settings.weekly_recap_enabled = True
@@ -374,7 +396,11 @@ class TestWeeklyRecapWiring:
         ]
 
     def test_recap_without_a_failure_leaves_no_annotation(
-        self, settings, mock_external_clients, mocker, capsys
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         settings.weekly_recap_enabled = True
         settings.symbols = ["AAPL"]
@@ -385,7 +411,11 @@ class TestWeeklyRecapWiring:
         assert "::error" not in capsys.readouterr().out
 
     def test_a_skipped_recap_is_not_an_undelivered_report(
-        self, settings, mock_external_clients, mocker, capsys
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         settings.weekly_recap_enabled = True
         settings.symbols = ["AAPL"]
@@ -396,7 +426,7 @@ class TestWeeklyRecapWiring:
         assert "::error" not in capsys.readouterr().out
 
     def test_deterministic_recap_sent_when_llm_adapter_cannot_be_built(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # NIEZ-10: brak SDK albo klucza wywracał cały recap przy BUDOWIE adaptera,
         # choć use case umie wysłać recap bez narracji, gdy samo wywołanie LLM padnie.
@@ -414,7 +444,7 @@ class TestWeeklyRecapWiring:
         notifier.send_report.assert_called_once()
 
     def test_resend_alert_raised_during_recap_send_is_persisted(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # NIEZ-03: alerty kwot zapisujemy przed recapem, więc alert z samej wysyłki
         # recapu (np. Resend 429) przepadał zamiast trafić do poniedziałkowego bannera.
@@ -424,9 +454,9 @@ class TestWeeklyRecapWiring:
         repository = MagicMock(spec=RepositoryPort)
         mocker.patch("main_trainer.SupabaseRepository", return_value=repository)
         alert = build_quota_alert()
-        monitors: list[object] = []
+        monitors: list[Any] = []
 
-        def build_notifier(_settings: object, quota_monitor: object = None) -> MagicMock:
+        def build_notifier(_settings: object, quota_monitor: Any = None) -> MagicMock:
             monitors.append(quota_monitor)
             return notifier
 
@@ -438,7 +468,7 @@ class TestWeeklyRecapWiring:
         repository.save_quota_alert.assert_any_call(alert)
 
     def test_calibration_judge_runs_when_llm_adapter_cannot_be_built(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # Ten sam wzorzec co recap: sędzia zapisuje kalibrację bez wniosku LLM.
         settings.calibration_judge_enabled = True
@@ -465,7 +495,9 @@ class TestCryptoInTrainingLoop:
     """Bug: main_trainer trenował tylko settings.symbols, więc BTC/ETH NIGDY
     nie przechodziły retrainu — model krypto zostawał na zawsze cold-start."""
 
-    def test_crypto_symbols_are_trained_too(self, settings, mock_external_clients, mocker) -> None:
+    def test_crypto_symbols_are_trained_too(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         settings.symbols = ["AAPL"]
         settings.crypto_symbols = ["BTC", "ETH"]
         settings.model_scorecard_enabled = False
@@ -481,7 +513,7 @@ class TestCryptoInTrainingLoop:
         assert trained == ["AAPL", "BTC", "ETH"]
 
     def test_no_duplicate_when_a_symbol_is_in_both_lists(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.symbols = ["AAPL", "BTC"]
         settings.crypto_symbols = ["BTC"]
@@ -502,7 +534,7 @@ class TestPooledTrainingLoop:
     """ML-13 (decyzja 4): po ewaluacji per symbol Slow Loop trenuje JEDEN wspólny
     model na wszystkich symbolach — jeden zapis wag zamiast last-writer-wins."""
 
-    def _trainer(self, settings, mocker) -> MagicMock:
+    def _trainer(self, settings: Settings, mocker: Any) -> MagicMock:
         settings.symbols = ["AAPL", "BTC"]
         settings.crypto_symbols = ["BTC", "ETH"]
         settings.weekly_recap_enabled = False
@@ -515,7 +547,7 @@ class TestPooledTrainingLoop:
         return fake_uc
 
     def test_pooled_model_trains_once_over_every_trainable_symbol(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.model_scorecard_enabled = True
         fake_uc = self._trainer(settings, mocker)
@@ -527,7 +559,7 @@ class TestPooledTrainingLoop:
         )
 
     def test_scorecard_flag_off_reaches_the_pooled_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         settings.model_scorecard_enabled = False
         fake_uc = self._trainer(settings, mocker)
@@ -537,7 +569,7 @@ class TestPooledTrainingLoop:
         assert fake_uc.run_pooled.call_args.kwargs == {"record_scorecard": False}
 
     def test_pooled_training_failure_fails_the_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         fake_uc = self._trainer(settings, mocker)
         fake_uc.run_pooled.side_effect = RuntimeError("XGBoost boom")
@@ -549,7 +581,7 @@ class TestSnapshotModelsLoop:
     """ML-52: po modelu wspólnym Slow Loop ewaluuje dwa modele z `feature_snapshots`
     (bez zapisu wag). Pomocniczy krok: jego błąd nie zmienia exit code'u."""
 
-    def _trainer(self, settings, mocker) -> MagicMock:
+    def _trainer(self, settings: Settings, mocker: Any) -> MagicMock:
         settings.symbols = ["AAPL", "BTC"]
         settings.crypto_symbols = ["BTC", "ETH"]
         settings.weekly_recap_enabled = False
@@ -563,7 +595,7 @@ class TestSnapshotModelsLoop:
 
     @pytest.mark.parametrize("cards", [True, False])
     def test_snapshot_models_run_over_every_trainable_symbol(
-        self, settings, mock_external_clients, mocker, cards
+        self, settings: Settings, mock_external_clients: None, mocker: Any, cards: bool
     ) -> None:
         settings.model_scorecard_enabled = cards
         fake_uc = self._trainer(settings, mocker)
@@ -575,7 +607,7 @@ class TestSnapshotModelsLoop:
         )
 
     def test_snapshot_model_failure_does_not_fail_the_run(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         fake_uc = self._trainer(settings, mocker)
         fake_uc.run_snapshot_models.side_effect = RuntimeError("feature_snapshots missing")
@@ -584,7 +616,7 @@ class TestSnapshotModelsLoop:
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_snapshot_training_flag_reaches_the_use_case(
-        self, settings, mock_external_clients, enabled
+        self, settings: Settings, mock_external_clients: None, enabled: bool
     ) -> None:
         settings.snapshot_training_enabled = enabled
 
@@ -594,7 +626,7 @@ class TestSnapshotModelsLoop:
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_sigma_target_flag_reaches_the_trainer(
-        self, settings, mock_external_clients, enabled
+        self, settings: Settings, mock_external_clients: None, enabled: bool
     ) -> None:
         settings.ml_sigma_target_enabled = enabled
 
@@ -603,7 +635,7 @@ class TestSnapshotModelsLoop:
         assert use_case._sigma_target is enabled
 
     def test_use_case_reads_training_data_from_supabase(
-        self, settings, mock_external_clients
+        self, settings: Settings, mock_external_clients: None
     ) -> None:
         from src.application.ports import TrainingDataPort
 
@@ -616,12 +648,12 @@ class TestModelScorecardBaselinesWiring:
     """ML-10 — `model_scorecard_baselines_enabled` dociera do repozytorium, które
     zapisuje karty: use case'u (wiersz ALL) i kroków per symbol w `main()`."""
 
-    def test_flag_defaults_off(self, settings) -> None:
+    def test_flag_defaults_off(self, settings: Settings) -> None:
         assert settings.model_scorecard_baselines_enabled is False
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_use_case_repository_gets_the_flag(
-        self, settings, mock_external_clients, mocker, enabled: bool
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
     ) -> None:
         settings.model_scorecard_baselines_enabled = enabled
         repo_cls = mocker.patch("main_trainer.SupabaseRepository")
@@ -632,7 +664,7 @@ class TestModelScorecardBaselinesWiring:
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_per_symbol_scorecard_repository_gets_the_flag(
-        self, settings, mock_external_clients, mocker, enabled: bool
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
     ) -> None:
         settings.model_scorecard_baselines_enabled = enabled
         repo_cls = mocker.patch(
@@ -653,7 +685,7 @@ class TestModelScorecardBaselinesWiring:
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_trainer_repository_passes_the_correction_category_flag(
-    settings, mocker, enabled: bool
+    settings: Settings, mocker: Any, enabled: bool
 ) -> None:
     # WIA-53/57: backfill diagnoz w Slow Loopie zapisuje kategorię tą samą flagą.
     repo_cls = mocker.patch("main_trainer.SupabaseRepository")
@@ -665,7 +697,9 @@ def test_trainer_repository_passes_the_correction_category_flag(
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_trainer_repository_follows_db_writes_flag(settings, mocker, enabled: bool) -> None:
+def test_trainer_repository_follows_db_writes_flag(
+    settings: Settings, mocker: Any, enabled: bool
+) -> None:
     from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 
     supabase = MagicMock(spec=RepositoryPort)
@@ -679,7 +713,7 @@ def test_trainer_repository_follows_db_writes_flag(settings, mocker, enabled: bo
     assert supabase.save_model_scorecard.call_count == int(enabled)
 
 
-def test_trainer_use_case_gets_the_guarded_repository(settings, mocker) -> None:
+def test_trainer_use_case_gets_the_guarded_repository(settings: Settings, mocker: Any) -> None:
     from src.infrastructure.adapters.write_guard import ReadOnlyRepository
 
     mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
@@ -696,7 +730,7 @@ class TestSlowLoopPaidBudget:
     sam meter co Fast Loop, a tygodniowy budżet z domeny przycina je PRZED
     wywołaniem dostawcy. Recap ma pierwszeństwo — to on trafia do użytkownika."""
 
-    def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock, MagicMock]:
+    def _trainer(self, settings: Settings, mocker: Any) -> tuple[MagicMock, MagicMock, MagicMock]:
         from src.application.ports import LLMPort
 
         fake_uc = MagicMock()
@@ -722,7 +756,7 @@ class TestSlowLoopPaidBudget:
         return provider, recap_cls, judge_cls
 
     def test_job_past_the_weekly_cap_never_reaches_the_provider(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         from src.application.metering import PaidBudgetExhausted
 
@@ -740,7 +774,7 @@ class TestSlowLoopPaidBudget:
         judge_cls.return_value.run.assert_called_once()
 
     def test_without_a_cap_both_jobs_reach_the_provider(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         provider, recap_cls, judge_cls = self._trainer(settings, mocker)
 
@@ -752,7 +786,7 @@ class TestSlowLoopPaidBudget:
         provider.analyze_mistake.assert_called_once_with("wniosek")
 
     def test_judge_gets_the_minimum_sample_size(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # FIN-20: produkcja nie płaci za wniosek sędziego z chudej próby.
         from src.application.use_cases.calibrate_confidence import MIN_JUDGE_SAMPLES
@@ -764,14 +798,18 @@ class TestSlowLoopPaidBudget:
         assert judge_cls.call_args.kwargs.get("min_samples") == MIN_JUDGE_SAMPLES
 
     def test_paid_calls_of_the_run_are_metered_and_logged(
-        self, settings, mock_external_clients, mocker, caplog
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         import logging
 
         _, recap_cls, judge_cls = self._trainer(settings, mocker)
         settings.slow_loop_max_paid_llm_calls_per_week = 15
 
-        def recap_run(*_args, **_kwargs):
+        def recap_run(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             recap_cls.call_args.kwargs["llm_port"].analyze("narracja")
             return {"status": "skipped_below_threshold"}
 
@@ -788,7 +826,7 @@ class TestDiagnosisBackfillJob:
     """WIA-53: job spłaty długu diagnoz w Slow Loopie — za flagą, z przydziałem
     z tygodniowego budżetu FIN-30 (ostatni w kolejce: recap > sędzia > diagnozy)."""
 
-    def _trainer(self, settings, mocker) -> MagicMock:
+    def _trainer(self, settings: Settings, mocker: Any) -> MagicMock:
         from src.application.ports import LLMPort
 
         fake_uc = MagicMock()
@@ -803,13 +841,15 @@ class TestDiagnosisBackfillJob:
             "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
         )
         judge_cls.return_value.run.return_value = {"status": "calibrated"}
-        backfill_cls = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
+        backfill_cls: MagicMock = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
         backfill_cls.return_value.run.return_value = {"status": "backfilled"}
         settings.symbols = ["AAPL"]
         settings.paid_calls_enabled = True
         return backfill_cls
 
-    def test_off_by_default(self, settings, mock_external_clients, mocker) -> None:
+    def test_off_by_default(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         backfill_cls = self._trainer(settings, mocker)
 
         main_trainer.main(settings)
@@ -817,7 +857,7 @@ class TestDiagnosisBackfillJob:
         backfill_cls.assert_not_called()
 
     def test_job_gets_its_cap_through_a_budgeted_port(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         from src.application.metering import BudgetedLLMPort
 
@@ -834,7 +874,7 @@ class TestDiagnosisBackfillJob:
         backfill_cls.return_value.run.assert_called_once()
 
     def test_weekly_cap_trims_the_backfill_first(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         backfill_cls = self._trainer(settings, mocker)
         settings.weekly_recap_enabled = True
@@ -853,7 +893,7 @@ class TestSlowLoopCostLedger:
     """FIN-13: recap i sędzia kalibracji zgłaszają tokeny do ledgera przebiegu
     Slow Loopa; zapis `llm_calls` za tą samą flagą co w Fast Loopie."""
 
-    def _trainer(self, settings, mocker) -> tuple[MagicMock, MagicMock]:
+    def _trainer(self, settings: Settings, mocker: Any) -> tuple[MagicMock, MagicMock]:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
@@ -869,7 +909,11 @@ class TestSlowLoopCostLedger:
         return build_llm, persist
 
     def test_recap_llm_reports_to_the_run_ledger_that_gets_persisted(
-        self, settings, mock_external_clients, mocker, monkeypatch
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         monkeypatch.setenv("GITHUB_RUN_ID", "18400")
@@ -882,19 +926,21 @@ class TestSlowLoopCostLedger:
         assert persist.call_args.kwargs["run_context"].run_id == "18400"
 
     def test_recap_usage_is_attributed_to_its_job(
-        self, settings, mock_external_clients, mocker
+        self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         from src.application.ports import LLMPort
 
         build_llm, persist = self._trainer(settings, mocker)
 
-        def provider(_settings, quota_monitor=None, usage_sink=None):
+        def provider(
+            _settings: object, quota_monitor: object = None, usage_sink: Any = None
+        ) -> MagicMock:
             port = MagicMock(spec=LLMPort)
             port.analyze.side_effect = lambda _prompt: usage_sink.record(build_usage()) or {}
             return port
 
         build_llm.side_effect = provider
-        recap_cls = main_trainer.WeeklyRecapUseCase
+        recap_cls = cast(Any, main_trainer).WeeklyRecapUseCase
         recap_cls.return_value.run.side_effect = lambda **_: (
             recap_cls.call_args.kwargs["llm_port"].analyze("recap prompt")
             or {"status": "skipped_below_threshold"}
@@ -910,7 +956,7 @@ class TestSlowLoopEarningsCache:
     """FIN-11: Slow Loop raz w tygodniu odświeża `earnings_cache` z Alpha Vantage
     całą listą kluczy — tylko dla spółek (ETF i krypto nie mają raportów)."""
 
-    def _refresh(self, settings, mocker) -> tuple[MagicMock, MagicMock]:
+    def _refresh(self, settings: Settings, mocker: Any) -> tuple[MagicMock, MagicMock]:
         av = mocker.patch("main_trainer.AlphaVantageEarningsAdapter")
         cache = mocker.patch("main_trainer.CachedEarningsAdapter")
         settings.symbols = ["AAPL", "VOO", "MSFT"]
@@ -919,7 +965,9 @@ class TestSlowLoopEarningsCache:
         main_trainer._refresh_earnings_cache(settings, MagicMock(spec=RepositoryPort))
         return av, cache
 
-    def test_refreshes_stocks_with_every_alpha_vantage_key(self, settings, mocker) -> None:
+    def test_refreshes_stocks_with_every_alpha_vantage_key(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         settings.earnings_calendar_enabled = True
         settings.earnings_cache_enabled = True
 
@@ -932,7 +980,9 @@ class TestSlowLoopEarningsCache:
             "MSFT",
         ]
 
-    def test_one_failing_symbol_does_not_stop_the_refresh(self, settings, mocker) -> None:
+    def test_one_failing_symbol_does_not_stop_the_refresh(
+        self, settings: Settings, mocker: Any
+    ) -> None:
         settings.earnings_calendar_enabled = True
         settings.earnings_cache_enabled = True
         cache = mocker.patch("main_trainer.CachedEarningsAdapter")
@@ -949,7 +999,9 @@ class TestSlowLoopEarningsCache:
         [(True, False, True), (False, True, True), (True, True, False)],
         ids=["cache-off", "calendar-off", "local-without-paid-calls"],
     )
-    def test_refresh_is_skipped(self, settings, mocker, calendar, cache_flag, paid) -> None:
+    def test_refresh_is_skipped(
+        self, settings: Settings, mocker: Any, calendar: bool, cache_flag: bool, paid: bool
+    ) -> None:
         settings.earnings_calendar_enabled = calendar
         settings.earnings_cache_enabled = cache_flag
         settings.paid_calls_enabled = paid
@@ -959,7 +1011,9 @@ class TestSlowLoopEarningsCache:
         av.assert_not_called()
         cache.assert_not_called()
 
-    def test_slow_loop_runs_the_refresh(self, settings, mock_external_clients, mocker) -> None:
+    def test_slow_loop_runs_the_refresh(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
