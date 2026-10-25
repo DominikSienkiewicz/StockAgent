@@ -114,6 +114,7 @@ MIGRATION_FILES = [
     "078_diagnosis_judge.sql",
     "079_bot_state.sql",
     "080_symbol_mutes.sql",
+    "081_shock_alert_levels.sql",
     "083_shadow_prediction_trend.sql",
 ]
 
@@ -4650,6 +4651,69 @@ class TestMigration080SymbolMutes:
             cur.execute(migration)
             cur.execute(migration)
         assert "muted_until" in _columns(migrated_pg_conn, "symbol_mutes")
+
+
+class TestMigration081ShockAlertLevels:
+    """ALR-16: drabina eskalacji — jeden wiersz `shock_alerts` na szczebel symbolu
+    dziennie (`UNIQUE(symbol, alert_date, level)`), najwyżej dwa szczeble; zapis bez
+    `level` (flaga off) to szczebel 1, więc drugi taki wiersz dnia nadal odbija się."""
+
+    @staticmethod
+    def _alert(cur: psycopg2.extensions.cursor, symbol: str, level: int | None) -> None:
+        if level is None:
+            cur.execute(
+                "INSERT INTO shock_alerts (symbol, alert_date, delta, direction) "
+                "VALUES (%s, '2026-10-24', -0.045, 'DOWN')",
+                (symbol,),
+            )
+            return
+        cur.execute(
+            "INSERT INTO shock_alerts (symbol, alert_date, delta, direction, level) "
+            "VALUES (%s, '2026-10-24', -0.095, 'DOWN', %s)",
+            (symbol, level),
+        )
+
+    def test_second_level_of_the_day_is_accepted(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._alert(cur, "SA081_OK", None)
+            self._alert(cur, "SA081_OK", 2)
+            cur.execute(
+                "SELECT level FROM shock_alerts WHERE symbol = 'SA081_OK' ORDER BY level"
+            )
+            assert [row[0] for row in cur.fetchall()] == [1, 2]
+
+    def test_same_level_twice_a_day_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            self._alert(cur, "SA081_DUP", None)
+            with pytest.raises(psycopg2.errors.UniqueViolation):
+                self._alert(cur, "SA081_DUP", 1)
+
+    def test_third_level_is_rejected(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur, pytest.raises(
+            psycopg2.errors.CheckViolation
+        ):
+            self._alert(cur, "SA081_THIRD", 3)
+
+    def test_081_is_idempotent_and_drops_the_daily_constraint(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        migration = (MIGRATIONS_DIR / "081_shock_alert_levels.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'public.shock_alerts'::regclass AND contype = 'u'"
+            )
+            unique = {row[0] for row in cur.fetchall()}
+
+        assert unique == {"uq_shock_alerts_symbol_date_level"}
 
 
 @pytest.mark.containers
