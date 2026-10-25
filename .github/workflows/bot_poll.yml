@@ -1,0 +1,107 @@
+name: 🤖 Bot Poll (every 15 min, free)
+
+on:
+  # MAIL-48: bot właściciela w Telegramie bez własnego serwera — co 15 minut jeden
+  # przebieg pollingu `getUpdates` (offset w `bot_state`, migracja 079) i odpowiedzi
+  # na komendy z czatu TELEGRAM_CHAT_ID. Latencja: do kwadransa plus opóźnienie GHA.
+  # Pauza produkcji działa jak przy fast_loop_12h.yml i shock_watch_hourly.yml:
+  # zakomentuj `schedule` z datą i powodem, ręczne `workflow_dispatch` zostaje.
+  # Bez sekretów TELEGRAM_* albo z `telegram_bot_enabled = false` w config.toml
+  # przebieg kończy się na pierwszych krokach, bez instalacji zależności.
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read       # bot nic nie zapisuje do repo
+
+# Dwa nakładające się przebiegi czytałyby ten sam offset i odpowiadały dwa razy.
+# Kolejka zamiast anulowania: przerwany przebieg mógł już odpowiedzieć, a nie
+# zapisać offsetu. Poza grupą `supabase-writers` — przebieg co 15 minut wypychałby
+# z niej oczekujący Fast Loop (jak shock watch, tests/test_workflow_policy.py).
+concurrency:
+  group: bot-poll
+  cancel-in-progress: false
+
+jobs:
+  poll-owner-commands:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5   # FinOps: twardy limit minut GHA
+
+    steps:
+      - name: 🔑 Check bot secrets
+        id: secrets
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Bot::Brak sekretów TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — przebieg pominięty"
+          fi
+
+      - name: 📥 Checkout repository
+        if: steps.secrets.outputs.configured == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🚦 Check telegram_bot_enabled
+        id: flag
+        if: steps.secrets.outputs.configured == 'true'
+        # Ten sam config.toml, który czyta Settings; tomllib jest w Pythonie runnera.
+        run: |
+          if python3 -c "import sys, tomllib; sys.exit(0 if tomllib.load(open('config.toml', 'rb')).get('telegram_bot_enabled') is True else 1)"; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Bot::telegram_bot_enabled = false w config.toml — przebieg pominięty"
+          fi
+
+      - name: 🐍 Set up Python 3.12
+        if: steps.flag.outputs.enabled == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        if: steps.flag.outputs.enabled == 'true'
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: "0.9.22"
+          enable-cache: true
+
+      - name: 📦 Sync dependencies
+        if: steps.flag.outputs.enabled == 'true'
+        run: uv sync --frozen --no-build --no-install-project
+
+      - name: 🤖 Answer owner commands (free)
+        if: steps.flag.outputs.enabled == 'true'
+        env:
+          # Odczyty bazy (predykcje, przebiegi, pozycje) i zapis offsetu / wyciszeń.
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          # BEZ-08: zapis `bot_state` i `symbol_mutes` wymaga jawnego włączenia.
+          DB_WRITES_ENABLED: "true"
+          # Bot API: token i allowlista czatu — te same sekrety co kanał push.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Settings wymaga tych pól, choć bot nie woła ani LLM, ani rynku.
+          OPENAI_API_KEY:    unused-in-bot
+          FINNHUB_API_KEY:   unused-in-bot
+          ALPHA_VANTAGE_API_KEYS: unused-in-bot
+        run: uv run --frozen --no-build --no-sync python main_bot.py
+
+      - name: 📮 Mail o porażce jobu
+        # NIEZ-23: GitHub mailuje o porażce crona tylko autora ostatniej zmiany crona,
+        # a timeout i anulowanie są ciche. Bez Pythona — działa też, gdy padło `uv sync`.
+        if: failure() || cancelled()
+        env:
+          RESEND_API_KEY:  ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO_EMAIL: ${{ secrets.DIGEST_TO_EMAIL }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS:      ${{ job.status }}
+          WORKFLOW_NAME:   ${{ github.workflow }}
+        run: scripts/notify-failure.sh "$WORKFLOW_NAME"

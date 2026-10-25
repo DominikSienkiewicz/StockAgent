@@ -156,7 +156,8 @@ SUPABASE_WRITERS_GROUP = "supabase-writers"
 # Shock watch pisze `shock_alerts`, ale chodzi co godzinę i jest darmowy. GitHub trzyma
 # w grupie jeden oczekujący job i anuluje starszego oczekującego, więc godzinny watch
 # stojący w tej kolejce wypychałby z niej dzienny Fast Loop albo tygodniowy Slow Loop.
-GROUP_EXEMPT_WRITERS = frozenset({"shock_watch_hourly.yml"})
+# Bot właściciela (MAIL-48) pisze offset i wyciszenia co 15 minut — ten sam powód.
+GROUP_EXEMPT_WRITERS = frozenset({"shock_watch_hourly.yml", "bot_poll.yml"})
 EXPECTED_GROUP_WRITERS = frozenset(
     {
         ("fast_loop_12h.yml", "run-market-agent"),
