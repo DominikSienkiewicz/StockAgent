@@ -288,3 +288,7 @@ direction get the sign of the return over IVV right).
 ## License
 
 [MIT](LICENSE)
+
+This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+
+The code is MIT-licensed; the market data it fetches is not. Every provider's terms, and what of its data reaches the email, are in [how-it-works.md](docs/how-it-works.md#data-sources-and-terms).
