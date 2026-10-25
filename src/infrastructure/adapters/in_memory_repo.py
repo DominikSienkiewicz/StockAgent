@@ -829,7 +829,13 @@ class InMemoryRepository(RepositoryPort):
         return []
 
     def find_similar_predictions(
-        self, embedding: list[float], limit: int = 3, regime: str | None = None
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         return []
 
