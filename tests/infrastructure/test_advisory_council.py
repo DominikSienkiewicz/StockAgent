@@ -531,6 +531,49 @@ class TestDebateMode:
         # Werdykt zawiera zrewidowane opinie (wszystkie BUY), nie round-1.
         assert all(op.recommendation == "BUY" for op in result.investor_opinions)
 
+    def test_split_round_records_first_round_and_revision_votes(
+        self, llm_port: Mock
+    ) -> None:
+        # ML-40: do `council_votes` idą głosy obu rund — runda 1 (BUY, SELL, HOLD)
+        # i runda rewizji (wszyscy BUY) — żeby dało się ocenić, czy rewizja poprawia
+        # trafność person, czy tylko spłaszcza dysydentów.
+        from src.domain.council import FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND
+
+        self._split_side_effect(llm_port, 3)
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=_personas(("A", "B", "C")), debate_mode=True
+        )
+
+        result = council.analyze("AAPL", _make_input())
+
+        rounds = {number: votes for number, votes in result.votes_by_round()}
+        assert sorted(rounds) == [FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND]
+        assert sorted(op.recommendation for op in rounds[FIRST_COUNCIL_ROUND]) == [
+            "BUY",
+            "HOLD",
+            "SELL",
+        ]
+        assert [op.recommendation for op in rounds[REVISION_COUNCIL_ROUND]] == ["BUY"] * 3
+        assert {op.investor_name for op in rounds[REVISION_COUNCIL_ROUND]} == {"A", "B", "C"}
+
+    def test_unanimous_round_records_only_the_first_round(self, llm_port: Mock) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND
+
+        def side_effect(prompt: str) -> dict[str, Any]:
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            return _opinion_json("BUY")
+
+        llm_port.analyze.side_effect = side_effect
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=_personas(("A", "B", "C")), debate_mode=True
+        )
+
+        result = council.analyze("AAPL", _make_input())
+
+        assert [number for number, _votes in result.votes_by_round()] == [FIRST_COUNCIL_ROUND]
+        assert result.first_round_opinions == ()
+
     def test_consensus_round1_no_revision(self, llm_port: Mock) -> None:
         # Round-1 jednomyślne BUY (brak SELL) → brak rewizji: N + 1.
         n = 3

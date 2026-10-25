@@ -245,12 +245,17 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
 
         # --- Debate mode (feature #1): JEDNA runda rewizji, gdy round-1 split ---
         # Cap = dokładnie jedna runda rewizji; po niej derive_consensus z REVISED.
+        # ML-40: głosy rundy 1 zostają w werdykcie obok zrewidowanych.
+        first_round: list[InvestorOpinion] = []
         if self._debate_mode and self._is_split(resolved_opinions):
             round1 = resolved_opinions
             revised = self._run_round(
                 personas, lambda p: self._call_revision(p, data, round1)
             )
-            # Cała runda rewizji po limicie czasu → zostają głosy z rundy 1.
+            # Cała runda rewizji po limicie czasu → zostają głosy z rundy 1 i nie ma
+            # drugiej rundy do zapisu.
+            if revised:
+                first_round = round1
             resolved_opinions = revised or round1
 
         try:
@@ -281,4 +286,5 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
             investor_opinions=tuple(resolved_opinions),
             # MAIL-12: mail pokazuje „odpowiedziało X/N”, gdy części person zabrakło.
             failed_personas=len(personas) - len(resolved_opinions),
+            first_round_opinions=tuple(first_round),
         )

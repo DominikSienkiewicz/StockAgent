@@ -582,3 +582,41 @@ class TestParseRecommendation:
 
     def test_without_a_default_unknown_value_is_none(self) -> None:
         assert parse_recommendation("STRONG_BUY") is None
+
+
+class TestVotesByRound:
+    """ML-40: głosy do zapisu w `council_votes` z numerem rundy."""
+
+    @staticmethod
+    def _op(name: str, rec: Literal["BUY", "SELL", "HOLD"]) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name=name, recommendation=rec, confidence=0.6, reasoning="", key_factors=()
+        )
+
+    def _verdict(self, *, first_round: tuple[InvestorOpinion, ...] = ()) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.7,
+            summary="",
+            dissenting_views=(),
+            investor_opinions=(self._op("A", "BUY"), self._op("B", "BUY")),
+            first_round_opinions=first_round,
+        )
+
+    def test_without_revision_the_verdict_votes_are_round_one(self) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND
+
+        verdict = self._verdict()
+
+        assert verdict.votes_by_round() == ((FIRST_COUNCIL_ROUND, verdict.investor_opinions),)
+
+    def test_after_revision_round_one_comes_first_then_the_revised_votes(self) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND
+
+        first = (self._op("A", "BUY"), self._op("B", "SELL"))
+        verdict = self._verdict(first_round=first)
+
+        assert verdict.votes_by_round() == (
+            (FIRST_COUNCIL_ROUND, first),
+            (REVISION_COUNCIL_ROUND, verdict.investor_opinions),
+        )

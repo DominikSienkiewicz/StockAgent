@@ -2822,7 +2822,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
 
     council_verdict = state.get("council_verdict")
     council_verdict_dict = (
-        dataclasses.asdict(council_verdict) if council_verdict is not None else None
+        _council_verdict_blob(council_verdict) if council_verdict is not None else None
     )
 
     record: dict[str, Any] = {
@@ -2968,6 +2968,15 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
 
     return {"prediction_id": prediction_id, "status": "saved"}
 
+
+
+def _council_verdict_blob(verdict: CouncilVerdict) -> dict[str, Any]:
+    """JSONB `prediction_logs.council_verdict` w kształcie sprzed ML-40: głosy rundy 1
+    debaty niesie `council_votes.round` (migracja 082), więc blob, kwit i czytniki
+    werdyktu zostają bajt w bajt takie same z rewizją i bez niej."""
+    blob = dataclasses.asdict(verdict)
+    del blob["first_round_opinions"]
+    return blob
 
 
 def _ignore_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:

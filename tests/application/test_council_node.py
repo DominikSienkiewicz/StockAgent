@@ -1,6 +1,7 @@
 # tests/application/test_council_node.py
 from __future__ import annotations
 
+import dataclasses
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -302,6 +303,33 @@ class TestCouncilVolatilityThreshold:
         assert all_args["symbol"] == "AAPL"
         assert len(all_args["votes"]) == 1
         assert all_args["votes"][0].investor_name == "Warren Buffett"
+
+    @pytest.mark.parametrize("debated", [False, True])
+    def test_verdict_blob_keeps_its_keys_with_and_without_a_revision(
+        self, debated: bool
+    ) -> None:
+        # ML-40: rundy niesie `council_votes.round` (migracja 082); JSONB
+        # `council_verdict` zostaje bajt w bajt jak przed polem rundy 1.
+        verdict = _make_verdict()
+        if debated:
+            verdict = dataclasses.replace(
+                verdict, first_round_opinions=verdict.investor_opinions
+            )
+        council_port = Mock(spec=AdvisoryCouncilPort)
+        council_port.analyze.return_value = verdict
+        graph, repo = _make_graph_with_repo(council_port=council_port)
+
+        graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
+
+        blob = repo.save_prediction.call_args.args[0]["council_verdict"]
+        assert set(blob) == {
+            "final_recommendation",
+            "consensus_strength",
+            "summary",
+            "dissenting_views",
+            "investor_opinions",
+            "failed_personas",
+        }
 
     def test_council_votes_port_error_keeps_the_saved_prediction(self) -> None:
         # ARCH-33: awaria bazy przy głosach (taksonomia z repozytorium) nie cofa
