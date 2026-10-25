@@ -5,8 +5,9 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
+from langgraph.graph import StateGraph
 
-from src.application.agent_graph import AgentGraphDeps, create_agent_graph
+from src.application.agent_graph import AgentGraphDeps, AgentState, create_agent_graph
 from src.application.ports import (
     AdvisoryCouncilPort,
     LLMPort,
@@ -26,16 +27,16 @@ def _make_verdict() -> CouncilVerdict:
         final_recommendation="BUY",
         consensus_strength=0.73,
         summary="Rada radzi kupować.",
-        dissenting_views=["Soros: ryzykowne"],
-        investor_opinions=[
+        dissenting_views=("Soros: ryzykowne",),
+        investor_opinions=(
             InvestorOpinion(
                 investor_name="Warren Buffett",
                 recommendation="BUY",
                 confidence=0.9,
                 reasoning="Silna fosa.",
-                key_factors=["moat"],
-            )
-        ],
+                key_factors=("moat",),
+            ),
+        ),
     )
 
 
@@ -45,7 +46,7 @@ def _make_graph_with_repo(
     *,
     ml_is_trained: bool = True,
     main_llm_fails: bool = False,
-):
+) -> tuple[StateGraph[AgentState], Mock]:
     market = Mock(spec=MarketDataPort)
     market.get_current_price.return_value = Money(Decimal("180.00"))
     sentiment = Mock(spec=SentimentPort)
@@ -92,7 +93,7 @@ def _make_graph_with_repo(
 def _make_graph(
     council_port: AdvisoryCouncilPort | None = None,
     council_threshold: Threshold | None = None,
-):
+) -> StateGraph[AgentState]:
     return _make_graph_with_repo(council_port, council_threshold)[0]
 
 
@@ -101,7 +102,7 @@ def _make_crypto_graph(
     *,
     council_threshold: Threshold,
     crypto_council_threshold: Threshold,
-):
+) -> tuple[StateGraph[AgentState], Mock]:
     """Wariant grafu dla aktywa CRYPTO z ROZRÓŻNIALNYMI progami rady:
     stock `council_threshold` vs `crypto_council_threshold`. Próg główny
     volatility ustawiony nisko (0.5%), żeby zawsze przepuścił i izolować
@@ -151,7 +152,7 @@ def _make_crypto_graph(
 
 
 class TestCouncilNodeIntegration:
-    def test_council_verdict_in_state_when_port_provided(self):
+    def test_council_verdict_in_state_when_port_provided(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         graph = _make_graph(council_port=council_port)
@@ -160,7 +161,7 @@ class TestCouncilNodeIntegration:
         assert result.get("council_verdict") is not None
         assert result["council_verdict"].final_recommendation == "BUY"
 
-    def test_council_called_with_symbol(self):
+    def test_council_called_with_symbol(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         graph = _make_graph(council_port=council_port)
@@ -170,13 +171,13 @@ class TestCouncilNodeIntegration:
         args = council_port.analyze.call_args
         assert args[0][0] == "AAPL"
 
-    def test_council_verdict_none_when_no_port(self):
+    def test_council_verdict_none_when_no_port(self) -> None:
         graph = _make_graph(council_port=None)
         app = graph.compile()
         result = app.invoke({"symbol": "AAPL", "previous_price": Decimal("173.00")})
         assert result.get("council_verdict") is None
 
-    def test_council_not_called_when_volatility_gate_blocks(self):
+    def test_council_not_called_when_volatility_gate_blocks(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         graph = _make_graph(council_port=council_port)
@@ -186,7 +187,7 @@ class TestCouncilNodeIntegration:
         council_port.analyze.assert_not_called()
         assert result.get("council_verdict") is None
 
-    def test_council_input_marks_ml_inactive_on_cold_start(self):
+    def test_council_input_marks_ml_inactive_on_cold_start(self) -> None:
         # G03: bez wag XGBoost "cel ML" to bieżąca cena — rada musi o tym wiedzieć.
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
@@ -195,7 +196,7 @@ class TestCouncilNodeIntegration:
         data = council_port.analyze.call_args.args[1]
         assert data.ml_model_active is False
 
-    def test_council_input_marks_ml_active_with_trained_model(self):
+    def test_council_input_marks_ml_active_with_trained_model(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         graph, _ = _make_graph_with_repo(council_port=council_port, ml_is_trained=True)
@@ -205,7 +206,7 @@ class TestCouncilNodeIntegration:
         assert data.ml_price_target == Decimal("185.00")
 
 
-    def test_council_skipped_when_main_llm_failed(self):
+    def test_council_skipped_when_main_llm_failed(self) -> None:
         # WIA-08: po awarii głównego LLM rada dostawała zastępcze „SIDEWAYS 50%”
         # jak prawdziwą analizę i płaciła 8 wywołań za zdegradowany cykl.
         council_port = Mock(spec=AdvisoryCouncilPort)
@@ -217,7 +218,7 @@ class TestCouncilNodeIntegration:
         council_port.analyze.assert_not_called()
         assert result.get("council_verdict") is None
 
-    def test_failed_council_is_flagged_in_data_quality(self):
+    def test_failed_council_is_flagged_in_data_quality(self) -> None:
         # MAIL-12: rada, która padła, i rada pominięta progiem dawały ten sam brak
         # werdyktu — flaga odróżnia awarię w zapisie i w odznakach maila.
         council_port = Mock(spec=AdvisoryCouncilPort)
@@ -231,7 +232,7 @@ class TestCouncilNodeIntegration:
         record = repo.save_prediction.call_args.args[0]
         assert "council_unavailable" in record["data_quality_flags"]
 
-    def test_council_skipped_by_threshold_is_not_flagged(self):
+    def test_council_skipped_by_threshold_is_not_flagged(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         graph, _ = _make_graph_with_repo(
@@ -248,7 +249,7 @@ class TestCouncilVolatilityThreshold:
     odpalania kosztownej rady (15 wywołań LLM) dla średnich zmienności.
     Rada odpala się dopiero przy Δ ≥ council_threshold (np. 5%)."""
 
-    def test_council_skipped_when_delta_below_council_threshold(self):
+    def test_council_skipped_when_delta_below_council_threshold(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         # Główny próg 2%, próg rady 5%. Current=180, prev=176 → Δ≈+2.27%.
@@ -264,7 +265,7 @@ class TestCouncilVolatilityThreshold:
         # Główna analiza zakończona zapisem (rada to opcjonalny dodatek).
         assert result.get("status") == "saved"
 
-    def test_council_called_when_delta_above_council_threshold(self):
+    def test_council_called_when_delta_above_council_threshold(self) -> None:
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
         # Current=180, prev=160 → Δ=+12.5%, ponad 5%.
@@ -277,7 +278,7 @@ class TestCouncilVolatilityThreshold:
         council_port.analyze.assert_called_once()
         assert result.get("council_verdict") is not None
 
-    def test_council_votes_persisted_after_save_prediction(self):
+    def test_council_votes_persisted_after_save_prediction(self) -> None:
         """save_node po zapisie predykcji powinien zapisać strukturalne głosy
         rady (po jednej linii per inwestor) do osobnej tabeli, z FK do
         prediction_id. Audit trail niezależny od JSONB blobu."""
@@ -302,7 +303,7 @@ class TestCouncilVolatilityThreshold:
         assert len(all_args["votes"]) == 1
         assert all_args["votes"][0].investor_name == "Warren Buffett"
 
-    def test_council_votes_port_error_keeps_the_saved_prediction(self):
+    def test_council_votes_port_error_keeps_the_saved_prediction(self) -> None:
         # ARCH-33: awaria bazy przy głosach (taksonomia z repozytorium) nie cofa
         # zapisu predykcji — JSONB w prediction_logs zostaje.
         from src.application.errors import ProviderUnavailable
@@ -316,7 +317,7 @@ class TestCouncilVolatilityThreshold:
 
         assert result.get("status") == "saved"
 
-    def test_council_votes_programming_error_is_not_swallowed(self):
+    def test_council_votes_programming_error_is_not_swallowed(self) -> None:
         # ARCH-33: tylko błąd portu jest „bazą, która nie odpowiedziała” — błąd
         # programisty przy zapisie głosów nie znika w logu.
         council_port = Mock(spec=AdvisoryCouncilPort)
@@ -327,7 +328,7 @@ class TestCouncilVolatilityThreshold:
         with pytest.raises(TypeError, match="bug in the vote rows"):
             graph.compile().invoke({"symbol": "AAPL", "previous_price": Decimal("160.00")})
 
-    def test_no_council_votes_persisted_when_council_skipped(self):
+    def test_no_council_votes_persisted_when_council_skipped(self) -> None:
         # Gdy rada nie odpaliła (próg blokuje), nie ma głosów do zapisu.
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
@@ -339,7 +340,7 @@ class TestCouncilVolatilityThreshold:
         app.invoke({"symbol": "AAPL", "previous_price": Decimal("176.00")})
         repo.save_council_votes.assert_not_called()
 
-    def test_council_called_when_threshold_is_none(self):
+    def test_council_called_when_threshold_is_none(self) -> None:
         # Brak osobnego progu → rada zawsze leci gdy główna bramka przepuści.
         council_port = Mock(spec=AdvisoryCouncilPort)
         council_port.analyze.return_value = _make_verdict()
@@ -357,7 +358,7 @@ class TestCryptoCouncilVolatilityThreshold:
     ono inną natywną zmienność. Bez tego pokrycia regresja (krypto spada do
     progu akcji) przeszłaby niezauważona. Progi celowo ROZRÓŻNIALNE."""
 
-    def test_crypto_council_skipped_using_crypto_threshold_not_stock(self):
+    def test_crypto_council_skipped_using_crypto_threshold_not_stock(self) -> None:
         # stock council_threshold=2%, crypto_council_threshold=8%.
         # current=180, prev=170 → Δ≈+5.88%. To JEST ponad próg akcji (2%), więc
         # gdyby council_node błędnie użył progu akcji → rada by ODPALIŁA.
@@ -383,7 +384,7 @@ class TestCryptoCouncilVolatilityThreshold:
         # Główna analiza i tak się zakończyła (rada to opcjonalny dodatek).
         assert result.get("status") == "saved"
 
-    def test_crypto_council_called_using_crypto_threshold_not_stock(self):
+    def test_crypto_council_called_using_crypto_threshold_not_stock(self) -> None:
         # stock council_threshold=20%, crypto_council_threshold=3%.
         # current=180, prev=170 → Δ≈+5.88%. PONIŻEJ progu akcji (20%), więc
         # gdyby council_node błędnie użył progu akcji → rada by była POMINIĘTA.
