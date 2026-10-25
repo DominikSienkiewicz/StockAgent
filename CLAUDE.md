@@ -12,7 +12,7 @@ Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
 uv run ruff check .
-uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + ratchet tests/, od tests/domain)
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + cały tests/, TEST-13)
 uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
@@ -123,6 +123,10 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   pomijane bez kluczy w env. CI uruchamia `pytest -m "not integration and not containers"`,
   a testy kontenerowe osobnym krokiem `pytest -m containers`.
 - Mocki portów: `Mock(spec=SomePort)`.
+- Prawdziwe `Settings` w testach, nie `MagicMock`: `build_settings(**overrides)` z
+  `tests/entrypoint_support.py` (rzuca na nieznane pole) albo `Settings(**NO_ENV_FILE, ...)`
+  z `tests/settings_kwargs.py` — mypy nie zna `_env_file`, więc bez `# type: ignore`.
+  Wspólne fixture'y `settings` i `mock_external_clients` żyją w `tests/conftest.py`.
 - Payloady dostawców: `tests/fixtures/providers/` (TEST-16). Nowy parser adaptera = plik w
   kształcie prawdziwej odpowiedzi (bez kluczy i treści newsów) + test w
   `tests/infrastructure/test_provider_shapes.py`.

@@ -12,7 +12,7 @@ Każda zmiana w kodzie musi przejść **wszystkie trzy**:
 
 ```bash
 uv run ruff check .
-uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + ratchet tests/, od tests/domain)
+uv run mypy          # strict mode; zakres = [tool.mypy].files (src + main_*.py + cały tests/, TEST-13)
 uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: uv run pytest -m containers (Docker)
 ```
 
@@ -50,6 +50,10 @@ Nowa integracja zewnętrzna = nowy port w `application/ports.py` + adapter w
   pomijane bez kluczy w env. CI uruchamia testy bez integracji oraz osobny zestaw
   `@pytest.mark.containers`.
 - Mocki portów: `Mock(spec=SomePort)`.
+- Prawdziwe `Settings` w testach, nie `MagicMock`: `build_settings(**overrides)` z
+  `tests/entrypoint_support.py` (rzuca na nieznane pole) albo `Settings(**NO_ENV_FILE, ...)`
+  z `tests/settings_kwargs.py` — mypy nie zna `_env_file`, więc bez `# type: ignore`.
+  Wspólne fixture'y `settings` i `mock_external_clients` żyją w `tests/conftest.py`.
 
 ## Reguły domenowe / FinOps
 

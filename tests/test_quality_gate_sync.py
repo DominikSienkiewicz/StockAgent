@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -28,7 +28,13 @@ GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 # TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
-MYPY_RATCHET = ("tests/domain", "tests/tools", "tests/infrastructure", "tests/application")
+MYPY_RATCHET = (
+    "tests/domain",
+    "tests/tools",
+    "tests/infrastructure",
+    "tests/application",
+    "tests/*.py",
+)
 
 
 def _entrypoints() -> list[str]:
@@ -154,6 +160,28 @@ def test_mypy_ratchet_keeps_the_typed_test_directories() -> None:
     assert "tests/domain" in files
     missing = [directory for directory in MYPY_RATCHET if directory not in files]
     assert not missing, f"[tool.mypy].files zgubiło katalogi ratchetu: {missing}"
+
+
+def _covered_by_mypy(path: str, files: list[str]) -> bool:
+    return any(
+        PurePosixPath(path).match(entry)
+        if "*" in entry
+        else path == entry or path.startswith(f"{entry}/")
+        for entry in files
+    )
+
+
+def test_mypy_gate_covers_every_test_module() -> None:
+    """TEST-13: ratchet doszedł do końca — każdy moduł `tests/` jest pod strict mypy.
+    Nowy katalog testów dopisz do `[tool.mypy].files` i `MYPY_RATCHET`."""
+    files = _mypy_files()
+    uncovered = [
+        relative
+        for path in sorted((ROOT / "tests").rglob("*.py"))
+        if not _covered_by_mypy(relative := path.relative_to(ROOT).as_posix(), files)
+    ]
+
+    assert not uncovered, f"moduły testów poza bramką mypy: {uncovered[:5]}"
 
 
 def _job_runs(job: str) -> list[str]:
