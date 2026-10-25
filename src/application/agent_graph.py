@@ -82,7 +82,12 @@ from src.domain.experiment import (
     has_treatment,
 )
 from src.domain.feature_attribution import FeatureContribution, top_contributions
-from src.domain.finops import PAID_LLM_SOURCES, paid_budget_allows
+from src.domain.finops import (
+    PAID_LLM_SOURCES,
+    SHADOW_LLM_SOURCE,
+    paid_budget_allows,
+    shadow_call_allowed,
+)
 from src.domain.forecast import ProbabilityForecast
 from src.domain.implied_edge import (
     ImpliedEdge,
@@ -115,6 +120,11 @@ from src.domain.promotion import CHAMPION_MODEL_NAME, ShadowForecast
 from src.domain.recipe import PredictionRecipe
 from src.domain.regime_key import canonical_regime_key
 from src.domain.session_close import SessionClose, SessionCloseSettlement, session_close_of
+from src.domain.shadow_prompt import (
+    SHADOW_PROMPT_MAX_PER_CYCLE,
+    ShadowTrendForecast,
+    in_shadow_sample,
+)
 from src.domain.value_objects import (
     AssetType,
     Fundamentals,
@@ -268,6 +278,9 @@ class AgentState(TypedDict, total=False):
     # ML-33: prognozy cienia nogi ML (champion i challengerzy) do `shadow_predictions`.
     # Brak klucza = bez `ShadowSetup` w deps; wynik cyklu ich nie czyta.
     shadow_forecasts: tuple[ShadowForecast, ...]
+    # EXP-26: trend wariantu promptu albo modelu w cieniu do `shadow_predictions`
+    # (migracja 083). Brak klucza = bez wariantu albo symbol poza podpróbką.
+    shadow_prompt_forecast: ShadowTrendForecast
     # ML-34: przedział 80% zwrotu do rozliczenia (conformal + ACI) z okna klasy
     # aktywa. Mail pokazuje go od razu; kolumny `interval_*` idą za flagą.
     move_interval: MoveInterval | None
@@ -783,6 +796,37 @@ class ShadowSetup:
 
 
 @dataclasses.dataclass(frozen=True)
+class PromptVariant:
+    """EXP-26: opcje promptu predykcji, które wariant w cieniu nadpisuje względem
+    produkcji. None = jak produkcja; `without_memory` = bez lekcji z reflect i bez
+    analogów RAG (jak ramię EXP-03)."""
+
+    prompt_delta_rounding: bool | None = None
+    prompt_taint_fence: bool | None = None
+    trend_probabilities: bool | None = None
+    without_memory: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class ShadowPromptSetup:
+    """EXP-26: wariant promptu albo modelu LLM w cieniu, składany przez DI za flagą
+    `shadow_prompt_variant_enabled`.
+
+    `name` — nazwa wariantu (wiersz `shadow_predictions`), `version` — sha256 jego
+    tożsamości, `llm_port` — model wariantu (bez kaskady i failovera), `variant` —
+    nadpisane opcje promptu. Wołany tylko dla stałej podpróbki symboli
+    (`sample_share`) za bramką volatility, najwyżej `max_calls_per_cycle` razy na
+    cykl i tylko w luzie sufitu cyklu; wynik idzie wyłącznie do `shadow_predictions`."""
+
+    name: str
+    version: str
+    llm_port: LLMPort
+    variant: PromptVariant = PromptVariant()
+    sample_share: float = 1.0
+    max_calls_per_cycle: int = SHADOW_PROMPT_MAX_PER_CYCLE
+
+
+@dataclasses.dataclass(frozen=True)
 class AgentGraphDeps:
     """Zależności wstrzykiwane do węzłów grafu — zebrane w jeden obiekt, żeby
     węzły były funkcjami modułowymi (testowalnymi osobno), a fabryka
@@ -916,6 +960,9 @@ class AgentGraphDeps:
     # ML-33: prognozy cienia championa i challengerów do `shadow_predictions`
     # (migracja 075). None = flaga off: graf nie liczy cieni i nie dotyka tabeli.
     shadow: ShadowSetup | None = None
+    # EXP-26: wariant promptu albo modelu LLM w cieniu (kolumny z migracji 083). None =
+    # flaga off: graf nie woła wariantu i nie dotyka jego wierszy.
+    shadow_prompt: ShadowPromptSetup | None = None
     # ARCH-11: metryki CYKLU (płatne wywołania, czasy węzłów, decyzje bramki),
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
     # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
@@ -1927,6 +1974,26 @@ def _persist_shadow_predictions(
         )
 
 
+def _persist_shadow_prompt_forecast(
+    deps: AgentGraphDeps, state: AgentState, prediction_id: str
+) -> None:
+    """EXP-26: trend wariantu pod id zapisanej predykcji. Błąd zapisu (np. brak kolumn
+    przed migracją 083) zostawia predykcję zapisaną, bez wiersza wariantu."""
+    forecast = state.get("shadow_prompt_forecast")
+    if deps.shadow_prompt is None or forecast is None:
+        return
+    try:
+        deps.repository_port.save_shadow_trend_prediction(
+            prediction_id, state["symbol"], forecast
+        )
+    except PortError:
+        logger.warning(
+            "save_shadow_trend_prediction failed for %s — predykcja zapisana bez wariantu",
+            state["symbol"],
+            exc_info=True,
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class _SealedCommitment:
     """Hash do publikacji po zapisie i — przy nadpisaniu innej predykcji w tej
@@ -2166,6 +2233,143 @@ def _interval_price(price: Decimal, move_return: float) -> Decimal:
     return Money(price * (Decimal(1) + Decimal(str(move_return)))).for_storage().amount
 
 
+@dataclasses.dataclass(frozen=True)
+class _PromptOptions:
+    """Opcje promptu predykcji z flag cyklu (produkcja) albo po nadpisaniu wariantem
+    w cieniu (EXP-26). `memory` = lekcje z reflect i analogi RAG w prompcie."""
+
+    memory: bool
+    rounded_delta: bool
+    fence_lessons: bool
+    include_probabilities: bool
+
+    def with_variant(self, variant: PromptVariant) -> _PromptOptions:
+        def chosen(override: bool | None, current: bool) -> bool:
+            return current if override is None else override
+
+        return _PromptOptions(
+            memory=self.memory and not variant.without_memory,
+            rounded_delta=chosen(variant.prompt_delta_rounding, self.rounded_delta),
+            fence_lessons=chosen(variant.prompt_taint_fence, self.fence_lessons),
+            include_probabilities=chosen(variant.trend_probabilities, self.include_probabilities),
+        )
+
+
+def _render_prediction_prompt(
+    deps: AgentGraphDeps,
+    state: AgentState,
+    options: _PromptOptions,
+    *,
+    news_summary: str,
+    similar_context: str,
+) -> str:
+    """Prompt predykcji z wejść cyklu — jedno źródło dla produkcji i wariantu w cieniu."""
+    sentiment = state.get("sentiment") or {}
+    news = state.get("news", [])
+    return get_prediction_prompt(
+        symbol=state["symbol"],
+        current_data={
+            "price": str(state["current_price"]),
+            "delta_percentage": format_prompt_delta(
+                to_percent(state["delta"]), rounded=options.rounded_delta
+            ),
+            "av_sentiment_score": sentiment.get("av_sentiment_score"),
+            "av_sentiment_label": sentiment.get("av_sentiment_label"),
+            "news_volume_24h": sentiment.get("news_volume_24h"),
+            "high_relevance_count": sentiment.get("high_relevance_count"),
+            "news_summary": news_summary,
+            "news_titles": _news_titles(news, _NEWS_TITLES_LIMIT),
+        },
+        reflection_context=state.get("reflection_context", "") if options.memory else "",
+        similar_context=similar_context if options.memory else "",
+        # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
+        regime_context=state.get("regime_context", ""),
+        peer_context=", ".join(
+            f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
+        ),
+        # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
+        alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
+        include_memory=options.memory,
+        include_probabilities=options.include_probabilities,
+        fence_lessons=options.fence_lessons,
+        include_invalidation=deps.invalidation_level_enabled,
+        # DAT-17: świeże 8-K tylko z flagą; "" = prompt bez bloku, jak przed DAT-17.
+        corporate_events_context=(
+            format_corporate_events(state.get("fresh_corporate_events", ()))
+            if deps.corporate_events_enabled
+            else ""
+        ),
+    )
+
+
+def _shadow_prompt_state(
+    deps: AgentGraphDeps,
+    symbol: str,
+    prompt_for: Callable[[_PromptOptions], str],
+    production: _PromptOptions,
+    *,
+    production_failed: bool,
+) -> AgentState:
+    """EXP-26: trend wariantu promptu albo modelu w cieniu dla symbolu za bramką.
+
+    Pomija symbol spoza stałej podpróbki i predykcję z atrapą produkcji (para bez
+    porównania). Wywołanie rezerwuje telemetria pod `SHADOW_LLM_SOURCE` regułą domeny
+    `shadow_call_allowed`: liczy się do sufitu cyklu, ale tylko w jego luzie, więc nie
+    zabiera przydziału produkcji. Błąd portu wariantu tylko loguje — predykcja idzie dalej."""
+    setup = deps.shadow_prompt
+    if (
+        setup is None
+        or production_failed
+        or not in_shadow_sample(setup.name, symbol, setup.sample_share)
+    ):
+        return {}
+
+    def admits(calls: Mapping[str, int]) -> bool:
+        return shadow_call_allowed(
+            calls, cap=deps.paid_call_cap, max_shadow_calls=setup.max_calls_per_cycle
+        )
+
+    if not deps.telemetry.reserve_paid_call(SHADOW_LLM_SOURCE, admits):
+        logger.info(
+            "EXP-26: wariant %s pominięty dla %s — limit wywołań cienia albo sufit cyklu",
+            setup.name,
+            symbol,
+        )
+        return {}
+    options = production.with_variant(setup.variant)
+    _log_paid_call_line("predict_shadow", symbol, "shadow_prompt.llm_port.analyze")
+    try:
+        with (
+            _timed_node("predict_shadow", symbol, deps.telemetry),
+            usage_scope(source=SHADOW_LLM_SOURCE, node="predict_shadow", symbol=symbol),
+        ):
+            raw = setup.llm_port.analyze(prompt_for(options))
+    except PortError:
+        logger.warning(
+            "EXP-26: wariant %s bez odpowiedzi dla %s — predykcja bez cienia",
+            setup.name,
+            symbol,
+            exc_info=True,
+        )
+        return {}
+    return {"shadow_prompt_forecast": _shadow_trend_forecast(setup, raw, symbol, options)}
+
+
+def _shadow_trend_forecast(
+    setup: ShadowPromptSetup, raw: dict[str, Any], symbol: str, options: _PromptOptions
+) -> ShadowTrendForecast:
+    """Trend i pewność wariantu po tej samej normalizacji co odpowiedź produkcji."""
+    _, raw = _split_failover_marker(raw)
+    _, raw = _split_routed_model(raw)
+    analysis, _ = _normalize_llm_analysis(raw)
+    if options.include_probabilities:
+        analysis, _ = _apply_probability_forecast(analysis, symbol)
+    confidence, _ = _saved_float(analysis.get("confidence_score"), "confidence_score", 0.5)
+    return ShadowTrendForecast(
+        setup.name, setup.version, TrendDirection(analysis["trend_direction"]), confidence
+    )
+
+
 def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     repository_port = deps.repository_port
     ml_port = deps.ml_port
@@ -2189,40 +2393,19 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         )
 
     # 1. LLM — analiza jakościowa z cross-validation pre-computed AV sentymentu
-    prompt = get_prediction_prompt(
-        symbol=state["symbol"],
-        current_data={
-            "price": str(state["current_price"]),
-            "delta_percentage": format_prompt_delta(
-                to_percent(state["delta"]), rounded=deps.prompt_delta_rounding_enabled
-            ),
-            "av_sentiment_score": sentiment.get("av_sentiment_score"),
-            "av_sentiment_label": sentiment.get("av_sentiment_label"),
-            "news_volume_24h": sentiment.get("news_volume_24h"),
-            "high_relevance_count": sentiment.get("high_relevance_count"),
-            "news_summary": news_summary,
-            "news_titles": _news_titles(news, _NEWS_TITLES_LIMIT),
-        },
-        reflection_context=state.get("reflection_context", "") if memory else "",
-        similar_context=similar_context,
-        # #7 reżim + #5 contagion (oba z bieżącego cyklu, przekazane w state).
-        regime_context=state.get("regime_context", ""),
-        peer_context=", ".join(
-            f"{sym}:{stance}" for sym, stance in state.get("peer_context", ())
-        ),
-        # #14: pusty string przy braku fuzji → blok nie wchodzi do promptu.
-        alpha_fusion_context=_format_alpha_fusion(state.get("alpha_fusion")),
-        include_memory=memory,
-        include_probabilities=deps.trend_probabilities_enabled,
+    prompt_options = _PromptOptions(
+        memory=memory,
+        rounded_delta=deps.prompt_delta_rounding_enabled,
         fence_lessons=deps.prompt_taint_fence_enabled,
-        include_invalidation=deps.invalidation_level_enabled,
-        # DAT-17: świeże 8-K tylko z flagą; "" = prompt bez bloku, jak przed DAT-17.
-        corporate_events_context=(
-            format_corporate_events(state.get("fresh_corporate_events", ()))
-            if deps.corporate_events_enabled
-            else ""
-        ),
+        include_probabilities=deps.trend_probabilities_enabled,
     )
+
+    def prompt_for(options: _PromptOptions) -> str:
+        return _render_prediction_prompt(
+            deps, state, options, news_summary=news_summary, similar_context=similar_context
+        )
+
+    prompt = prompt_for(prompt_options)
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)
     model_used, raw_analysis = _split_routed_model(raw_analysis)
@@ -2346,6 +2529,10 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     elapsed_ms = (time.perf_counter() - predict_start) * 1000.0
     logger.info("node=predict symbol=%s elapsed_ms=%.1f", symbol, elapsed_ms)
     deps.telemetry.record_node_timing("predict", symbol, elapsed_ms)
+    # EXP-26: wariant w cieniu PO pomiarze predict — jego czas idzie pod własny węzeł.
+    shadow_prompt = _shadow_prompt_state(
+        deps, symbol, prompt_for, prompt_options, production_failed=_LLM_FALLBACK_FLAG in llm_flags
+    )
 
     implied_edge = _resolve_implied_edge(
         deps,
@@ -2365,6 +2552,7 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         **failover_state,
         **routing_state,
         **shadow,
+        **shadow_prompt,
         **invalidation_state,
         "llm_analysis": llm_analysis,
         "trend_probabilities": trend_probabilities,
@@ -2745,6 +2933,7 @@ def _save_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
     if sealed is not None:
         _publish_commitment(deps, state["symbol"], sealed, prediction_id)
     _persist_shadow_predictions(deps, state, prediction_id)
+    _persist_shadow_prompt_forecast(deps, state, prediction_id)
 
     # Strukturalny audit trail rady — JSONB blob w prediction_logs zostaje
     # (wstecz-kompat), ale głosy lecą też do osobnej tabeli, żeby dało się

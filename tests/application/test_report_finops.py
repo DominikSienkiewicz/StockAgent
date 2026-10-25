@@ -150,3 +150,21 @@ def test_unit_only_cycle_renders_as_before() -> None:
         estimate(calls)
     )
     assert "(szacunek)" not in render_finops_text(estimate(calls))
+
+
+def test_shadow_variant_calls_get_their_own_readable_line() -> None:
+    # EXP-26: wywołania wariantu w cieniu to osobny klucz cennika — mail pokazuje je
+    # jako osobną linię kosztu, nie jako surowy klucz.
+    from datetime import date
+
+    cost = estimate_cycle_cost(
+        {"llm": 2, "shadow_llm": 1},
+        token_costs={"llm": 0.0123, "shadow_llm": 0.0061},
+        priced_as_of=date(2026, 10, 20),
+    )
+
+    html = render_finops_html(cost)
+    text = render_finops_text(cost)
+
+    assert "Wariant promptu w cieniu (LLM): 1 wywołanie z tokenów" in html
+    assert "Wariant promptu w cieniu (LLM): 1 wywołanie z tokenów" in text

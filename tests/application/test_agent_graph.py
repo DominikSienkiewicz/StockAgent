@@ -8508,3 +8508,307 @@ class TestCorporateEventsInCycle:
 
         _symbol, features = repository_port.save_feature_snapshot.call_args.args
         assert set(features) == set(FREE_SNAPSHOT_FEATURES)
+
+
+class TestShadowMode:
+    """EXP-26: za flagą `shadow_prompt_variant_enabled` (DI składa `ShadowPromptSetup`)
+    predict woła dodatkowo wariant promptu albo modelu dla stałej podpróbki symboli
+    za bramką, a save zapisuje jego trend do `shadow_predictions` (migracja 083).
+    Mail, rada i rekord predykcji są te same co bez wariantu; wywołanie wariantu
+    liczy się do sufitu cyklu, ale nie zabiera przydziału produkcji."""
+
+    NAME = "llm_variant"
+    VERSION = "e" * 64
+    _COUNCIL_REQUESTS = 8
+
+    def _setup(self, llm_port: Mock, **overrides: Any) -> Any:
+        from src.application.agent_graph import ShadowPromptSetup
+
+        fields: dict[str, Any] = {"name": self.NAME, "version": self.VERSION, "llm_port": llm_port}
+        fields.update(overrides)
+        return ShadowPromptSetup(**fields)
+
+    @staticmethod
+    def _ports(
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> GraphPorts:
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(sentiment_port, news_port, repository_port, ml_port, llm_port)
+        ml_port.explain.return_value = {}
+        return GraphPorts(
+            market_port=market_port, sentiment_port=sentiment_port, news_port=news_port,
+            repository_port=repository_port, ml_port=ml_port, llm_port=llm_port,
+        )
+
+    def _run(
+        self, ports: GraphPorts, shadow_prompt: object | None, **extra: Any
+    ) -> dict[str, Any]:
+        deps = make_deps(**ports, shadow_prompt=shadow_prompt, **extra)
+        return create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
+
+    def test_shadow_call_does_not_change_saved_prediction(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.domain.shadow_prompt import ShadowTrendForecast
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        without = self._run(ports, None)
+        record_without = repository_port.save_prediction.call_args
+        prompt_without = llm_port.analyze.call_args
+        llm_port.analyze.reset_mock()
+
+        final = self._run(ports, self._setup(llm_port))
+
+        assert llm_port.analyze.call_count == 2
+        assert llm_port.analyze.call_args_list[0] == prompt_without
+        assert repository_port.save_prediction.call_args == record_without
+        assert final["llm_analysis"] == without["llm_analysis"]
+        repository_port.save_shadow_trend_prediction.assert_called_once_with(
+            "pred-uuid-123",
+            "AAPL",
+            ShadowTrendForecast(self.NAME, self.VERSION, TrendDirection.BEARISH, 0.85),
+        )
+
+    def test_below_the_gate_the_variant_costs_nothing(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+
+        final = self._run(ports, self._setup(llm_port))
+
+        assert final["status"] == "ignored"
+        llm_port.analyze.assert_not_called()
+        repository_port.save_shadow_trend_prediction.assert_not_called()
+
+    def test_variant_prompt_differs_only_by_its_overrides(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.application.agent_graph import PromptVariant
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        self._run(ports, None, prompt_delta_rounding_enabled=True)
+        rounded_production = llm_port.analyze.call_args.args[0]
+        llm_port.analyze.reset_mock()
+
+        self._run(ports, self._setup(llm_port, variant=PromptVariant(prompt_delta_rounding=True)))
+
+        prompts = [call.args[0] for call in llm_port.analyze.call_args_list]
+        assert len(prompts) == 2
+        assert prompts[0] != prompts[1]
+        assert prompts[1] == rounded_production
+
+    def test_shadow_answer_goes_through_the_production_normalisation(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.application.ports import LLM_ROUTED_MODEL_KEY
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        variant_port = Mock(spec=LLMPort)
+        variant_port.analyze.return_value = {
+            "trend_direction": " bullish ",
+            "confidence_score": 1.7,
+            LLM_ROUTED_MODEL_KEY: "openai:gpt-5-mini",
+        }
+
+        self._run(ports, self._setup(variant_port))
+
+        repository_port.save_shadow_trend_prediction.assert_called_once()
+        forecast = repository_port.save_shadow_trend_prediction.call_args.args[2]
+        assert (forecast.predicted_trend, forecast.confidence) == (TrendDirection.BULLISH, 1.0)
+        llm_port.analyze.assert_called_once()
+
+    def test_symbol_outside_the_fixed_sample_gets_no_shadow_call(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.domain.shadow_prompt import in_shadow_sample
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        share = 0.05
+        assert not in_shadow_sample(self.NAME, "AAPL", share)
+
+        self._run(ports, self._setup(llm_port, sample_share=share))
+
+        llm_port.analyze.assert_called_once()
+        repository_port.save_shadow_trend_prediction.assert_not_called()
+
+    def test_failed_variant_call_leaves_the_prediction_saved(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        variant_port = Mock(spec=LLMPort)
+        variant_port.analyze.side_effect = ProviderUnavailable("variant down")
+
+        final = self._run(ports, self._setup(variant_port))
+
+        assert final["status"] == "saved"
+        repository_port.save_prediction.assert_called_once()
+        repository_port.save_shadow_trend_prediction.assert_not_called()
+
+    def test_failed_variant_write_leaves_the_prediction_saved(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.application.errors import PortError
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        repository_port.save_shadow_trend_prediction.side_effect = PortError("no column")
+
+        final = self._run(ports, self._setup(llm_port))
+
+        assert final["status"] == "saved"
+        repository_port.save_price_snapshot.assert_called_once()
+
+    def test_production_llm_failure_skips_the_variant(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        # Para z atrapą produkcji (poza track recordem) nie da się porównać.
+        from src.application.errors import ProviderUnavailable
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        llm_port.analyze.side_effect = ProviderUnavailable("production down")
+        variant_port = Mock(spec=LLMPort)
+
+        self._run(ports, self._setup(variant_port))
+
+        variant_port.analyze.assert_not_called()
+
+    def _metered_deps(self, ports: GraphPorts, **extra: Any) -> AgentGraphDeps:
+        from src.application.cycle_telemetry import CycleTelemetry
+        from src.application.ports import AdvisoryCouncilPort
+
+        telemetry = CycleTelemetry()
+        council_port = Mock(spec=AdvisoryCouncilPort)
+
+        def council_requests(symbol: str, data: object) -> None:
+            for _ in range(self._COUNCIL_REQUESTS):
+                telemetry.record_paid_call("council_llm")
+            return None
+
+        council_port.analyze.side_effect = council_requests
+        return make_deps(**ports, council_port=council_port, telemetry=telemetry, **extra)
+
+    @staticmethod
+    def _cycle(deps: AgentGraphDeps, symbols: list[str]) -> list[str]:
+        app = create_agent_graph(deps).compile()
+        return [
+            app.invoke({"symbol": symbol, "previous_price": Decimal("100.0")})["status"]
+            for symbol in symbols
+        ]
+
+    def test_shadow_counts_against_the_cap_but_never_cuts_a_production_symbol(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.domain.finops import SHADOW_LLM_SOURCE
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        symbols = ["AAPL", "MSFT", "NVDA"]
+        statuses_without = self._cycle(self._metered_deps(ports, paid_call_cap=10), symbols)
+        llm_port.analyze.reset_mock()
+
+        deps = self._metered_deps(ports, paid_call_cap=10, shadow_prompt=self._setup(llm_port))
+        statuses = self._cycle(deps, symbols)
+
+        # Bez wariantu: AAPL i MSFT za bramką (9 + 9 wywołań), NVDA odcięty sufitem 10.
+        assert statuses == statuses_without == ["saved", "saved", "ignored"]
+        # Wariant dostał luz po AAPL (1 + 1 ≤ 10), a po MSFT już nie (10 + 1 + 1 > 10).
+        assert deps.telemetry.snapshot().paid_calls.get(SHADOW_LLM_SOURCE) == 1
+        assert llm_port.analyze.call_count == 3
+
+    def test_shadow_stops_at_its_per_cycle_limit(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+    ) -> None:
+        from src.domain.finops import SHADOW_LLM_SOURCE
+
+        ports = self._ports(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
+        )
+        deps = make_deps(**ports, shadow_prompt=self._setup(llm_port, max_calls_per_cycle=1))
+
+        assert self._cycle(deps, ["AAPL", "MSFT"]) == ["saved", "saved"]
+        assert deps.telemetry.snapshot().paid_calls.get(SHADOW_LLM_SOURCE) == 1
+        assert repository_port.save_shadow_trend_prediction.call_count == 1

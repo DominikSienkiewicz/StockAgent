@@ -64,6 +64,8 @@ _SOURCE_LABELS: dict[str, str] = {
     "sentiment": "Sentyment (Alpha Vantage)",
     "news": "Newsy",
     "embedding": "Embeddingi (RAG)",
+    # EXP-26: wariant promptu albo modelu w cieniu (`SHADOW_LLM_SOURCE`).
+    "shadow_llm": "Wariant promptu w cieniu (LLM)",
 }
 
 _COLOR_MUTED = "#6b7280"
