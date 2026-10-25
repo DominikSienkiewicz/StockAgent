@@ -2098,6 +2098,75 @@ class TestShadowPredictionsFlag:
             make_settings(**REQUIRED_ENV_KWARGS, ml_challengers=challengers)
 
 
+class TestShadowPromptVariantFlag:
+    """EXP-26: wariant promptu albo modelu LLM w cieniu — nowy zapis do bazy (kolumny
+    z migracji 083), domyślnie off i poza przepisem (predykcja produkcyjna ta sama).
+    Nazwa wariantu jest kluczem wiersza cienia obok nogi ML, więc nie może skleić się
+    z championem ani z challengerem."""
+
+    def test_defaults_off_without_a_variant(self, env: pytest.MonkeyPatch) -> None:
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
+
+        assert settings.shadow_prompt_variant_enabled is False
+        assert settings.shadow_prompt_variant is None
+
+    def test_is_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert {
+            "shadow_prompt_variant_enabled",
+            "shadow_prompt_variant",
+        } <= NON_RECIPE_SETTINGS_FIELDS
+
+    def test_reads_a_variant_with_its_overrides(self, env: pytest.MonkeyPatch) -> None:
+        settings = make_settings(
+            **REQUIRED_ENV_KWARGS,
+            shadow_prompt_variant={
+                "name": "mini_rounded",
+                "llm_provider": "openai",
+                "llm_model": "gpt-5-mini",
+                "prompt_delta_rounding": True,
+                "sample_share": 0.25,
+                "max_calls_per_cycle": 2,
+            },
+        )
+
+        variant = settings.shadow_prompt_variant
+        assert variant is not None
+        assert (variant.name, variant.llm_model, variant.prompt_delta_rounding) == (
+            "mini_rounded",
+            "gpt-5-mini",
+            True,
+        )
+        assert (variant.sample_share, variant.max_calls_per_cycle) == (0.25, 2)
+        assert variant.prompt_taint_fence is None
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            {"name": "champion"},
+            {"name": "direction"},
+            {"name": "Mini"},
+            {"name": "mini", "sample_share": 0.0},
+            {"name": "mini", "sample_share": 1.5},
+            {"name": "mini", "max_calls_per_cycle": 0},
+            {"name": "mini", "max_calls_per_cycle": 6},
+            {"name": "mini", "llm_provider": "mistral"},
+        ],
+    )
+    def test_rejects_a_variant_the_shadow_table_cannot_tell_apart_or_bound(
+        self, env: pytest.MonkeyPatch, variant: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ValidationError):
+            make_settings(
+                **REQUIRED_ENV_KWARGS,
+                ml_challengers=[
+                    {"name": "direction", "path": "data/models/d.ubj", "kind": "direction"}
+                ],
+                shadow_prompt_variant=variant,
+            )
+
+
 class TestIsotonicCalibrationFlag:
     """ML-28: mapa izotoniczna w rankingu sygnałów — domyślnie off, poza przepisem
     (ranking liczy się po predykcji, jak `calibrated_confidence_enabled`)."""

@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from src.application.agent_graph import AgentGraphDeps, ShadowSetup
+from src.application.agent_graph import (
+    AgentGraphDeps,
+    PromptVariant,
+    ShadowPromptSetup,
+    ShadowSetup,
+)
 from src.application.attestation_cycle import (
     CycleCommitmentCollector,
     attestation_cycle_id,
@@ -194,6 +199,7 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis, risk_off_change
 from src.domain.scenarios import Scenario
+from src.domain.shadow_prompt import variant_version
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
@@ -1433,6 +1439,68 @@ def build_shadow_setup(settings: Settings) -> ShadowSetup | None:
     )
 
 
+def build_shadow_prompt_setup(
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
+) -> ShadowPromptSetup | None:
+    """EXP-26: wariant promptu albo modelu LLM w cieniu, RAZ na cykl. Flaga off albo
+    brak definicji → None (graf nie woła wariantu). Model wariantu to pojedynczy adapter
+    — bez kaskady routingu i failovera; bez klucza jego dostawcy wariant zostaje off
+    z WARNING-iem. Run z atrapami (FIN-35) daje wariantowi atrapę LLM.
+
+    Wersja wariantu to sha256 tożsamości: dostawca, model, hash szablonu promptu,
+    `config_hash` (opcje promptu, których wariant nie nadpisuje, dziedziczy z produkcji)
+    i nadpisania. Udział podpróbki i limit wywołań nie zmieniają prognozy — poza wersją."""
+    variant = settings.shadow_prompt_variant
+    if not settings.shadow_prompt_variant_enabled or variant is None:
+        return None
+    provider = variant.llm_provider or settings.llm_provider
+    model = variant.llm_model or _provider_default_model(provider)
+    llm_port: LLMPort
+    if not settings.paid_calls_enabled:
+        llm_port = LocalStubLLMAdapter()
+    else:
+        key_name, key = _provider_api_key(settings, provider)
+        if not key:
+            logger.warning(
+                "shadow_prompt_variant %s: %s nie jest ustawiony — wariant w cieniu wyłączony",
+                variant.name,
+                key_name,
+            )
+            return None
+        llm_port = _build_single_llm(settings, provider, model, quota_monitor, usage_sink)
+    prompt = PromptVariant(
+        prompt_delta_rounding=variant.prompt_delta_rounding,
+        prompt_taint_fence=variant.prompt_taint_fence,
+        trend_probabilities=variant.trend_probabilities,
+        without_memory=variant.without_memory,
+    )
+    identity = {
+        "name": variant.name,
+        "llm_provider": provider,
+        "llm_model": model,
+        "prompt_sha256": prompt_templates_sha256(),
+        "config_hash": settings.config_hash(),
+        **{field: str(value) for field, value in dataclasses.asdict(prompt).items()},
+    }
+    return ShadowPromptSetup(
+        name=variant.name,
+        version=variant_version(identity),
+        llm_port=llm_port,
+        variant=prompt,
+        sample_share=variant.sample_share,
+        max_calls_per_cycle=variant.max_calls_per_cycle,
+    )
+
+
+def _provider_api_key(settings: Settings, provider: str) -> tuple[str, str | None]:
+    """(nazwa zmiennej, wartość) klucza API dostawcy LLM."""
+    if provider == "anthropic":
+        return "ANTHROPIC_API_KEY", settings.anthropic_api_key
+    return "OPENAI_API_KEY", settings.openai_api_key
+
+
 def build_move_calibration(
     settings: Settings, repository: RepositoryPort
 ) -> dict[AssetType, tuple[CalibrationPoint, ...]] | None:
@@ -1806,6 +1874,10 @@ def build_agent_graph_deps(
         ),
         # ML-33: prognozy cienia championa i challengerów (migracja 075) za flagą.
         shadow=build_shadow_setup(settings),
+        # EXP-26: wariant promptu albo modelu w cieniu (kolumny z migracji 083) za flagą.
+        shadow_prompt=build_shadow_prompt_setup(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_ledger
+        ),
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,

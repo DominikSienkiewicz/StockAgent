@@ -519,6 +519,100 @@ class TestBuildAgentGraphDeps:
         assert main_agent.build_agent_graph_deps(settings).shadow is None
         load.assert_not_called()
 
+    def test_shadow_prompt_flag_off_wires_no_variant(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        # EXP-26: bez flagi graf nie woła wariantu, nawet gdy config niesie jego definicję.
+        from src.config import ShadowPromptVariantSettings
+
+        settings.shadow_prompt_variant_enabled = False
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini")
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_shadow_prompt_flag_without_a_variant_wires_nothing(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        settings.shadow_prompt_variant_enabled = True
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_shadow_prompt_flag_wires_the_variant_model_and_overrides(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.application.agent_graph import PromptVariant
+        from src.config import ShadowPromptVariantSettings
+        from src.infrastructure.llm.openai_client import OpenAIAdapter
+
+        settings.shadow_prompt_variant_enabled = True
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(
+            name="mini",
+            llm_provider="openai",
+            llm_model="gpt-5-mini",
+            prompt_delta_rounding=True,
+            without_memory=True,
+            sample_share=0.25,
+            max_calls_per_cycle=2,
+        )
+
+        setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+
+        assert setup is not None
+        assert setup.name == "mini"
+        assert len(setup.version) == 64 and int(setup.version, 16) >= 0
+        assert setup.variant == PromptVariant(prompt_delta_rounding=True, without_memory=True)
+        assert (setup.sample_share, setup.max_calls_per_cycle) == (0.25, 2)
+        assert isinstance(setup.llm_port, OpenAIAdapter)
+        assert cast(Any, setup.llm_port)._model == "gpt-5-mini"
+
+    def test_shadow_prompt_version_follows_the_variant_identity(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.config import ShadowPromptVariantSettings
+
+        def version(**variant: Any) -> str:
+            settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini", **variant)
+            setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+            assert setup is not None
+            return setup.version
+
+        settings.shadow_prompt_variant_enabled = True
+
+        rounded = version(prompt_delta_rounding=True)
+        assert rounded == version(prompt_delta_rounding=True, sample_share=0.1)
+        assert rounded != version(prompt_delta_rounding=False)
+        assert rounded != version(prompt_delta_rounding=True, llm_model="gpt-5")
+
+    def test_shadow_prompt_without_the_variant_provider_key_stays_off(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.config import ShadowPromptVariantSettings
+
+        settings.shadow_prompt_variant_enabled = True
+        settings.anthropic_api_key = None
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(
+            name="sonnet", llm_provider="anthropic"
+        )
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_stub_run_gives_the_variant_the_stub_llm(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        # FIN-35: lokalny run bez płatnych wywołań — wariant też dostaje atrapę.
+        from src.config import ShadowPromptVariantSettings
+        from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+
+        settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
+        settings.shadow_prompt_variant_enabled = True
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini")
+
+        setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+
+        assert setup is not None
+        assert isinstance(setup.llm_port, LocalStubLLMAdapter)
+
     def test_shadow_flag_wires_the_champion_version_and_the_loadable_challengers(
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:

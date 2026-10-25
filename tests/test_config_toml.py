@@ -507,6 +507,15 @@ def test_real_config_toml_ships_the_shadow_predictions_off_until_migration() -> 
     ]
 
 
+def test_real_config_toml_ships_the_shadow_prompt_variant_off_until_migration() -> None:
+    # EXP-26: kolumny wariantu w `shadow_predictions` (migracja 083); włączenie po
+    # EXP-02/03 (po 2027-01-29), więc config.toml nie niesie jeszcze definicji wariantu.
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert data["shadow_prompt_variant_enabled"] is False
+    assert "shadow_prompt_variant" not in data
+
+
 def test_real_config_toml_ships_the_isotonic_calibration_off() -> None:
     """ML-28: mapa izotoniczna w rankingu sygnałów — świadome włączenie właściciela."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))

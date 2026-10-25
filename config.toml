@@ -189,6 +189,15 @@ shadow_predictions_enabled = false
 ml_challengers = [
     { name = "direction", path = "data/models/price_predictor_direction.ubj", kind = "direction" },
 ]
+# EXP-26: shadow mode wariantu promptu albo modelu LLM — dla stałej podpróbki symboli
+# za bramką volatility Fast Loop pyta dodatkowo wariant `shadow_prompt_variant` i zapisuje
+# jego trend do shadow_predictions; mail, rada i rekord predykcji bez zmian. +1 płatne
+# wywołanie LLM na symbol z podpróbki, najwyżej max_calls_per_cycle (≤ 5) na cykl i tylko
+# w luzie max_paid_llm_calls_per_cycle. Włączenie po EXP-02/03 (po 2027-01-29) razem
+# z definicją wariantu, np.:
+# shadow_prompt_variant = { name = "mini_rounded", llm_provider = "openai", llm_model = "gpt-5-mini", prompt_delta_rounding = true, sample_share = 0.5, max_calls_per_cycle = 3 }
+# UWAGA: włącz DOPIERO po migracji 083 (inaczej zapis wariantu pada z WARNING-iem).
+shadow_prompt_variant_enabled = false
 # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze — liczony w cyklu
 # z rozliczonych predykcji, bez migracji. Flaga dokłada zapis `interval_low/high`
 # i pokrycie zrealizowane vs nominalne w Track Record. UWAGA: włącz DOPIERO po

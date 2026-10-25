@@ -44,6 +44,7 @@ from src.domain.macro_risk import MacroRiskInstrumentType
 from src.domain.price_levels import LevelDirection, PriceLevel
 from src.domain.promotion import CHAMPION_MODEL_NAME
 from src.domain.regime import DEFAULT_EXIT_CONFIRMATIONS
+from src.domain.shadow_prompt import SHADOW_PROMPT_MAX_PER_CYCLE
 
 # Ścieżka do config.toml zakotwiczona w ROOCIE repo (src/config.py → ../config.toml),
 # NIE względem CWD. Inaczej agent odpalony spoza roota nie znajduje pliku i cały
@@ -226,6 +227,10 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     # wynik cyklu, prompt i mail są te same z flagą i bez.
     "shadow_predictions_enabled",
     "ml_challengers",
+    # EXP-26: trend wariantu promptu albo modelu idzie wyłącznie do `shadow_predictions`
+    # — prompt, rekord, rada i mail produkcji są te same z flagą i bez.
+    "shadow_prompt_variant_enabled",
+    "shadow_prompt_variant",
     # FIN-32: sama kontrola startu (WARNING vs błąd) i jej kadencja; prognoza ta sama.
     "av_budget_strict",
     "fast_loop_cycles_per_day",
@@ -438,6 +443,28 @@ class MLChallengerSettings(BaseModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
     path: str = Field(min_length=1)
     kind: Literal["return", "direction"]
+
+
+class ShadowPromptVariantSettings(BaseModel):
+    """EXP-26: wariant promptu albo modelu LLM w cieniu z `config.toml`.
+
+    `name` — `model_name` wiersza w `shadow_predictions`; `llm_provider` / `llm_model`
+    — model wariantu (None = dostawca `llm_provider` i jego domyślny model); opcje
+    promptu None = jak produkcja, `without_memory` = bez lekcji i analogów RAG.
+    `sample_share` — udział stałej podpróbki symboli, `max_calls_per_cycle` — limit
+    wywołań wariantu na cykl (twardo najwyżej `SHADOW_PROMPT_MAX_PER_CYCLE`)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    llm_provider: Literal["openai", "anthropic"] | None = None
+    llm_model: str | None = Field(default=None, min_length=1)
+    prompt_delta_rounding: bool | None = None
+    prompt_taint_fence: bool | None = None
+    trend_probabilities: bool | None = None
+    without_memory: bool = False
+    sample_share: float = Field(default=0.5, gt=0, le=1)
+    max_calls_per_cycle: int = Field(default=3, ge=1, le=SHADOW_PROMPT_MAX_PER_CYCLE)
 
 
 class ModelPriceSettings(BaseModel):
@@ -738,6 +765,13 @@ class Settings(BaseSettings):
     shadow_predictions_enabled: bool = False
     # ML-33: najwyżej `MAX_ML_CHALLENGERS` challengerów; brak pliku wag = pominięty.
     ml_challengers: list[MLChallengerSettings] = Field(default_factory=list)
+    # EXP-26: wariant promptu albo modelu LLM w cieniu. Dla stałej podpróbki symboli za
+    # bramką volatility Fast Loop pyta dodatkowo wariant (`shadow_prompt_variant`)
+    # i zapisuje jego trend do `shadow_predictions` (kolumny z migracji 083) — mail,
+    # rada i rekord predykcji bez zmian. Wywołanie liczy się do sufitu cyklu tylko w jego
+    # luzie, najwyżej `max_calls_per_cycle` razy. Off: przed migracją kolumn nie ma.
+    shadow_prompt_variant_enabled: bool = False
+    shadow_prompt_variant: ShadowPromptVariantSettings | None = None
     # ML-34: przedział 80% ruchu (conformal + ACI) jest w mailu zawsze, liczony
     # w cyklu bez migracji. Ta flaga dokłada zapis `interval_low/high` (migracja
     # 032) i pokrycie zrealizowane vs nominalne w Track Record. Off: nowy klucz
@@ -1319,6 +1353,18 @@ class Settings(BaseSettings):
             )
         if any(challenger.path == self.ml_model_path for challenger in self.ml_challengers):
             raise ValueError("ml_challengers must not point at the champion's ml_model_path")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_shadow_prompt_variant(self) -> Settings:
+        """EXP-26: wiersz wariantu dzieli klucz (prediction_id, model_name) z nogą ML —
+        nazwa championa albo challengera nadpisałaby jego prognozę upsertem."""
+        variant = self.shadow_prompt_variant
+        taken = {CHAMPION_MODEL_NAME, *(challenger.name for challenger in self.ml_challengers)}
+        if variant is not None and variant.name in taken:
+            raise ValueError(
+                f"shadow_prompt_variant name must differ from the ML leg's names: {variant.name}"
+            )
         return self
 
     def price_level_seeds(self) -> tuple[PriceLevel, ...]:
