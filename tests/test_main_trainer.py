@@ -890,6 +890,68 @@ class TestDiagnosisBackfillJob:
         assert backfill_cls.call_args.kwargs["max_paid_calls"] == 1
 
 
+class TestBatchDiagnosisJob:
+    """EXP-17: tygodniowa diagnoza zbiorcza — za flagą, jedno wywołanie LLM przez
+    przydział tygodniowego budżetu FIN-30 (kolejka: recap > zbiorcza > spłata diagnoz)."""
+
+    def _trainer(self, settings: Settings, mocker: Any) -> tuple[MagicMock, MagicMock]:
+        from src.application.ports import LLMPort
+
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
+        mocker.patch("main_trainer.build_notifier", return_value=MagicMock())
+        mocker.patch("main_agent.build_llm_adapter", return_value=MagicMock(spec=LLMPort))
+        recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
+        recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
+        batch_cls: MagicMock = mocker.patch("main_trainer.BatchDiagnosisUseCase")
+        batch_cls.return_value.run.return_value = {"status": "diagnosed"}
+        backfill_cls: MagicMock = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
+        backfill_cls.return_value.run.return_value = {"status": "backfilled"}
+        settings.symbols = ["AAPL"]
+        settings.paid_calls_enabled = True
+        return batch_cls, backfill_cls
+
+    def test_off_by_default(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        batch_cls, _ = self._trainer(settings, mocker)
+
+        main_trainer.main(settings)
+
+        batch_cls.assert_not_called()
+
+    def test_job_runs_once_through_a_budgeted_port(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        from src.application.metering import BudgetedLLMPort
+
+        batch_cls, _ = self._trainer(settings, mocker)
+        settings.batch_diagnosis_enabled = True
+        settings.slow_loop_max_paid_llm_calls_per_week = 15
+
+        main_trainer.main(settings)
+
+        assert isinstance(batch_cls.call_args.kwargs["llm_port"], BudgetedLLMPort)
+        batch_cls.return_value.run.assert_called_once()
+
+    def test_batch_goes_before_the_backfill_in_the_weekly_cap(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        _, backfill_cls = self._trainer(settings, mocker)
+        settings.weekly_recap_enabled = True
+        settings.batch_diagnosis_enabled = True
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 5
+        settings.slow_loop_max_paid_llm_calls_per_week = 3
+
+        main_trainer.main(settings)
+
+        # Sufit 3: recap 1 + diagnoza zbiorcza 1 → na spłatę diagnoz zostaje 1.
+        assert backfill_cls.call_args.kwargs["max_paid_calls"] == 1
+
+
 class TestSlowLoopCostLedger:
     """FIN-13: recap i sędzia kalibracji zgłaszają tokeny do ledgera przebiegu
     Slow Loopa; zapis `llm_calls` za tą samą flagą co w Fast Loopie."""

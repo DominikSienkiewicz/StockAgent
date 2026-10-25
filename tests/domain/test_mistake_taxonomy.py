@@ -6,6 +6,8 @@ z kategorią ze zbioru, to OTHER z całym tekstem jako diagnozą."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.domain.mistake_taxonomy import (
@@ -13,6 +15,7 @@ from src.domain.mistake_taxonomy import (
     MistakeCategory,
     MistakeDiagnosis,
     count_categories,
+    parse_batch_diagnoses,
     parse_mistake_category,
     parse_mistake_diagnosis,
 )
@@ -79,3 +82,54 @@ class TestCategories:
 
     def test_every_category_has_a_polish_label(self) -> None:
         assert set(MISTAKE_CATEGORY_LABELS_PL) == set(MistakeCategory)
+
+
+class TestParseBatchDiagnoses:
+    """EXP-17: jedna odpowiedź LLM nad wszystkimi pudłami tygodnia → diagnoza per pudło."""
+
+    def test_entries_map_to_their_positions(self) -> None:
+        raw = json.dumps(
+            {
+                "diagnoses": [
+                    {"n": 2, "category": "earnings", "insight": " Raport. "},
+                    {"n": 1, "category": "MACRO", "insight": "Stopy."},
+                ]
+            }
+        )
+
+        assert parse_batch_diagnoses(raw, 2) == (
+            MistakeDiagnosis(MistakeCategory.MACRO, "Stopy."),
+            MistakeDiagnosis(MistakeCategory.EARNINGS, "Raport."),
+        )
+
+    def test_missing_unusable_and_out_of_range_entries_leave_none(self) -> None:
+        raw = json.dumps(
+            {
+                "diagnoses": [
+                    "not an object",
+                    {"n": "1", "insight": "pozycja jako tekst"},
+                    {"n": True, "insight": "bool to nie pozycja"},
+                    {"n": 2, "insight": "  "},
+                    {"n": 3, "category": "???", "insight": "Inne."},
+                    {"n": 3, "category": "NOISE", "insight": "Duplikat."},
+                    {"n": 9, "insight": "Poza zakresem."},
+                ]
+            }
+        )
+
+        assert parse_batch_diagnoses(raw, 3) == (
+            None,
+            None,
+            MistakeDiagnosis(MistakeCategory.OTHER, "Inne."),
+        )
+
+    def test_answer_without_a_list_is_shared_by_every_position(self) -> None:
+        shared = MistakeDiagnosis(MistakeCategory.OTHER, "Makro.")
+
+        assert parse_batch_diagnoses("Makro.", 2) == (shared, shared)
+        assert parse_batch_diagnoses('{"diagnoses": "x", "insight": "Makro."}', 1) == (
+            shared,
+        )
+
+    def test_empty_answer_diagnoses_nothing(self) -> None:
+        assert parse_batch_diagnoses("   ", 2) == (None, None)

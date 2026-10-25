@@ -358,6 +358,9 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "rag_exact_search_enabled",
     # ML-41: analogi RAG tylko rozliczone — inne analogi w prompcie predykcji.
     "rag_point_in_time_enabled",
+    # EXP-17: reflect bez diagnozy per błąd — lekcja w prompcie dopiero po tygodniowej
+    # diagnozie zbiorczej Slow Loopa.
+    "batch_diagnosis_enabled",
     "ml_model_path",
     # EXP-05: ramiona zmieniają prompt (rada bez trendu LLM, prompt bez pamięci).
     "experiments",
@@ -647,6 +650,10 @@ class Settings(BaseSettings):
     # po recapie i sędzi. Bez migracji (kolumny 001/009, kwit 020 opcjonalnie).
     diagnosis_backfill_enabled: bool = False
     diagnosis_backfill_max_calls: int = Field(default=5, ge=0)
+    # EXP-17: reflect nie płaci za diagnozę błędu; Slow Loop diagnozuje pudła tygodnia
+    # JEDNYM wywołaniem LLM w tygodniowym budżecie FIN-30. Zmienia lekcje w prompcie
+    # (przepis); włączenie po EXP-02/03 (po 2027-01-29). Bez migracji. Off.
+    batch_diagnosis_enabled: bool = False
 
     # ----- Risk: VaR / stress-test / hedge-effectiveness -----
     # Wszystkie liczone z DARMOWEJ historii snapshotów (zero płatnych portów),

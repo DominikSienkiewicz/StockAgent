@@ -54,6 +54,10 @@ from src.application.report_weekly_recap import (
 from src.application.run_context import RunContext
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.backfill_diagnoses import BackfillDiagnosesUseCase
+from src.application.use_cases.batch_diagnosis import (
+    PAID_LLM_CALLS_PER_RUN as BATCH_DIAGNOSIS_LLM_CALLS,
+)
+from src.application.use_cases.batch_diagnosis import BatchDiagnosisUseCase
 from src.application.use_cases.export_evidence import ExportEvidenceUseCase
 from src.application.use_cases.monitor_output_drift import (
     MonitorOutputDriftUseCase,
@@ -110,6 +114,9 @@ WEEKLY_RECAP_DAYS = 7
 # FIN-30: joby Slow Loopa z płatnym LLM. Kolejność w `_requested_llm_calls` to
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
+# EXP-17: tygodniowa diagnoza zbiorcza — przed spłatą diagnoz (jedno wywołanie nad
+# wszystkimi pudłami tygodnia jest tańsze niż wywołanie per pudło).
+BATCH_DIAGNOSIS_JOB = "batch_diagnosis"
 # WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
 DIAGNOSIS_JOB = "diagnosis"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
@@ -523,12 +530,15 @@ def _build_llm_or_unavailable(
 
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
     """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie pierwszy:
-    to on trafia do użytkownika. Spłata diagnoz (WIA-53) jest ostatnia — przycięcie
-    bierze ją pierwszą. Kalibracja pewności nie woła LLM (WIA-65), więc nie prosi o
-    przydział. `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy."""
+    to on trafia do użytkownika. Diagnoza zbiorcza (EXP-17) idzie przed spłatą diagnoz
+    (WIA-53), która jest ostatnia — przycięcie bierze ją pierwszą. Kalibracja pewności
+    nie woła LLM (WIA-65), więc nie prosi o przydział. `extra_per_job` (NIEZ-44) —
+    rezerwa na request do zapasowego dostawcy."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
+    if settings.batch_diagnosis_enabled:
+        requested[BATCH_DIAGNOSIS_JOB] = BATCH_DIAGNOSIS_LLM_CALLS + extra_per_job
     if settings.diagnosis_backfill_enabled:
         requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
     return requested
@@ -809,6 +819,20 @@ def _run_calibration_scores(
         logger.exception("Calibration scores failed — pomijam")
 
 
+def _run_batch_diagnosis(repository: RepositoryPort, llm_port: LLMPort) -> None:
+    """EXP-17: pudła ostatnich 7 dni bez diagnozy — JEDNO wywołanie LLM w tygodniowym
+    budżecie Slow Loopa. Przed spłatą diagnoz, żeby ta nie płaciła za nie osobno.
+    Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = BatchDiagnosisUseCase(
+            repository_port=repository, llm_port=llm_port, clock=lambda: datetime.now(UTC)
+        ).run()
+    except PortError:
+        logger.warning("Batch diagnosis failed — pomijam", exc_info=True)
+        return
+    logger.info("Batch diagnosis — %s", result)
+
+
 def _run_diagnosis_backfill(
     repository: RepositoryPort, llm_port: LLMPort, max_paid_calls: int
 ) -> None:
@@ -933,6 +957,8 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
+    if settings.batch_diagnosis_enabled:
+        _run_batch_diagnosis(repository, paid_llm.port_for(BATCH_DIAGNOSIS_JOB))
     if settings.diagnosis_backfill_enabled:
         # Rezerwa NIEZ-44 zostaje na zapasowego dostawcę — wierszy nie więcej niż cap.
         _run_diagnosis_backfill(

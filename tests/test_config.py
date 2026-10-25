@@ -790,6 +790,19 @@ class TestRagPointInTimeFlag:
         assert "rag_point_in_time_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestBatchDiagnosisFlag:
+    """EXP-17: reflect bez diagnozy per błąd — lekcja w prompcie z tygodniowym
+    opóźnieniem, więc domyślnie off i w przepisie."""
+
+    def test_defaults_off_and_in_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = make_settings(**REQUIRED_ENV_KWARGS)
+
+        assert settings.batch_diagnosis_enabled is False
+        assert "batch_diagnosis_enabled" in RECIPE_SETTINGS_FIELDS
+
+
 class TestCorporateEventsFlag:
     """DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech — zmiana przepisu,
     więc domyślnie off i w przepisie (decyzja 2026-10-25)."""

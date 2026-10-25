@@ -288,6 +288,18 @@ class TestSubstantiveInsight:
             assert not is_substantive_insight(placeholder)
             assert not is_substantive_insight(f"  {placeholder}\n")
 
+    def test_batch_pending_placeholder_waits_for_a_diagnosis(self) -> None:
+        # EXP-17: placeholder tygodniowej diagnozy zbiorczej nie jest lekcją, a job
+        # Slow Loopa i spłata diagnoz znajdują go jak każde pudło bez diagnozy.
+        from src.domain.prediction import (
+            DIAGNOSIS_BATCH_PENDING_INSIGHT,
+            UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+            is_substantive_insight,
+        )
+
+        assert not is_substantive_insight(DIAGNOSIS_BATCH_PENDING_INSIGHT)
+        assert DIAGNOSIS_BATCH_PENDING_INSIGHT in UNDIAGNOSED_MISTAKE_PLACEHOLDERS
+
     def test_historical_placeholder_texts_are_recognised(self) -> None:
         # Wiersze sprzed WIA-10 niosą dokładnie te literały — zostają w bazie.
         from src.domain.prediction import is_substantive_insight

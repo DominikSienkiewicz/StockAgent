@@ -4218,6 +4218,21 @@ class TestRagPointInTimeWiring:
         assert use_case_cls.call_args.args[0].rag_point_in_time_enabled is enabled
 
 
+class TestBatchDiagnosisWiring:
+    """EXP-17 — flaga z Settings trafia do `AgentGraphDeps` (reflect bez diagnozy)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.batch_diagnosis_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].batch_diagnosis_enabled is enabled
+
+
 class TestStaleReferenceWiring:
     """FIN-14 — zegar cyklu dociera do use case'u (wiek referencji ceny liczy się
     od startu cyklu, jak nagłówek maila), a stęchłe referencje dowodzą historii."""

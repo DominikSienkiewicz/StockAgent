@@ -106,6 +106,7 @@ from src.domain.paper_ledger import (
 )
 from src.domain.prediction import (
     CORRECT_PREDICTION_INSIGHT,
+    DIAGNOSIS_BATCH_PENDING_INSIGHT,
     DIAGNOSIS_SKIPPED_INSIGHT,
     STALE_QUOTE_INSIGHT,
     Prediction,
@@ -956,6 +957,9 @@ class AgentGraphDeps:
     # w `pc`) nie otwiera bramki, nie rozlicza i nie nadpisuje referencji. Off = bez
     # odczytu historii, jak przed DAT-15.
     price_outlier_guard_enabled: bool = False
+    # EXP-17: reflect nie płaci za diagnozę błędu, tylko zostawia placeholder dla
+    # tygodniowej diagnozy zbiorczej Slow Loopa. Off = diagnoza za bramką, jak dotąd.
+    batch_diagnosis_enabled: bool = False
     attestation_publisher: AttestationPublisherPort | None = None
     # ML-33: prognozy cienia championa i challengerów do `shadow_predictions`
     # (migracja 075). None = flaga off: graf nie liczy cieni i nie dotyka tabeli.
@@ -1696,7 +1700,11 @@ def _reflect_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         drift=_drift_of(state),
     ).passes
 
-    if diagnose_paid:
+    if deps.batch_diagnosis_enabled:
+        # EXP-17: diagnozę tego błędu zrobi raz w tygodniu Slow Loop, jednym
+        # wywołaniem nad wszystkimi pudłami tygodnia — reflect nie płaci za nią.
+        insight, category = DIAGNOSIS_BATCH_PENDING_INSIGHT, None
+    elif diagnose_paid:
         # Counterfactual dissent-replay (#8): który dysydent rady trafił ruch,
         # mimo że agent poszedł inaczej? Wzbogaca diagnozę o stłumiony, trafny
         # głos mniejszości. W pełni graceful — brak głosów / błąd → bez bloku.

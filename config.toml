@@ -81,6 +81,11 @@ model_probe_enabled = true
 # Przepisany wniosek trafia do lessons i analogów RAG. Off.
 diagnosis_backfill_enabled = false
 diagnosis_backfill_max_calls = 5
+# EXP-17: diagnoza zbiorcza raz w tygodniu — reflect w Fast Loopie nie płaci za diagnozę
+# błędu, a Slow Loop diagnozuje pudła ostatnich 7 dni JEDNYM wywołaniem LLM (przed spłatą
+# diagnoz, w budżecie `slow_loop_max_paid_llm_calls_per_week`). Lekcje w prompcie
+# przychodzą z tygodniowym opóźnieniem → nowy przepis; włącz po EXP-02/03 (po 2027-01-29).
+batch_diagnosis_enabled = false
 # Tool-use research agent (R-24): na największych ruchach model dociąga read-only
 # toole (fundamenty/makro) przed werdyktem. Płatna, wielorundowa ścieżka — off.
 tool_use_enabled = false

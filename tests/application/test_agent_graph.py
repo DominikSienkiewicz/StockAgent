@@ -929,6 +929,41 @@ class TestReflectMistakeDiagnosisGatedByVolatility:
 # ---------------------------------------------------------------------------
 
 
+class TestBatchDiagnosisFlag:
+    """EXP-17: za `batch_diagnosis_enabled` reflect nie płaci za diagnozę błędu —
+    zostawia placeholder tygodniowej diagnozy zbiorczej Slow Loopa."""
+
+    def test_flag_on_leaves_the_miss_for_the_weekly_batch_without_paying(
+        self,
+        market_port: Mock,
+        sentiment_port: Mock,
+        news_port: Mock,
+        repository_port: Mock,
+        ml_port: Mock,
+        llm_port: Mock,
+        graph_ports: GraphPorts,
+    ) -> None:
+        from src.domain.prediction import DIAGNOSIS_BATCH_PENDING_INSIGHT, is_substantive_insight
+
+        # Cykl zmienny (−10%) i błędny prior — bez flagi diagnoza by się opłaciła.
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+            has_prior_prediction=True,
+        )
+        graph = create_agent_graph(make_deps(**graph_ports, batch_diagnosis_enabled=True))
+
+        final = graph.compile().invoke(_initial_state("100.0"))
+
+        llm_port.analyze_mistake.assert_not_called()
+        kwargs = repository_port.update_prediction_accuracy.call_args.kwargs
+        assert kwargs["insight"] == DIAGNOSIS_BATCH_PENDING_INSIGHT
+        assert kwargs["correction_category"] is None
+        assert kwargs["is_trend_correct"] is False
+        assert not is_substantive_insight(kwargs["insight"])
+        assert DIAGNOSIS_BATCH_PENDING_INSIGHT in final["reflection_context"]
+
+
 class TestSelfReflectionOnCorrectPrediction:
     def test_reinforces_when_prior_prediction_was_correct(
         self,
