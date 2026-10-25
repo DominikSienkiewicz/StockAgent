@@ -488,6 +488,20 @@ class InMemoryRepository(RepositoryPort):
             if score_version is not None:
                 row["calibration_score_version"] = score_version
 
+    def save_calibration_scores(
+        self, scores: Mapping[str, float], *, score_version: int
+    ) -> int:
+        updated = 0
+        with self._lock:
+            for prediction_id, score in scores.items():
+                row = self._predictions.get(prediction_id)
+                if row is None:
+                    continue
+                row["confidence_calibration"] = score
+                row["calibration_score_version"] = score_version
+                updated += 1
+        return updated
+
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         rows = _newest_first(
             r

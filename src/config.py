@@ -213,7 +213,7 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "liveness_fast_loop_max_gap_h",
     "liveness_slow_loop_max_gap_h",
     "calibration_judge_enabled",
-    # WIA-37: wersja reguły zapisywanej przez sędziego (Slow Loop) — prognoza ta sama.
+    # WIA-37: wersja reguły oceny kalibracji (Slow Loop) — prognoza ta sama.
     "calibration_score_version_enabled",
     # NIEZ-25: sonda Models API w Slow Loopie — sam odczyt katalogu dostawcy.
     "model_probe_enabled",
@@ -633,10 +633,11 @@ class Settings(BaseSettings):
     # uwagi). Klucze MUSZĄ być sektorami z `sectors` — inaczej start pada, żeby
     # zmiana nazwy sektora nie wyłączyła sugestii po cichu.
     sector_peers: dict[str, list[str]] = Field(default_factory=dict)
-    # LLM-as-Judge kalibracji pewności (Slow Loop, migracja 016).
+    # Arytmetyczna ocena kalibracji pewności (Slow Loop, R-22) jednym zapisem zbiorczym
+    # (migracja 077). WIA-65: bez sędziego LLM — zero płatnych wywołań.
     calibration_judge_enabled: bool = False
-    # WIA-37: sędzia zapisuje właściwą regułę Briera (v2) z kolumną
-    # `calibration_score_version` (migracja 044). Off: reguła liniowa v1 bez klucza.
+    # WIA-37: ocena kalibracji to właściwa reguła Briera (v2) z kolumną
+    # `calibration_score_version` (migracja 044). Off: reguła liniowa v1.
     calibration_score_version_enabled: bool = False
     # NIEZ-25: tygodniowa sonda Models API (Slow Loop, bez tokenów, bez migracji).
     model_probe_enabled: bool = False

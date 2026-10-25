@@ -54,9 +54,6 @@ from src.application.report_weekly_recap import (
 from src.application.run_context import RunContext
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.backfill_diagnoses import BackfillDiagnosesUseCase
-from src.application.use_cases.calibrate_confidence import (
-    PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
-)
 from src.application.use_cases.export_evidence import ExportEvidenceUseCase
 from src.application.use_cases.monitor_output_drift import (
     MonitorOutputDriftUseCase,
@@ -113,7 +110,6 @@ WEEKLY_RECAP_DAYS = 7
 # FIN-30: joby Slow Loopa z płatnym LLM. Kolejność w `_requested_llm_calls` to
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
-JUDGE_JOB = "judge"
 # WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
 DIAGNOSIS_JOB = "diagnosis"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
@@ -526,15 +522,13 @@ def _build_llm_or_unavailable(
 
 
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
-    """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
-    sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego.
-    Spłata diagnoz (WIA-53) jest ostatnia — przycięcie bierze ją pierwszą.
-    `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy LLM."""
+    """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie pierwszy:
+    to on trafia do użytkownika. Spłata diagnoz (WIA-53) jest ostatnia — przycięcie
+    bierze ją pierwszą. Kalibracja pewności nie woła LLM (WIA-65), więc nie prosi o
+    przydział. `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
-    if settings.calibration_judge_enabled:
-        requested[JUDGE_JOB] = JUDGE_LLM_CALLS + extra_per_job
     if settings.diagnosis_backfill_enabled:
         requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
     return requested
@@ -795,28 +789,24 @@ def _run_evidence_export(
     )
 
 
-def _run_calibration_judge(
-    repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
+def _run_calibration_scores(
+    repository: RepositoryPort, *, brier_score_enabled: bool = False
 ) -> None:
-    """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
-    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
-    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044).
-    FIN-20: poniżej `MIN_JUDGE_SAMPLES` rozliczonych predykcji sędzia nie woła LLM."""
+    """#4: arytmetyczna ocena kalibracji pewności (Slow Loop), jednym zapisem
+    zbiorczym (migracja 077). WIA-65: bez sędziego LLM — zero płatnych wywołań.
+    WIA-37: `brier_score_enabled` = reguła Briera v2 (bez flagi liniowa v1)."""
     try:
         from src.application.use_cases.calibrate_confidence import (
-            MIN_JUDGE_SAMPLES,
             CalibrateConfidenceUseCase,
         )
 
         cal_result = CalibrateConfidenceUseCase(
             repository_port=repository,
-            llm_port=llm_port,
             brier_score_enabled=brier_score_enabled,
-            min_samples=MIN_JUDGE_SAMPLES,
         ).run(days=30)
-        logger.info("Calibration judge — %s", cal_result.get("status"))
+        logger.info("Calibration scores — %s", cal_result.get("status"))
     except Exception:
-        logger.exception("Calibration judge failed — pomijam")
+        logger.exception("Calibration scores failed — pomijam")
 
 
 def _run_diagnosis_backfill(
@@ -933,14 +923,13 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     _run_model_probe(settings, quota_monitor)
     _run_evidence_export(settings)
 
+    if settings.calibration_judge_enabled:
+        _run_calibration_scores(
+            repository, brier_score_enabled=settings.calibration_score_version_enabled
+        )
+
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
-    if settings.calibration_judge_enabled:
-        _run_calibration_judge(
-            repository,
-            paid_llm.port_for(JUDGE_JOB),
-            brier_score_enabled=settings.calibration_score_version_enabled,
-        )
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
@@ -959,7 +948,7 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
         run_context=RunContext.from_environ(os.environ),
     )
 
-    # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
+    # NIEZ-03: alerty z recapu i diagnoz (LLM, Resend) powstają po pierwszym zapisie.
     _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable) + 1)

@@ -562,6 +562,15 @@ class RepositoryPort(ABC):
         (migracja 044); None = bez tego klucza w zapisie (wiersz v1)."""
 
     @abstractmethod
+    def save_calibration_scores(
+        self, scores: Mapping[str, float], *, score_version: int
+    ) -> int:
+        """WIA-65 — arytmetyczne oceny kalibracji (`id predykcji → confidence_calibration`)
+        JEDNYM zapisem zbiorczym (RPC `save_calibration_scores`, migracja 077) razem
+        z wersją reguły (`calibration_score_version`, 044: 1 liniowa, 2 Brier).
+        `calibration_insight` zostaje bez zmian. Zwraca liczbę zaktualizowanych wierszy."""
+
+    @abstractmethod
     def get_persona_accuracy(
         self, asset_type: AssetType, window_days: int = 90
     ) -> dict[str, float]:

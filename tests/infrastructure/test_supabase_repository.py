@@ -1024,6 +1024,59 @@ class TestSaveCalibration:
         assert payload["calibration_insight"] == "Przepewna na krypto."
 
 
+class TestSaveCalibrationScores:
+    """WIA-65: arytmetyczne oceny kalibracji jednym wywołaniem RPC (migracja 077)."""
+
+    @staticmethod
+    def _execute(client: MagicMock) -> MagicMock:
+        return cast(MagicMock, client.rpc.return_value.execute)
+
+    def test_sends_every_score_in_one_rpc_call(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        self._execute(mock_client).return_value = MagicMock(data=2)
+
+        updated = repo.save_calibration_scores({"p1": 0.19, "p2": 0.96}, score_version=2)
+
+        assert updated == 2
+        mock_client.rpc.assert_called_once_with(
+            "save_calibration_scores",
+            {
+                "p_scores": [{"id": "p1", "score": 0.19}, {"id": "p2", "score": 0.96}],
+                "p_score_version": 2,
+            },
+        )
+        mock_client.table.assert_not_called()
+
+    def test_no_scores_make_no_call(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        assert repo.save_calibration_scores({}, score_version=1) == 0
+        mock_client.rpc.assert_not_called()
+
+    def test_a_payload_that_is_not_a_count_is_malformed(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from src.application.errors import MalformedPayload
+
+        self._execute(mock_client).return_value = MagicMock(data=[{"updated": 2}])
+
+        with pytest.raises(MalformedPayload):
+            repo.save_calibration_scores({"p1": 0.5}, score_version=1)
+
+    def test_missing_function_leaves_as_not_found(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        self._execute(mock_client).side_effect = APIError(
+            {"code": "PGRST202", "message": "no function"}
+        )
+
+        with pytest.raises(NotFound):
+            repo.save_calibration_scores({"p1": 0.5}, score_version=1)
+
+
 class TestGetPersonaAccuracy:
     def test_maps_rpc_rows_to_weights(
         self, repo: SupabaseRepository, mock_client: MagicMock

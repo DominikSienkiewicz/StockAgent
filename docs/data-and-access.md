@@ -58,6 +58,7 @@ The functions in `public`, all `SECURITY INVOKER` (they run with the caller's pr
 | `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
 | `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 | `schema_version()` | `071` | Fast Loop and Slow Loop at start (RPC, NIEZ-30) | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads `supabase_migrations.schema_migrations`, which `service_role` cannot, and returns only the highest numeric version (`NULL` when the registry is missing or empty) |
+| `save_calibration_scores(jsonb, smallint)` | `077` | Slow Loop (RPC, `calibration_judge_enabled`, WIA-65): the arithmetic calibration scores of the 30-day window in one bulk `UPDATE` of `confidence_calibration` and `calibration_score_version` | `service_role` only; `search_path = ''` |
 | `paper_trades_chain_head()`, `paper_trades_close_only()`, `paper_trades_append_only()` | `073` | triggers on `paper_trades` | nobody; the triggers fire for any writer |
 
 `scripts/prod-state-check.sh` reads several of these relations with plain `GET` requests and

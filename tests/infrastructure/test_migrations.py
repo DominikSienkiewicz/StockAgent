@@ -10,6 +10,7 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -109,6 +110,7 @@ MIGRATION_FILES = [
     "074_invalidation_price.sql",
     "075_shadow_predictions.sql",
     "076_rag_point_in_time.sql",
+    "077_slow_loop_rpcs.sql",
     "079_bot_state.sql",
     "080_symbol_mutes.sql",
     "083_shadow_prediction_trend.sql",
@@ -4857,4 +4859,73 @@ class TestMigration064ScorecardProvenance:
                 "WHERE conrelid = 'model_scorecards'::regclass AND contype = 'c' "
                 "AND pg_get_constraintdef(oid) LIKE '%dataset_sha256%'"
             )
+            assert cur.fetchone() == (1,)
+
+
+@pytest.mark.containers
+class TestMigration077SlowLoopRpcs:
+    """WIA-65: `save_calibration_scores` — arytmetyczne oceny kalibracji jednym
+    wywołaniem zamiast UPDATE wiersz po wierszu; tylko service_role je wykonuje."""
+
+    SAVE_SCORES = "save_calibration_scores(jsonb,smallint)"
+
+    def test_save_calibration_scores_updates_every_listed_row_in_one_call(
+        self, migrated_pg_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(migrated_pg_conn) as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, timestamp, calibration_insight) VALUES "
+                "('CAL077', '2026-10-19T05:30:00+00:00', 'stary wniosek'), "
+                "('CAL077', '2026-10-20T05:30:00+00:00', NULL), "
+                "('CAL077', '2026-10-21T05:30:00+00:00', NULL) RETURNING id"
+            )
+            first, second, untouched = (str(row[0]) for row in cur.fetchall())
+            scores = [
+                {"id": first, "score": 0.19},
+                {"id": second, "score": 0.96},
+                {"id": "00000000-0000-0000-0000-000000000077", "score": 0.5},
+            ]
+            cur.execute(
+                "SELECT save_calibration_scores(%s::jsonb, 2::smallint)", (json.dumps(scores),)
+            )
+            (updated,) = cur.fetchone()
+            cur.execute(
+                "SELECT id::text, confidence_calibration, calibration_score_version, "
+                "calibration_insight FROM prediction_logs WHERE symbol = 'CAL077'"
+            )
+            rows = {row[0]: row[1:] for row in cur.fetchall()}
+
+        assert updated == 2
+        assert rows == {
+            first: (0.19, 2, "stary wniosek"),
+            second: (0.96, 2, None),
+            untouched: (None, None, None),
+        }
+
+    def test_only_the_service_role_executes_it_and_its_search_path_is_pinned(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure",
+                (self.SAVE_SCORES,),
+            )
+            (config,) = cur.fetchone()
+            can_execute = {}
+            for role in (*PUBLIC_API_ROLES, "service_role"):
+                cur.execute(
+                    "SELECT has_function_privilege(%s::name, %s::regprocedure, 'EXECUTE')",
+                    (role, self.SAVE_SCORES),
+                )
+                can_execute[role] = cur.fetchone()[0]
+
+        assert "search_path=\"\"" in (config or [])
+        assert can_execute == {"anon": False, "authenticated": False, "service_role": True}
+
+    def test_077_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "077_slow_loop_rpcs.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute("SELECT count(*) FROM pg_proc WHERE proname = 'save_calibration_scores'")
             assert cur.fetchone() == (1,)

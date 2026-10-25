@@ -66,10 +66,11 @@ regime_exit_confirmations = 2
 # Contagion (R-23): werdykty spółek z tego samego sektora z tego cyklu do promptu.
 # Grupy (`peer_groups`) idą z `sectors` niżej. Off.
 contagion_enabled = false
-# Kalibracja pewności sędzią-LLM (R-22, Slow Loop, migracja 016). Off.
+# Arytmetyczna ocena kalibracji pewności (R-22, Slow Loop) jednym zapisem zbiorczym.
+# WIA-65: bez sędziego LLM — zero płatnych wywołań. UWAGA: włącz DOPIERO po migracji 077.
 calibration_judge_enabled = false
-# Sędzia zapisuje regułę Briera 1 − (c − o)² z wersją v2 (WIA-37). Włącz DOPIERO
-# po migracji 044 (PGRST204). Off: reguła liniowa v1, bez kolumny wersji.
+# Ocena kalibracji to reguła Briera 1 − (c − o)² z wersją v2 (WIA-37). Włącz DOPIERO
+# po migracji 044 (PGRST204). Off: reguła liniowa v1.
 calibration_score_version_enabled = false
 # NIEZ-25: Slow Loop pyta Models API (bez tokenów), czy skonfigurowane modele żyją.
 model_probe_enabled = true

@@ -739,9 +739,10 @@ def test_trainer_use_case_gets_the_guarded_repository(settings: Settings, mocker
 
 
 class TestSlowLoopPaidBudget:
-    """FIN-30: płatne wywołania LLM Slow Loopa (recap, sędzia kalibracji) liczy ten
+    """FIN-30: płatne wywołania LLM Slow Loopa (recap, spłata diagnoz) liczy ten
     sam meter co Fast Loop, a tygodniowy budżet z domeny przycina je PRZED
-    wywołaniem dostawcy. Recap ma pierwszeństwo — to on trafia do użytkownika."""
+    wywołaniem dostawcy. Recap ma pierwszeństwo — to on trafia do użytkownika.
+    WIA-65: kalibracja pewności nie woła LLM, więc drugim jobem są diagnozy."""
 
     def _trainer(self, settings: Settings, mocker: Any) -> tuple[MagicMock, MagicMock, MagicMock]:
         from src.application.ports import LLMPort
@@ -757,58 +758,45 @@ class TestSlowLoopPaidBudget:
         mocker.patch("main_agent.build_llm_adapter", return_value=provider)
         recap_cls = mocker.patch("main_trainer.WeeklyRecapUseCase")
         recap_cls.return_value.run.return_value = {"status": "skipped_below_threshold"}
-        judge_cls = mocker.patch(
-            "src.application.use_cases.calibrate_confidence.CalibrateConfidenceUseCase"
-        )
-        judge_cls.return_value.run.return_value = {"status": "calibrated"}
+        backfill_cls = mocker.patch("main_trainer.BackfillDiagnosesUseCase")
+        backfill_cls.return_value.run.return_value = {"status": "backfilled"}
         settings.symbols = ["AAPL"]
         settings.weekly_recap_enabled = True
-        settings.calibration_judge_enabled = True
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 1
         # FIN-35: budżet dotyczy prawdziwego dostawcy — lokalna atrapa nie płaci.
         settings.paid_calls_enabled = True
-        return provider, recap_cls, judge_cls
+        return provider, recap_cls, backfill_cls
 
     def test_job_past_the_weekly_cap_never_reaches_the_provider(
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         from src.application.metering import PaidBudgetExhausted
 
-        provider, recap_cls, judge_cls = self._trainer(settings, mocker)
+        provider, recap_cls, backfill_cls = self._trainer(settings, mocker)
         settings.slow_loop_max_paid_llm_calls_per_week = 1
 
         main_trainer.main(settings)
 
         recap_llm = recap_cls.call_args.kwargs["llm_port"]
-        judge_llm = judge_cls.call_args.kwargs["llm_port"]
+        backfill_llm = backfill_cls.call_args.kwargs["llm_port"]
         assert recap_llm.analyze("narracja") == {"narrative": "opowieść"}
         with pytest.raises(PaidBudgetExhausted):
-            judge_llm.analyze_mistake("wniosek")
+            backfill_llm.analyze_mistake("wniosek")
         provider.analyze_mistake.assert_not_called()
-        judge_cls.return_value.run.assert_called_once()
+        backfill_cls.return_value.run.assert_called_once()
 
     def test_without_a_cap_both_jobs_reach_the_provider(
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
-        provider, recap_cls, judge_cls = self._trainer(settings, mocker)
+        provider, recap_cls, backfill_cls = self._trainer(settings, mocker)
 
         main_trainer.main(settings)
 
         recap_cls.call_args.kwargs["llm_port"].analyze("narracja")
-        judge_cls.call_args.kwargs["llm_port"].analyze_mistake("wniosek")
+        backfill_cls.call_args.kwargs["llm_port"].analyze_mistake("wniosek")
         provider.analyze.assert_called_once_with("narracja")
         provider.analyze_mistake.assert_called_once_with("wniosek")
-
-    def test_judge_gets_the_minimum_sample_size(
-        self, settings: Settings, mock_external_clients: None, mocker: Any
-    ) -> None:
-        # FIN-20: produkcja nie płaci za wniosek sędziego z chudej próby.
-        from src.application.use_cases.calibrate_confidence import MIN_JUDGE_SAMPLES
-
-        _, _, judge_cls = self._trainer(settings, mocker)
-
-        main_trainer.main(settings)
-
-        assert judge_cls.call_args.kwargs.get("min_samples") == MIN_JUDGE_SAMPLES
 
     def test_paid_calls_of_the_run_are_metered_and_logged(
         self,
@@ -819,7 +807,7 @@ class TestSlowLoopPaidBudget:
     ) -> None:
         import logging
 
-        _, recap_cls, judge_cls = self._trainer(settings, mocker)
+        _, recap_cls, _ = self._trainer(settings, mocker)
         settings.slow_loop_max_paid_llm_calls_per_week = 15
 
         def recap_run(*_args: Any, **_kwargs: Any) -> dict[str, str]:
@@ -837,7 +825,7 @@ class TestSlowLoopPaidBudget:
 
 class TestDiagnosisBackfillJob:
     """WIA-53: job spłaty długu diagnoz w Slow Loopie — za flagą, z przydziałem
-    z tygodniowego budżetu FIN-30 (ostatni w kolejce: recap > sędzia > diagnozy)."""
+    z tygodniowego budżetu FIN-30 (ostatni w kolejce: recap > diagnozy)."""
 
     def _trainer(self, settings: Settings, mocker: Any) -> MagicMock:
         from src.application.ports import LLMPort
@@ -894,11 +882,11 @@ class TestDiagnosisBackfillJob:
         settings.calibration_judge_enabled = True
         settings.diagnosis_backfill_enabled = True
         settings.diagnosis_backfill_max_calls = 5
-        settings.slow_loop_max_paid_llm_calls_per_week = 3
+        settings.slow_loop_max_paid_llm_calls_per_week = 2
 
         main_trainer.main(settings)
 
-        # Sufit 3: recap 1 + sędzia 1 → na diagnozy zostaje 1.
+        # Sufit 2: recap 1 → na diagnozy zostaje 1 (kalibracja bez LLM, WIA-65).
         assert backfill_cls.call_args.kwargs["max_paid_calls"] == 1
 
 

@@ -546,3 +546,36 @@ class TestBotStoreContract:
 
         assert store.get_update_offset() == 870000004
         assert store.get_symbol_mutes() == [SymbolMute("T17MU", until)]
+
+
+class TestCalibrationScoresRpc:
+    """WIA-65: zbiorczy zapis ocen kalibracji przez prawdziwy PostgREST (migracja 077)."""
+
+    def test_bulk_write_reaches_every_listed_prediction(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        first = repository.save_prediction(prediction_record("T17CAL"))
+        second = repository.save_prediction(
+            prediction_record("T17CAL", timestamp=_hours_ago(2))
+        )
+
+        updated = repository.save_calibration_scores(
+            {str(first): 0.19, str(second): 0.96}, score_version=2
+        )
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT id::text, confidence_calibration, calibration_score_version "
+                "FROM prediction_logs WHERE symbol = 'T17CAL'"
+            )
+            rows = {row[0]: row[1:] for row in cur.fetchall()}
+        assert updated == 2
+        assert rows == {str(first): (0.19, 2), str(second): (0.96, 2)}
+
+    def test_anon_key_cannot_call_the_bulk_write(self, postgrest_stack: PostgrestStack) -> None:
+        anon = make_repository(postgrest_stack, role="anon")
+
+        with pytest.raises(PortError):
+            anon.save_calibration_scores(
+                {"00000000-0000-0000-0000-000000000077": 0.5}, score_version=1
+            )

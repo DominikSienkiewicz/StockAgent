@@ -1652,6 +1652,29 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             payload["calibration_score_version"] = score_version
         self._client.table(self._table).update(payload).eq("id", prediction_id).execute()
 
+    def save_calibration_scores(
+        self, scores: Mapping[str, float], *, score_version: int
+    ) -> int:
+        # WIA-65: jedno wywołanie RPC (migracja 077) zamiast UPDATE wiersz po wierszu.
+        if not scores:
+            return 0
+        payload = [
+            {"id": prediction_id, "score": score} for prediction_id, score in scores.items()
+        ]
+        data = (
+            self._client.rpc(
+                "save_calibration_scores",
+                {"p_scores": payload, "p_score_version": score_version},
+            )
+            .execute()
+            .data
+        )
+        if isinstance(data, bool) or not isinstance(data, int):
+            raise MalformedPayload(
+                f"save_calibration_scores zwróciło {type(data).__name__}, nie liczbę"
+            )
+        return data
+
     def get_persona_accuracy(
         self, asset_type: AssetType, window_days: int = 90
     ) -> dict[str, float]:

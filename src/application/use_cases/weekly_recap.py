@@ -9,9 +9,8 @@ case robi trzy rzeczy warstwy application:
    działało),
 2. woła `build_weekly_recap` — **gdy zwróci None (poniżej progu 5), recap NIE
    POWSTAJE, mail NIE WYCHODZI i LLM NIE jest wołany**,
-3. dokłada JEDNĄ narracyjną syntezę LLM tygodniowo (wzorzec sędziego z
-   `CalibrateConfidenceUseCase`). Awaria LLM → recap deterministyczny i tak
-   wychodzi (narracja pusta).
+3. dokłada JEDNĄ narracyjną syntezę LLM tygodniowo. Awaria LLM → recap
+   deterministyczny i tak wychodzi (narracja pusta).
 
 FinOps: dokładnie jedno płatne wywołanie tygodniowo (`LLMPort.analyze`) — nie per
 symbol, nie per predykcja. Teksty pochodzące pośrednio z newsów

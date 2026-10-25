@@ -21,7 +21,6 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
     {
         "subscriptions_enabled": 14,
         "persona_weighting_enabled": 15,
-        "calibration_judge_enabled": 16,
         "regime_tagging_enabled": 17,
         "vector_memory_enabled": 17,
         "model_scorecard_enabled": 19,
@@ -72,6 +71,8 @@ FLAG_REQUIRED_MIGRATION: Mapping[str, int] = MappingProxyType(
         "invalidation_level_enabled": 74,
         "shadow_predictions_enabled": 75,
         "rag_point_in_time_enabled": 76,
+        # WIA-65: zbiorczy zapis ocen kalibracji (RPC `save_calibration_scores`).
+        "calibration_judge_enabled": 77,
         "telegram_bot_enabled": 79,
         "symbol_mutes_enabled": 80,
         "shadow_prompt_variant_enabled": 83,

@@ -71,6 +71,38 @@ class TestCalibrationJudgeScoreVersion:
         assert Settings.model_fields["calibration_score_version_enabled"].default is False
 
 
+class TestCalibrationWithoutLlm:
+    """WIA-65 (decyzja 2026-10-23, opcja b): krok kalibracji Slow Loopa nie płaci
+    za LLM — liczy arytmetyczny `calibration_score` i zapisuje go jednym zapisem."""
+
+    def test_calibration_step_makes_no_llm_call(
+        self, settings: Settings, mocker: MagicMock
+    ) -> None:
+        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "trained_successfully"}
+        mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
+        repo = MagicMock(spec=RepositoryPort)
+        repo.get_resolved_for_calibration.return_value = [
+            {"id": f"p{i}", "confidence_score": 0.7, "is_trend_correct": i % 3 == 0}
+            for i in range(25)
+        ]
+        mocker.patch("main_trainer.SupabaseRepository", return_value=repo)
+        provider = MagicMock(spec=LLMPort)
+        mocker.patch("main_agent.build_llm_adapter", return_value=provider)
+        settings.calibration_judge_enabled = True
+        settings.weekly_recap_enabled = False
+
+        main_trainer.main(settings)
+
+        assert provider.analyze_mistake.call_count == 0
+        calibration_writes = [
+            call[0] for call in repo.method_calls if call[0].startswith("save_calibration")
+        ]
+        assert calibration_writes == ["save_calibration_scores"]
+
+
 _MIXED_CALIBRATION_ROWS = [
     {"confidence_score": 0.9, "is_trend_correct": True, "predicted_trend": "SIDEWAYS"},
     {"confidence_score": 0.9, "is_trend_correct": False, "predicted_trend": "BULLISH"},

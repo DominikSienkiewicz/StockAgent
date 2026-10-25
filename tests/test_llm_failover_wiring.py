@@ -204,8 +204,14 @@ class TestSlowLoopWiring:
     """Decyzje 2026-10-20: request do zapasowego przechodzi przez tygodniowy
     przydział joba (FIN-30) i zużywa go; przy wyczerpanym przydziale failover nie
     startuje, a błąd głównego idzie dalej jak dotąd. Z działającym fallbackiem każdy
-    job prosi `slow_loop_paid_budget` o +1 wywołanie (recap 2, sędzia 2) — tylko na
-    request do zapasowego; sufit tygodniowy zostaje twardy."""
+    job prosi `slow_loop_paid_budget` o +1 wywołanie (recap 2, diagnozy 2) — tylko na
+    request do zapasowego; sufit tygodniowy zostaje twardy. WIA-65: kalibracja nie
+    woła LLM, więc drugim jobem jest spłata diagnoz z przydziałem 1."""
+
+    @staticmethod
+    def _with_diagnosis_job(settings: Settings) -> None:
+        settings.diagnosis_backfill_enabled = True
+        settings.diagnosis_backfill_max_calls = 1
 
     @staticmethod
     def _paid(
@@ -226,12 +232,12 @@ class TestSlowLoopWiring:
 
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
-        settings.calibration_judge_enabled = True
+        self._with_diagnosis_job(settings)
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
         paid = self._paid(settings, caplog)
         port = paid.port_for(main_trainer.RECAP_JOB)
 
-        assert "allowed={'recap': 2, 'judge': 2}" in caplog.text
+        assert "allowed={'recap': 2, 'diagnosis': 2}" in caplog.text
         assert port.analyze("prompt")["trend_direction"] == "BULLISH"
         # Jeden request do głównego (meter joba) + jeden do zapasowego = cały przydział.
         assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 2}
@@ -251,11 +257,11 @@ class TestSlowLoopWiring:
             "src.infrastructure.llm.anthropic_client.AnthropicAdapter", return_value=primary
         )
         settings.weekly_recap_enabled = True
-        settings.calibration_judge_enabled = True
+        self._with_diagnosis_job(settings)
         paid = self._paid(settings, caplog)
         port = paid.port_for(main_trainer.RECAP_JOB)
 
-        assert "allowed={'recap': 1, 'judge': 1}" in caplog.text
+        assert "allowed={'recap': 1, 'diagnosis': 1}" in caplog.text
         port.analyze("prompt")
         with pytest.raises(PaidBudgetExhausted):
             port.analyze("prompt")
@@ -293,18 +299,18 @@ class TestSlowLoopWiring:
         secondary: Mock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # Sufit 3: recap ma pierwszeństwo (2), sędzia dostaje resztę (1) — jego jedyne
-        # wywołanie zużywa request do głównego, więc failover sędziego nie startuje.
+        # Sufit 3: recap ma pierwszeństwo (2), diagnozy dostają resztę (1) — ich jedyne
+        # wywołanie zużywa request do głównego, więc failover diagnoz nie startuje.
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
-        settings.calibration_judge_enabled = True
+        self._with_diagnosis_job(settings)
         settings.slow_loop_max_paid_llm_calls_per_week = 3
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
         paid = self._paid(settings, caplog)
 
-        assert "allowed={'recap': 2, 'judge': 1}" in caplog.text
+        assert "allowed={'recap': 2, 'diagnosis': 1}" in caplog.text
         with pytest.raises(TimeoutError):
-            paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
+            paid.port_for(main_trainer.DIAGNOSIS_JOB).analyze("prompt")
         secondary.analyze.assert_not_called()
         assert dict(paid.telemetry.snapshot().paid_calls) == {"llm": 1}
 
@@ -318,14 +324,14 @@ class TestSlowLoopWiring:
     ) -> None:
         settings.llm_fallback_provider = "openai"
         settings.weekly_recap_enabled = True
-        settings.calibration_judge_enabled = True
+        self._with_diagnosis_job(settings)
         mocker.patch("main_agent._build_single_llm", return_value=secondary)
         paid = self._paid(settings, caplog)
 
         paid.port_for(main_trainer.RECAP_JOB).analyze("prompt")
-        paid.port_for(main_trainer.JUDGE_JOB).analyze("prompt")
+        paid.port_for(main_trainer.DIAGNOSIS_JOB).analyze("prompt")
 
-        # Failover recapu nie zjada przydziału sędziego.
+        # Failover recapu nie zjada przydziału diagnoz.
         assert secondary.analyze.call_count == 2
 
     def test_local_stub_run_has_no_failover(self, settings: Settings, mocker: Any) -> None:

@@ -174,6 +174,7 @@ class ReadOnlyRepository(RepositoryPort):
         "save_earnings",
         "save_quota_alert",
         "save_calibration",
+        "save_calibration_scores",
         "save_backfilled_diagnosis",
         "mark_commitment_revealed",
         "save_shock_alert",
@@ -474,6 +475,12 @@ class ReadOnlyRepository(RepositoryPort):
         score_version: int | None = None,
     ) -> None:
         self._skipped.skip("save_calibration")
+
+    def save_calibration_scores(
+        self, scores: Mapping[str, float], *, score_version: int
+    ) -> int:
+        self._skipped.skip("save_calibration_scores")
+        return 0
 
     def mark_commitment_revealed(self, prediction_id: str) -> None:
         self._skipped.skip("mark_commitment_revealed")
