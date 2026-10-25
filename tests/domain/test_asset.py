@@ -38,13 +38,11 @@ class TestPriceDelta:
         delta = PriceDelta.calculate(Money(Decimal("100.0")), Money(Decimal("110.0")))
         assert delta.percent == Decimal("10.0")
 
-    def test_percentage_alias_still_reads_fraction(self) -> None:
-        # Deprecated alias `percentage` musi nadal zwracać UŁAMEK (nie procent),
-        # bo zewnętrzny czytelnik (agent_graph.py) czyta `delta.percentage`
-        # i traktuje go jak ułamek. Zmiana wartości złamałaby ten kontrakt.
+    def test_percentage_alias_is_removed(self) -> None:
+        # ARCH-14: alias `percentage` zwracał ułamek mimo nazwy (100x pułapka).
+        # Ułamek to `fraction`, procent to `percent` — trzeciej drogi nie ma.
         delta = PriceDelta.calculate(Money(Decimal("100.0")), Money(Decimal("110.0")))
-        assert delta.percentage == Decimal("0.10")
-        assert delta.percentage == delta.fraction
+        assert not hasattr(delta, "percentage")
 
 
 class TestAssetEvaluateVolatility:

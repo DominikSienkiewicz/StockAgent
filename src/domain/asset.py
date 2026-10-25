@@ -38,7 +38,7 @@ class PriceDelta:
     `fraction` to UŁAMEK zmiany (jednostka `Ratio`: 0.02 = +2%), NIE procent — na
     nim działa bramka volatility i on trafia do stanu grafu (`AgentState.delta`).
     Procent do prezentacji daje `percent`. Dawna nazwa `percentage` była myląca
-    i groziła 100x błędem (finding #33, gap4-1).
+    i groziła 100x błędem (finding #33, gap4-1); alias usunięty w ARCH-14.
     """
 
     fraction: Decimal
@@ -49,16 +49,6 @@ class PriceDelta:
         dla warstwy prezentacji — nie używać do bramki volatility, która
         operuje na ułamku."""
         return to_percent(Ratio(self.fraction))
-
-    @property
-    def percentage(self) -> Decimal:
-        """DEPRECATED alias na `fraction` (zwraca UŁAMEK, nie procent).
-
-        Kod produkcyjny czyta już `fraction` (ARCH-04); alias zostaje tylko dla
-        zgodności wstecz do czasu usunięcia (ARCH-14). Nowy kod używa `fraction`
-        (ułamek) albo `percent` (procent).
-        """
-        return self.fraction
 
     @staticmethod
     def calculate(previous: Money, current: Money) -> "PriceDelta":
