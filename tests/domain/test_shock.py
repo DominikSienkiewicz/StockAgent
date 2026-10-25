@@ -4,15 +4,20 @@ from decimal import Decimal
 from src.domain.asset import Asset, PriceDelta
 from src.domain.shock import (
     CRYPTO_SHOCK_THRESHOLD,
+    MAX_SHOCK_ALERTS_PER_DAY,
     PORTFOLIO_ALERT_SYMBOL,
     SHOCK_THRESHOLD_MULTIPLIER,
     SNAPSHOT_MAX_AGE_HOURS,
+    SentShockLevel,
     ShockAlert,
     ShockDirection,
+    classify_shock,
     detect_portfolio_shock,
     detect_shock,
     is_reference_stale,
+    next_shock_level,
     should_emit,
+    should_escalate,
 )
 from src.domain.value_objects import AssetType, Threshold
 
@@ -127,6 +132,55 @@ class TestShouldEmit:
     def test_other_symbol_same_day_is_independent(self) -> None:
         already_sent = {("NVDA", date(2026, 7, 10))}
         assert should_emit("BTC", date(2026, 7, 10), already_sent) is True
+
+
+class TestShouldEscalate:
+    """ALR-16: drabina eskalacji — drugi alert dnia tylko przy ruchu ≥ 2× progu szoku
+    w tym samym kierunku albo przy odwróceniu kierunku ponad próg; najwyżej 2 dziennie."""
+
+    NVDA = Asset("NVDA", AssetType.STOCK)
+
+    def _alert(self, fraction: str) -> ShockAlert:
+        alert = classify_shock(self.NVDA, PriceDelta(Decimal(fraction)), FAST_LOOP_THRESHOLD)
+        assert alert is not None
+        return alert
+
+    def test_escalates_once_when_move_doubles(self) -> None:
+        # Poziom 1 poszedł przy -4,5% (próg szoku 4%). -9,5% przekracza 2× progu (8%)
+        # → drugi szczebel; -6% to wciąż ten sam szok → nic; po drugim szczeblu
+        # trzecia próba nie przechodzi nawet przy -15%.
+        first = SentShockLevel(level=1, direction=self._alert("-0.045").direction)
+
+        assert should_escalate(self.NVDA, self._alert("-0.095"), FAST_LOOP_THRESHOLD, [first])
+        assert not should_escalate(self.NVDA, self._alert("-0.06"), FAST_LOOP_THRESHOLD, [first])
+        second = SentShockLevel(level=2, direction=ShockDirection.DOWN)
+        assert not should_escalate(
+            self.NVDA, self._alert("-0.15"), FAST_LOOP_THRESHOLD, [first, second]
+        )
+
+    def test_reversal_above_threshold_escalates(self) -> None:
+        # Rano -5%, po południu +4,5%: odwrócenie kierunku ponad próg to nowa informacja,
+        # choć ruch nie sięga 2× progu.
+        first = SentShockLevel(level=1, direction=ShockDirection.DOWN)
+        assert should_escalate(self.NVDA, self._alert("0.045"), FAST_LOOP_THRESHOLD, [first])
+
+    def test_first_alert_of_the_day_needs_no_escalation(self) -> None:
+        assert should_escalate(self.NVDA, self._alert("-0.045"), FAST_LOOP_THRESHOLD, [])
+
+    def test_crypto_escalates_from_its_own_threshold(self) -> None:
+        # Krypto: próg szoku 6%, więc drugi szczebel dopiero od 12%.
+        btc = Asset("BTC", AssetType.CRYPTO)
+        first = [SentShockLevel(level=1, direction=ShockDirection.DOWN)]
+        below = classify_shock(btc, PriceDelta(Decimal("-0.10")), FAST_LOOP_THRESHOLD)
+        above = classify_shock(btc, PriceDelta(Decimal("-0.12")), FAST_LOOP_THRESHOLD)
+        assert below is not None and above is not None
+        assert not should_escalate(btc, below, FAST_LOOP_THRESHOLD, first)
+        assert should_escalate(btc, above, FAST_LOOP_THRESHOLD, first)
+
+    def test_next_level_follows_the_sent_rungs(self) -> None:
+        assert next_shock_level([]) == 1
+        assert next_shock_level([SentShockLevel(level=1, direction=ShockDirection.UP)]) == 2
+        assert MAX_SHOCK_ALERTS_PER_DAY == 2
 
 
 class TestConstants:
