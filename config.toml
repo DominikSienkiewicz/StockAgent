@@ -564,6 +564,11 @@ subscriptions_enabled = false
 # w mailu właściciela i w pushu. UWAGA: włącz DOPIERO po migracji 061 i sprawdzeniu,
 # że bucket `digests` istnieje i jest prywatny (Dashboard → Storage).
 digest_archive_enabled = false
+# MAIL-35: polityka cichego dnia (decyzja 2026-10-23). W dzień bez leadu, rozliczeń,
+# szoków z watcha, symboli za bramką i błędów idzie zwarty mail: największy ruch, próg
+# bramki, stan portfela i pełna stopka źródeł danych. "always" = zawsze pełny mail.
+# "skip_when_quiet" (bez maila) czeka na tygodniowy heartbeat MAIL-28.
+digest_quiet_policy = "compact_when_quiet"
 
 # --- NBP (kursy do raportu) ---
 nbp_enabled = true

@@ -1633,6 +1633,37 @@ class TestReferenceSignalFlag:
         assert "reference_signal_enabled" in NON_RECIPE_SETTINGS_FIELDS
 
 
+class TestDigestQuietPolicy:
+    """MAIL-35: polityka cichego dnia. W kodzie „always” (mail jak przed MAIL-35);
+    „skip_when_quiet” odrzucony, dopóki nie ma tygodniowego heartbeatu (MAIL-28)."""
+
+    def _settings(self, **overrides: Any) -> Settings:
+        return make_settings(**{**REQUIRED_ENV_KWARGS, **overrides})
+
+    def test_defaults_to_always(self, env: pytest.MonkeyPatch) -> None:
+        assert self._settings().digest_quiet_policy == "always"
+
+    def test_accepts_the_compact_policy(self, env: pytest.MonkeyPatch) -> None:
+        settings = self._settings(digest_quiet_policy="compact_when_quiet")
+
+        assert settings.digest_quiet_policy == "compact_when_quiet"
+
+    @pytest.mark.parametrize("value", ["skip_when_quiet", "never"])
+    def test_rejects_skip_until_the_weekly_heartbeat_exists(
+        self, env: pytest.MonkeyPatch, value: str
+    ) -> None:
+        with pytest.raises(ValueError, match="digest_quiet_policy"):
+            self._settings(digest_quiet_policy=value)
+
+    def test_stays_outside_the_recipe(self, env: pytest.MonkeyPatch) -> None:
+        from src.config import NON_RECIPE_SETTINGS_FIELDS
+
+        assert "digest_quiet_policy" in NON_RECIPE_SETTINGS_FIELDS
+        baseline = self._settings().config_hash()
+        compact = self._settings(digest_quiet_policy="compact_when_quiet")
+        assert compact.config_hash() == baseline
+
+
 class TestLlmLedgerBudget:
     """FIN-25: dzienny i miesięczny limit USD z ledgera `llm_calls` — domyślnie
     wyłączone (None), poza przepisem (decyduje, CZY cykl płaci, nie jak)."""

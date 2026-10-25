@@ -332,6 +332,16 @@ migrations and the status of every flag are in its [flag table](configuration.md
 
 Both flags are part of `config_hash`, so turning them off starts a new track-record segment; turning them off before the first weekday cycle on the new database (2026-10-26) keeps that cost at almost nothing.
 
+<a id="flag-digest-quiet-policy"></a>
+
+### `digest_quiet_policy`: a short email on a quiet day, not no email
+
+**A full 40–70 KB email on a day without a signal teaches the reader that the email usually says nothing** (MAIL-35, decision 2026-10-23, option b). On such a day `compact_when_quiet` sends five lines instead: the largest move against its threshold, the gate thresholds and the portfolio (or watchlist) state, with the full footer. The footer stays whole because the data sources' terms require the attributions and the notice on every email that shows their data ([data sources and terms](how-it-works.md#data-sources-and-terms)).
+
+**Quiet is defined narrowly** so that the short email never hides news: an empty lead, no settlement, no watch shock, no symbol past the gate (an analysed one has a prediction, a budget-cut one a move worth seeing), no failed symbol and not the onboarding cycle. A failed read of the settlements is not quiet either: the full email warns about it.
+
+**No email at all (`skip_when_quiet`) is not offered yet.** Without the weekly heartbeat of MAIL-28, a silent inbox cannot be told apart from a broken pipeline, so `Settings` accepts only `always` and `compact_when_quiet`; the domain keeps the third policy for when the heartbeat ships.
+
 <a id="flag-yield-curve"></a>
 
 ### `yield_curve_enabled`: a vote, not a veto

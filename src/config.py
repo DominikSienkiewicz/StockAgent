@@ -111,6 +111,8 @@ NON_RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "subscriptions_enabled",
     # MAIL-24: prywatne archiwum digestu i link w mailu — dostarczanie, nie prognoza.
     "digest_archive_enabled",
+    # MAIL-35: postać maila w cichy dzień — prezentacja, nie prognoza.
+    "digest_quiet_policy",
     "public_scorecard_enabled",
     "public_scorecard_path",
     # NIEZ-33: publiczna strona statusu — prezentacja historii przebiegów, nie prognoza.
@@ -1174,6 +1176,12 @@ class Settings(BaseSettings):
     # i w pushu; indeks w tabeli `digests` (migracja 061). Zapis do bazy i Storage,
     # więc działa tylko z `db_writes_enabled`. Off.
     digest_archive_enabled: bool = False
+    # MAIL-35: polityka cichego dnia (pusty lead, zero rozliczeń, szoków, symboli za
+    # bramką i błędów): „always” = zawsze pełny mail (jak przed MAIL-35),
+    # „compact_when_quiet” = zwarty mail z pełną stopką źródeł. Domena zna też
+    # „skip_when_quiet”, ale Settings go nie przyjmuje: bez tygodniowego heartbeatu
+    # (MAIL-28) brak maila wygląda jak awaria.
+    digest_quiet_policy: Literal["always", "compact_when_quiet"] = "always"
 
     @field_validator(
         "symbols",
