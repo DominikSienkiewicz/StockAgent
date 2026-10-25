@@ -45,7 +45,7 @@ from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import Portfolio, Position
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.track_record import ScoredCall, assess_directional_hit_rate
-from src.domain.value_objects import AssetType, Fundamentals, Money, ValuationVerdict
+from src.domain.value_objects import AssetType, Fundamentals, Money, Ratio, ValuationVerdict
 
 # Czwartek 2026-10-15 10:30 UTC = premarket NYSE, 12:30 w Warszawie.
 SAMPLE_STARTED_AT = datetime(2026, 10, 15, 10, 30, tzinfo=UTC)
@@ -396,7 +396,7 @@ def sample_context() -> ReportContext:
                     symbol="AMD",
                     predicted_trend="BULLISH",
                     insight="Przykład: rynek wycenił słabszy popyt.",
-                    actual_change_pct=Decimal("-0.026"),
+                    actual_change_ratio=Ratio(Decimal("-0.026")),
                 ),
             ),
             total_mistakes=1,

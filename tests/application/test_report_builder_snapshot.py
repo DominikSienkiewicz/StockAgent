@@ -534,7 +534,7 @@ def _full_context() -> ReportContext:
                     symbol="AMD",
                     predicted_trend="BULLISH",
                     insight="Rynek wycenił słabszy popyt w segmencie klienckim.",
-                    actual_change_pct=Decimal("-0.0247"),
+                    actual_change_ratio=Decimal("-0.0247"),
                 ),
             ),
             total_mistakes=1,

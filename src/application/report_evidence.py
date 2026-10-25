@@ -129,7 +129,7 @@ def executable_change(prediction: ResolvedPrediction) -> float | None:
 def _realized_change(prediction: ResolvedPrediction) -> float | None:
     """Zmiana ceny jako float; poza zakresem floata (inf) → None (PORT-09):
     krzywe domeny odrzucają NaN/inf, więc taka predykcja wypada sama."""
-    change = prediction.actual_change_pct
+    change = prediction.actual_change_ratio
     if change is None:
         return None
     value = float(change)

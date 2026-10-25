@@ -221,10 +221,9 @@ class ResolvedPrediction:
         return Ratio((self.actual_price - self.entry_price) / self.entry_price)
 
     @property
-    def actual_change_pct(self) -> Ratio | None:
+    def actual_change_ratio(self) -> Ratio | None:
         """Faktyczna zmiana ceny od momentu predykcji do zamknięcia jako UŁAMEK
-        (`Ratio`: 0.02 = +2%), mimo sufiksu `_pct` — formatery raportu mnożą go
-        przez 100 (ARCH-04)."""
+        (`Ratio`: 0.02 = +2%) — formatery raportu mnożą go przez 100 (ARCH-04)."""
         if self.price_at_prediction is None or self.actual_price is None:
             return None
         if self.price_at_prediction == 0:

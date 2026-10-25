@@ -96,8 +96,8 @@ def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, s
         else ""
     )
     move_line = ""
-    if p.actual_change_pct is not None:
-        move_txt = direction_pct(p.actual_change_pct)
+    if p.actual_change_ratio is not None:
+        move_txt = direction_pct(p.actual_change_ratio)
         prices = (
             f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
             if p.price_at_prediction is not None and p.actual_price is not None
@@ -106,7 +106,7 @@ def _render_resolved_item_html(p: ResolvedPrediction, sector_map: Mapping[str, s
         move_line = (
             f"<div style='font-size: 11px; color: #4b5563; margin-top: 2px;'>"
             f"Faktycznie: {prices}"
-            f"<span style='color: {_delta_color(p.actual_change_pct)};'>"
+            f"<span style='color: {_delta_color(p.actual_change_ratio)};'>"
             f"({move_txt})</span></div>"
         )
     why_line = (
@@ -221,14 +221,14 @@ def _render_resolved_predictions_text(
         )
         if p.reasoning:
             lines.append(f"        bo: {p.reasoning}")
-        if p.actual_change_pct is not None:
+        if p.actual_change_ratio is not None:
             prices = (
                 f"{_money(p.price_at_prediction)} → {_money(p.actual_price)} "
                 if p.price_at_prediction is not None and p.actual_price is not None
                 else ""
             )
             lines.append(
-                f"        faktycznie: {prices}({_pct(p.actual_change_pct, signed=True)})"
+                f"        faktycznie: {prices}({_pct(p.actual_change_ratio, signed=True)})"
             )
         lines.append(f"        dlaczego: {_resolved_why(p)}")
         receipt = _resolved_receipt_line(p)

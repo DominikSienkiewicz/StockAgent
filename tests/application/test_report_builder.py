@@ -770,7 +770,7 @@ class TestResolvedPostMortem:
         assert r.insight == "Trafiona predykcja."
         assert r.price_at_prediction == Decimal("100.0")
         assert r.actual_price == Decimal("106.0")
-        assert r.actual_change_pct == Decimal("0.06")
+        assert r.actual_change_ratio == Decimal("0.06")
 
     def test_parse_reads_the_mistake_category(self):
         # WIA-57: kolumna `correction_category` (migracja 046); brak albo śmieć → None.

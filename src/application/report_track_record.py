@@ -455,8 +455,8 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
     items: list[str] = []
     for item in lessons.items:
         change = (
-            f" ({pct(item.actual_change_pct, signed=True, decimals=1)})"
-            if item.actual_change_pct is not None
+            f" ({pct(item.actual_change_ratio, signed=True, decimals=1)})"
+            if item.actual_change_ratio is not None
             else ""
         )
         items.append(

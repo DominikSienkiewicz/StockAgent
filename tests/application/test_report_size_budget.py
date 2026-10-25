@@ -352,7 +352,7 @@ def _full_track_record_context() -> ReportContext:
                     symbol=f"SYM{i}",
                     predicted_trend="BULLISH",
                     insight="Rynek wycenił słabszy popyt w segmencie klienckim. " * 2,
-                    actual_change_pct=Decimal("-0.0247"),
+                    actual_change_ratio=Decimal("-0.0247"),
                 )
                 for i in range(5)
             ),

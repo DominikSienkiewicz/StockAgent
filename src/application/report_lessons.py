@@ -11,11 +11,11 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal
 
 from src.application.report_models import ResolvedPrediction
 from src.domain.mistake_taxonomy import MistakeCategory, count_categories
 from src.domain.prediction import is_substantive_insight
+from src.domain.value_objects import Ratio
 
 # Polskie stopwordy (oraz krótkie spójniki) — nie mogą wygrać jako motyw.
 # Niezależnie od listy odrzucamy też słowa krótsze niż _MIN_KEYWORD_LEN.
@@ -32,12 +32,15 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 @dataclass(frozen=True)
 class LessonItem:
-    """Pojedyncza 'lekcja' — błędna predykcja z diagnozą i faktycznym ruchem."""
+    """Pojedyncza 'lekcja' — błędna predykcja z diagnozą i faktycznym ruchem.
+
+    `actual_change_ratio` to faktyczna zmiana ceny jako UŁAMEK (`Ratio`: -0.1 = -10%,
+    ARCH-04); None, gdy predykcja nie ma obu cen."""
 
     symbol: str
     predicted_trend: str
     insight: str
-    actual_change_pct: Decimal | None
+    actual_change_ratio: Ratio | None
 
 
 @dataclass(frozen=True)
@@ -109,7 +112,7 @@ def build_lessons(
             predicted_trend=p.predicted_trend,
             # insight nie jest None po filtrze _is_mistake_with_insight.
             insight=p.insight,  # type: ignore[arg-type]
-            actual_change_pct=p.actual_change_pct,
+            actual_change_ratio=p.actual_change_ratio,
         )
         for p in mistakes[:limit]
     )
