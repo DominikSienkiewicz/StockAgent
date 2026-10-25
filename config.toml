@@ -308,6 +308,12 @@ crypto_paper_cost_bps = 25
 # SEC. Off, dopóki SEC (webmaster@sec.gov, z Reference ID ze strony 403) jej nie
 # zdejmie; potem true i jeden ręczny run. Szczegóły: docs/configuration.md.
 insider_flow_enabled = false
+# DAT-17: świeży raport bieżący SEC 8-K (wyniki, zmiana w zarządzie, istotna umowa) w
+# prompcie predykcji i jako cecha `fresh_8k` w `feature_snapshots` — z tej samej
+# odpowiedzi submissions EDGAR co insider flow (wspólny adapter). Zmiana przepisu.
+# UWAGA: włącz DOPIERO po zdjęciu blokady 403 SEC (patrz insider_flow wyżej) i po
+# końcu EXP-02/03 (2027-01-29). Bez migracji.
+corporate_events_enabled = false
 # earnings_calendar: bramka earnings (R-6). FIN-09: jedno wywołanie Alpha Vantage na cykl
 # (kalendarz bez symbolu obsługuje całą watchlistę, rotacja kluczy, alert przy limicie).
 # Off do końca EXP-02/03 (decyzja DAT-40, krok 12 w docs/resume-checklist.md) — mnożnik

@@ -357,6 +357,63 @@ class TestMainAgent:
         assert analyze.call_args.kwargs["cycle_at"] == dispatch.call_args.kwargs["started_at"]
 
 
+class TestCorporateEventsWiring:
+    """DAT-17: flaga `corporate_events_enabled` dociera do grafu (prompt i cechy)
+    i do przebiegu symboli (pobranie przed grafem), a 8-K czyta TEN SAM adapter
+    EDGAR co insider flow — jedna odpowiedź submissions na spółkę."""
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_graph(self, settings, mock_external_clients, enabled):
+        settings.corporate_events_enabled = enabled
+
+        deps = main_agent.build_agent_graph_deps(settings)
+
+        assert deps.corporate_events_enabled is enabled
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_flag_reaches_the_symbol_loop(self, settings, mocker, enabled):
+        settings.corporate_events_enabled = enabled
+        runner = mocker.patch("main_agent._cycle_runner")
+
+        main_agent._analyze_symbols(
+            ["AAPL"],
+            use_case=MagicMock(),
+            settings=settings,
+            crypto_set=set(),
+            etf_set=set(),
+            regime_context="",
+            regime_multiplier=1.0,
+            collect_alpha=False,
+            alpha_use_case=MagicMock(),
+        )
+
+        assert runner.call_args.kwargs["options"].corporate_events_enabled is enabled
+
+    def test_events_share_the_edgar_adapter_of_the_insider_flow(self, settings):
+        settings.insider_flow_enabled = True
+        settings.corporate_events_enabled = True
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+
+        assert enrichment._corporate_events is enrichment._insider
+
+    def test_events_alone_keep_the_insider_flow_null(self, settings):
+        from src.infrastructure.adapters.edgar_insider import (
+            EdgarInsiderAdapter,
+            NullInsiderFlowAdapter,
+        )
+
+        settings.corporate_events_enabled = True
+
+        enrichment = main_agent.build_alpha_enrichment(settings)
+
+        assert isinstance(enrichment._corporate_events, EdgarInsiderAdapter)
+        assert isinstance(enrichment._insider, NullInsiderFlowAdapter)
+
+    def test_flag_off_builds_no_events_port(self, settings):
+        assert main_agent.build_alpha_enrichment(settings)._corporate_events is None
+
+
 class TestBuildAgentGraphDeps:
     """TEST-09 (G56): fabryka deps grafu sprawdzana na polach, nie przez `is not None`.
 

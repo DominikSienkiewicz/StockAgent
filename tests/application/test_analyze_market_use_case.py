@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -17,6 +17,7 @@ from src.application.ports import (
     SentimentPort,
 )
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
+from src.domain.corporate_events import CorporateEvent, CorporateEventSnapshot
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import Money, Threshold
 
@@ -824,3 +825,36 @@ class TestMarketFeaturesPhase:
         features = repository_port.save_feature_snapshot.call_args.args[1]
         assert features["breadth"] == pytest.approx(0.5)
         assert features["ret_1_rank"] == 1.0
+
+
+class TestCorporateEventsState:
+    """DAT-17: use case wkłada do stanu grafu tylko ŚWIEŻE raporty 8-K (domena,
+    `fresh_events` od dnia cyklu); brak snapshotu = brak klucza."""
+
+    _NOW = datetime(2026, 10, 27, 5, 30, tzinfo=UTC)
+
+    def test_only_fresh_filings_enter_the_state(
+        self, use_case, market_port, repository_port
+    ) -> None:
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+        fresh = CorporateEvent("8-K", ("2.02",), date(2026, 10, 26))
+        stale = CorporateEvent("8-K", ("5.02",), date(2026, 10, 15))
+
+        result = use_case.run(
+            "AAPL",
+            corporate_events=CorporateEventSnapshot("AAPL", (fresh, stale), 14),
+            now=self._NOW,
+        )
+
+        assert result["fresh_corporate_events"] == (fresh,)
+
+    def test_without_a_snapshot_the_state_has_no_key(
+        self, use_case, market_port, repository_port
+    ) -> None:
+        repository_port.get_last_price.return_value = Money(Decimal("100.0"))
+        market_port.get_current_price.return_value = Money(Decimal("100.5"))
+
+        result = use_case.run("AAPL", now=self._NOW)
+
+        assert "fresh_corporate_events" not in result

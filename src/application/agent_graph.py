@@ -17,6 +17,7 @@ from src.application.cycle_telemetry import CycleTelemetry
 from src.application.decision_receipt import RECEIPT_SCHEMA_V1, RECEIPT_SCHEMA_V2
 from src.application.errors import LLMOutputIncomplete, PortError
 from src.application.ml_features import (
+    CORPORATE_EVENT_SNAPSHOT_FEATURES,
     FREE_SNAPSHOT_FEATURES,
     GATED_SNAPSHOT_EXTRAS,
     MARKET_SNAPSHOT_FEATURES,
@@ -45,6 +46,7 @@ from src.application.ports import (
 )
 from src.application.prompts import (
     format_analog_line,
+    format_corporate_events,
     format_prompt_delta,
     get_mistake_diagnosis_prompt,
     get_prediction_prompt,
@@ -65,6 +67,7 @@ from src.domain.attestation import (
 from src.domain.attestation import SCHEMA_VERSION as ATTESTATION_SCHEMA_VERSION
 from src.domain.conformal import CalibrationPoint, MoveInterval, move_interval
 from src.domain.corporate_actions import SplitSuspicion, detect_split, to_pre_split_price
+from src.domain.corporate_events import CorporateEvent
 from src.domain.council import (
     CouncilInput,
     CouncilVerdict,
@@ -305,6 +308,10 @@ class AgentState(TypedDict, total=False):
     # ML-31: cechy rynkowe cyklu policzone przed grafem (use case, flaga
     # `market_features_enabled`). Brak klucza = symbol bez cech rynkowych (None).
     market_features: dict[str, Any]
+    # DAT-17: świeże raporty 8-K symbolu, wybrane przez use case przed grafem (flaga
+    # `corporate_events_enabled`). Pusta krotka = wiadomo, że świeżego 8-K nie ma;
+    # brak klucza = nie wiadomo (flaga off, ETF/krypto, EDGAR niedostępny).
+    fresh_corporate_events: tuple[CorporateEvent, ...]
 
     # EXP-05: ramiona AKTYWNYCH eksperymentów tego symbolu-dnia `{id: ramię}`,
     # przydzielone przez use case. Brak klucza = cykl jak bez eksperymentów.
@@ -868,6 +875,9 @@ class AgentGraphDeps:
     # ML-41: analogi RAG tylko rozliczone (z wynikiem), z większej puli kandydatów.
     # Off = retrieval i analogi w prompcie jak przed ML-41.
     rag_point_in_time_enabled: bool = False
+    # DAT-17: świeży 8-K ze stanu (`fresh_corporate_events`) w prompcie predykcji
+    # i cecha `fresh_8k` w `feature_snapshots`. Off = prompt i wektor jak przed DAT-17.
+    corporate_events_enabled: bool = False
     # DAT-23: `pc` notowania vs ostatni snapshot — podejrzenie splitu koryguje
     # referencję bramki, rozliczenie i `price_delta`, a zdarzenie idzie do
     # `corporate_actions` (migracja 062). Off = jak przed DAT-23.
@@ -1105,7 +1115,17 @@ def _free_snapshot_features(deps: AgentGraphDeps, state: AgentState) -> dict[str
     if deps.market_features_enabled:
         market = state.get("market_features") or {}
         free.update({name: market.get(name) for name in MARKET_SNAPSHOT_FEATURES})
+    if deps.corporate_events_enabled:
+        free.update(_corporate_event_features(state))
     return free
+
+
+def _corporate_event_features(state: AgentState) -> dict[str, Any]:
+    """DAT-17: `fresh_8k` = 1.0 przy świeżym 8-K, 0.0 gdy wiadomo, że go nie ma, None,
+    gdy nie wiadomo (brak klucza w stanie) — cisza nie udaje braku zdarzenia."""
+    events = state.get("fresh_corporate_events")
+    fresh = None if events is None else float(bool(events))
+    return dict.fromkeys(CORPORATE_EVENT_SNAPSHOT_FEATURES, fresh)
 
 
 def _gated_snapshot_features(state: AgentState) -> dict[str, Any]:
@@ -2150,6 +2170,12 @@ def _predict_node(deps: AgentGraphDeps, state: AgentState) -> AgentState:
         include_probabilities=deps.trend_probabilities_enabled,
         fence_lessons=deps.prompt_taint_fence_enabled,
         include_invalidation=deps.invalidation_level_enabled,
+        # DAT-17: świeże 8-K tylko z flagą; "" = prompt bez bloku, jak przed DAT-17.
+        corporate_events_context=(
+            format_corporate_events(state.get("fresh_corporate_events", ()))
+            if deps.corporate_events_enabled
+            else ""
+        ),
     )
     raw_analysis, llm_flags = _run_llm_analysis(deps, state, prompt, symbol)
     failover, raw_analysis = _split_failover_marker(raw_analysis)

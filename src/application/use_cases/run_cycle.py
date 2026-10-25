@@ -32,6 +32,7 @@ from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidP
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.domain.alpha_fusion import AlphaFusionScore, fuse_alpha_signals
 from src.domain.asset import Asset
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.earnings import EarningsEvent, earnings_threshold_multiplier
 from src.domain.finops import rank_by_magnitude
 from src.domain.peer_group import build_peer_context
@@ -77,6 +78,8 @@ class CycleOptions:
     contagion_enabled: bool = False
     peer_groups: Mapping[str, Sequence[str]] = field(default_factory=dict)
     throttle_seconds: float = 0.0
+    # DAT-17: raporty 8-K pobierane przed grafem (EDGAR, darmowe) do promptu i cech.
+    corporate_events_enabled: bool = False
 
     @property
     def parallel(self) -> bool:
@@ -109,6 +112,8 @@ class _SymbolInputs(NamedTuple):
     earnings_multiplier: float
     alpha_signal: AlphaSignals | None
     alpha_fusion: AlphaFusionScore | None
+    # DAT-17: raporty 8-K symbolu (flaga `corporate_events_enabled`); None = brak.
+    corporate_events: CorporateEventSnapshot | None = None
 
 
 class _GatedSymbol(NamedTuple):
@@ -216,6 +221,7 @@ class RunFastLoopCycle:
                     peer_context=peer_ctx,
                     # FIN-14: wiek referencji ceny liczy się od startu cyklu.
                     now=options.cycle_at,
+                    corporate_events=inputs.corporate_events,
                 )
                 return self._finished(symbol, raw, inputs.alpha_signal)
             except PortError as exc:
@@ -264,7 +270,16 @@ class RunFastLoopCycle:
                     analyst=alpha_signal.analyst,
                     earnings=alpha_signal.earnings,
                 )
-        return _SymbolInputs(asset, earnings_multiplier, alpha_signal, alpha_fusion)
+        # DAT-17: 8-K z tego samego adaptera EDGAR co insider flow (po `enrich` to już
+        # odpowiedź w pamięci); flaga off → port nie jest ruszany.
+        corporate_events = (
+            self._alpha.fetch_corporate_events(symbol)
+            if options.corporate_events_enabled
+            else None
+        )
+        return _SymbolInputs(
+            asset, earnings_multiplier, alpha_signal, alpha_fusion, corporate_events
+        )
 
     def _finished(
         self, symbol: str, raw: dict[str, Any], alpha_signal: AlphaSignals | None
@@ -352,6 +367,7 @@ class RunFastLoopCycle:
                 earnings_multiplier=inputs.earnings_multiplier,
                 alpha_fusion=inputs.alpha_fusion,
                 now=options.cycle_at,
+                corporate_events=inputs.corporate_events,
             )
             if outcome.passed:
                 return _GatedSymbol(symbol, None, outcome.state, inputs.alpha_signal)

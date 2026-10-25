@@ -17,6 +17,7 @@ import pytest
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.run_cycle import CycleOptions, RunFastLoopCycle, SymbolScope
+from src.domain.corporate_events import CorporateEventSnapshot
 
 
 def _use_case() -> Mock:
@@ -104,3 +105,39 @@ def test_contagion_hands_earlier_stances_to_later_peers() -> None:
     ).run(["NVDA", "AMD"])
 
     assert use_case.run.call_args_list[1].kwargs["peer_context"] == (("NVDA", "BULLISH"),)
+
+
+class TestCorporateEventsInputs:
+    """DAT-17: raporty 8-K pobiera cykl PRZED grafem (jak alfę), tylko z flagą
+    `corporate_events_enabled`, i podaje je use case'owi."""
+
+    @staticmethod
+    def _cycle(use_case: Mock, alpha: Mock, *, enabled: bool) -> RunFastLoopCycle:
+        return RunFastLoopCycle(
+            use_case=use_case,
+            alpha_use_case=alpha,
+            options=CycleOptions(corporate_events_enabled=enabled),
+            sleep=Mock(),
+            redact=lambda text: text,
+            symbol_scope=lambda symbol: nullcontext(),
+        )
+
+    def test_flag_on_hands_the_snapshot_to_the_use_case(self) -> None:
+        use_case = _use_case()
+        alpha = Mock(spec=AlphaEnrichmentUseCase)
+        snapshot = CorporateEventSnapshot("AAPL", (), 14)
+        alpha.fetch_corporate_events.return_value = snapshot
+
+        self._cycle(use_case, alpha, enabled=True).run(["AAPL"])
+
+        alpha.fetch_corporate_events.assert_called_once_with("AAPL")
+        assert use_case.run.call_args.kwargs["corporate_events"] is snapshot
+
+    def test_flag_off_asks_nothing(self) -> None:
+        use_case = _use_case()
+        alpha = Mock(spec=AlphaEnrichmentUseCase)
+
+        self._cycle(use_case, alpha, enabled=False).run(["AAPL"])
+
+        alpha.fetch_corporate_events.assert_not_called()
+        assert use_case.run.call_args.kwargs.get("corporate_events") is None

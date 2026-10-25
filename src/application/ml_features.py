@@ -79,6 +79,12 @@ FREE_SNAPSHOT_FEATURES = (
 )
 GATED_SNAPSHOT_EXTRAS = ("confidence_score", "data_quality_flags")
 
+# DAT-17: flaga świeżego raportu 8-K (1.0 / 0.0 / None = nie wiadomo) dokładana do cech
+# darmowych w KAŻDYM cyklu za `corporate_events_enabled`. Nowy klucz, nie zmiana
+# znaczenia istniejącego, więc wersja zestawu cech się nie zmienia; wejście modelu
+# (`FREE_MODEL_FEATURE_COLUMNS`) go nie bierze, dopóki porównanie go nie uzasadni.
+CORPORATE_EVENT_SNAPSHOT_FEATURES = ("fresh_8k",)
+
 # ML-31/ML-32/DAT-22: cechy rynkowe cyklu (wersja 4) liczone przed grafem z darmowych
 # źródeł i dokładane do cech darmowych w KAŻDYM cyklu: cenowe symbolu, jego ruch na
 # tle uniwersum i zmienne stanu z FRED. Brak danych = None (maska braków).

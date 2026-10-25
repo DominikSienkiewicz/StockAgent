@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+from src.application.errors import ProviderUnavailable
 from src.application.ports import (
     AnalystConsensusPort,
+    CorporateEventsPort,
     EarningsCalendarPort,
     InsiderFlowPort,
     OptionsFlowPort,
@@ -16,10 +18,12 @@ from src.application.ports import (
 )
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.domain.analyst_consensus import AnalystConsensus
+from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.earnings import EarningsEvent
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.domain.social_velocity import SocialVelocitySnapshot
+from src.domain.value_objects import AssetType
 
 
 def _ports() -> dict[str, Mock]:
@@ -219,3 +223,40 @@ class TestMarketCapForTheInsiderThreshold:
 
         assert signals.market_cap is None
         assert signals.significant_insider_buy() is not None
+
+
+class TestCorporateEvents:
+    """DAT-17: raporty 8-K pobiera ten sam use case co insider flow (wspólny adapter
+    EDGAR, jedna odpowiedź submissions) — tylko dla spółek, zawsze gracefully."""
+
+    _TYPES = {"AAPL": AssetType.STOCK, "VOO": AssetType.ETF, "BTC": AssetType.CRYPTO}
+
+    def _use_case(self, port: Mock | None) -> AlphaEnrichmentUseCase:
+        return AlphaEnrichmentUseCase(
+            **_ports(), corporate_events_port=port, asset_type_of=self._TYPES.__getitem__
+        )
+
+    def test_a_stock_asks_the_port(self) -> None:
+        port = Mock(spec=CorporateEventsPort)
+        snapshot = CorporateEventSnapshot("AAPL", (), 14)
+        port.get_corporate_events.return_value = snapshot
+
+        assert self._use_case(port).fetch_corporate_events("AAPL") is snapshot
+        port.get_corporate_events.assert_called_once_with("AAPL")
+
+    def test_etf_and_crypto_never_ask(self) -> None:
+        port = Mock(spec=CorporateEventsPort)
+        use_case = self._use_case(port)
+
+        assert use_case.fetch_corporate_events("VOO") is None
+        assert use_case.fetch_corporate_events("BTC") is None
+        port.get_corporate_events.assert_not_called()
+
+    def test_without_a_port_there_are_no_events(self) -> None:
+        assert self._use_case(None).fetch_corporate_events("AAPL") is None
+
+    def test_provider_failure_is_graceful(self) -> None:
+        port = Mock(spec=CorporateEventsPort)
+        port.get_corporate_events.side_effect = ProviderUnavailable("SEC 503")
+
+        assert self._use_case(port).fetch_corporate_events("AAPL") is None

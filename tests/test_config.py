@@ -778,6 +778,19 @@ class TestRagPointInTimeFlag:
         assert "rag_point_in_time_enabled" in RECIPE_SETTINGS_FIELDS
 
 
+class TestCorporateEventsFlag:
+    """DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech — zmiana przepisu,
+    więc domyślnie off i w przepisie (decyzja 2026-10-25)."""
+
+    def test_defaults_off_and_in_the_recipe(self, env):
+        from src.config import RECIPE_SETTINGS_FIELDS
+
+        settings = Settings(_env_file=None, **REQUIRED_ENV_KWARGS)
+
+        assert settings.corporate_events_enabled is False
+        assert "corporate_events_enabled" in RECIPE_SETTINGS_FIELDS
+
+
 class TestGateDeltaFlag:
     """EXP-01: zapis delty bramki (migracja 034) — flaga samego zapisu, więc
     domyślnie off i poza przepisem (`config_hash` się nie rusza)."""

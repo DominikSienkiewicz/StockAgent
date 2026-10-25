@@ -294,6 +294,8 @@ RECIPE_SETTINGS_FIELDS: frozenset[str] = frozenset({
     "peer_groups",
     "alpha_fusion_enabled",
     "insider_flow_enabled",
+    # DAT-17: świeży 8-K w prompcie predykcji i w wektorze cech.
+    "corporate_events_enabled",
     "earnings_calendar_enabled",
     "options_flow_enabled",
     # WIA-28: horyzont edge z kalendarza NYSE — inny zapisany `edge_sigma`.
@@ -831,6 +833,10 @@ class Settings(BaseSettings):
     # Każde źródło ma adapter (wolne/istniejące API) i Null-fallback. W Fast Loop
     # domyślnie Null; realny adapter włącza dopiero flaga (+ ewentualny klucz).
     insider_flow_enabled: bool = False
+    # DAT-17: świeży raport 8-K (ta sama odpowiedź submissions EDGAR co insider flow,
+    # wspólny adapter) w prompcie predykcji i jako `fresh_8k` w `feature_snapshots`.
+    # Zmiana przepisu. Off do naprawy dostępu do EDGAR (403) i do końca EXP-02/03.
+    corporate_events_enabled: bool = False
     earnings_calendar_enabled: bool = False
     # FIN-11 (wymaga migracji 053): Fast Loop czyta datę raportu z `earnings_cache`
     # (odświeżanego w Slow Loopie) zamiast pytać AV o każdy symbol w każdym cyklu.

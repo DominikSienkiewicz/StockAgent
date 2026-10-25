@@ -1245,10 +1245,15 @@ def build_alpha_enrichment(
         RedditSocialAdapter,
     )
 
-    insider: InsiderFlowPort = (
+    # DAT-17: jeden adapter EDGAR na insider flow i raporty 8-K — oba czytają tę samą
+    # odpowiedź submissions (jeden request na spółkę, jeden pacer i jedna cisza po 403).
+    edgar = (
         EdgarInsiderAdapter(user_agent=settings.edgar_user_agent)
-        if settings.insider_flow_enabled
-        else NullInsiderFlowAdapter()
+        if settings.insider_flow_enabled or settings.corporate_events_enabled
+        else None
+    )
+    insider: InsiderFlowPort = (
+        edgar if settings.insider_flow_enabled and edgar is not None else NullInsiderFlowAdapter()
     )
     earnings: EarningsCalendarPort = NullEarningsCalendarAdapter()
     if settings.earnings_calendar_enabled and settings.earnings_cache_enabled:
@@ -1308,6 +1313,7 @@ def build_alpha_enrichment(
             else None
         ),
         asset_type_of=lambda symbol: classify_asset(symbol, crypto_set, etf_set),
+        corporate_events_port=edgar if settings.corporate_events_enabled else None,
     )
 
 
@@ -1730,6 +1736,8 @@ def build_agent_graph_deps(
         prompt_delta_rounding_enabled=settings.prompt_delta_rounding_enabled,
         # ML-41: analogi RAG tylko rozliczone; off.
         rag_point_in_time_enabled=settings.rag_point_in_time_enabled,
+        # DAT-17: świeży 8-K w prompcie i cecha `fresh_8k` (bez migracji); off.
+        corporate_events_enabled=settings.corporate_events_enabled,
         # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u; off.
         prompt_taint_fence_enabled=settings.prompt_taint_fence_enabled,
         # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
@@ -2111,6 +2119,8 @@ def _analyze_symbols(
         contagion_enabled=settings.contagion_enabled,
         peer_groups=settings.peer_groups,
         throttle_seconds=settings.symbol_throttle_seconds,
+        # DAT-17: raporty 8-K przed grafem (EDGAR, wspólny adapter z insider flow).
+        corporate_events_enabled=settings.corporate_events_enabled,
     )
     return _cycle_runner(
         use_case=use_case,

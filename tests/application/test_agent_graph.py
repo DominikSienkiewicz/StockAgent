@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -17,6 +17,7 @@ from src.application.ports import (
     Tool,
     ToolUseLLMPort,
 )
+from src.domain.corporate_events import CorporateEvent
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.recipe import PredictionRecipe
 from src.domain.value_objects import Money, Threshold
@@ -7404,3 +7405,88 @@ class TestShadowPredictions:
         assert final["status"] == "ignored"
         direction.forecast.assert_not_called()
         repository_port.save_shadow_predictions.assert_not_called()
+
+
+class TestCorporateEventsInCycle:
+    """DAT-17: świeże 8-K ze stanu (`fresh_corporate_events`, use case przed grafem)
+    trafiają do promptu predykcji i jako `fresh_8k` do `feature_snapshots` — tylko
+    z flagą `corporate_events_enabled`. Off: prompt i wektor jak przed DAT-17."""
+
+    _EVENTS = (CorporateEvent("8-K", ("2.02", "9.01"), date(2026, 10, 26)),)
+
+    @staticmethod
+    def _deps(
+        market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+        *, enabled: bool,
+    ) -> AgentGraphDeps:
+        return AgentGraphDeps(
+            market_port=market_port, sentiment_port=sentiment_port,
+            news_port=news_port, repository_port=repository_port,
+            ml_port=ml_port, llm_port=llm_port,
+            threshold=Threshold(Decimal("0.02")),
+            feature_snapshots_enabled=True,
+            corporate_events_enabled=enabled,
+        )
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_fresh_filing_reaches_the_prompt_only_with_the_flag(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, enabled,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("90.0"))
+        _setup_full_analysis_mocks(
+            sentiment_port, news_port, repository_port, ml_port, llm_port,
+        )
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=enabled,
+        )
+        state = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
+
+        create_agent_graph(deps).compile().invoke(state)
+
+        prompt = llm_port.analyze.call_args_list[0].args[0]
+        assert ("<corporate_events>" in prompt) is enabled
+        assert ("26.10 8-K: wyniki finansowe" in prompt) is enabled
+
+    @pytest.mark.parametrize(
+        ("state_extra", "expected"),
+        [
+            ({"fresh_corporate_events": _EVENTS}, 1.0),
+            ({"fresh_corporate_events": ()}, 0.0),
+            ({}, None),
+        ],
+        ids=["fresh-8k", "no-fresh-8k", "unknown"],
+    )
+    def test_ignored_cycle_writes_the_fresh_8k_feature(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port, state_extra, expected,
+    ):
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=True,
+        )
+
+        create_agent_graph(deps).compile().invoke({**_initial_state("100.0"), **state_extra})
+
+        _symbol, features = repository_port.save_feature_snapshot.call_args.args
+        assert features["fresh_8k"] == expected
+
+    def test_flag_off_keeps_the_feature_vector_unchanged(
+        self, market_port, sentiment_port, news_port,
+        repository_port, ml_port, llm_port,
+    ):
+        from src.application.ml_features import FREE_SNAPSHOT_FEATURES
+
+        market_port.get_current_price.return_value = Money(Decimal("99.5"))
+        deps = self._deps(
+            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            enabled=False,
+        )
+        state = {**_initial_state("100.0"), "fresh_corporate_events": self._EVENTS}
+
+        create_agent_graph(deps).compile().invoke(state)
+
+        _symbol, features = repository_port.save_feature_snapshot.call_args.args
+        assert set(features) == set(FREE_SNAPSHOT_FEATURES)
