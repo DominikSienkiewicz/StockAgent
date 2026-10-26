@@ -10,6 +10,7 @@ Uruchomienie:
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -19,12 +20,22 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
 
 import psycopg2
 import pytest
 from psycopg2 import sql
 from testcontainers.postgres import PostgresContainer
 
+from src.application.ports import EvidenceArchivePort, EvidenceSourcePort
+from src.application.use_cases.export_evidence import MANIFEST_NAME, ExportEvidenceUseCase
+from src.domain.attestation import (
+    SCHEMA_VERSION,
+    commit,
+    prediction_commitment_payload,
+    verify,
+)
 from src.domain.calibration_curve import brier_score, log_loss
 from src.domain.persona_track_record import (
     PersonaVoteOutcome,
@@ -5218,3 +5229,264 @@ class TestMigration078DiagnosisJudge:
                 "AND pg_get_constraintdef(oid) LIKE '%diagnosis_judge_score%'"
             )
             assert cur.fetchone() == (1,)
+
+
+# ---------------------------------------------------------------------------
+# NIEZ-48 — restore drill: tygodniowa kopia dowodów wraca do świeżego schematu
+# ---------------------------------------------------------------------------
+
+RUNNING_LOCALLY = Path(__file__).parents[2] / "docs" / "running-locally.md"
+RESTORE_RUNBOOK_HEADING = "### Restoring the evidence backup"
+RESTORE_DRILL_DB = "restore_drill"
+_RESTORE_ORDER = re.compile(r"^for table in (?P<tables>[\w ]+); do$", re.MULTILINE)
+_SQL_BLOCK = re.compile(r"^```sql\n(?P<sql>.*?)^```$", re.MULTILINE | re.DOTALL)
+
+_DRILL_STARTED = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+_DRILL_RECIPE = "recipe-2026-10"
+# Sole ujawnione w `attestation-log` (reveal) — w eksporcie ich NIE ma.
+_PUBLISHED_REVEAL_SALTS = {
+    "00000000-0000-4000-8000-000000000001": "sol-ujawniona-1",
+    "00000000-0000-4000-8000-000000000002": "sol-ujawniona-2",
+}
+_OPEN_PREDICTION_ID = "00000000-0000-4000-8000-000000000003"
+
+
+def _restore_runbook() -> tuple[list[str], str]:
+    """Kolejność ładowania (pętla `\\copy`) i blok SQL po załadowaniu z runbooka
+    w running-locally.md — test wykonuje dokładnie to, co dokument każe zrobić."""
+    text = RUNNING_LOCALLY.read_text(encoding="utf-8")
+    _, found, after = text.partition(RESTORE_RUNBOOK_HEADING)
+    assert found, f"running-locally.md nie ma runbooka „{RESTORE_RUNBOOK_HEADING}”"
+    section = re.split(r"^#{1,3} ", after, maxsplit=1, flags=re.MULTILINE)[0]
+    order = _RESTORE_ORDER.search(section)
+    block = _SQL_BLOCK.search(section)
+    assert order is not None, "runbook bez pętli `for table in …` ładującej CSV"
+    assert block is not None, "runbook bez bloku ```sql po załadowaniu"
+    return order["tables"].split(), block["sql"]
+
+
+def _committed_row(
+    prediction_id: str,
+    *,
+    symbol: str,
+    hours_ago: int,
+    salt: str,
+    settled_price: float | None,
+) -> dict[str, Any]:
+    """Wiersz `prediction_logs` w kształcie odpowiedzi PostgREST (liczby jako float,
+    czas jako tekst ISO, JSONB jako dict/list), z commitmentem v2 jak w Fast Loopie."""
+    timestamp = _DRILL_STARTED - timedelta(hours=hours_ago)
+    payload = prediction_commitment_payload(
+        symbol=symbol,
+        predicted_trend="BULLISH",
+        predicted_target_price=Decimal("190.5"),
+        price_at_prediction=Decimal("185.25"),
+        confidence_score=0.72,
+        council_recommendation="BUY",
+        council_consensus_strength=0.71,
+        recipe_version=_DRILL_RECIPE,
+    )
+    settled = settled_price is not None
+    return {
+        "id": prediction_id,
+        "symbol": symbol,
+        "timestamp": timestamp.isoformat(),
+        "price_at_prediction": 185.25,
+        "sentiment_score": 0.31,
+        "predicted_trend": "BULLISH",
+        "predicted_target_price": 190.5,
+        "reasoning_text": "Popyt rośnie; kontakt: owner@example.com",
+        "actual_price_after_12h": settled_price,
+        "council_verdict": {
+            "final_recommendation": "BUY",
+            "consensus_strength": 0.71,
+            "summary": "Rada radzi kupować.",
+        },
+        "data_quality_flags": [],
+        "is_trend_correct": True if settled else None,
+        "confidence_score": 0.72,
+        "commitment_hash": commit(payload, salt, schema_version=SCHEMA_VERSION),
+        "revealed_at": (timestamp + timedelta(hours=13)).isoformat() if settled else None,
+        "feature_set_version": 1,
+        "settled_at": (timestamp + timedelta(hours=12)).isoformat() if settled else None,
+        "recipe_version": _DRILL_RECIPE,
+    }
+
+
+class _FixtureEvidenceSource(EvidenceSourcePort):
+    """`EvidenceSourcePort` z wierszami fixture — jak adapter: tylko żądane kolumny."""
+
+    def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
+        self._tables = tables
+
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        return [
+            {column: row[column] for column in columns if column in row}
+            for row in self._tables[table]
+        ]
+
+
+def _evidence_export() -> dict[str, bytes]:
+    first, second = _PUBLISHED_REVEAL_SALTS
+    tables: dict[str, list[dict[str, Any]]] = {
+        "prediction_logs": [
+            _committed_row(
+                first, symbol="AAPL", hours_ago=48, salt="sol-ujawniona-1", settled_price=188.0
+            ),
+            _committed_row(
+                second, symbol="AAPL", hours_ago=24, salt="sol-ujawniona-2", settled_price=183.4
+            ),
+            _committed_row(
+                _OPEN_PREDICTION_ID,
+                symbol="MSFT",
+                hours_ago=2,
+                salt="sol-nieujawniona",
+                settled_price=None,
+            ),
+        ],
+        "council_votes": [
+            {
+                "id": 41,
+                "prediction_id": first,
+                "symbol": "AAPL",
+                "timestamp": (_DRILL_STARTED - timedelta(hours=48)).isoformat(),
+                "investor_name": "Buffett",
+                "recommendation": "BUY",
+                "confidence": 0.8,
+                "reasoning": "Fosa.",
+                "key_factors": ["moat", "FCF"],
+            },
+            {
+                "id": 42,
+                "prediction_id": first,
+                "symbol": "AAPL",
+                "timestamp": (_DRILL_STARTED - timedelta(hours=48)).isoformat(),
+                "investor_name": "Soros",
+                "recommendation": "SELL",
+                "confidence": 0.6,
+                "reasoning": "Refleksywność.",
+                "key_factors": ["makro"],
+            },
+        ],
+        "model_scorecards": [
+            {
+                "id": 7,
+                "symbol": "AAPL",
+                "status": "promoted",
+                "candidate_holdout_rmse": 0.012,
+                "baseline_rmse": 0.015,
+                "candidate_holdout_directional_hit_rate": 0.58,
+                "n_folds": 5,
+                "n_samples": 240,
+                "timestamp": _DRILL_STARTED.isoformat(),
+            }
+        ],
+    }
+    use_case = ExportEvidenceUseCase(_FixtureEvidenceSource(tables), Mock(spec=EvidenceArchivePort))
+    return use_case.build(_DRILL_STARTED)
+
+
+@pytest.fixture
+def restore_drill_conn(
+    pg_conn: psycopg2.extensions.connection,
+) -> Iterator[psycopg2.extensions.connection]:
+    """Świeża baza z kompletem migracji w kontenerze `pg_conn` (jak `migrated_pg_conn`,
+    ale pusta i tylko dla drillu — liczby wierszy muszą być dokładne)."""
+    with pg_conn.cursor() as cur:
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(RESTORE_DRILL_DB)))
+        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(RESTORE_DRILL_DB)))
+    info = pg_conn.info
+    conn = psycopg2.connect(
+        host=info.host,
+        port=info.port,
+        dbname=RESTORE_DRILL_DB,
+        user=info.user,
+        password=info.password,
+    )
+    conn.autocommit = True
+    _apply_migrations(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _copy_csv(cur: psycopg2.extensions.cursor, table: str, content: bytes) -> None:
+    """Odpowiednik `\\copy <tabela> (<nagłówek CSV>) FROM '<tabela>.csv'
+    WITH (FORMAT csv, HEADER true)` z runbooka — psql robi z niego COPY FROM STDIN."""
+    header = content.decode("utf-8").split("\n", 1)[0]
+    statement = sql.SQL("COPY {} ({}) FROM STDIN WITH (FORMAT csv, HEADER true)").format(
+        sql.Identifier(table),
+        sql.SQL(", ").join(sql.Identifier(column) for column in header.split(",")),
+    )
+    cur.copy_expert(statement, io.BytesIO(content))
+
+
+@pytest.mark.containers
+class TestEvidenceRestoreDrill:
+    """NIEZ-48: kopia tabel dowodowych (NIEZ-32) nie miała dowodu, że da się ją
+    odtworzyć. Eksport z `ExportEvidenceUseCase` ładujemy do świeżego schematu
+    krokami runbooka z running-locally.md i sprawdzamy, że dowód przeżył."""
+
+    def test_evidence_export_restores_into_fresh_schema(
+        self, restore_drill_conn: psycopg2.extensions.connection
+    ) -> None:
+        export = _evidence_export()
+        manifest = json.loads(export[MANIFEST_NAME])
+        order, post_load_sql = _restore_runbook()
+
+        assert sorted(order) == sorted(manifest["tables"])
+        with restore_drill_conn.cursor() as cur:
+            for table in order:
+                _copy_csv(cur, table, export[f"{table}.csv"])
+            cur.execute(post_load_sql)
+
+            counts: dict[str, int] = {}
+            for table in order:
+                cur.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
+                counts[table] = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM ml_feature_store")
+            feature_rows = cur.fetchone()[0]
+            cur.execute(
+                "SELECT id::text, symbol, predicted_trend, predicted_target_price, "
+                "price_at_prediction, confidence_score, council_verdict, recipe_version, "
+                "commitment_hash, commitment_salt, revealed_at FROM prediction_logs"
+            )
+            restored = {row[0]: row[1:] for row in cur.fetchall()}
+            next_ids: dict[str, tuple[int, int]] = {}
+            for table in ("council_votes", "model_scorecards"):
+                cur.execute(sql.SQL("SELECT max(id) FROM {}").format(sql.Identifier(table)))
+                max_id = cur.fetchone()[0]
+                cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id'))", (table,))
+                next_ids[table] = (max_id, cur.fetchone()[0])
+
+        assert counts == {table: meta["rows"] for table, meta in manifest["tables"].items()}
+        assert counts["prediction_logs"] == 3
+        # Dwie rozliczone predykcje bez flag jakości — widok liczy się z odtworzonych danych.
+        assert feature_rows == 2
+        # Sól nie wychodzi z bazy w eksporcie: żaden odtworzony wiersz jej nie ma.
+        assert {row[8] for row in restored.values()} == {None}
+        for prediction_id, salt in _PUBLISHED_REVEAL_SALTS.items():
+            (symbol, trend, target, price, confidence, council, recipe, commitment, _, revealed) = (
+                restored[prediction_id]
+            )
+            payload = prediction_commitment_payload(
+                symbol=symbol,
+                predicted_trend=trend,
+                predicted_target_price=target,
+                price_at_prediction=price,
+                confidence_score=confidence,
+                council_recommendation=council["final_recommendation"],
+                council_consensus_strength=council["consensus_strength"],
+                recipe_version=recipe,
+            )
+            assert revealed is not None
+            assert verify(payload, salt, commitment, schema_version=SCHEMA_VERSION)
+        # Otwarta predykcja: hash wrócił, ale bez revealu nie ma czym go zweryfikować.
+        open_row = restored[_OPEN_PREDICTION_ID]
+        assert open_row[7] is not None and open_row[9] is None
+        assert _OPEN_PREDICTION_ID not in _PUBLISHED_REVEAL_SALTS
+        # Sekwencje id za odtworzonymi wierszami: następny zapis Fast/Slow Loopa nie
+        # trafi w duplikat klucza.
+        for table, (max_id, next_id) in next_ids.items():
+            assert next_id > max_id, f"{table}: sekwencja id za odtworzonymi wierszami"
