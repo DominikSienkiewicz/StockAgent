@@ -1,5 +1,6 @@
 import inspect
 import typing
+from abc import ABC
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -7,30 +8,42 @@ from unittest.mock import Mock
 
 import pytest
 
+from src.application import ports
 from src.application.ports import (
     AdvisoryCouncilPort,
     FundamentalsPort,
-    LLMPort,
-    MacroIndicatorsPort,
-    MarketDataPort,
     MLPredictionPort,
-    NewsPort,
     RepositoryPort,
-    SentimentPort,
 )
 from src.domain.council import CouncilInput
 from src.domain.model_scorecard import TrainingReport
 from src.domain.value_objects import Percent
 
-ALL_PORTS = [
-    MarketDataPort,
-    SentimentPort,
-    NewsPort,
-    RepositoryPort,
-    MLPredictionPort,
-    LLMPort,
-    MacroIndicatorsPort,
-]
+# TEST-20: każda klasa ABC zdefiniowana w module `ports` — nowy port wchodzi do testów
+# abstrakcyjności bez dopisywania go ręcznie.
+ALL_PORTS: list[type[ABC]] = sorted(
+    (
+        value
+        for value in vars(ports).values()
+        if isinstance(value, type) and issubclass(value, ABC) and value.__module__ == ports.__name__
+    ),
+    key=lambda port: port.__name__,
+)
+
+
+def test_all_ports_covers_every_abc_in_ports_module() -> None:
+    # TEST-20: lista ręczna obejmowała 7 portów — nowy port wypadał z testu
+    # abstrakcyjności. Filtr `__module__` odsiewa ABC zaimportowane z innych modułów,
+    # a `issubclass(ABC)` — dataclassy i wyjątki zdefiniowane w `ports`.
+    abc_classes: set[type] = {
+        cls
+        for _, cls in inspect.getmembers(ports, inspect.isclass)
+        if issubclass(cls, ABC) and cls.__module__ == ports.__name__
+    }
+
+    assert set(ALL_PORTS) == abc_classes
+    assert {MLPredictionPort, ports.CircuitStatePort, ports.ShadowModelPort} <= abc_classes
+    assert ports.CycleRun not in abc_classes
 
 
 @pytest.mark.parametrize("port_cls", ALL_PORTS)
