@@ -128,6 +128,7 @@ MIGRATION_FILES = [
     "081_shock_alert_levels.sql",
     "082_council_vote_rounds.sql",
     "083_shadow_prediction_trend.sql",
+    "084_function_search_path.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -4864,6 +4865,77 @@ class TestMigration082CouncilVoteRounds:
             any(item.startswith("search_path=") for item in config or [])
             for config in configs.values()
         ), configs
+
+
+# BEZ-17: funkcje, których 070 (BEZ-18) świadomie nie ruszała.
+REMAINING_FUNCTIONS = (
+    "refresh_ml_feature_store()",
+    "persona_vote_outcomes(integer)",
+    "stamp_prediction_settled_at()",
+)
+
+
+@pytest.mark.containers
+class TestMigration084PinsRemainingSearchPaths:
+    """BEZ-17: refresh widoku cech, RPC surowych głosów person i funkcja triggera 029
+    mają stały search_path jak RPC z 070, a nadal działają z prawami wołającego —
+    także wołane z sesji, której ścieżka nie ma `public`.
+
+    Stan po komplecie migracji z `supabase_like_conn`, nie z `migrated_pg_conn`: test
+    idempotencji 082 ponawia tam CREATE OR REPLACE `persona_vote_outcomes` bez SET."""
+
+    @pytest.mark.parametrize("function", REMAINING_FUNCTIONS)
+    def test_function_pins_its_search_path_and_stays_an_invoker(
+        self, supabase_like_conn: psycopg2.extensions.connection, function: str
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure",
+                (function,),
+            )
+            security_definer, config = cur.fetchone()
+
+        assert any(item.startswith("search_path=") and "public" in item for item in config or []), (
+            config
+        )
+        assert security_definer is False
+
+    def test_functions_work_from_a_session_without_public_in_its_path(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SET LOCAL search_path = pg_catalog")
+            cur.execute("SELECT public.refresh_ml_feature_store()")
+            cur.execute("SELECT count(*) FROM public.persona_vote_outcomes(90)")
+            (outcomes,) = cur.fetchone()
+            cur.execute(
+                "INSERT INTO public.prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('B084', now(), 100.0) RETURNING id"
+            )
+            (prediction_id,) = cur.fetchone()
+            cur.execute(
+                "UPDATE public.prediction_logs SET actual_price_after_12h = 101.0 "
+                "WHERE id = %s RETURNING settled_at",
+                (prediction_id,),
+            )
+            (settled_at,) = cur.fetchone()
+
+        assert outcomes == 0
+        assert settled_at is not None
+
+    def test_084_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "084_function_search_path.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            cur.execute(
+                "SELECT count(*) FROM pg_proc WHERE oid = ANY(%s::regprocedure[]) "
+                "AND proconfig IS NOT NULL",
+                (list(REMAINING_FUNCTIONS),),
+            )
+            (pinned,) = cur.fetchone()
+
+        assert pinned == len(REMAINING_FUNCTIONS)
 
 
 @pytest.mark.containers

@@ -46,19 +46,19 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `bot_state` | `079` | Operational: the `getUpdates` offset of the owner's Telegram bot (MAIL-48) — one row per channel, no message text and no chat id | on, no policies | Bot (`telegram_bot_enabled`, after the commands of a run) | Bot (start of a run) |
 | `symbol_mutes` | `080` | User settings: symbols muted from the owner's bot (MAIL-45) — symbol, end of the mute, time of the last `/mute`; symbols are added only through `config.toml` | on, no policies | Bot (`symbol_mutes_enabled`: `/mute` upserts, `/unmute` deletes) | Fast Loop (`symbol_mutes_enabled`: a muted symbol gets no paid analysis and no section, only its price snapshot), Bot (`/watch`) |
 
-The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()` and `db_size_report()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function still run with the caller's path:
+The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()` and `db_size_report()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; migration `084` (BEZ-17) pins the same path on `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function `stamp_prediction_settled_at`, still without `SECURITY DEFINER`:
 
 | Function | Migration | Called by | `EXECUTE` after `038` |
 |---|---|---|---|
-| `refresh_ml_feature_store()` | `001`, `004` | Slow Loop, backtest (RPC) | `service_role` only |
+| `refresh_ml_feature_store()` | `001`, `004`, `084` (`search_path`) | Slow Loop, backtest (RPC) | `service_role` only |
 | `match_news_embeddings(vector, int, text)` | `011`, `017` | Fast Loop (RAG, RPC) | `service_role` only |
 | `match_news_embeddings_exact(vector, int, text)` | `063` | Fast Loop (RAG, RPC, `rag_exact_search_enabled`) | `service_role` only |
 | `match_news_embeddings_pit(vector, int, text, timestamptz, text, int)` | `076` | Fast Loop (RAG, RPC, `rag_point_in_time_enabled`) | `service_role` only |
 | `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
-| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
+| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements), `084` (`search_path`) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
 | `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
-| `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
+| `stamp_prediction_settled_at()` | `029`, `084` (`search_path`) | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 | `schema_version()` | `071` | Fast Loop and Slow Loop at start (RPC, NIEZ-30) | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads `supabase_migrations.schema_migrations`, which `service_role` cannot, and returns only the highest numeric version (`NULL` when the registry is missing or empty) |
 | `db_size_report()` | `077` | Slow Loop (RPC, NIEZ-37): the size of every relation in `public` with its indexes and TOAST, largest first, against `db_size_budget_mb` | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads only the system catalog (`pg_class`, `pg_total_relation_size`) and returns relation names and byte counts, never rows |
 | `save_calibration_scores(jsonb, smallint)` | `077` | Slow Loop (RPC, `calibration_judge_enabled`, WIA-65): the arithmetic calibration scores of the 30-day window in one bulk `UPDATE` of `confidence_calibration` and `calibration_score_version` | `service_role` only; `search_path = ''` |
