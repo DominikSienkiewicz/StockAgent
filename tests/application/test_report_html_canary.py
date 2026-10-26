@@ -123,7 +123,6 @@ CASES: dict[str, Callable[[], Cycle]] = {
     "precedent_summary": _raw_case("similar_precedents", 0, "summary"),
     "reflection_context": _raw_case("reflection_context"),
     "council_verdict": _council_case,
-    "symbol_error": _error_case,
     "resolved_prediction": _context_case(
         resolved_predictions=[
             ResolvedPrediction(
@@ -186,6 +185,18 @@ def test_mail_without_canary_has_no_active_markup() -> None:
     html, _ = build_html_report(results, STARTED, DURATION_SECONDS, _full_context())
 
     assert _active_markup(html) == []
+
+
+def test_symbol_error_text_never_reaches_the_mail() -> None:
+    """MAIL-32: surowy wyjątek symbolu zostaje w logach — mail pokazuje tylko kategorię,
+    więc kanarek z treści błędu nie dociera do HTML-a w żadnej postaci."""
+    results, context = _error_case()
+
+    html, _ = build_html_report(results, STARTED, DURATION_SECONDS, context)
+
+    assert _active_markup(html) == []
+    assert ESCAPED_MARKER not in html
+    assert "TEST-26" not in html
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
