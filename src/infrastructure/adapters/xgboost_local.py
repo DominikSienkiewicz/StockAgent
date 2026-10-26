@@ -324,10 +324,10 @@ class XGBoostAdapter(MLPredictionPort):
 
     def walk_forward_report(
         self,
-        features: Any,
-        target: Any,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
         *,
-        timestamps: Any = None,
+        timestamps: Sequence[datetime] | None = None,
         label_ends: Sequence[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki OOS bez persystencji (offline backtest harness).
@@ -552,9 +552,9 @@ def _model_target_unit(model: Any) -> TargetUnit:
     return TargetUnit(model.get_booster().attr(TARGET_UNIT_ATTR) or TargetUnit.RETURN.value)
 
 
-def _feature_frame(features: Any) -> pd.DataFrame:
-    """Ramka cech z sekwencji wierszy `{cecha: wartość}` (ARCH-09: port nie niesie
-    DataFrame; `walk_forward_report` backtestu podaje ją jeszcze wprost).
+def _feature_frame(features: Sequence[Mapping[str, float | None]]) -> pd.DataFrame:
+    """Ramka cech z sekwencji wierszy `{cecha: wartość}` (ARCH-09, ML-55: port nie
+    niesie DataFrame — ani w `train`, ani w `walk_forward_report`).
 
     ML-52: brak (None) — także w całej kolumnie, np. cechy makro bez FRED — staje się
     NaN, czyli brakiem XGBoost. Kolumny już liczbowe zostają bez zmian."""
@@ -668,7 +668,9 @@ def _paired_loss_sums(
     return sums
 
 
-def _global_time_order(timestamps: Any, n_samples: int) -> list[datetime] | None:
+def _global_time_order(
+    timestamps: Sequence[datetime] | None, n_samples: int
+) -> list[datetime] | None:
     """Znormalizowane (UTC) znaczniki czasu wierszy albo None (trening bez purgu).
 
     Walk-forward modelu wspólnego musi iść po czasie GLOBALNYM — nieposortowane

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
     TARGET_COLUMN,
-    in_label_time_order,
+    complete_model_rows,
+    rows_in_label_time_order,
 )
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.domain.backtest import BacktestSummary, summarize_folds
@@ -22,10 +21,10 @@ class BacktestUseCase:
     """Offline walk-forward backtest lokalnego modelu (harness diagnostyczny).
 
     Reużywa logikę foldów z `MLPredictionPort.walk_forward_report` (finding #23) —
-    NIE re-implementuje splitów. Czysto ewaluacyjny: czyta feature store, składa
-    DataFrame i deleguje do portu ML, a wynik agreguje w domenowym
-    `summarize_folds`. Nigdy nie rzuca na pustych/krótkich danych — degraduje do
-    pustego `BacktestSummary`.
+    NIE re-implementuje splitów. Czysto ewaluacyjny: czyta feature store, podaje
+    portowi ML wiersze cech i target jak `train` (ML-55: bez DataFrame w tej
+    warstwie), a wynik agreguje w domenowym `summarize_folds`. Nigdy nie rzuca na
+    pustych/krótkich danych — degraduje do pustego `BacktestSummary`.
     """
 
     def __init__(
@@ -54,22 +53,21 @@ class BacktestUseCase:
         if not rows:
             return _too_few_samples_summary(0)
 
-        df = pd.DataFrame(rows)
         # price_delta i target_return przychodzą GOTOWE z widoku (NaN-guarded) —
-        # nie przeliczamy ich tutaj (jak train_model). dropna odsiewa wiersze, dla
+        # nie przeliczamy ich tutaj (jak train_model). Odsiewamy wiersze, dla
         # których widok zwrócił NULL.
-        required_columns = [*ML_FEATURE_COLUMNS, TARGET_COLUMN]
-        df = df.dropna(subset=required_columns)
+        complete = complete_model_rows(rows)
 
-        if len(df) < MIN_BACKTEST_SAMPLES:
-            return _too_few_samples_summary(len(df))
+        if len(complete) < MIN_BACKTEST_SAMPLES:
+            return _too_few_samples_summary(len(complete))
 
         # Decyzja 4 (2026-10-18): purge horyzontu etykiety jak w modelu wspólnym.
-        df, stamps = in_label_time_order(df)
+        ordered, stamps = rows_in_label_time_order(complete)
 
-        folds = self._ml_port.walk_forward_report(
-            df[list(ML_FEATURE_COLUMNS)], df[TARGET_COLUMN], timestamps=stamps
-        )
+        # Kolejność kluczy = kontrakt `ML_FEATURE_COLUMNS`, ta sama co w `train`.
+        features = [{name: float(row[name]) for name in ML_FEATURE_COLUMNS} for row in ordered]
+        target = [float(row[TARGET_COLUMN]) for row in ordered]
+        folds = self._ml_port.walk_forward_report(features, target, timestamps=stamps)
         return summarize_folds(folds, cost_bps=self._cost_bps)
 
     def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:

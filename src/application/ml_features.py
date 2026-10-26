@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 import pandas as pd
 
@@ -196,3 +198,40 @@ def in_label_time_order(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | 
     stamps = pd.to_datetime(frame[TIMESTAMP_COLUMN], utc=True)
     ordered = frame.assign(_label_time=stamps).sort_values("_label_time", kind="stable")
     return ordered, ordered["_label_time"]
+
+
+# Wiersz widoku `ml_feature_store` tak, jak zwraca go `RepositoryPort.get_feature_store_data`.
+Row = Mapping[str, Any]
+
+
+def rows_in_label_time_order(
+    rows: Sequence[Row],
+) -> tuple[list[Row], list[datetime] | None]:
+    """ML-55: `in_label_time_order` na wierszach widoku, bez DataFrame.
+
+    Sortowanie stabilne po `timestamp` (UTC; czas bez strefy to UTC, jak w
+    `pd.to_datetime(utc=True)`). Wiersze bez kolumny `timestamp` zostają w kolejności
+    wejścia, a znaczników nie ma (`None`) — walk-forward idzie wtedy bez purgu."""
+    if not any(TIMESTAMP_COLUMN in row for row in rows):
+        return list(rows), None
+    stamped = sorted(
+        ((_utc_moment(row[TIMESTAMP_COLUMN]), row) for row in rows), key=lambda pair: pair[0]
+    )
+    return [row for _, row in stamped], [moment for moment, _ in stamped]
+
+
+def _utc_moment(raw: object) -> datetime:
+    """Chwila z wiersza widoku (ISO 8601 z PostgREST albo `datetime`) w UTC."""
+    moment = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+
+
+def complete_model_rows(rows: Sequence[Row]) -> list[Row]:
+    """ML-55: wiersze z kompletem `ML_FEATURE_COLUMNS` i targetu — odpowiednik
+    `dropna(subset=...)`: brak klucza, None i NaN to brak wartości."""
+    required = (*ML_FEATURE_COLUMNS, TARGET_COLUMN)
+    return [row for row in rows if not any(_is_missing(row.get(name)) for name in required)]
+
+
+def _is_missing(value: object) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))

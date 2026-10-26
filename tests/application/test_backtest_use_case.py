@@ -1,10 +1,15 @@
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
 
-from src.application.ml_features import FEATURE_SET_VERSION
+from src.application.ml_features import (
+    FEATURE_SET_VERSION,
+    complete_model_rows,
+    rows_in_label_time_order,
+)
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.application.use_cases.backtest import MIN_BACKTEST_SAMPLES, BacktestUseCase
 from src.domain.backtest import BacktestSummary
@@ -66,14 +71,34 @@ class TestRun:
 
         ml_port.walk_forward_report.assert_called_once()
         features, target = ml_port.walk_forward_report.call_args.args
-        assert isinstance(features, pd.DataFrame)
-        assert list(features.columns) == EXPECTED_ML_FEATURES
-        assert isinstance(target, pd.Series)
+        # ML-55: wiersze cech w kolejności kontraktu zamiast kolumn DataFrame.
+        assert [list(row) for row in features] == [EXPECTED_ML_FEATURES] * 60
         assert len(features) == len(target) == 60
         # Werdykt pochodzi z summarize_folds nad zwróconymi foldami.
         assert isinstance(summary, BacktestSummary)
         assert summary.n_folds == 2
         assert summary.beats_baseline is True
+
+    def test_walk_forward_report_receives_plain_sequences(
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
+        # ML-55: port dostaje wiersze cech w kolejności kontraktu i target jak `train` —
+        # bez DataFrame w warstwie application; ramkę składa adapter.
+        repository_port.get_feature_store_data.return_value = _stamped_rows(60)[::-1]
+        ml_port.walk_forward_report.return_value = [
+            {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
+        ]
+
+        use_case.run("AAPL")
+
+        features, target = ml_port.walk_forward_report.call_args.args
+        stamps = ml_port.walk_forward_report.call_args.kwargs["timestamps"]
+        assert isinstance(features, list)
+        assert all(type(row) is dict for row in features)
+        assert [list(row) for row in features] == [EXPECTED_ML_FEATURES] * 60
+        assert target == [float(hour) for hour in range(60)]
+        assert isinstance(stamps, list)
+        assert all(isinstance(stamp, datetime) for stamp in stamps)
 
     def test_too_few_rows_returns_empty_summary_without_calling_ml(
         self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
@@ -251,3 +276,42 @@ class TestFeatureSetVersion:
         use_case.run("AAPL")
 
         repository_port.get_feature_store_data.assert_called_once_with("AAPL")
+
+
+class TestRowsWithoutDataFrame:
+    """ML-55: odsiew braków i kolejność po czasie na wierszach widoku zachowują się
+    jak dawne `dropna` i `in_label_time_order` na DataFrame."""
+
+    def test_missing_key_none_and_nan_count_as_missing(self) -> None:
+        complete = _feature_store_rows(4)
+        complete[1]["av_sentiment_score"] = None
+        complete[2]["target_return"] = float("nan")
+        del complete[3]["llm_trend_signal"]
+
+        assert complete_model_rows(complete) == [complete[0]]
+
+    def test_orders_rows_by_utc_moment_stably(self) -> None:
+        rows: list[dict[str, Any]] = [
+            {"id": "late", "timestamp": "2026-09-01T12:00:00+02:00"},
+            {"id": "naive", "timestamp": "2026-09-01T09:00:00"},
+            {"id": "z", "timestamp": "2026-09-01T09:00:00Z"},
+            {"id": "aware", "timestamp": datetime(2026, 9, 1, 8, tzinfo=UTC)},
+        ]
+
+        ordered, stamps = rows_in_label_time_order(rows)
+
+        assert [row["id"] for row in ordered] == ["aware", "naive", "z", "late"]
+        assert stamps == [
+            datetime(2026, 9, 1, 8, tzinfo=UTC),
+            datetime(2026, 9, 1, 9, tzinfo=UTC),
+            datetime(2026, 9, 1, 9, tzinfo=UTC),
+            datetime(2026, 9, 1, 10, tzinfo=UTC),
+        ]
+
+    def test_rows_without_timestamp_keep_input_order(self) -> None:
+        rows = _feature_store_rows(3)[::-1]
+
+        ordered, stamps = rows_in_label_time_order(rows)
+
+        assert ordered == rows
+        assert stamps is None

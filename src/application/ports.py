@@ -1178,14 +1178,16 @@ class MLPredictionPort(ABC):
     @abstractmethod
     def walk_forward_report(
         self,
-        features: Any,
-        target: Any,
+        features: Sequence[Mapping[str, float | None]],
+        target: Sequence[float],
         *,
-        timestamps: Any = None,
+        timestamps: Sequence[datetime] | None = None,
         label_ends: Sequence[datetime] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki out-of-sample (walk-forward, expanding window) BEZ
         persystencji — zasila offline backtest harness (`main_backtest.py`).
+        ML-55: `features` i `target` jak w `train` — wiersze `{cecha: wartość}`
+        i wyrównany target, bez DataFrame w porcie.
 
         Reużywa tę samą logikę foldów co `train()` (finding #23), ale zwraca
         SZCZEGÓŁ każdego foldu zamiast średniej: lista dictów z kluczami
