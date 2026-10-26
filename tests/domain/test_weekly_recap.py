@@ -11,15 +11,20 @@ from __future__ import annotations
 import dataclasses
 from decimal import Decimal
 
+import pytest
+
 from src.domain.council import InvestorOpinion
+from src.domain.finops import LedgerCost
 from src.domain.prediction import Prediction, TrendDirection
 from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
     MIN_CLOSED_PREDICTIONS_FOR_RECAP,
     ClosedPrediction,
     RecapHighlight,
+    SymbolCost,
     WeeklyRecap,
     build_weekly_recap,
+    summarize_weekly_cost,
 )
 
 
@@ -376,3 +381,60 @@ class TestRecapProbabilityScores:
         assert recap.scores is not None
         assert recap.scores.skill is not None
         assert abs(recap.scores.skill) < 1e-9
+
+
+# --- FIN-26: koszt tygodnia, niezależny od narracji LLM --------------------------
+
+
+def test_cost_summary_counts_gated_cycles() -> None:
+    """Cykle z 0, 5 i 0 wywołaniami → 2/3 w pełni zatrzymane; USD = suma ledgera."""
+    summary = summarize_weekly_cost(
+        [0, 5, 0],
+        [LedgerCost("NVDA", 0.03), LedgerCost("AAPL", 0.02), LedgerCost(None, 0.01)],
+        settled_predictions=4,
+    )
+
+    assert (summary.cycles, summary.gated_cycles, summary.paid_calls) == (3, 2, 5)
+    assert summary.gated_ratio == pytest.approx(2 / 3)
+    assert summary.total_usd == pytest.approx(0.06)
+    assert summary.cost_per_settled_usd == pytest.approx(0.015)
+
+
+def test_cost_summary_ranks_the_three_most_expensive_symbols() -> None:
+    ledger = [
+        LedgerCost("AMD", 0.01),
+        LedgerCost("NVDA", 0.02),
+        LedgerCost("MSFT", 0.03),
+        LedgerCost("NVDA", 0.02),
+        LedgerCost("AAPL", 0.03),
+        LedgerCost("TSLA", 0.0),
+        LedgerCost("META", None),
+        LedgerCost(None, 0.5),
+    ]
+
+    summary = summarize_weekly_cost([1], ledger, settled_predictions=0)
+
+    # Remis 0,03 rozstrzyga alfabet; wiersz bez wyceny i bez symbolu poza rankingiem.
+    assert [cost.symbol for cost in summary.top_symbols] == ["NVDA", "AAPL", "MSFT"]
+    assert [cost.cost_usd for cost in summary.top_symbols] == pytest.approx([0.04, 0.03, 0.03])
+    assert isinstance(summary.top_symbols[0], SymbolCost)
+    assert summary.total_usd == pytest.approx(0.61)
+
+
+def test_empty_week_has_no_ratio_and_no_unit_cost() -> None:
+    """Pauza: zero cykli i zero rozliczeń — brak dzielenia przez zero, sekcja i tak
+    ma co powiedzieć (0 cykli, koszt z ledgera)."""
+    summary = summarize_weekly_cost([], [LedgerCost(None, 0.02)], settled_predictions=0)
+
+    assert summary.cycles == 0
+    assert summary.gated_ratio is None
+    assert summary.cost_per_settled_usd is None
+    assert summary.top_symbols == ()
+    assert summary.total_usd == pytest.approx(0.02)
+
+
+def test_cost_summary_rejects_negative_inputs() -> None:
+    with pytest.raises(ValueError, match="paid calls"):
+        summarize_weekly_cost([-1], [], settled_predictions=0)
+    with pytest.raises(ValueError, match="settled"):
+        summarize_weekly_cost([], [], settled_predictions=-1)

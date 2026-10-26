@@ -279,6 +279,15 @@ class LLMCallEntry:
 
 
 @dataclass(frozen=True)
+class LedgerCost:
+    """FIN-26: odczyt wiersza ledgera `llm_calls` do kosztu tygodnia — symbol (None
+    dla jobów Slow Loopa) i koszt z tokenów (None = model spoza cennika)."""
+
+    symbol: str | None
+    cost_usd: float | None
+
+
+@dataclass(frozen=True)
 class CycleCallBound:
     """Górna granica płatnych wywołań JEDNEGO cyklu (najgorszy przypadek).
 
