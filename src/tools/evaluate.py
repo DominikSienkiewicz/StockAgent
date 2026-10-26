@@ -263,7 +263,7 @@ class EvalReport:
     model_rmse: float | None  # RMSE prognozy vs rzeczywistość
     baseline_rmse: float | None  # RMSE naiwnego "brak zmiany"
     beats_baseline: bool  # czy model bije baseline
-    # Finding #24: blended hit_rate zalicza SIDEWAYS jako trafienie zawsze, gdy
+    # Audyt z czerwca 2026: blended hit_rate zalicza SIDEWAYS jako trafienie zawsze, gdy
     # ruch < ±0.5% — banking trafień na spokojnych dniach myli „trafiłem kierunek"
     # z „nic się nie ruszyło". Rozdzielamy directional-only od pokrycia SIDEWAYS.
     directional_hit_rate: float | None  # trafność tylko BULLISH/BEARISH

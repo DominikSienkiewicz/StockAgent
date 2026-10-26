@@ -25,7 +25,7 @@ from src.infrastructure.llm.openai_client import (
     validate_model_id,
 )
 
-# #6 — tani, deterministyczny model do pętli tool-use (taki sam default jak
+# R-24 — tani, deterministyczny model do pętli tool-use (taki sam default jak
 # zwykły OpenAIAdapter). Tool-use to wieloetapowa, PŁATNA ścieżka — dlatego
 # domyślny model jest tani, a liczba rund twardo ograniczona (`max_rounds`).
 DEFAULT_MODEL = "gpt-4o"
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallingOpenAIAdapter(ToolUseLLMPort):
-    """#6 — adapter OpenAI z pętlą tool-use (function calling).
+    """R-24 — adapter OpenAI z pętlą tool-use (function calling).
 
     Model może na żądanie wywołać read-only narzędzia (fundamenty, RAG, makro)
     zanim wyda finalny werdykt JSON. Pętla:

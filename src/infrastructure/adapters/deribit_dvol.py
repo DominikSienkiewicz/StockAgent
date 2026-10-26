@@ -1,6 +1,6 @@
 """Adapter Deribit DVOL — implikowana zmienność BTC i ETH dla implied edge (DAT-18).
 
-Option-chain Finnhuba to endpoint premium, więc #18 (ruch modelu vs implied move
+Option-chain Finnhuba to endpoint premium, więc R-18 (ruch modelu vs implied move
 rynku opcji) nie ma dziś danych. Dla krypto istnieje darmowy, standardowy indeks
 IV: DVOL Deribitu (publiczne API, bez klucza):
 

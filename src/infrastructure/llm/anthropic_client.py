@@ -30,7 +30,7 @@ from src.infrastructure.llm._usage import anthropic_usage, report_usage
 DEFAULT_MODEL = "claude-sonnet-4-6"  # dobry kompromis kosztów/jakości
 # Wszystkie publiczne id modeli Anthropic zaczynają się od "claude-".
 _ANTHROPIC_MODEL_PREFIX = "claude-"
-# #31 — Strukturalne schematy JSON (predykcja, council) potrzebują kilkuset
+# Strukturalne schematy JSON (predykcja, council) potrzebują kilkuset
 # tokenów wyjścia, nie 4096. Ciasny cap tnie koszt per-investor council call;
 # nadpisywalny przez konstruktor (max_tokens=) dla wolnych generacji.
 DEFAULT_MAX_TOKENS = 768
@@ -52,7 +52,7 @@ T = TypeVar("T")
 def validate_model_id(model: str) -> None:
     """Lekka walidacja id modelu — bez sieciowego calla na starcie.
 
-    #30 — Stary/wycofany id failuje dopiero przy 1. API callu (non-retried 4xx),
+    Stary/wycofany id failuje dopiero przy 1. API callu (non-retried 4xx),
     per symbol, co cykl — cichy total outage wykrywany dopiero przez exit code
     "wszystkie symbole padły". Tutaj łapiemy OCZYWISTĄ pomyłkę config (pusty
     string, zły provider prefix) natychmiast, z czytelnym komunikatem. Nie

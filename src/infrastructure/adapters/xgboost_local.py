@@ -141,7 +141,7 @@ class XGBoostAdapter(MLPredictionPort):
 
         # Walk-forward (expanding window) zamiast jednego splitu 20%: bramka
         # „pobij baseline" opiera się na ŚREDNIEJ z foldów, nie na jednym
-        # hałaśliwym estymatorze z jednego reżimu rynku (finding #23). Sama reguła
+        # hałaśliwym estymatorze z jednego reżimu rynku (audyt z czerwca 2026). Sama reguła
         # (margines 2%, min. punktów OOS) żyje w domenie — `summarize_folds`.
         summary = summarize_folds(
             self._walk_forward_folds_detail(feature_frame, target_series, stamps, ends, folds=folds)
@@ -192,7 +192,7 @@ class XGBoostAdapter(MLPredictionPort):
 
         # Shipowany model: refit na WSZYSTKICH danych (train+holdout) — NIE jest
         # re-walidowany, więc raportowane RMSE/hit-rate to metryki KANDYDATA
-        # (finding #22, patrz METRIC_NOTE).
+        # (audyt z czerwca 2026, patrz METRIC_NOTE).
         model = xgb.XGBRegressor(**self._params)
         model.fit(feature_frame, target_series)
         if target_unit is not TargetUnit.RETURN:
@@ -329,7 +329,7 @@ class XGBoostAdapter(MLPredictionPort):
     ) -> list[dict[str, float]]:
         """Per-fold metryki OOS bez persystencji (offline backtest harness).
 
-        Reużywa logikę foldów `train()` (finding #23), łącznie z purgem etykiet
+        Reużywa logikę foldów walk-forward `train()`, łącznie z purgem etykiet
         przy podanych `timestamps` (i `label_ends`, ML-26) albo gotowymi `folds`
         (ARCH-27). Czysto ewaluacyjna — nie zapisuje modelu i nie zmienia stanu
         adaptera (`self._model`)."""

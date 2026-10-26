@@ -1,4 +1,4 @@
-"""Adaptery pozycji portfela (#15 — tabela `positions`, migracja 023).
+"""Adaptery pozycji portfela (R-15 — tabela `positions`, migracja 023).
 
 Realne pozycje użytkownika (ilość + średni koszt) napędzają całą warstwę ryzyka:
 bez nich `weights`/`portfolio_pnl`/VaR liczą fikcję na RÓWNYCH wagach. Ten moduł

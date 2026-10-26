@@ -557,7 +557,7 @@ class InMemoryRepository(RepositoryPort):
             row["correction_insights"] = DIAGNOSIS_REJECTED_INSIGHT
 
     # ------------------------------------------------------------------
-    # Atestacja (#16, WIA-01) — kolumny w wierszu predykcji
+    # Atestacja (R-16, WIA-01) — kolumny w wierszu predykcji
     # ------------------------------------------------------------------
 
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:

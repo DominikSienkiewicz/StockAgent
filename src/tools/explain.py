@@ -1,6 +1,6 @@
 """CLI „dlaczego?” — czytnik kwitów decyzyjnych predykcji (WIA-56).
 
-`prediction_logs.decision_receipts` (migracja 020, #13) był write-only: zapisywał
+`prediction_logs.decision_receipts` (migracja 020, R-13) był write-only: zapisywał
 go graf i nikt go nie czytał, a audit trail, którego nikt nie czyta, nie jest
 dowodem. To narzędzie składa z kwitu i głosów rady odpowiedź na pytanie, na czym
 stała predykcja:

@@ -25,7 +25,7 @@ from src.infrastructure.llm.anthropic_client import (
     validate_model_id,
 )
 
-# #6 — domyślny model do pętli tool-use (taki sam kompromis kosztów/jakości co
+# R-24 — domyślny model do pętli tool-use (taki sam kompromis kosztów/jakości co
 # zwykły AnthropicAdapter). Tool-use to wieloetapowa, PŁATNA ścieżka — dlatego
 # liczba rund jest twardo ograniczona (`max_rounds`).
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallingAnthropicAdapter(ToolUseLLMPort):
-    """#6 — adapter Anthropic z pętlą tool-use (Messages API tools).
+    """R-24 — adapter Anthropic z pętlą tool-use (Messages API tools).
 
     Model może na żądanie wywołać read-only narzędzia (fundamenty, RAG, makro)
     zanim wyda finalny werdykt JSON. Pętla:

@@ -36,7 +36,7 @@ _OPENAI_MODEL_PREFIXES = ("gpt-", "o")
 # zamiast `max_tokens` (patrz `_token_limit_kwarg`). Prefiksy dobrane pod
 # faktyczne ograniczenie API.
 _NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
-# #31 — Strukturalne schematy JSON potrzebują kilkuset tokenów wyjścia. Bez capa
+# Strukturalne schematy JSON potrzebują kilkuset tokenów wyjścia. Bez capa
 # OpenAI ogranicza output tylko defaultem modelu. Ciasny, nadpisywalny cap.
 DEFAULT_MAX_TOKENS = 768
 # Regresja 2026-06-21 (COUNCIL_LLM_MODEL=gpt-5-mini): dla reasoning models
@@ -67,7 +67,7 @@ T = TypeVar("T")
 def validate_model_id(model: str) -> None:
     """Lekka walidacja id modelu — bez sieciowego calla na starcie.
 
-    #30 — Stary/wycofany/typo'd id failuje dopiero przy 1. API callu
+    Stary/wycofany/typo'd id failuje dopiero przy 1. API callu
     (non-retried 4xx), per symbol, co cykl — cichy total outage wykrywany
     dopiero przez exit code "wszystkie symbole padły". Łapiemy OCZYWISTĄ
     pomyłkę config (pusty string, zły provider prefix) natychmiast, z
@@ -176,7 +176,7 @@ class OpenAIAdapter(LLMPort):
             kwargs["response_format"] = {"type": "json_object"}
         if self._supports_custom_temperature():
             kwargs["temperature"] = self._temperature
-        # #31 — cap wyjścia: bez niego output ograniczony tylko defaultem modelu.
+        # Cap wyjścia: bez niego output ograniczony tylko defaultem modelu.
         kwargs[self._token_limit_kwarg()] = self._resolved_max_tokens()
         return kwargs
 

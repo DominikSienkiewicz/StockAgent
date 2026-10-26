@@ -22,7 +22,7 @@ DEFAULT_MAX_ESCALATIONS = 5
 
 
 class CascadingLLMAdapter(LLMPort):
-    """Confidence-gated model routing — kompozyt dwóch `LLMPort` (Feature #2).
+    """Confidence-gated model routing — kompozyt dwóch `LLMPort` (R-20).
 
     Analizę domyślnie wykonuje TANI model. Dopiero gdy jego wynik jest mało
     pewny (`confidence_score < routing_floor`) i mamy jeszcze budżet eskalacji,

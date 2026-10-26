@@ -1,4 +1,4 @@
-"""Adaptery dla `AttestationPublisherPort` (#16 — commit-reveal track record):
+"""Adaptery dla `AttestationPublisherPort` (R-16 — commit-reveal track record):
 - `FileAttestationPublisher` — dopisuje commitmenty i revealy do append-only
   plików JSONL (osobne ścieżki), które workflow Gita może commitować.
 - `NullAttestationPublisher` — no-op gdy feature wyłączony (mirror `NullWebPublisher`).
