@@ -1055,6 +1055,26 @@ class TestProcessOneSymbol:
         assert "401 Client Error" in proc.result.error_message
         assert "symbol-secret-token" not in proc.result.error_message
 
+    def test_price_source_timeout_maps_to_provider_unavailable(
+        self, settings: Settings, mocker: Any
+    ) -> None:
+        # MAIL-32: timeout adaptera ceny → kategoria z taksonomii portów i dostawca;
+        # surowy wyjątek zostaje w logu.
+        import requests
+
+        from src.application.errors import ErrorCategory
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        mocker.patch("requests.Session.get", side_effect=requests.Timeout("Read timed out."))
+        adapter = FinnhubAdapter(api_key="fh-test")
+        uc = MagicMock()
+        uc.run.side_effect = lambda symbol, **_: adapter.get_current_price(symbol)
+
+        proc = main_agent._process_one_symbol("NVDA", peer_ctx=(), **self._kwargs(settings, uc))
+
+        assert proc.result.error_category is ErrorCategory.PROVIDER_UNAVAILABLE
+        assert proc.result.error_provider == "Finnhub"
+
     def test_port_error_is_one_warning_without_traceback(
         self, settings: Settings, caplog: pytest.LogCaptureFixture
     ) -> None:

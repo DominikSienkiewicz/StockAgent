@@ -246,6 +246,7 @@ from src.infrastructure.adapters.write_guard import (
     ReadOnlyRepository,
 )
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter, load_challenger
+from src.infrastructure.error_provider import provider_of
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.logging_setup import configure_logging, symbol_context
 from src.infrastructure.persona_loader import load_council_personas, personas_sha256
@@ -2221,8 +2222,8 @@ def _cycle_runner(
     phase_two_feeds: PhaseTwoFeeds | None = None,
 ) -> RunFastLoopCycle:
     """ARCH-07: use case przebiegu z hookami świata — `time.sleep` (czytany przy
-    wywołaniu, więc patch `time.sleep` w testach działa), redakcja sekretów
-    i kontekst logu symbolu."""
+    wywołaniu, więc patch `time.sleep` w testach działa), redakcja sekretów,
+    kontekst logu symbolu i dostawca błędu symbolu (MAIL-32)."""
     return RunFastLoopCycle(
         use_case=use_case,
         alpha_use_case=alpha_use_case,
@@ -2231,6 +2232,7 @@ def _cycle_runner(
         redact=_secret_redactor(secret_values),
         symbol_scope=symbol_context,
         phase_two_feeds=phase_two_feeds,
+        error_provider=provider_of,
     )
 
 

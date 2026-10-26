@@ -44,6 +44,13 @@ logger = logging.getLogger(__name__)
 PhaseTwoFeeds = Callable[[Sequence[str]], tuple[SentimentPort, NewsPort]]
 # Kontekst logu jednego symbolu (NIEZ-21); composition root podaje `symbol_context`.
 SymbolScope = Callable[[str], AbstractContextManager[None]]
+# MAIL-32: dostawca, którego adapter zgłosił błąd symbolu; composition root podaje
+# `provider_of` z infrastruktury (application nie zna modułów adapterów).
+ErrorProvider = Callable[[BaseException], str | None]
+
+
+def _no_provider(_: BaseException) -> str | None:
+    return None
 
 
 def classify_asset(symbol: str, crypto_set: Set[str], etf_set: Set[str]) -> AssetType:
@@ -149,6 +156,8 @@ class RunFastLoopCycle:
     czyści komunikat błędu symbolu z sekretów, zanim trafi do maila (BEZ-07),
     a `symbol_scope` ustawia symbol w kontekście logu workera (NIEZ-21).
     Z `phase_two_feeds` (EXP-27, `two_phase_cycle_enabled`) cykl jest dwufazowy.
+    `error_provider` (MAIL-32) nazywa dostawcę błędu symbolu do maila; bez niego
+    mail podaje samą kategorię.
     """
 
     def __init__(
@@ -161,6 +170,7 @@ class RunFastLoopCycle:
         redact: Callable[[str], str],
         symbol_scope: SymbolScope,
         phase_two_feeds: PhaseTwoFeeds | None = None,
+        error_provider: ErrorProvider = _no_provider,
     ) -> None:
         self._use_case = use_case
         self._alpha = alpha_use_case
@@ -169,6 +179,7 @@ class RunFastLoopCycle:
         self._redact = redact
         self._symbol_scope = symbol_scope
         self._phase_two_feeds = phase_two_feeds
+        self._error_provider = error_provider
 
     def run(self, eligible: Sequence[str]) -> CycleOutcome:
         """Dispatcher: wybiera ścieżkę równoległą lub sekwencyjną; z `phase_two_feeds`
@@ -312,7 +323,10 @@ class RunFastLoopCycle:
         # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
         # MAIL-32: kategoria z taksonomii portów — mail pokazuje ją zamiast komunikatu.
         failed = replace(
-            result, error_type=type(exc).__name__, error_category=error_category_of(exc)
+            result,
+            error_type=type(exc).__name__,
+            error_category=error_category_of(exc),
+            error_provider=self._error_provider(exc),
         )
         return ProcessedSymbol(failed, True, None, None)
 

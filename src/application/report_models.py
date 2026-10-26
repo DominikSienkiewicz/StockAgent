@@ -88,6 +88,8 @@ class SymbolResult:
     # MAIL-32: kategoria błędu z taksonomii portów — tę (nie `error_message`) widzi
     # czytelnik maila. None = wynik spoza przebiegu symboli (traktowany jak UNKNOWN).
     error_category: ErrorCategory | None = None
+    # MAIL-32: dostawca, którego adapter zgłosił błąd („Finnhub”); None = nieznany.
+    error_provider: str | None = None
     council_verdict: CouncilVerdict | None = None
     valuation: ValuationSection | None = None
     # Q5: analogi RAG użyte w tym cyklu (precedent receipts). Pusta lista =

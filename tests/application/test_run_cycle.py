@@ -88,6 +88,42 @@ def test_failure_carries_the_category_of_its_port_error() -> None:
     ]
 
 
+def test_failure_names_the_provider_from_the_injected_hook() -> None:
+    # MAIL-32: dostawcę zna infrastruktura; use case tylko woła wstrzyknięty hook.
+    use_case = _use_case()
+    failure = QuotaExhausted("429")
+    use_case.run.side_effect = failure
+    seen: list[BaseException] = []
+
+    def provider(exc: BaseException) -> str | None:
+        seen.append(exc)
+        return "Finnhub"
+
+    cycle = RunFastLoopCycle(
+        use_case=use_case,
+        alpha_use_case=Mock(spec=AlphaEnrichmentUseCase),
+        options=CycleOptions(),
+        sleep=Mock(),
+        redact=lambda text: text,
+        symbol_scope=lambda symbol: nullcontext(),
+        error_provider=provider,
+    )
+
+    outcome = cycle.run(["AAPL"])
+
+    assert outcome.results[0].error_provider == "Finnhub"
+    assert seen == [failure]
+
+
+def test_without_a_provider_hook_the_provider_is_unknown() -> None:
+    use_case = _use_case()
+    use_case.run.side_effect = QuotaExhausted("429")
+
+    outcome = _cycle(use_case, CycleOptions()).run(["AAPL"])
+
+    assert outcome.results[0].error_provider is None
+
+
 def test_every_symbol_runs_inside_its_log_scope() -> None:
     scoped: list[str] = []
 
