@@ -66,6 +66,41 @@ The rules that keep the loop cheap and a bad day survivable, each with the test 
 | The owner's Telegram bot answers only the `TELEGRAM_CHAT_ID` chat, and a symbol muted from it skips the paid analysis but keeps its price snapshot | [`tests/infrastructure/test_telegram_command_source.py`](tests/infrastructure/test_telegram_command_source.py) `test_only_owner_text_messages_pass_and_offset_moves_past_every_update`; [`tests/test_main_agent_mutes.py`](tests/test_main_agent_mutes.py) `TestFastLoopMutes::test_muted_symbol_skips_the_graph_but_keeps_its_price_snapshot` |
 | CI is under test: the quality job runs ruff and mypy on every entry point, and an active Fast Loop cron needs the deadman, the cost ceiling and the weekly budget | [`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) `test_ci_quality_job_runs_ruff_and_mypy`, `test_ci_lints_and_typechecks_every_entrypoint`; [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py) `test_enabled_fast_loop_schedule_requires_deadman` |
 
+## Testing
+
+The quality job of [CI](.github/workflows/ci.yml) runs these commands on every push to `main`
+and every pull request, and they are the local gate too.
+[`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) fails when this block,
+[AGENTS.md](AGENTS.md) or the [running guide](docs/running-locally.md) quotes a command CI
+does not run:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy          # strict: src, every main_*.py and all of tests/
+uv run pytest -m "not integration and not containers"
+```
+
+Two markers split off what the plain run leaves out. `integration` marks tests against the
+live APIs (paid LLM calls, a real email): they skip without keys, the CI gate never runs
+them, and only the manual Integration smoke workflow does, with its own keys. `containers`
+marks the tests that need Docker: CI runs them as a separate step and fails when no Docker
+daemon answers. On top of the plain run, CI measures the branch coverage of `src/domain`
+against a floor that only rises.
+
+The layers are tested where they live:
+
+- **Domain:** plain Python without mocks, so a rule is checked on values in and decisions out.
+- **Adapters:** `requests.Session` mocked, parsers fed payloads in the shape of real provider
+  answers ([`tests/fixtures/providers/`](tests/fixtures/providers/)), and no socket: a unit
+  test that tries the network fails ([`tests/test_network_isolation.py`](tests/test_network_isolation.py)).
+- **Application:** the graph, the use cases and the report run on `Mock(spec=Port)` fakes
+  and an in-memory repository.
+- **Schema and repository:** every migration applied to a real Postgres with pgvector, and
+  the repository's contract checked against a real PostgREST, both in containers.
+
+Setup, the local run and the build commands are in [running it](docs/running-locally.md).
+
 ## Status
 
 **The daily report run resumed on 2026-10-23** on weekdays at 05:30 UTC

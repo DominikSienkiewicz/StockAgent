@@ -28,7 +28,7 @@ import yaml
 
 ROOT = Path(__file__).parent.parent
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
+GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md", "README.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 # TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
