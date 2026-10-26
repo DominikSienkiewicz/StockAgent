@@ -317,6 +317,8 @@ def _macro_risk_report() -> MacroRiskReport:
             eur_pln_30d_change_ratio=Ratio(Decimal("0.010")),
             usd_pln_30d_change_ratio=Ratio(Decimal("0.015")),
             fetched_at=SAMPLE_STARTED_AT - timedelta(hours=2),
+            eur_pln_1d_change_ratio=Ratio(Decimal("-0.0012")),
+            usd_pln_1d_change_ratio=Ratio(Decimal("0.0041")),
         ),
         overall_alert=MacroAlertLevel.ELEVATED,
     )

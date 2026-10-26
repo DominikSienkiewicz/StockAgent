@@ -244,7 +244,7 @@ VIXY,UVXY                           # short-term VIX futures — explicit volati
 
 Each instrument is tagged with a `MacroRiskInstrumentType` via `RISK_SYMBOL_TYPES`. The domain (`MacroRiskSignal.evaluate_alert`) maps price change to one of `NORMAL / ELEVATED / CRITICAL` — for `SOVEREIGN_PROXY` the sign is inverted so a *falling* EPOL triggers the alert.
 
-When `NBP_ENABLED=true`, the `NbpClient` adapter (implements `MacroIndicatorsPort`) pulls a 30-day EUR/PLN and USD/PLN window from `api.nbp.pl` (free, no key). `PolishMacroSnapshot.evaluate_stress_level` raises ELEVATED / CRITICAL when the złoty weakens > 2% / > 5% over the window — early warning for PL fiscal stress visible in FX before it shows up in the rating.
+When `NBP_ENABLED=true`, the `NbpClient` adapter (implements `MacroIndicatorsPort`) pulls a 30-day EUR/PLN and USD/PLN window from `api.nbp.pl` (free, no key). `PolishMacroSnapshot.evaluate_stress_level` raises ELEVATED / CRITICAL when the złoty weakens > 2% / > 5% over the window — early warning for PL fiscal stress visible in FX before it shows up in the rating. The same two series give the daily change (the last table A rate against the previous one, DAT-29), shown next to the 30-day change in Risk Watch; it never feeds the stress level.
 
 Output lands in the e-mail as a dedicated **🚨 Risk Watch** section (signals table + FX block + overall alert level). A per-symbol fetch failure (e.g. Finnhub 403 on a delisted ticker) is logged and skipped — Risk Watch never breaks the main report.
 
