@@ -342,10 +342,13 @@ są zwolnione.
 - Pozycja roadmapy ma numer `R-N`, definiowany wyłącznie w `docs/decisions.md`. W kodzie,
   `config.toml` i docs nie pisz „roadmap #N”; `tests/test_decision_log.py` pilnuje, że każde
   `R-N` ma wiersz.
-- Komentarz ani docstring w `src/` nie niesie gołego „#N” (DOC-53): pozycja roadmapy to `R-N`,
-  znalezisko audytu z 2026-10-15 — jego identyfikator z audytu (`G-N`, zapisywany jak `G03`),
-  a odwołanie spoza obu spisów (np. znalezisko pierwszego audytu z czerwca 2026) opisujesz
-  słowami. Pilnuje `tests/test_docs_consistency.py::test_no_bare_hash_reference_in_src_comments`.
+- Komentarz ani docstring w `src/`, `main_*.py` i `tests/` nie niesie gołego „#N” (DOC-53,
+  DOC-55): pozycja roadmapy to `R-N`, znalezisko audytu z 2026-10-15 — jego identyfikator z
+  audytu (`G-N`, zapisywany jak `G03`), a odwołanie spoza obu spisów (np. znalezisko pierwszego
+  audytu z czerwca 2026) opisujesz słowami. Numer, który nie jest odwołaniem (kolor, przykład
+  dawnej numeracji), trafia do `NOT_A_REFERENCE` z powodem. Pilnują
+  `tests/test_docs_consistency.py::test_no_bare_hash_reference_in_src_comments` i
+  `::test_no_bare_hash_reference_in_entrypoints_and_tests`.
 - Nowa decyzja architektoniczna = wpis `D-N` w `docs/decisions.md` (data, status, hashe
   commitów, strażnicy). Nowy incydent = wiersz w `docs/engineering-log.md` (incydent → reguła →
   test).
