@@ -14,10 +14,12 @@ env, sieci ani bazy, nie składa `Settings` (ARCH-39) i nie importuje `tests/`.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
+from src.application.errors import ErrorCategory
 from src.application.report_builder import (
     ReportContext,
     ResolvedPrediction,
@@ -266,8 +268,13 @@ def sample_results() -> list[SymbolResult]:
             skip_reason=SkipReason.UNSUPPORTED_PRICE,
             error_message="unsupported by current price adapter (Finnhub free)",
         ),
-        to_symbol_result(
-            "ASML", None, error="HTTPError: 429 Too Many Requests", now=SAMPLE_STARTED_AT
+        # MAIL-32: błąd symbolu w mailu to kategoria i dostawca, nie komunikat wyjątku.
+        replace(
+            to_symbol_result(
+                "ASML", None, error="HTTPError: 429 Too Many Requests", now=SAMPLE_STARTED_AT
+            ),
+            error_category=ErrorCategory.QUOTA_EXHAUSTED,
+            error_provider="Finnhub",
         ),
     ]
 
