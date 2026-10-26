@@ -1,9 +1,9 @@
 """ARCH-07: przebieg symboli jednego cyklu Fast Loopa.
 
 `RunFastLoopCycle` prowadzi listę symboli przez `AnalyzeMarketUseCase`:
-sekwencyjnie (contagion #5, throttle między symbolami), równolegle w puli
+sekwencyjnie (contagion R-23, throttle między symbolami), równolegle w puli
 wątków albo dwufazowo (EXP-27). Wejścia grafu liczone przed nim — klasa
-aktywa, mnożnik earnings (#6), sygnały alfa i ich fuzja (#14) — też żyją tutaj.
+aktywa, mnożnik earnings (R-6), sygnały alfa i ich fuzja (R-14) — też żyją tutaj.
 Pojedynczy błąd symbolu nie przerywa cyklu: wynik dostaje `is_failure`.
 
 Konfigurację przebiegu niesie jeden `CycleOptions` zamiast 9–11 kwargs na
@@ -66,9 +66,9 @@ def classify_asset(symbol: str, crypto_set: Set[str], etf_set: Set[str]) -> Asse
 class CycleOptions:
     """Ustawienia przebiegu symboli jednego cyklu, mapowane z `Settings`.
 
-    `earnings_gate_enabled` (#6) i `alpha_fusion_enabled` (#14) domyślnie
+    `earnings_gate_enabled` (R-6) i `alpha_fusion_enabled` (R-14) domyślnie
     WYŁĄCZONE — wtedy ścieżka jest bit-w-bit taka jak przed nimi. Równolegle
-    tylko przy `symbol_concurrency > 1` i bez contagion (#5 zależy od kolejności).
+    tylko przy `symbol_concurrency > 1` i bez contagion (R-23 zależy od kolejności).
     `cycle_at` to start cyklu: od niego liczy się wiek referencji ceny (FIN-14)
     i odznaki proweniencji (ARCH-26).
     """
@@ -90,7 +90,7 @@ class CycleOptions:
 
     @property
     def parallel(self) -> bool:
-        """Równolegle tylko przy concurrency > 1 i bez contagion (#5 zależy od kolejności)."""
+        """Równolegle tylko przy concurrency > 1 i bez contagion (R-23 zależy od kolejności)."""
         return self.symbol_concurrency > 1 and not self.contagion_enabled
 
 
@@ -188,7 +188,7 @@ class RunFastLoopCycle:
         if self._phase_two_feeds is not None:
             return self._run_two_phase(eligible, self._phase_two_feeds)
         # Ścieżka równoległa: tylko gdy concurrency > 1 ORAZ contagion off (contagion
-        # #5 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
+        # R-23 zależy od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
         if options.parallel:
             return self._run_parallel(eligible)
 
@@ -209,11 +209,11 @@ class RunFastLoopCycle:
         nie widzi wyjątku, a semantyka resilience jest identyczna z dawną pętlą
         sekwencyjną.
 
-        `alpha_fusion_enabled` (#14) zmienia prompt LLM i zapisuje kandydata na
+        `alpha_fusion_enabled` (R-14) zmienia prompt LLM i zapisuje kandydata na
         cechę ML (`alpha_fusion_score`, poza `ML_FEATURE_COLUMNS` — model go nie
         widzi), więc jej wdrożenie ma być świadomą, odwracalną decyzją; o promocji
         do cech modelu rozstrzyga porównanie A/B (EXP-19), nie intuicja
-        dobierającego wagi. Off → `alpha_fusion=None` → prompt i zapis jak przed #14.
+        dobierającego wagi. Off → `alpha_fusion=None` → prompt i zapis jak przed R-14.
 
         NIEZ-21: symbol trafia do każdej linii logu z tego wywołania — także z wątku
         puli i z wątków rady (`copy_context`).
@@ -248,7 +248,7 @@ class RunFastLoopCycle:
             symbol=symbol,
             asset_type=classify_asset(symbol, options.crypto_symbols, options.etf_symbols),
         )
-        # #6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
+        # R-6: bramka earnings. Event pobieramy PRZED grafem, bo mnożnik progu
         # musi być znany zanim graf zdecyduje o odpaleniu płatnych portów.
         # Gdy kalendarz earnings jest wyłączony, nie ruszamy portu w ogóle.
         earnings_event: EarningsEvent | None = None
@@ -257,7 +257,7 @@ class RunFastLoopCycle:
             earnings_event = self._alpha.fetch_earnings(symbol)
             if earnings_event is not None:
                 earnings_multiplier = earnings_threshold_multiplier(earnings_event.proximity())
-        # #14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
+        # R-14: enrichment biegnie PRZED grafem. Dawniej działał po nim, więc
         # LLM i cechy XGBoost nigdy nie widziały sygnałów alfa — 5 pobieranych
         # źródeł było render-only. Liczba płatnych wywołań się NIE zmienia:
         # `enrich` i tak leciał raz na symbol, tylko później.
@@ -331,7 +331,7 @@ class RunFastLoopCycle:
         return ProcessedSymbol(failed, True, None, None)
 
     def _run_parallel(self, eligible: Sequence[str]) -> CycleOutcome:
-        """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy
+        """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion R-23 zależy
         od kolejności przetwarzania, więc jest niekompatybilny z out-of-order).
         executor.map zachowuje kolejność wejścia → wyniki deterministyczne."""
         with ThreadPoolExecutor(max_workers=self._options.symbol_concurrency) as executor:
@@ -340,11 +340,11 @@ class RunFastLoopCycle:
 
     def _run_sequential(self, eligible: Sequence[str]) -> CycleOutcome:
         """Ścieżka sekwencyjna: zachowuje kolejność, buduje peer_context dla contagion
-        (#5) i throttluje między symbolami (ochrona OpenAI TPM)."""
+        (R-23) i throttluje między symbolami (ochrona OpenAI TPM)."""
         options = self._options
         results: list[SymbolResult] = []
         failures = 0
-        # #5: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
+        # R-23: akumulator werdyktów tego cyklu (symbol → stance) dla contagion.
         processed_stances: dict[str, str] = {}
         alpha_signals: dict[str, AlphaSignals] = {}
         alpha_prices: dict[str, Decimal] = {}

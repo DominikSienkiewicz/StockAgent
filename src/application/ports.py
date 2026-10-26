@@ -103,7 +103,7 @@ class NewsPort(ABC):
 
 @dataclass(frozen=True)
 class PreviousVerdict:
-    """#8 — snapshot poprzedniego cyklu potrzebny detektorowi zmian nastawienia."""
+    """R-8 — snapshot poprzedniego cyklu potrzebny detektorowi zmian nastawienia."""
 
     verdict: CouncilVerdict
     sentiment_score: float
@@ -562,7 +562,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
-        """#4 — rozliczone predykcje z `id`, `symbol`, `confidence_score`,
+        """R-22 — rozliczone predykcje z `id`, `symbol`, `confidence_score`,
         `is_trend_correct`, `predicted_trend`, `timestamp`, `reasoning_text` do
         oceny kalibracji (Slow Loop) i krzywych kalibracji (WIA-39); `symbol`
         wyznacza klasę aktywa mapy izotonicznej (ML-54).
@@ -579,14 +579,14 @@ class RepositoryPort(ABC):
     def get_persona_accuracy(
         self, asset_type: AssetType, window_days: int = 90
     ) -> dict[str, float]:
-        """#3 — waga każdej persony rady wg jej historycznej trafności
+        """R-21 — waga każdej persony rady wg jej historycznej trafności
         (rekomendacja vs realny ruch ceny), zmapowana do ~[0.5, 1.5].
         `{investor_name: waga}`. Pusta mapa = brak danych / RPC niedostępne
         → ważenie wyłączone (każda persona waży 1.0)."""
 
     @abstractmethod
     def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
-        """#3 — surowy track record person rady pod leaderboard w raporcie:
+        """R-3 — surowy track record person rady pod leaderboard w raporcie:
         `{investor_name: (hit_rate, liczba_rozliczonych_głosów)}` (migracja 018).
 
         W odróżnieniu od `get_persona_accuracy` (zwraca gotową WAGĘ do
@@ -659,7 +659,7 @@ class RepositoryPort(ABC):
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
     ) -> list[dict[str, Any]]:
-        """#17 — jak `get_resolved_predictions`, ale z polami, których tamta NIE
+        """R-17 — jak `get_resolved_predictions`, ale z polami, których tamta NIE
         zwraca: `id`, `price_at_prediction`, `predicted_target_price`,
         `confidence_score`, `actual_price_after_12h` i `council_verdict` (JSONB).
 
@@ -684,7 +684,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
-        """#16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
+        """R-16 — ROZLICZONE predykcje z commitmentem, jeszcze nieujawnione.
 
         Napędza sweep: bez niego predykcje symboli usuniętych z `config.toml`
         nigdy nie zostałyby ujawnione, a dla sceptyka wygląda to jak ukrywanie
@@ -719,7 +719,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def mark_commitment_revealed(self, prediction_id: str) -> None:
-        """#16 — stempluje `revealed_at`, żeby sweep nie ujawnił tego dwa razy."""
+        """R-16 — stempluje `revealed_at`, żeby sweep nie ujawnił tego dwa razy."""
 
     @abstractmethod
     def get_latest_snapshot_at(self) -> datetime | None:
@@ -758,7 +758,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None:
-        """#11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
+        """R-11 — najnowszy snapshot ceny WRAZ ze znacznikiem czasu.
 
         Alert szoku potrzebuje wieku punktu odniesienia: stęchły snapshot
         (>30h) daje fałszywy alarm, więc `detect_shock` go tłumi.
@@ -768,7 +768,7 @@ class RepositoryPort(ABC):
     def save_shock_alert(
         self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
-        """#11 — persystuje alert szoku PO jego wysyłce (migracja 021).
+        """R-11 — persystuje alert szoku PO jego wysyłce (migracja 021).
 
         Kontrakt at-least-once (ALR-14, ALR-23): watch wysyła push PRZED zapisem, więc
         `UNIQUE(symbol, alert_date)` — od migracji 081 `UNIQUE(symbol, alert_date, level)`
@@ -791,7 +791,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
-        """#11 — pary (symbol, dzień) już zaalarmowane od `since`.
+        """R-11 — pary (symbol, dzień) już zaalarmowane od `since`.
         Pusty zbiór = brak danych / brak migracji 021 → debounce w domenie
         polega wtedy wyłącznie na pamięci bieżącego przebiegu."""
 
@@ -840,7 +840,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_previous_verdict(self, symbol: str) -> PreviousVerdict | None:
-        """#8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
+        """R-8 — ostatni ZAPISANY werdykt rady dla symbolu (JSONB `council_verdict`
         z migracji 005) wraz z sentymentem i znacznikiem czasu tamtego cyklu.
 
         Adapter jest SUROWY (bez try/except) — graceful degradation robi caller
@@ -850,7 +850,7 @@ class RepositoryPort(ABC):
     def save_model_scorecard(
         self, symbol: str, result: Mapping[str, Any], *, run_id: str | None = None
     ) -> None:
-        """#12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
+        """R-12 — zapisuje jeden przebieg treningu walk-forward (migracja 019).
 
         Slow Loop zapisuje wiersz per symbol (ewaluacja bez zapisu wag) i jeden
         wiersz modelu wspólnego z `symbol = "ALL"` (ML-13), więc `symbol` jest
@@ -861,7 +861,7 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_recent_model_scorecards(self, days: int = 30) -> list[dict[str, Any]]:
-        """#12 — scorecardy z ostatnich `days` dni, od najnowszego.
+        """R-12 — scorecardy z ostatnich `days` dni, od najnowszego.
         Pusta lista = brak danych / brak migracji 019 → sekcja się chowa."""
 
     @abstractmethod
@@ -1218,7 +1218,7 @@ class MLPredictionPort(ABC):
         ML-55: `features` i `target` jak w `train` — wiersze `{cecha: wartość}`
         i wyrównany target, bez DataFrame w porcie.
 
-        Reużywa tę samą logikę foldów co `train()` (finding #23), ale zwraca
+        Reużywa tę samą logikę foldów walk-forward co `train()`, ale zwraca
         SZCZEGÓŁ każdego foldu zamiast średniej: lista dictów z kluczami
         `train_end`, `valid_end`, `n_train`, `n_valid`, `candidate_rmse`,
         `baseline_rmse` (zwrot=0), `hit_rate` (trafność kierunku) oraz (ML-20)
@@ -1419,7 +1419,7 @@ class SubscriberRepositoryPort(ABC):
 
 
 class PortfolioPositionsPort(ABC):
-    """#15 — realne pozycje użytkownika (tabela `positions`, migracja 023).
+    """R-15 — realne pozycje użytkownika (tabela `positions`, migracja 023).
 
     Bez nich cała warstwa ryzyka liczy fikcję na RÓWNYCH wagach. Pusta lista =
     brak pozycji / port wyłączony → fallback na dotychczasowe równe wagi."""
@@ -1449,7 +1449,7 @@ class PositionsImportPort(ABC):
 
 
 class AttestationPublisherPort(ABC):
-    """#16 — publikacja commitmentów i revealów (append-only JSONL).
+    """R-16 — publikacja commitmentów i revealów (append-only JSONL).
 
     Lustro `WebPublisherPort`: zwraca ścieżkę/URL albo "" gdy wyłączone lub
     błąd. Awaria publikacji NIGDY nie wywala cyklu."""
@@ -1495,7 +1495,7 @@ class LedgerHeadPublisherPort(ABC):
 
 
 class WebPublisherPort(ABC):
-    """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard #10).
+    """Publikacja strony HTML jako statyczny artefakt web (publiczny scorecard R-10).
     Zwraca URL/ścieżkę albo "" gdy wyłączone / błąd (publikacja nigdy nie
     wywala cyklu). Prywatny digest idzie do `DigestArchivePort` (MAIL-24)."""
 
@@ -1606,7 +1606,7 @@ class SymbolMutePort(ABC):
 
 @dataclass(frozen=True)
 class Tool:
-    """#6 — read-only narzędzie udostępniane modelowi w pętli tool-use.
+    """R-24 — read-only narzędzie udostępniane modelowi w pętli tool-use.
 
     `func` przyjmuje argumenty wywołania (dict) i zwraca JSON-safe wynik (dict).
     `parameters` to JSON Schema argumentów (dla SDK function-calling)."""
@@ -1618,7 +1618,7 @@ class Tool:
 
 
 class ToolUseLLMPort(ABC):
-    """#6 — LLM z pętlą tool-use: model może na żądanie wywołać read-only toole
+    """R-24 — LLM z pętlą tool-use: model może na żądanie wywołać read-only toole
     (fundamenty, RAG, makro) zanim wyda werdykt. Implementacja MUSI mieć twardy
     cap rund (FinOps). Zwraca ustrukturyzowany JSON jak `LLMPort.analyze`."""
 

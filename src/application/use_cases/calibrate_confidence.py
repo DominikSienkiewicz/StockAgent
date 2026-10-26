@@ -1,4 +1,4 @@
-"""#4 — ocena kalibracji pewności rozliczonych predykcji (Slow Loop).
+"""R-22 — ocena kalibracji pewności rozliczonych predykcji (Slow Loop).
 
 Per-predykcja `calibration_score` liczymy arytmetycznie: czy DEKLAROWANA pewność
 była uzasadniona realnym wynikiem. WIA-65 (decyzja 2026-10-23, opcja b): zbiorczy

@@ -108,7 +108,7 @@ QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 # ALR-06: okno szoków, gdy nie wiadomo, kiedy wyszedł ostatni mail (doba = cykl
 # Fast Loopa w dzień roboczy).
 SHOCK_FALLBACK_LOOKBACK_HOURS = 24
-# Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
+# Okno track recordu person (R-3) — 90 dni, tak jak domyślne okno RPC z migracji
 # 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
 PERSONA_TRACK_RECORD_DAYS = 90
 
@@ -135,7 +135,7 @@ class ReportFlags:
     model_scorecard_enabled: bool = False
     cycle_diff_enabled: bool = False
     settled_at_windows_enabled: bool = False
-    # ALR-06: szoki z watcha (#11) od ostatniego maila — czytane tylko, gdy watch działa.
+    # ALR-06: szoki z watcha (R-11) od ostatniego maila — czytane tylko, gdy watch działa.
     shock_alerts_enabled: bool = False
     # WIA-44: leaderboard person po Brier Skill pewności (RPC 065) zamiast hit-rate'u.
     persona_brier_ranking_enabled: bool = False
@@ -163,7 +163,7 @@ class ReportFlags:
 
 
 def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
-    """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
+    """R-4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
     Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
     "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
@@ -176,7 +176,7 @@ def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]
 
 
 def classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
-    """#4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
+    """R-4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
 
     Symbole nieobsługiwane cenowo są jawnie POZA mianownikiem (nigdy nie dostaną
     punktu odniesienia), a błędy liczone osobno — cykl zdominowany przez awarie
@@ -204,7 +204,7 @@ def build_consensus_shifts(
     *,
     now: datetime,
 ) -> list[tuple[str, ConsensusShift]]:
-    """#8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
+    """R-8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
 
     Tłumienie stęchłych flipów: symbol bez ŚWIEŻEGO werdyktu (odcięty bramką
     volatility) jest pomijany — inaczej stary flip pokazywałby się w kółko.
@@ -242,7 +242,7 @@ def build_consensus_shifts(
 def build_model_scorecard(
     flags: ReportFlags, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> ModelScorecardView | None:
-    """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
+    """R-12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
     odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
     to `MODEL_SCORECARD_WINDOW_DAYS`, nie `track_record_days` — karta starsza niż
     próg świeżości zostaje widoczna z odznaką STALE."""
@@ -308,7 +308,7 @@ def build_council_redundancy(
 def build_signal_calibration(
     flags: ReportFlags, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> list[CalibrationBucket] | None:
-    """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
+    """R-9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
 
     Świadomie osobne od `build_track_record`: `calibration_curve_enabled` rysuje
     sekcję, a `calibrated_confidence_enabled` zmienia ranking. Sprzęgnięcie ich
@@ -700,7 +700,7 @@ def fetch_report_context(
     except Exception:
         logger.exception("Failed to fetch council vote history")
 
-    # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
+    # R-3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
     # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
     # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
     persona_track_record: list[PersonaTrackRecord] = []
@@ -818,7 +818,7 @@ class ReportAssembler:
                 *recent_alerts,
                 accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
             ]
-        # #9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
+        # R-9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
         signal_calibration_buckets = build_signal_calibration(flags, repository, reads=reads)
         # ML-28: mapa izotoniczna (flaga) — tylko gdy ranking ma kubełki (WIA-38);
         # ML-54: z tego samego odczytu mapy per klasa aktywa (osobna flaga).
@@ -827,12 +827,12 @@ class ReportAssembler:
             if signal_calibration_buckets
             else (None, None)
         )
-        # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
+        # R-4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = classify_cycle_maturity(results)
         sectors = portfolio_sectors(results, context.sector_map or {})
-        # #12: karta kondycji modelu (flaga + migracja 019).
+        # R-12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = build_model_scorecard(flags, repository, reads=reads)
-        # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
+        # R-8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             build_consensus_shifts(repository, results, now=started_at)
             if flags.cycle_diff_enabled

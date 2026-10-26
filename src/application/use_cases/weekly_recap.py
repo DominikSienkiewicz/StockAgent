@@ -1,4 +1,4 @@
-"""#17 — use case niedzielnej retrospektywy „Tydzień StockAgenta" (Slow Loop).
+"""R-17 — use case niedzielnej retrospektywy „Tydzień StockAgenta" (Slow Loop).
 
 Domena (`weekly_recap.py`) wybiera bohaterów tygodnia deterministycznie; ten use
 case robi trzy rzeczy warstwy application:

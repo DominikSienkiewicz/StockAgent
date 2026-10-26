@@ -21,7 +21,7 @@ class BacktestUseCase:
     """Offline walk-forward backtest lokalnego modelu (harness diagnostyczny).
 
     Foldy projektuje domenowe `walk_forward_folds` (ARCH-27) — te same, na których
-    bramkuje `train()` (finding #23); port ML tylko na nich trenuje i mierzy. Czysto
+    bramkuje `train()`; port ML tylko na nich trenuje i mierzy. Czysto
     ewaluacyjny: czyta feature store, podaje portowi ML wiersze cech i target jak
     `train` (ML-55: bez DataFrame w tej warstwie), a wynik agreguje w domenowym
     `summarize_folds`. Nigdy nie rzuca na pustych/krótkich danych — degraduje do

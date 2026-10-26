@@ -58,7 +58,7 @@ class PaidPhase:
     def run(
         self, state: AgentState, *, peer_context: tuple[tuple[str, str], ...] = ()
     ) -> dict[str, Any]:
-        """Kończy symbol za bramką od stanu fazy 1. `peer_context` (#5) liczy DI
+        """Kończy symbol za bramką od stanu fazy 1. `peer_context` (R-23) liczy DI
         dopiero w fazie 2, z werdyktów symboli przeanalizowanych wcześniej."""
         phase_two_state: AgentState = {**state, "peer_context": peer_context}
         result: dict[str, Any] = self._app.invoke(phase_two_state)
@@ -254,12 +254,12 @@ class AnalyzeMarketUseCase:
             # zapisuje nowy punkt odniesienia bez płatnych wywołań.
             "reference_at": reference_at,
             "stale_reference": stale_reference,
-            # #7 reżim (label + mnożnik progu) i #5 contagion (peery z tego cyklu).
+            # R-25 reżim (label + mnożnik progu) i R-23 contagion (peery z tego cyklu).
             "regime_context": regime_context,
             "regime_multiplier": regime_multiplier,
-            # #6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
+            # R-6 bramka earnings — mnożnik progu z domeny (zawsze >= 1.0).
             "earnings_multiplier": earnings_multiplier,
-            # #14 composite alfa — do promptu LLM i jako kandydat na cechę ML
+            # R-14 composite alfa — do promptu LLM i jako kandydat na cechę ML
             # (zapis w prediction_logs, poza `ML_FEATURE_COLUMNS`).
             "alpha_fusion": alpha_fusion,
             "peer_context": peer_context,

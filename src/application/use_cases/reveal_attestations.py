@@ -1,4 +1,4 @@
-"""#16 — sweep revealów commit-reveal po wysyłce raportu Fast Loopa (ARCH-02).
+"""R-16 — sweep revealów commit-reveal po wysyłce raportu Fast Loopa (ARCH-02).
 
 Zna tylko porty: repozytorium (odczyt zapadłych commitmentów i stempel
 `revealed_at`), publisher atestacji i — od WIA-15 — trwały ledger (checkout gałęzi
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def reveal_record(row: Mapping[str, Any]) -> dict[str, Any]:
-    """#16 — rekord revealu: sól, hash i plaintext predykcji z wynikiem.
+    """R-16 — rekord revealu: sól, hash i plaintext predykcji z wynikiem.
 
     WIA-70: wiersz z `commitment_payload` (043) ujawnia zapisany plaintext
     dosłownie (`payload`) — sceptyk liczy SHA-256(payload + sól) bez rekonstrukcji.
@@ -71,7 +71,7 @@ def _commitment_of(row: Mapping[str, Any]) -> str:
 
 
 class RevealAttestationsUseCase:
-    """#16 — ujawnia WSZYSTKIE zapadłe commitmenty.
+    """R-16 — ujawnia WSZYSTKIE zapadłe commitmenty.
 
     Sweep, nie „reveal przy rozliczeniu": predykcje symboli usuniętych z
     `config.toml` nigdy nie przeszłyby przez reflect, więc ich commitmenty

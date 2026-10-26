@@ -1,4 +1,4 @@
-"""#10 — publiczny scorecard kalibracji jako use case (ARCH-02).
+"""R-10 — publiczny scorecard kalibracji jako use case (ARCH-02).
 
 Zna tylko porty: repozytorium (darmowe odczyty okna `track_record_days`)
 i publisher strony. Konfigurację okna i protokół ewaluacji dostaje
@@ -98,7 +98,7 @@ def scorecard_inputs(
     *,
     reads: TrackRecordReads | None = None,
 ) -> ScorecardInputs:
-    """#10 — agregaty z okna `window_days` (N, hit-rate, Brier, ECE, krzywe).
+    """R-10 — agregaty z okna `window_days` (N, hit-rate, Brier, ECE, krzywe).
 
     Metryki liczone z `resolved`/`cal_rows` NIEZALEŻNIE od flag
     `equity_curve_enabled` / `calibration_curve_enabled` — tamte sterują
@@ -150,12 +150,12 @@ def render_public_scorecard(
     *,
     reads: TrackRecordReads | None = None,
 ) -> str:
-    """#10 — strona z agregatami okna (`scorecard_inputs`); "" gdy okno nie ma danych."""
+    """R-10 — strona z agregatami okna (`scorecard_inputs`); "" gdy okno nie ma danych."""
     return scorecard_inputs(repository, options, costs, reads=reads).html()
 
 
 class PublishPublicScorecardUseCase:
-    """#10 — publikuje stronę i `scorecard.json` (WIA-81) przez osobny publisher strony.
+    """R-10 — publikuje stronę i `scorecard.json` (WIA-81) przez osobny publisher strony.
 
     Osobna instancja publishera (nie ta od prywatnego digestu) wybiera
     composition root — obie piszą do pliku, więc jedna nadpisałaby drugą.

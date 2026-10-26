@@ -75,7 +75,7 @@ class AlphaEnrichmentUseCase:
         return self._safe(self._corporate_events.get_corporate_events, symbol, "8-K")
 
     def fetch_earnings(self, symbol: str) -> EarningsEvent | None:
-        """#6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).
+        """R-6 — pobiera najbliższy raport kwartalny gracefully (błąd → None).
 
         Bramka earnings potrzebuje tego eventu PRZED grafem (żeby zacieśnić próg
         volatility), a `enrich` biegnie PO grafie. Bez tego wejścia orkiestrator
@@ -93,7 +93,7 @@ class AlphaEnrichmentUseCase:
         """Agreguje snapshoty 5 portów alpha. Gdy `earnings_prefetched=True`,
         `earnings` jest brany wprost (także gdy to None — "brak raportu" to
         pełnoprawny wynik prefetchu) i port earnings NIE jest wołany ponownie.
-        De-dup płatnego wywołania Alpha Vantage dla bramki earnings (#6)."""
+        De-dup płatnego wywołania Alpha Vantage dla bramki earnings (R-6)."""
         earnings_signal = (
             earnings
             if earnings_prefetched
