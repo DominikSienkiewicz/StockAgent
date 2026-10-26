@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -571,3 +572,150 @@ def test_production_workflows_sync_without_dev_dependencies() -> None:
         f"`uv sync` bez `--no-dev` w jobach z entry-pointem: {with_dev} — grupa dev "
         "(pytest, mypy, testcontainers) nie ma czego szukać w jobie z sekretami"
     )
+
+
+# BEZ-22: connection string z prawem DDL na produkcji był sekretem repo, czytelnym dla każdego
+# workflowu z main. Job migracji biegnie w środowisku `production-db` (wymagane zatwierdzenie
+# właściciela, audyt w UI), a sekret żyje wyłącznie w tym środowisku. Środowisko, którego
+# jeszcze nie ma po stronie GitHuba, powstaje przy pierwszym runie bez reguł ochrony, a sekret
+# repo o tej samej nazwie dalej działa — workflow nie pada przed krokami właściciela.
+MIGRATION_ENVIRONMENT = "production-db"
+ENVIRONMENT_SECRETS = {"SUPABASE_DB_URL": MIGRATION_ENVIRONMENT}
+SECRET_SCRIPTS = ("gh-secrets-check.sh", "gh-secrets-sync.sh")
+
+
+def _job_environment(job: dict[str, Any]) -> str | None:
+    """Nazwa środowiska joba — `environment: x` albo `environment: {name: x}`."""
+    declared = job.get("environment")
+    if isinstance(declared, dict):
+        return str(declared.get("name"))
+    return None if declared is None else str(declared)
+
+
+def _jobs_reading_secret(secret: str) -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, name in _job_ids()
+        if f"secrets.{secret}" in yaml.safe_dump(_jobs(_workflow_specs()[workflow])[name])
+    ]
+
+
+def test_db_migrate_runs_in_protected_environment() -> None:
+    migrate = _jobs(_workflow_specs()["db_migrate.yml"])["migrate"]
+
+    assert _job_environment(migrate) == MIGRATION_ENVIRONMENT
+
+
+@pytest.mark.parametrize(("secret", "environment"), sorted(ENVIRONMENT_SECRETS.items()))
+def test_environment_secrets_are_read_only_inside_their_environment(
+    secret: str, environment: str
+) -> None:
+    readers = _jobs_reading_secret(secret)
+
+    assert readers, f"żaden job nie czyta {secret} — mapa ENVIRONMENT_SECRETS jest martwa"
+    outside = [
+        f"{workflow}:{name}"
+        for workflow, name in readers
+        if _job_environment(_jobs(_workflow_specs()[workflow])[name]) != environment
+    ]
+    assert outside == [], f"{secret} czytany poza środowiskiem {environment}: {outside}"
+
+
+def _script_environment_secrets(script: str) -> dict[str, str]:
+    text = (ROOT / "scripts" / script).read_text(encoding="utf-8")
+    match = re.search(r'^ENVIRONMENT_SECRETS="([^"]*)"$', text, re.MULTILINE)
+    assert match, f"scripts/{script} nie deklaruje ENVIRONMENT_SECRETS"
+    return dict(entry.split("=", 1) for entry in match.group(1).split())
+
+
+@pytest.mark.parametrize("script", SECRET_SCRIPTS)
+def test_secret_scripts_know_the_environment_secrets(script: str) -> None:
+    assert _script_environment_secrets(script) == ENVIRONMENT_SECRETS
+
+
+FAKE_GH = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_DIR/calls"
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "repo view") echo "owner/repo" ;;
+  "variable list") ;;
+  "secret set") cat > /dev/null ;;
+  "secret list")
+    case " $* " in
+      *" --env "*) cat "$FAKE_DIR/environment_secrets" 2>/dev/null || exit 1 ;;
+      *) cat "$FAKE_DIR/repo_secrets" ;;
+    esac ;;
+  *) echo "unexpected gh call: $*" >&2; exit 3 ;;
+esac
+"""
+
+
+def _workflow_secret_names() -> set[str]:
+    text = "".join(path.read_text(encoding="utf-8") for path in WORKFLOWS_DIR.glob("*.yml"))
+    return set(re.findall(r"secrets\.([A-Za-z0-9_]+)", text)) - {"GITHUB_TOKEN"}
+
+
+def _run_secret_script(
+    tmp_path: Path, script: str, *args: str, repo: set[str], environment: set[str] | None
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    gh = fake_bin / "gh"
+    gh.write_text(FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    (tmp_path / "repo_secrets").write_text("".join(f"{n}\n" for n in sorted(repo)), "utf-8")
+    if environment is not None:
+        names = "".join(f"{n}\n" for n in sorted(environment))
+        (tmp_path / "environment_secrets").write_text(names, encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SUPABASE_DB_URL=postgresql://example\nOPENAI_API_KEY=sk-example\n", encoding="utf-8"
+    )
+    result = subprocess.run(
+        [str(ROOT / "scripts" / script), "-R", "owner/repo", "-f", str(env_file), *args],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DIR": str(tmp_path),
+            "GH_TOKEN": "",
+            "GITHUB_TOKEN": "",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls_file = tmp_path / "calls"
+    calls = calls_file.read_text(encoding="utf-8").splitlines() if calls_file.exists() else []
+    return result, calls
+
+
+def test_secret_sync_pushes_the_migration_url_into_its_environment(tmp_path: Path) -> None:
+    result, calls = _run_secret_script(
+        tmp_path, "gh-secrets-sync.sh", "--yes", repo=set(), environment=set()
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    sets = [call for call in calls if call.startswith("secret set")]
+    assert "secret set SUPABASE_DB_URL --env production-db --repo owner/repo" in sets
+    assert "secret set OPENAI_API_KEY --repo owner/repo" in sets
+
+
+def test_secret_check_reads_the_migration_url_from_its_environment(tmp_path: Path) -> None:
+    repo = _workflow_secret_names() - set(ENVIRONMENT_SECRETS)
+
+    result, calls = _run_secret_script(
+        tmp_path, "gh-secrets-check.sh", repo=repo, environment=set(ENVIRONMENT_SECRETS)
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "secret list --env production-db --repo owner/repo" in calls
+
+
+def test_secret_check_flags_a_migration_url_left_only_on_the_repo(tmp_path: Path) -> None:
+    result, _ = _run_secret_script(
+        tmp_path, "gh-secrets-check.sh", repo=_workflow_secret_names(), environment=None
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "SUPABASE_DB_URL" in result.stdout
+    assert "production-db" in result.stdout

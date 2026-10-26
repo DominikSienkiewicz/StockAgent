@@ -45,6 +45,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF_DIR="$ROOT/.github/workflows"
 [[ -n "$ENV_FILE" ]] || ENV_FILE="$ROOT/.env"
 
+# BEZ-22: sekrety środowiska GitHub (NAZWA=środowisko), nie repo. Job ze swoim `environment:`
+# widzi też sekrety repo, ale te mają żyć WYŁĄCZNIE w środowisku z wymaganym zatwierdzeniem.
+# Zgodność z workflowami pilnuje tests/test_workflow_policy.py.
+ENVIRONMENT_SECRETS="SUPABASE_DB_URL=production-db"
+
+# Środowisko sekretu z ENVIRONMENT_SECRETS albo pusty napis dla sekretu repo.
+secret_environment() {
+  local name="$1" entry
+  for entry in $ENVIRONMENT_SECRETS; do
+    if [[ "${entry%%=*}" = "$name" ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+}
+
 if [[ -t 1 ]]; then
   GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 else
@@ -101,7 +117,7 @@ discover() {
 }
 
 # Zbuduj plan w równoległych indeksowanych tablicach (bash 3.2 nie ma tablic asocjacyjnych).
-PLAN_NOUN=(); PLAN_NAME=(); PLAN_VALUE=(); PLAN_MASK=()
+PLAN_NOUN=(); PLAN_NAME=(); PLAN_VALUE=(); PLAN_MASK=(); PLAN_ENVIRONMENT=()
 N=0
 SKIPPED=""
 
@@ -114,6 +130,8 @@ stage_kind() {
     [[ -z "$name" ]] && continue
     if value="$(get_env_value "$name" "$ENV_FILE")" && [[ -n "$value" ]]; then
       PLAN_NOUN[N]="$noun"; PLAN_NAME[N]="$name"; PLAN_VALUE[N]="$value"; PLAN_MASK[N]="$mask"
+      PLAN_ENVIRONMENT[N]=""
+      [[ "$noun" = "secret" ]] && PLAN_ENVIRONMENT[N]="$(secret_environment "$name")"
       N=$((N + 1))
     else
       SKIPPED="${SKIPPED}  ${YELLOW}skip${RESET} ${name} ${DIM}(absent or empty in $(basename "$ENV_FILE"))${RESET}
@@ -150,7 +168,9 @@ else
     else
       shown="${PLAN_VALUE[i]}"
     fi
-    echo "  ${GREEN}set${RESET} ${PLAN_NOUN[i]} ${BOLD}${PLAN_NAME[i]}${RESET} = ${shown}"
+    target=""
+    [[ -n "${PLAN_ENVIRONMENT[i]}" ]] && target=" ${DIM}(environment ${PLAN_ENVIRONMENT[i]})${RESET}"
+    echo "  ${GREEN}set${RESET} ${PLAN_NOUN[i]} ${BOLD}${PLAN_NAME[i]}${RESET}${target} = ${shown}"
     i=$((i + 1))
   done
 fi
@@ -174,7 +194,9 @@ fi
 FAIL=0
 i=0
 while [[ "$i" -lt "$N" ]]; do
-  if err="$(printf '%s' "${PLAN_VALUE[i]}" | gh "${PLAN_NOUN[i]}" set "${PLAN_NAME[i]}" "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" 2>&1)"; then
+  ENVIRONMENT_FLAG=()
+  [[ -n "${PLAN_ENVIRONMENT[i]}" ]] && ENVIRONMENT_FLAG=(--env "${PLAN_ENVIRONMENT[i]}")
+  if err="$(printf '%s' "${PLAN_VALUE[i]}" | gh "${PLAN_NOUN[i]}" set "${PLAN_NAME[i]}" "${ENVIRONMENT_FLAG[@]+"${ENVIRONMENT_FLAG[@]}"}" "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" 2>&1)"; then
     echo "  ${GREEN}✓${RESET} ${PLAN_NOUN[i]} ${PLAN_NAME[i]}"
   else
     echo "  ${RED}✗ FAILED${RESET} ${PLAN_NOUN[i]} ${PLAN_NAME[i]} ${DIM}— ${err}${RESET}"

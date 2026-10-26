@@ -39,6 +39,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF_DIR="$ROOT/.github/workflows"
 [[ -n "$ENV_FILE" ]] || ENV_FILE="$ROOT/.env"
 
+# BEZ-22: sekrety środowiska GitHub (NAZWA=środowisko), nie repo. Job ze swoim `environment:`
+# widzi też sekrety repo, ale te mają żyć WYŁĄCZNIE w środowisku z wymaganym zatwierdzeniem.
+# Zgodność z workflowami pilnuje tests/test_workflow_policy.py.
+ENVIRONMENT_SECRETS="SUPABASE_DB_URL=production-db"
+
+# Środowisko sekretu z ENVIRONMENT_SECRETS albo pusty napis dla sekretu repo.
+secret_environment() {
+  local name="$1" entry
+  for entry in $ENVIRONMENT_SECRETS; do
+    if [[ "${entry%%=*}" = "$name" ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+}
+
 if [[ -t 1 ]]; then
   GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
 else
@@ -128,6 +144,12 @@ fetch_names() {
   FETCH_OUT="$(printf '%s\n' "$raw" | awk 'NF{print $1}')"
 }
 
+# Nazwy sekretów środowiska; kod != 0, gdy gh nie umie ich wylistować (zwykle środowiska
+# jeszcze nie ma po stronie GitHuba).
+environment_secret_names() {
+  gh secret list --env "$1" "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" 2>/dev/null | awk 'NF{print $1}'
+}
+
 # Pobierz oba store i obie listy wymaganych raz, żeby każda sekcja mogła odróżnić "missing"
 # od "ustawione w złym kubełku" (workflow czyta je jako inny rodzaj → runtime miss).
 fetch_names secret;   HAVE_SECRET="$FETCH_OUT"
@@ -155,7 +177,21 @@ check_kind() {
     while IFS= read -r name; do
       [[ -z "$name" ]] && continue
       total=$((total + 1))
-      if contains_line "$have" "$name"; then
+      environment=""
+      [[ "$noun" = "secret" ]] && environment="$(secret_environment "$name")"
+      if [[ -n "$environment" ]]; then
+        if environment_have="$(environment_secret_names "$environment")" \
+          && contains_line "$environment_have" "$name"; then
+          echo "  ${GREEN}✓${RESET} ${name} ${DIM}(environment ${environment})${RESET}"
+          present=$((present + 1))
+        else
+          echo "  ${RED}✗${RESET} ${name} ${DIM}(missing in environment ${environment} — gh secret set ${name} --env ${environment})${RESET}"
+          missing=$((missing + 1))
+        fi
+        if contains_line "$have" "$name"; then
+          echo "  ${YELLOW}!${RESET} ${name} ${YELLOW}is also a repository secret, readable by every workflow — gh secret delete ${name}${RESET}"
+        fi
+      elif contains_line "$have" "$name"; then
         echo "  ${GREEN}✓${RESET} ${name}"
         present=$((present + 1))
       elif contains_line "$other" "$name"; then

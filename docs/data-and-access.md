@@ -95,7 +95,9 @@ refuses to start with a publishable key or an `anon` / `authenticated` JWT (BEZ-
 entry point stops with a validation error that names the fix and does not print the key.
 
 `SUPABASE_DB_URL`, the Postgres connection string of the `postgres` role, is a separate secret
-used only by the DB Migrate workflow. The app never reads it.
+used only by the DB Migrate workflow. It is a secret of the `production-db` environment, not of
+the repository, so only the `migrate` job can read it, after the owner approves the run (BEZ-22).
+The app never reads it.
 
 ## Retention
 
