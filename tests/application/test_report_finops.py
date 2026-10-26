@@ -12,6 +12,8 @@ from decimal import Decimal
 
 from src.application.report_builder import ReportContext, build_html_report
 from src.application.report_finops import (
+    CycleGateTally,
+    cycle_gate_tally,
     render_finops_html,
     render_finops_text,
 )
@@ -241,3 +243,64 @@ def test_budget_note_keeps_the_cycle_ceiling_without_a_usd_breach() -> None:
     assert "Pominięte — wyczerpany budżet cyklu" in html
     assert "limit płatnych wywołań" in text
     assert "limit USD" not in html
+
+
+# --- FIN-19: symbole zatrzymane bramką obok kwoty ----------------------------------
+
+
+def test_gated_symbols_count_shown_next_to_cost() -> None:
+    cost = estimate_cycle_cost({})
+
+    html = render_finops_html(cost, gated_symbols=40)
+    text = render_finops_text(cost, gated_symbols=40)
+    html_without = render_finops_html(cost, gated_symbols=0)
+
+    for rendered in (html, text):
+        assert "40" in rendered
+        assert "bramką" in rendered
+    assert "bramką" not in html_without
+    assert html_without == render_finops_html(cost)
+
+
+def test_gated_line_names_the_cycle_size_and_the_saved_calls() -> None:
+    cost = estimate_cycle_cost({"llm": 3, "council_llm": 2})
+
+    html = render_finops_html(cost, gated_symbols=40, cycle_symbols=43)
+    text = render_finops_text(cost, gated_symbols=40, cycle_symbols=43)
+
+    for rendered in (html, text):
+        assert "Zatrzymane bramką volatility: 40 z 43 symboli — za nie 0 płatnych wywołań" in (
+            rendered
+        )
+
+
+def test_cycle_gate_tally_counts_only_symbols_below_the_threshold() -> None:
+    results = [
+        SymbolResult(symbol="AAPL", status="saved"),
+        SymbolResult(symbol="MSFT", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+        SymbolResult(symbol="AMD", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+        SymbolResult(symbol="NVDA", status="ignored", skip_reason=SkipReason.BUDGET_EXHAUSTED),
+        SymbolResult(symbol="ETH", status="ignored", skip_reason=SkipReason.COLD_START),
+        SymbolResult(symbol="ASML", status="error"),
+    ]
+
+    assert cycle_gate_tally(results) == CycleGateTally(gated=2, symbols=6)
+
+
+def test_section_counts_the_whole_cycle_not_the_subscriber_watchlist() -> None:
+    """Koszt w sekcji jest kosztem CAŁEGO cyklu, więc licznik bramki też — kontekst
+    niesie liczbę z wszystkich wyników, a filtr subskrybenta jej nie tnie."""
+    results = [
+        SymbolResult(symbol="MSFT", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+        SymbolResult(symbol="AMD", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+    ]
+    context = ReportContext(
+        cycle_cost=estimate_cycle_cost({}),
+        cycle_gate=cycle_gate_tally(results),
+        symbols_filter=frozenset({"MSFT"}),
+    )
+
+    html, text = build_html_report(results, datetime(2026, 10, 20, 5, 30, tzinfo=UTC), 1.0, context)
+
+    assert "Zatrzymane bramką volatility: 2 z 2 symboli" in html
+    assert "Zatrzymane bramką volatility: 2 z 2 symboli" in text

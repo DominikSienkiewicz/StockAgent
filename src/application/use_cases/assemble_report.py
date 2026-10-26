@@ -37,6 +37,7 @@ from src.application.report_evidence import (
     ledger_curve,
     portfolio_curve,
 )
+from src.application.report_finops import cycle_gate_tally
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_model_scorecard import (
     ModelScorecardView,
@@ -775,6 +776,8 @@ class ReportAssembler:
             signal_isotonic_calibration=signal_isotonic_calibration,
             signal_isotonic_class_calibration=signal_isotonic_class_calibration,
             cycle_maturity=maturity,
+            # FIN-19: licznik bramki z wyników CAŁEGO cyklu, jak koszt w sekcji.
+            cycle_gate=cycle_gate_tally(results),
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,

@@ -26,6 +26,7 @@ from src.application.report_charts import (
     build_forecast_chart_html,
 )
 from src.application.report_council_history import InvestorHistory
+from src.application.report_finops import CycleGateTally
 from src.application.report_formatting import (
     DEFAULT_DISPLAY_TIMEZONE,
     format_local,
@@ -495,6 +496,9 @@ class ReportContext:
     # `user_portfolio` jest ignorowane (nigdy VaR na równych wagach).
     position_risk: PositionRisk | None = None
     cycle_cost: CycleCost | None = None
+    # FIN-19: symbole CAŁEGO cyklu zatrzymane bramką volatility (przed filtrem
+    # subskrybenta, jak koszt obok). None = sekcja kosztu bez tej linii.
+    cycle_gate: CycleGateTally | None = None
     # FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls` — cykl bez
     # płatnych wywołań, banner limitów na górze maila. None = limit nie wyczerpany
     # (albo wyłączony, albo odczyt ledgera padł — fail-open), mail jak przed FIN-25.

@@ -16,6 +16,11 @@ FIN-36: zero wywołań ma rozłączne przyczyny i każda ma własny tekst. Wycze
 dzienny albo miesięczny limit USD z ledgera (`BudgetBreach`, FIN-25) to nie bramka
 volatility — sekcja nazywa limit, a cykl nie jest „darmowy” z wyboru.
 
+FIN-19: obok kwoty stoi liczba symboli zatrzymanych bramką volatility („40 z 43
+symboli — za nie 0 płatnych wywołań”) — najmocniejszy dowód tezy FinOps. Liczy ją
+`cycle_gate_tally` ze wszystkich wyników cyklu, bo kwota obok też jest kosztem
+całego cyklu, a nie watchlisty subskrybenta.
+
 Uczciwość jest wymogiem, nie ozdobą: kwoty to SZACUNEK rzędu wielkości (patrz
 `UNIT_COST_USD` w domenie), nie faktura — więc przy każdej kwocie stoi słowo
 "szacunkowy", a na końcu sekcji jawne zastrzeżenie.
@@ -28,11 +33,15 @@ i podaje datę cennika. Cykl bez danych o tokenach renderuje się jak przed FIN-
 from __future__ import annotations
 
 import html as _html
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 
 from src.application.report_formatting import PALETTE, number, plural_pl
+from src.application.report_models import SymbolResult
 from src.application.report_quota_banner import USD_LIMIT_NAME
 from src.application.reporting.section import ReportSection, SectionInput, text_block
+from src.domain.cycle_maturity import SkipReason
 from src.domain.finops import BudgetBreach, CycleCost, SourceCost
 
 _HEADING = "💸 Koszt cyklu"
@@ -77,6 +86,32 @@ _COLOR_MUTED = "#6b7280"
 _COLOR_TEXT = "#374151"
 _COLOR_FREE = PALETTE.positive
 _COLOR_STOPPED = PALETTE.caution
+
+
+@dataclass(frozen=True)
+class CycleGateTally:
+    """FIN-19: ile symboli cyklu zatrzymała bramka volatility (`gated`) z ilu (`symbols`)."""
+
+    gated: int
+    symbols: int
+
+
+def cycle_gate_tally(results: Sequence[SymbolResult]) -> CycleGateTally:
+    """Symbole z `SkipReason.BELOW_THRESHOLD` na tle wszystkich wyników cyklu."""
+    gated = sum(1 for r in results if r.skip_reason is SkipReason.BELOW_THRESHOLD)
+    return CycleGateTally(gated=gated, symbols=len(results))
+
+
+def _gated_line(gated: int, symbols: int | None) -> str:
+    """FIN-19: „Zatrzymane bramką volatility: 40 z 43 symboli — za nie 0 płatnych
+    wywołań.”; "" gdy bramka nie zatrzymała żadnego symbolu."""
+    if gated <= 0:
+        return ""
+    if symbols is None:
+        count = f"{gated} {plural_pl(gated, 'symbol', 'symbole', 'symboli')}"
+    else:
+        count = f"{gated} z {symbols} {plural_pl(symbols, 'symbolu', 'symboli', 'symboli')}"
+    return f"Zatrzymane bramką volatility: {count} — za nie 0 płatnych wywołań."
 
 
 def _source_label(source: str) -> str:
@@ -163,11 +198,19 @@ def _token_rows_html(cost: CycleCost) -> list[str]:
     return rows
 
 
-def render_finops_html(cost: CycleCost | None, *, budget_breach: BudgetBreach | None = None) -> str:
+def render_finops_html(
+    cost: CycleCost | None,
+    *,
+    budget_breach: BudgetBreach | None = None,
+    gated_symbols: int = 0,
+    cycle_symbols: int | None = None,
+) -> str:
     """Renderuje sekcję HTML kosztu cyklu lub "" gdy brak licznika (None).
 
     Cykl darmowy (0 wywołań) renderuje się JAWNIE — nie chowamy go. Z
     `budget_breach` (FIN-36) zero wywołań przypisuje limitowi USD, nie bramce.
+    `gated_symbols` > 0 (FIN-19) dokłada linię symboli zatrzymanych bramką
+    volatility, z `cycle_symbols` jako „z N symboli”.
     """
     if cost is None:
         return ""
@@ -203,6 +246,13 @@ def render_finops_html(cost: CycleCost | None, *, budget_breach: BudgetBreach | 
                 f"</div>"
             )
 
+    gated_line = _gated_line(gated_symbols, cycle_symbols)
+    if gated_line:
+        rows.append(
+            f"<div style='font-size: 12px; color: {_COLOR_TEXT}; "
+            f"margin-top: 4px;'>🛡️ {_html.escape(gated_line)}</div>"
+        )
+
     if cost.unknown_sources:
         joined = ", ".join(_html.escape(src) for src in cost.unknown_sources)
         rows.append(
@@ -226,7 +276,13 @@ def render_finops_html(cost: CycleCost | None, *, budget_breach: BudgetBreach | 
     )
 
 
-def render_finops_text(cost: CycleCost | None, *, budget_breach: BudgetBreach | None = None) -> str:
+def render_finops_text(
+    cost: CycleCost | None,
+    *,
+    budget_breach: BudgetBreach | None = None,
+    gated_symbols: int = 0,
+    cycle_symbols: int | None = None,
+) -> str:
     """Renderuje sekcję plain-text kosztu cyklu lub "" gdy brak licznika (None)."""
     if cost is None:
         return ""
@@ -254,6 +310,10 @@ def render_finops_text(cost: CycleCost | None, *, budget_breach: BudgetBreach | 
                 f"~{_fmt_usd(line.unit_cost_usd)} = ~{_fmt_usd(line.subtotal_usd)}"
             )
 
+    gated_line = _gated_line(gated_symbols, cycle_symbols)
+    if gated_line:
+        lines.append(f"  {gated_line}")
+
     if cost.unknown_sources:
         joined = ", ".join(cost.unknown_sources)
         lines.append(f"  Źródła spoza cennika (koszt nieoszacowany): {joined}")
@@ -263,13 +323,31 @@ def render_finops_text(cost: CycleCost | None, *, budget_breach: BudgetBreach | 
     return "\n".join(lines)
 
 
+def _gate_counts(data: SectionInput) -> tuple[int, int | None]:
+    """(zatrzymane bramką, symbole cyklu) z kontekstu; bez licznika — bez linii."""
+    gate = data.context.cycle_gate
+    return (0, None) if gate is None else (gate.gated, gate.symbols)
+
+
 def _section_html(data: SectionInput) -> str:
-    return render_finops_html(data.context.cycle_cost, budget_breach=data.context.llm_budget_breach)
+    gated, symbols = _gate_counts(data)
+    return render_finops_html(
+        data.context.cycle_cost,
+        budget_breach=data.context.llm_budget_breach,
+        gated_symbols=gated,
+        cycle_symbols=symbols,
+    )
 
 
 def _section_text(data: SectionInput) -> list[str]:
+    gated, symbols = _gate_counts(data)
     return text_block(
-        render_finops_text(data.context.cycle_cost, budget_breach=data.context.llm_budget_breach)
+        render_finops_text(
+            data.context.cycle_cost,
+            budget_breach=data.context.llm_budget_breach,
+            gated_symbols=gated,
+            cycle_symbols=symbols,
+        )
     )
 
 
@@ -279,5 +357,5 @@ FINOPS_SECTION = ReportSection(
     key="finops",
     render_html=_section_html,
     render_text=_section_text,
-    context_fields=frozenset({"cycle_cost"}),
+    context_fields=frozenset({"cycle_cost", "cycle_gate"}),
 )

@@ -18,6 +18,7 @@ from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisher
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_evidence import PaperCosts
+from src.application.report_finops import CycleGateTally
 from src.application.report_models import ResolvedPrediction
 from src.application.report_track_record import TrackRecordStats
 from src.application.use_cases.assemble_report import (
@@ -31,7 +32,7 @@ from src.application.use_cases.publish_public_scorecard import (
     PublishPublicScorecardUseCase,
 )
 from src.domain.council_redundancy import CouncilVoteSample
-from src.domain.cycle_maturity import CycleMaturity
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.paper_ledger import LedgerTrade
 from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
@@ -714,3 +715,30 @@ def test_open_entry_curve_off_without_its_flag() -> None:
     flags = ReportFlags(track_record_days=30, reflection_min_age_hours=6)
 
     assert _assemble(repo, flags).open_entry_curve is None
+
+
+def test_gate_tally_of_the_whole_cycle_reaches_the_context() -> None:
+    """FIN-19: licznik symboli zatrzymanych bramką liczy assembler ze wszystkich
+    wyników cyklu, jak koszt — przed filtrem watchlisty subskrybenta."""
+    results = [
+        SymbolResult(symbol="AAPL", status="saved"),
+        SymbolResult(symbol="MSFT", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+    ]
+
+    context = (
+        ReportAssembler(
+            _repo(),
+            ReportFlags(track_record_days=30, reflection_min_age_hours=12),
+            PaperCosts(cost_bps=10.0),
+        )
+        .assemble(
+            results=results,
+            started_at=STARTED_AT,
+            quota_monitor=QuotaMonitor(),
+            all_symbols=["AAPL", "MSFT"],
+            context=ReportContext(),
+        )
+        .context
+    )
+
+    assert context.cycle_gate == CycleGateTally(gated=1, symbols=2)
