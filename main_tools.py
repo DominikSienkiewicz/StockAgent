@@ -23,6 +23,7 @@ Użycie:
     uv run python main_tools.py persona-ablation [--days N] [--window-days N]
     uv run python main_tools.py council-ablation [--days N]
     uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
+        [--rekor-repository OWNER/REPO] [--rekor-workflow PATH]
     uv run python main_tools.py reproduce-training [--sidecar PATH]
 """
 
@@ -91,6 +92,11 @@ from src.tools.verify_attestation import (
     format_report,
     parse_jsonl,
     verify_ledger,
+)
+from src.tools.verify_rekor import (
+    DEFAULT_REKOR_REPOSITORY,
+    DEFAULT_REKOR_WORKFLOW,
+    WorkflowIdentity,
 )
 
 if TYPE_CHECKING:
@@ -356,8 +362,7 @@ def _run_import_positions(args: argparse.Namespace) -> int:
     print(format_plan(plan, file_lots=len(incoming)))
     if not args.apply:
         print(
-            "To był dry-run — nic nie zapisano. "
-            "--apply zastąpi tabelę positions (as_of = teraz)."
+            "To był dry-run — nic nie zapisano. --apply zastąpi tabelę positions (as_of = teraz)."
         )
         return 0
     if not settings.db_writes_enabled:
@@ -417,6 +422,8 @@ def _run_cost_envelope(args: argparse.Namespace) -> int:
         personas=min(len(personas), COUNCIL_MAX_PERSONAS),
         debate=settings.debate_mode_enabled,
         tool_rounds=settings.tool_use_max_rounds if settings.tool_use_enabled else 0,
+        max_escalations=settings.frontier_escalations_per_cycle(),
+        max_shadow_calls=settings.shadow_calls_per_cycle(),
     )
     print(render_cost_envelope(cost_envelope(inputs)))
     # WIA-11: tydzień przy suficie FIN-12 — ta sama reguła co kontrola startu Fast Loopa.
@@ -882,7 +889,10 @@ def _run_explain(args: argparse.Namespace) -> int:
         parser: argparse.ArgumentParser = args.explain_parser
         parser.error("podaj <prediction_id> albo --symbol X razem z --date RRRR-MM-DD")
     settings = _load_settings()
-    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    # ML-40: głosy rady w kwicie z rundy 1, gdy baza ma rundy (migracja 082).
+    repo = SupabaseRepository(
+        url=settings.supabase_url, key=settings.supabase_key, council_vote_rounds_from_schema=True
+    )
     if by_id:
         print(explain_prediction(repo, args.prediction_id))
     else:
@@ -991,8 +1001,10 @@ def _add_verify_attestation(
         help="Check the published commit-reveal ledger offline (no keys, no database, no network).",
         description=(
             "WIA-26: for every reveal in reveals.jsonl recomputes SHA-256(payload + salt) and "
-            "compares it with the commitment published in commitments.jsonl. Prints OK and "
-            "exits 0, or FAIL and exits 1; exits 2 when a file cannot be read."
+            "compares it with the commitment published in commitments.jsonl; WIA-73: checks the "
+            "Rekor entry of every cycle root that carries one (root binding, inclusion proof, "
+            "log time, workflow identity). Prints OK and exits 0, or FAIL and exits 1; exits 2 "
+            "when a file cannot be read."
         ),
     )
     parser.add_argument(
@@ -1006,6 +1018,22 @@ def _add_verify_attestation(
         type=Path,
         default=Path(DEFAULT_REVEALS_PATH),
         help=f"Reveals ledger (default: {DEFAULT_REVEALS_PATH}).",
+    )
+    parser.add_argument(
+        "--rekor-repository",
+        default=DEFAULT_REKOR_REPOSITORY,
+        help=(
+            "WIA-73: repository (owner/name) whose workflow must have signed the Rekor entry "
+            f"of a cycle root (default: {DEFAULT_REKOR_REPOSITORY})."
+        ),
+    )
+    parser.add_argument(
+        "--rekor-workflow",
+        default=DEFAULT_REKOR_WORKFLOW,
+        help=(
+            "WIA-73: path of that workflow file in the repository "
+            f"(default: {DEFAULT_REKOR_WORKFLOW})."
+        ),
     )
     parser.set_defaults(handler=_run_verify_attestation)
 
@@ -1024,7 +1052,14 @@ def _run_verify_attestation(args: argparse.Namespace) -> int:
             return 2
     commitments, bad_commitments = parse_jsonl(texts["commitments"], Path(args.commitments).name)
     reveals, bad_reveals = parse_jsonl(texts["reveals"], Path(args.reveals).name)
-    report = verify_ledger(commitments, reveals, malformed=[*bad_commitments, *bad_reveals])
+    report = verify_ledger(
+        commitments,
+        reveals,
+        malformed=[*bad_commitments, *bad_reveals],
+        rekor_identity=WorkflowIdentity(
+            repository=args.rekor_repository, workflow=args.rekor_workflow
+        ),
+    )
     print(format_report(report))
     return 0 if report.ok else 1
 

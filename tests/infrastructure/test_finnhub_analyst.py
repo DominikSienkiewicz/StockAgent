@@ -165,15 +165,11 @@ class TestGetConsensus:
     def test_non_200_on_recommendation_returns_none(
         self, adapter: FinnhubAnalystAdapter, mocker: Any
     ) -> None:
-        mocker.patch(
-            "requests.Session.get", side_effect=[_status_response(403)]
-        )
+        mocker.patch("requests.Session.get", side_effect=[_status_response(403)])
 
         assert adapter.get_consensus("AAPL") is None
 
-    def test_network_error_returns_none(
-        self, adapter: FinnhubAnalystAdapter, mocker: Any
-    ) -> None:
+    def test_network_error_returns_none(self, adapter: FinnhubAnalystAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=requests.ConnectionError("boom"),
@@ -385,9 +381,7 @@ class TestRevision:
             self._period("2026-10-01", strongBuy=3, buy=12, hold=5),
             self._period("2026-09-01", buy=10, hold=10),
         ]
-        mocker.patch(
-            "requests.Session.get", side_effect=[_ok_response(payload), _ok_response({})]
-        )
+        mocker.patch("requests.Session.get", side_effect=[_ok_response(payload), _ok_response({})])
 
         consensus = adapter.get_consensus("AAPL")
 

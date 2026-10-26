@@ -30,9 +30,7 @@ class OptionsFlowSnapshot:
     put_call_ratio: float | None
     implied_vol: float | None = None
 
-    def sentiment(
-        self, bullish_below: float = 0.7, bearish_above: float = 1.0
-    ) -> OptionsSentiment:
+    def sentiment(self, bullish_below: float = 0.7, bearish_above: float = 1.0) -> OptionsSentiment:
         """Klasyfikuje nastawienie. Niski P/C (< `bullish_below`) → BULLISH;
         wysoki (> `bearish_above`) → BEARISH; pośrodku / brak danych → NEUTRAL."""
         if self.put_call_ratio is None:

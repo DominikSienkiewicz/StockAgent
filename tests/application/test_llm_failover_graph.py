@@ -79,18 +79,20 @@ def _record(analysis: dict[str, Any], *, recipe: PredictionRecipe | None) -> dic
     ml.is_trained = True
     llm = Mock(spec=LLMPort)
     llm.analyze.return_value = analysis
-    create_agent_graph(AgentGraphDeps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repository,
-        ml_port=ml,
-        llm_port=llm,
-        threshold=Threshold(Decimal("0.02")),
-        receipts_enabled=True,
-        recipe=recipe,
-        recipe_version_enabled=True,
-    )).compile().invoke({"symbol": "AAPL", "previous_price": Decimal("100.0")})
+    create_agent_graph(
+        AgentGraphDeps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repository,
+            ml_port=ml,
+            llm_port=llm,
+            threshold=Threshold(Decimal("0.02")),
+            receipts_enabled=True,
+            recipe=recipe,
+            recipe_version_enabled=True,
+        )
+    ).compile().invoke({"symbol": "AAPL", "previous_price": Decimal("100.0")})
     record: dict[str, Any] = repository.save_prediction.call_args.args[0]
     return record
 

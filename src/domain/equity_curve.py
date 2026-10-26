@@ -245,9 +245,7 @@ def paper_portfolio_curve(
         for trade in cycle:
             signal = signal_of(trade.predicted_trend)
             prev_signal = positions.get(trade.symbol, 0)
-            returns.append(
-                net_return(signal, prev_signal, signal * trade.change, trade.cost_bps)
-            )
+            returns.append(net_return(signal, prev_signal, signal * trade.change, trade.cost_bps))
             positions[trade.symbol] = signal
         period_returns.append(sum(returns) / len(returns))
     trades = [(trade.predicted_trend, trade.change) for cycle in non_empty for trade in cycle]
@@ -290,9 +288,7 @@ def _compound(
         # ruina (kapitał 0), a nie ujemny kapitał i obsunięcie ponad 100%.
         period_return = max(raw_return, _TOTAL_LOSS)
         equity = equity * (1.0 + period_return)
-        points.append(
-            EquityPoint(index=index, period_return=period_return, equity=equity)
-        )
+        points.append(EquityPoint(index=index, period_return=period_return, equity=equity))
 
         # Obsunięcie liczone na bieżącym szczycie kapitału (peak-to-trough).
         if equity > peak:

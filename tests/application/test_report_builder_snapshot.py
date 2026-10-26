@@ -60,7 +60,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.drawdown import DrawdownSignal
 from src.domain.equity_curve import DirectionalHitRate, EquityCurve, EquityPoint
 from src.domain.feature_attribution import FeatureContribution
-from src.domain.finops import estimate_cycle_cost
+from src.domain.finops import BudgetBreach, BudgetWindow, estimate_cycle_cost
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel, MacroRiskInstrumentType, MacroRiskSignal
@@ -345,8 +345,9 @@ def _macro_risk_report() -> MacroRiskReport:
         ),
         overall_alert=MacroAlertLevel.ELEVATED,
         drawdowns=[
-            DrawdownSignal(symbol="AMD", current_price=Decimal("160.00"),
-                           peak_price=Decimal("186.00")),
+            DrawdownSignal(
+                symbol="AMD", current_price=Decimal("160.00"), peak_price=Decimal("186.00")
+            ),
         ],
     )
 
@@ -505,10 +506,12 @@ def _full_context() -> ReportContext:
         macro_risk_report=_macro_risk_report(),
         portfolio_risk_report=_portfolio_risk_report(),
         council_history=[
-            InvestorHistory(investor_name="Buffett", symbol="NVDA",
-                            recommendations=("BUY", "BUY", "HOLD")),
-            InvestorHistory(investor_name="Soros", symbol="NVDA",
-                            recommendations=("HOLD", "SELL", "SELL")),
+            InvestorHistory(
+                investor_name="Buffett", symbol="NVDA", recommendations=("BUY", "BUY", "HOLD")
+            ),
+            InvestorHistory(
+                investor_name="Soros", symbol="NVDA", recommendations=("HOLD", "SELL", "SELL")
+            ),
         ],
         persona_track_record=[
             PersonaTrackRecord(investor_name="Buffett", hit_rate=0.68, votes=25),
@@ -525,10 +528,8 @@ def _full_context() -> ReportContext:
         ],
         equity_curve=_equity_curve(),
         calibration_buckets=[
-            CalibrationBucket(lower=0.6, upper=0.7, count=14, mean_confidence=0.65,
-                              hit_rate=0.57),
-            CalibrationBucket(lower=0.8, upper=0.9, count=9, mean_confidence=0.84,
-                              hit_rate=0.67),
+            CalibrationBucket(lower=0.6, upper=0.7, count=14, mean_confidence=0.65, hit_rate=0.57),
+            CalibrationBucket(lower=0.8, upper=0.9, count=9, mean_confidence=0.84, hit_rate=0.67),
         ],
         lessons=LessonsReport(
             items=(
@@ -545,10 +546,12 @@ def _full_context() -> ReportContext:
         alpha_signals={
             "NVDA": AlphaSignals(
                 symbol="NVDA",
-                insider=InsiderFlowSnapshot(symbol="NVDA", net_shares=-12000.0,
-                                            buy_count=1, sell_count=4, window_days=90),
-                analyst=AnalystConsensus(symbol="NVDA", strong_buy=18, buy=22, hold=6,
-                                         sell=1, price_target=165.0),
+                insider=InsiderFlowSnapshot(
+                    symbol="NVDA", net_shares=-12000.0, buy_count=1, sell_count=4, window_days=90
+                ),
+                analyst=AnalystConsensus(
+                    symbol="NVDA", strong_buy=18, buy=22, hold=6, sell=1, price_target=165.0
+                ),
             ),
         },
         yield_curve=YieldCurveSnapshot(ten_year=4.12, two_year=3.94, fed_funds=4.33),
@@ -685,11 +688,20 @@ def _degraded_sources_cycle() -> tuple[str, str]:
         _model_scorecard(),
         snapshot_models=snapshot_model_cards(
             [
-                {"symbol": "ALL_FREE", "status": "trained_successfully",
-                 "timestamp": "2026-10-11T03:36:00+00:00", "candidate_holdout_rmse": 0.021,
-                 "baseline_rmse": 0.024, "n_samples": 812},
-                {"symbol": "ALL_LLM", "status": "skipped",
-                 "timestamp": "2026-10-11T03:37:00+00:00", "n_samples": 37},
+                {
+                    "symbol": "ALL_FREE",
+                    "status": "trained_successfully",
+                    "timestamp": "2026-10-11T03:36:00+00:00",
+                    "candidate_holdout_rmse": 0.021,
+                    "baseline_rmse": 0.024,
+                    "n_samples": 812,
+                },
+                {
+                    "symbol": "ALL_LLM",
+                    "status": "skipped",
+                    "timestamp": "2026-10-11T03:37:00+00:00",
+                    "n_samples": 37,
+                },
             ]
         ),
     )
@@ -727,11 +739,76 @@ def _degraded_sources_cycle() -> tuple[str, str]:
     return build_html_report(results, STARTED, DURATION_SECONDS, context)
 
 
+def _llm_budget_spent_cycle() -> tuple[str, str]:
+    """FIN-25: dzienny limit USD z ledgera wyczerpany przed cyklem — banner limitu
+    na górze, ruch ponad progiem w „wyczerpany budżet” (bez analizy), cykl darmowy."""
+    results = [
+        _mapped(
+            "NVDA",
+            {**_ignored_raw("NVDA", AssetType.STOCK, "140.00", "-0.035"), "budget_exhausted": True},
+        ),
+        _mapped("AMD", _ignored_raw("AMD", AssetType.STOCK, "160.00", "0.004")),
+        _mapped("ETH", _ignored_raw("ETH", AssetType.CRYPTO, "3200", "-0.011")),
+    ]
+    context = ReportContext(
+        cycle_maturity=CycleMaturity.STEADY_STATE,
+        cycle_cost=estimate_cycle_cost({}),
+        display_timezone=DISPLAY_TIMEZONE,
+        run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
+        llm_budget_breach=BudgetBreach(BudgetWindow.DAY, spent_usd=2.134, cap_usd=2.0),
+    )
+    return build_html_report(results, STARTED, DURATION_SECONDS, context)
+
+
+def _quiet_day_compact_cycle() -> tuple[str, str]:
+    """MAIL-35: cichy dzień z polityką `compact_when_quiet` — nagłówek, sesja, blok
+    trzech linijek (największy ruch z progiem, nic za bramką, portfel właściciela)
+    i pełna stopka ze źródłami i warunkami dostawców."""
+    results = [
+        _mapped(
+            "NVDA",
+            {
+                **_ignored_raw("NVDA", AssetType.STOCK, "140.00", "0.004"),
+                "effective_threshold": Decimal("0.02"),
+            },
+        ),
+        _mapped(
+            "AMD",
+            {
+                **_ignored_raw("AMD", AssetType.STOCK, "160.00", "-0.012"),
+                "effective_threshold": Decimal("0.02"),
+            },
+        ),
+        _mapped(
+            "ETH",
+            {
+                **_ignored_raw("ETH", AssetType.CRYPTO, "3200", "-0.011"),
+                "effective_threshold": Decimal("0.05"),
+            },
+        ),
+    ]
+    context = ReportContext(
+        cycle_maturity=CycleMaturity.STEADY_STATE,
+        cycle_cost=estimate_cycle_cost({}),
+        display_timezone=DISPLAY_TIMEZONE,
+        run_context=RUN,
+        sector_map=SECTOR_MAP,
+        sector_peers=SECTOR_PEERS,
+        user_portfolio=_user_portfolio(),
+        resolved_predictions=[],
+    )
+    return build_html_report(results, STARTED, DURATION_SECONDS, context, compact=True)
+
+
 SCENARIOS: dict[str, Callable[[], tuple[str, str]]] = {
     "full_cycle": _full_cycle,
     "all_ignored": _all_ignored_cycle,
     "first_run": _first_run_cycle,
     "degraded_sources": _degraded_sources_cycle,
+    "llm_budget_spent": _llm_budget_spent_cycle,
+    "quiet_day_compact": _quiet_day_compact_cycle,
 }
 
 

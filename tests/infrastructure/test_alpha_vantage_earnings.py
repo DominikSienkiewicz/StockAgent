@@ -33,7 +33,7 @@ CSV_EMPTY = "symbol,name,reportDate,fiscalDateEnding,estimate,currency\n"
 # AV przy rate-limit / błędzie zwraca JSON zamiast CSV.
 RATE_LIMIT_NOTE = (
     '{"Information": "Thank you for using Alpha Vantage! Our standard '
-    "API rate limit is 25 requests per day.\"}"
+    'API rate limit is 25 requests per day."}'
 )
 
 
@@ -254,7 +254,6 @@ class TestKeyRotation:
         assert mock_get.call_count == 1
 
 
-
 class TestOneRequestPerProcess:
     """FIN-09: kalendarz bez parametru `symbol` zwraca całą listę spółek, więc jedno
     zapytanie na proces (leniwie, pod lockiem) obsługuje każdy symbol z pamięci."""
@@ -285,6 +284,7 @@ class TestOneRequestPerProcess:
         from concurrent.futures import ThreadPoolExecutor
 
         adapter = AlphaVantageEarningsAdapter(api_key="KEY", today=date(2026, 6, 21))
+
         def slow_get(*_args: object, **_kwargs: object) -> MagicMock:
             time.sleep(0.05)
             return _mock_response(self.CSV_TWO_COMPANIES)

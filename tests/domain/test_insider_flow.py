@@ -72,7 +72,6 @@ class TestEvaluateSignal:
         assert snap.evaluate_signal(min_net_shares=100.0) is InsiderSignal.NEUTRAL
 
 
-
 class TestHasEvidence:
     """DAT-03: snapshot mówi, czy EDGAR dał dowód o insiderach. Niesparsowane Form 4
     są nieodróżnialne od braku transakcji, jeśli liczniki filingów tego nie powiedzą."""

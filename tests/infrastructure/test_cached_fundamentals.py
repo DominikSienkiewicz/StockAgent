@@ -13,7 +13,9 @@ from src.infrastructure.adapters.cached_fundamentals import (
 
 def _sample_fundamentals() -> Fundamentals:
     return Fundamentals(
-        trailing_pe=25.0, forward_pe=20.0, peg_ratio=1.2,
+        trailing_pe=25.0,
+        forward_pe=20.0,
+        peg_ratio=1.2,
         eps_growth_yoy=0.15,
         fetched_at=datetime(2026, 5, 17, tzinfo=UTC),
     )
@@ -77,9 +79,7 @@ class TestSingleFlight:
         # symuluje read-through repo widziane przez drugiego wołającego.
         cache_state: dict[str, Fundamentals] = {}
         repo.get_cached_fundamentals.side_effect = lambda sym: cache_state.get(sym)
-        repo.save_fundamentals.side_effect = (
-            lambda sym, val: cache_state.__setitem__(sym, val)
-        )
+        repo.save_fundamentals.side_effect = lambda sym, val: cache_state.__setitem__(sym, val)
 
         # Wolny delegat → okno na wyścig: drugi wątek wchodzi w czasie
         # gdy pierwszy jeszcze „płaci” za request.
@@ -118,13 +118,13 @@ class TestSingleFlight:
 
         def fetch(sym: str) -> Fundamentals:
             if sym == "AAPL":
-                in_flight.set()          # AAPL trzyma swój lock
+                in_flight.set()  # AAPL trzyma swój lock
                 proceed.wait(timeout=1)  # i czeka
             else:
                 # MSFT wejdzie tylko jeśli NIE jest serializowany za AAPL.
                 if in_flight.wait(timeout=1):
                     seen_overlap.set()
-                proceed.set()            # zwalnia AAPL
+                proceed.set()  # zwalnia AAPL
             return fresh
 
         delegate.get_fundamentals.side_effect = fetch

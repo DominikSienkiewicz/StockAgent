@@ -26,17 +26,26 @@ from src.infrastructure.adapters.advisory_council import (
 )
 
 ALL_INVESTORS = [
-    "Warren Buffett", "Benjamin Graham", "George Soros", "Peter Lynch",
-    "Ray Dalio", "Charlie Munger", "Philip Fisher", "Paul Tudor Jones",
-    "Bill Gross", "Jesse Livermore",
-    "Cathie Wood", "Michael Burry", "Howard Marks",
-    "Stanley Druckenmiller", "Joel Greenblatt",
+    "Warren Buffett",
+    "Benjamin Graham",
+    "George Soros",
+    "Peter Lynch",
+    "Ray Dalio",
+    "Charlie Munger",
+    "Philip Fisher",
+    "Paul Tudor Jones",
+    "Bill Gross",
+    "Jesse Livermore",
+    "Cathie Wood",
+    "Michael Burry",
+    "Howard Marks",
+    "Stanley Druckenmiller",
+    "Joel Greenblatt",
 ]
 COUNCIL_SIZE = len(ALL_INVESTORS)
 
 _TEST_PERSONAS = tuple(
-    InvestorPersona(name=name, style=f"Test style for {name}. " * 3)
-    for name in ALL_INVESTORS
+    InvestorPersona(name=name, style=f"Test style for {name}. " * 3) for name in ALL_INVESTORS
 )
 
 
@@ -97,10 +106,12 @@ class TestLLMAdvisoryCouncilIsPort:
 class TestAnalyzeCallCount:
     def _side_effect_factory(self, llm_port: Mock) -> None:
         call_count = 0
+
         def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             return _opinion_json() if call_count <= COUNCIL_SIZE else _verdict_json()
+
         llm_port.analyze.side_effect = side_effect
 
     def test_calls_llm_once_per_investor_plus_chairman(
@@ -137,12 +148,14 @@ class TestFallbacks:
         self, council: LLMAdvisoryCouncil, llm_port: Mock
     ) -> None:
         call_count = 0
+
         def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= COUNCIL_SIZE:
                 return {"confidence": 0.5, "reasoning": "ok", "key_factors": []}
             return _verdict_json()
+
         llm_port.analyze.side_effect = side_effect
         result = council.analyze("AAPL", _make_input())
         for op in result.investor_opinions:
@@ -152,12 +165,14 @@ class TestFallbacks:
         self, council: LLMAdvisoryCouncil, llm_port: Mock
     ) -> None:
         call_count = 0
+
         def side_effect(prompt: str) -> dict[str, Any]:
             nonlocal call_count
             call_count += 1
             if call_count <= COUNCIL_SIZE:
                 return _opinion_json()
             return {"consensus_strength": 0.5, "summary": "ok", "dissenting_views": []}
+
         llm_port.analyze.side_effect = side_effect
         result = council.analyze("AAPL", _make_input())
         # Wszystkie opinie to BUY (domyślny mock) → werdykt z głosów to BUY,
@@ -193,9 +208,7 @@ class TestConsensusDerivedFromVotes:
             InvestorPersona(name=n, style=f"Styl testowy dla {n}. " * 3)
             for n in ("Inv A", "Inv B", "Inv C", "Inv D")
         )
-        return LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, max_personas=10
-        )
+        return LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, max_personas=10)
 
     def test_unanimous_buy_survives_chairman_failure(self, llm_port: Mock) -> None:
         # 4 inwestorów głosuje BUY; wywołanie chairmana RZUCA wyjątek.
@@ -292,7 +305,6 @@ class TestConfidenceClamp:
         assert 0.0 <= opinion.confidence <= 1.0
 
 
-
 class TestRecommendationParsing:
     """ARCH-03: rekomendacja persony przez domenowe `parse_recommendation`."""
 
@@ -307,6 +319,7 @@ class TestRecommendationParsing:
 
         assert opinion.recommendation == "HOLD"
         assert "STRONG_BUY" in caplog.text
+
 
 class TestPersonaCap:
     """Finding #11: liczba wywołań LLM ograniczona górnym capem person."""
@@ -346,9 +359,7 @@ class TestPersonaCap:
             result = council.analyze("AAPL", _make_input())
 
         assert len(result.investor_opinions) == COUNCIL_MAX_PERSONAS
-        assert "persona" not in " ".join(
-            r.getMessage().lower() for r in caplog.records
-        )
+        assert "persona" not in " ".join(r.getMessage().lower() for r in caplog.records)
 
     def test_below_cap_unchanged(self, llm_port: Mock) -> None:
         personas = self._personas(5)
@@ -358,9 +369,7 @@ class TestPersonaCap:
 
     def test_custom_cap_param(self, llm_port: Mock) -> None:
         personas = self._personas(8)
-        council = LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, max_personas=3
-        )
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, max_personas=3)
         result = council.analyze("AAPL", _make_input())
         assert len(result.investor_opinions) == 3
 
@@ -375,9 +384,7 @@ class TestPersonaCap:
 
 
 def _personas(names: tuple[str, ...]) -> tuple[InvestorPersona, ...]:
-    return tuple(
-        InvestorPersona(name=n, style=f"Styl testowy dla {n}. " * 3) for n in names
-    )
+    return tuple(InvestorPersona(name=n, style=f"Styl testowy dla {n}. " * 3) for n in names)
 
 
 class TestAdaptivePersonaWeighting:
@@ -511,9 +518,7 @@ class TestDebateMode:
         n = 3
         self._split_side_effect(llm_port, n)
         personas = _personas(("A", "B", "C"))
-        council = LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, debate_mode=True
-        )
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, debate_mode=True)
         council.analyze("AAPL", _make_input())
         # N round-1 + N rewizji + 1 chairman = 2N+1.
         assert llm_port.analyze.call_count == 2 * n + 1
@@ -522,14 +527,53 @@ class TestDebateMode:
         n = 3
         self._split_side_effect(llm_port, n)
         personas = _personas(("A", "B", "C"))
-        council = LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, debate_mode=True
-        )
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, debate_mode=True)
         result = council.analyze("AAPL", _make_input())
         # Po rewizji wszyscy głosują BUY → werdykt BUY (round-1 był split).
         assert result.final_recommendation == "BUY"
         # Werdykt zawiera zrewidowane opinie (wszystkie BUY), nie round-1.
         assert all(op.recommendation == "BUY" for op in result.investor_opinions)
+
+    def test_split_round_records_first_round_and_revision_votes(self, llm_port: Mock) -> None:
+        # ML-40: do `council_votes` idą głosy obu rund — runda 1 (BUY, SELL, HOLD)
+        # i runda rewizji (wszyscy BUY) — żeby dało się ocenić, czy rewizja poprawia
+        # trafność person, czy tylko spłaszcza dysydentów.
+        from src.domain.council import FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND
+
+        self._split_side_effect(llm_port, 3)
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=_personas(("A", "B", "C")), debate_mode=True
+        )
+
+        result = council.analyze("AAPL", _make_input())
+
+        rounds = {number: votes for number, votes in result.votes_by_round()}
+        assert sorted(rounds) == [FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND]
+        assert sorted(op.recommendation for op in rounds[FIRST_COUNCIL_ROUND]) == [
+            "BUY",
+            "HOLD",
+            "SELL",
+        ]
+        assert [op.recommendation for op in rounds[REVISION_COUNCIL_ROUND]] == ["BUY"] * 3
+        assert {op.investor_name for op in rounds[REVISION_COUNCIL_ROUND]} == {"A", "B", "C"}
+
+    def test_unanimous_round_records_only_the_first_round(self, llm_port: Mock) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND
+
+        def side_effect(prompt: str) -> dict[str, Any]:
+            if "final_recommendation" in prompt:
+                return _verdict_json()
+            return _opinion_json("BUY")
+
+        llm_port.analyze.side_effect = side_effect
+        council = LLMAdvisoryCouncil(
+            llm_port=llm_port, personas=_personas(("A", "B", "C")), debate_mode=True
+        )
+
+        result = council.analyze("AAPL", _make_input())
+
+        assert [number for number, _votes in result.votes_by_round()] == [FIRST_COUNCIL_ROUND]
+        assert result.first_round_opinions == ()
 
     def test_consensus_round1_no_revision(self, llm_port: Mock) -> None:
         # Round-1 jednomyślne BUY (brak SELL) → brak rewizji: N + 1.
@@ -542,9 +586,7 @@ class TestDebateMode:
 
         llm_port.analyze.side_effect = side_effect
         personas = _personas(("A", "B", "C"))
-        council = LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, debate_mode=True
-        )
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, debate_mode=True)
         council.analyze("AAPL", _make_input())
         assert llm_port.analyze.call_count == n + 1
 
@@ -568,9 +610,7 @@ class TestDebateMode:
 
         llm_port.analyze.side_effect = side_effect
         personas = _personas(("A", "B", "C"))
-        council = LLMAdvisoryCouncil(
-            llm_port=llm_port, personas=personas, debate_mode=False
-        )
+        council = LLMAdvisoryCouncil(llm_port=llm_port, personas=personas, debate_mode=False)
         council.analyze("AAPL", _make_input())
         # N round-1 + 1 chairman, zero rewizji.
         assert llm_port.analyze.call_count == n + 1
@@ -790,7 +830,6 @@ def test_persona_threads_inherit_the_usage_scope_of_the_caller() -> None:
     assert attributions == {("council_llm", "council", "AAPL")}
 
 
-
 class TestChairmanReasoningFence:
     """BEZ-14: uzasadnienia person (LLM z newsów stron trzecich) w prompcie
     przewodniczącego idą za flagą w fence'u DATA-ONLY; bez flagi prompt jak dziś."""
@@ -811,9 +850,7 @@ class TestChairmanReasoningFence:
 
         assert "<<<UNTRUSTED_REASONING_DATA>>>" in prompt
 
-    def test_without_flag_the_chairman_prompt_has_no_reasoning_fence(
-        self, llm_port: Mock
-    ) -> None:
+    def test_without_flag_the_chairman_prompt_has_no_reasoning_fence(self, llm_port: Mock) -> None:
         prompt = self._chairman_prompt(llm_port, fence=False)
 
         assert "UNTRUSTED_REASONING_DATA" not in prompt

@@ -9,7 +9,10 @@ nigdy nie oceniono poza próbą, na której powstał. Tu:
 - `select_isotonic_calibrator` — mapa dopasowana na [t−60 d, t−30 d) i oceniana
   Brierem na [t−30 d, t) przeciw surowej pewności i obecnemu shrinkage kubełkowemu
   (kubełki z tego samego starszego okna). Do rankingu wchodzi wyłącznie wtedy, gdy
-  wygrywa z oboma poza próbą — i jest to dokładnie ta oceniona mapa.
+  wygrywa z oboma poza próbą — i jest to dokładnie ta oceniona mapa;
+- `select_class_isotonic_calibrators` (ML-54) — ta sama reguła osobno dla krypto
+  i dla reszty, gdy klasa ma dość próbek w obu oknach; mniejsza klasa dostaje
+  mapę globalną.
 
 Czysta domena, stdlib. Próbki z pewnością spoza [0, 1] albo NaN odpadają (PORT-09).
 """
@@ -18,9 +21,10 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 
 from src.domain.calibration_curve import brier_score, calibrated_confidence, reliability_curve
 
@@ -29,9 +33,24 @@ ISOTONIC_FIT_WINDOW = (timedelta(days=60), timedelta(days=30))
 ISOTONIC_EVAL_WINDOW = (timedelta(days=30), timedelta(0))
 # Minimum próbek w KAŻDYM oknie — przy małym n schodkowy kalibrator jest przeuczony.
 MIN_ISOTONIC_SAMPLES = 30
+# ML-54: klasa aktywa dostaje własną mapę od tylu próbek w KAŻDYM oknie — tyle samo,
+# ile potrzebuje ocena poza próbą mapy globalnej, bo klasa przechodzi tę samą ocenę.
+MIN_CLASS_ISOTONIC_SAMPLES = MIN_ISOTONIC_SAMPLES
 
 Sample = tuple[float, bool]
 TimedSample = tuple[datetime, float, bool]
+
+
+class CalibrationClass(Enum):
+    """ML-54: klasa aktywa mapy kalibracji. Krypto ma inną zmienność i inne pasmo
+    SIDEWAYS niż akcje i ETF-y, więc wspólna mapa uśrednia dwie różne krzywe."""
+
+    CRYPTO = "CRYPTO"
+    NON_CRYPTO = "NON_CRYPTO"
+
+
+# Klasa None (wiersz bez symbolu) liczy się wyłącznie do mapy globalnej.
+ClassedSample = tuple[datetime, float, bool, CalibrationClass | None]
 
 
 @dataclass(frozen=True)
@@ -168,4 +187,54 @@ def select_isotonic_calibrator(
         n_fit=len(fit),
         n_eval=len(evaluation),
         reason=reason,
+    )
+
+
+@dataclass(frozen=True)
+class ClassIsotonicSelection:
+    """ML-54: decyzje ML-28 dla rankingu — globalna i per klasa aktywa.
+
+    `class_selections` ma wyłącznie klasy z co najmniej `MIN_CLASS_ISOTONIC_SAMPLES`
+    próbkami w każdym oknie; taka klasa ma własną ocenę poza próbą."""
+
+    global_selection: IsotonicSelection
+    class_selections: Mapping[CalibrationClass, IsotonicSelection]
+
+    def calibrator_for(self, calibration_class: CalibrationClass | None) -> IsotonicMap | None:
+        """Mapa pod ranking symbolu klasy `calibration_class`.
+
+        Klasa z własną oceną dostaje wyłącznie swoją decyzję: mapę klasy, gdy wygrała
+        poza próbą w tej klasie, inaczej None (kubełki) — mapa globalna nie była
+        oceniana na samej tej klasie. Klasa z małą próbą i klasa nieznana (None)
+        dostają mapę globalną."""
+        own = (
+            self.class_selections.get(calibration_class) if calibration_class is not None else None
+        )
+        return (own if own is not None else self.global_selection).calibrator
+
+
+def select_class_isotonic_calibrators(
+    samples: Sequence[ClassedSample], *, now: datetime, bucket_min_count: int = 10
+) -> ClassIsotonicSelection:
+    """ML-54: reguła ML-28 globalnie i osobno dla krypto i dla reszty.
+
+    Mapa globalna to `select_isotonic_calibrator` na wszystkich próbkach. Klasa
+    z co najmniej `MIN_CLASS_ISOTONIC_SAMPLES` próbkami w każdym oknie przechodzi
+    tę samą ocenę poza próbą na własnych próbkach; mniejsza zostaje przy globalnej."""
+    unclassed = [(stamp, confidence, hit) for stamp, confidence, hit, _ in samples]
+    global_selection = select_isotonic_calibrator(
+        unclassed, now=now, bucket_min_count=bucket_min_count
+    )
+    class_selections: dict[CalibrationClass, IsotonicSelection] = {}
+    for calibration_class in CalibrationClass:
+        own = [
+            (stamp, confidence, hit)
+            for stamp, confidence, hit, sample_class in samples
+            if sample_class is calibration_class
+        ]
+        selection = select_isotonic_calibrator(own, now=now, bucket_min_count=bucket_min_count)
+        if min(selection.n_fit, selection.n_eval) >= MIN_CLASS_ISOTONIC_SAMPLES:
+            class_selections[calibration_class] = selection
+    return ClassIsotonicSelection(
+        global_selection=global_selection, class_selections=class_selections
     )

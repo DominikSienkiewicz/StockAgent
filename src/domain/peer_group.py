@@ -50,8 +50,4 @@ def build_peer_context(
     `symbol` są pomijane. Kolejność stabilna, zgodna z `peers_of`. Pusto, gdy
     żaden peer nie był jeszcze przetworzony.
     """
-    return tuple(
-        (peer, processed[peer])
-        for peer in peers_of(symbol, groups)
-        if peer in processed
-    )
+    return tuple((peer, processed[peer]) for peer in peers_of(symbol, groups) if peer in processed)

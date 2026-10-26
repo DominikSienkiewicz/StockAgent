@@ -18,9 +18,7 @@ def test_probabilities_are_renormalized_and_argmax_is_trend() -> None:
 
     assert forecast.trend is TrendDirection.BULLISH
     assert forecast.confidence == pytest.approx(0.5)
-    assert forecast.as_dict() == pytest.approx(
-        {"BULLISH": 0.5, "BEARISH": 0.25, "SIDEWAYS": 0.25}
-    )
+    assert forecast.as_dict() == pytest.approx({"BULLISH": 0.5, "BEARISH": 0.25, "SIDEWAYS": 0.25})
     assert sum(p for _, p in forecast.probabilities or ()) == pytest.approx(1.0)
 
 

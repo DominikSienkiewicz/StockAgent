@@ -27,9 +27,7 @@ MIN_HISTORY_RETURNS = 10
 OUTLIER_HISTORY_DAYS = 30
 
 
-def is_price_outlier(
-    price: Decimal, history: Sequence[Decimal], *, k: Decimal = MAD_K
-) -> bool:
+def is_price_outlier(price: Decimal, history: Sequence[Decimal], *, k: Decimal = MAD_K) -> bool:
     """Czy `price` leży dalej niż `k` MAD od mediany zwrotów `history` (ceny
     rosnąco po czasie), licząc zwrot od ostatniej ceny historii.
 
@@ -42,8 +40,7 @@ def is_price_outlier(
         return True
     prices = [value for value in history if value > 0]
     returns = [
-        current / previous - 1
-        for previous, current in zip(prices, prices[1:], strict=False)
+        current / previous - 1 for previous, current in zip(prices, prices[1:], strict=False)
     ]
     if len(returns) < MIN_HISTORY_RETURNS:
         return False

@@ -242,9 +242,7 @@ class TestWatchSummary:
         mocker.patch("main_agent.build_market_port")
         mocker.patch(
             "main_watch.scan_watch",
-            return_value=main_watch.WatchOutcome(
-                sent=1, failures=0, total=3, checked=3, stale=1
-            ),
+            return_value=main_watch.WatchOutcome(sent=1, failures=0, total=3, checked=3, stale=1),
         )
 
         assert main_watch.main(settings) == 0

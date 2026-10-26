@@ -131,7 +131,7 @@ def test_methodology_says_the_entry_is_the_last_close() -> None:
 
     html = render_public_scorecard_html(resolved, None, [(0.8, True)])
 
-    methodology = html[html.index("<h2>Metodologia</h2>"):]
+    methodology = html[html.index("<h2>Metodologia</h2>") :]
     assert "ostatnie zamknięcie" in methodology
     assert "lukę na otwarciu" in methodology
 
@@ -198,10 +198,7 @@ def _dated(
 
 def _card(value: str, label: str) -> str:
     """Dokładny markup karty — asercje na podciągach przechodziłyby dzięki CSS."""
-    return (
-        f"<div class='card-value'>{value}</div>"
-        f"<div class='card-label'>{label}</div>"
-    )
+    return f"<div class='card-value'>{value}</div><div class='card-label'>{label}</div>"
 
 
 class TestDirectionalHitRateHeadline:
@@ -365,9 +362,7 @@ class TestPaperCostDisclosure:
         from src.application.report_evidence import PaperCosts
 
         curve = equity_curve([("BULLISH", 0.03)], cost_bps=12.5)
-        costs = PaperCosts(
-            cost_bps=12.5, crypto_cost_bps=25, crypto_symbols=frozenset({"ZZCOIN"})
-        )
+        costs = PaperCosts(cost_bps=12.5, crypto_cost_bps=25, crypto_symbols=frozenset({"ZZCOIN"}))
 
         html = render_public_scorecard_html(
             [_resolved("AAA", "BULLISH", True)], curve, None, costs=costs
@@ -501,7 +496,7 @@ class TestEvaluationProtocolSection:
         html = render_public_scorecard_html(
             [_resolved("AAA", "BULLISH", True)], None, [(0.8, True)], protocol=protocol
         )
-        section = html[html.index("Protokół ewaluacji"):]
+        section = html[html.index("Protokół ewaluacji") :]
 
         # Jednoliterowy ticker („S”) koliduje z nazwą indeksu „S&P 500”, którą strona
         # podaje celowo zamiast tickera IVV.
@@ -513,6 +508,7 @@ class TestEvaluationProtocolSection:
         leaked = {s for s in watchlist if re.search(rf"\b{re.escape(s)}\b", section)}
         assert leaked == set()
         assert "@" not in section
+
 
 class TestDirectionalCalibrationDisclosure:
     """WIA-39: krzywa kalibracji strony jest kierunkowa — strona mówi to wprost."""
@@ -566,6 +562,7 @@ class TestCalibrationErrorInterval:
 
         assert "równoliczn" in html
 
+
 def test_coverage_line_counts_unsettled_symbols_without_naming_them() -> None:
     # DAT-16: pokrycie i luka są na stronie, ale symbole bez rozliczeń tylko jako liczba.
     from src.domain.coverage import CoverageGap, CoverageReport
@@ -592,7 +589,7 @@ class TestRequiredSampleLine:
 
     @staticmethod
     def _methodology(html: str) -> str:
-        return html[html.index("<h2>Metodologia</h2>"):]
+        return html[html.index("<h2>Metodologia</h2>") :]
 
     def test_methodology_names_the_sample_that_tells_55_from_50(self) -> None:
         resolved = [_resolved("AAA", "BULLISH", True)]
@@ -681,9 +678,10 @@ def test_json_and_html_report_the_same_hit_rate() -> None:
     rate = document["directional_hit_rate"]["rate"]
     assert _card(f"{rate * 100:.1f}%", "Hit-rate kierunkowy") in html
     assert document["directional_hit_rate"]["sideways"] == 1
-    low, high = document["directional_hit_rate"]["wilson_low"], document[
-        "directional_hit_rate"
-    ]["wilson_high"]
+    low, high = (
+        document["directional_hit_rate"]["wilson_low"],
+        document["directional_hit_rate"]["wilson_high"],
+    )
     assert f"95% CI {low * 100:.0f}–{high * 100:.0f}%" in html
 
 

@@ -273,9 +273,7 @@ class RunFastLoopCycle:
         # DAT-17: 8-K z tego samego adaptera EDGAR co insider flow (po `enrich` to już
         # odpowiedź w pamięci); flaga off → port nie jest ruszany.
         corporate_events = (
-            self._alpha.fetch_corporate_events(symbol)
-            if options.corporate_events_enabled
-            else None
+            self._alpha.fetch_corporate_events(symbol) if options.corporate_events_enabled else None
         )
         return _SymbolInputs(
             asset, earnings_multiplier, alpha_signal, alpha_fusion, corporate_events
@@ -403,9 +401,7 @@ class RunFastLoopCycle:
         if options.parallel:
             with ThreadPoolExecutor(max_workers=options.symbol_concurrency) as executor:
                 processed = list(
-                    executor.map(
-                        lambda sym: self._analyze_gated(gated[sym], paid_phase, ()), order
-                    )
+                    executor.map(lambda sym: self._analyze_gated(gated[sym], paid_phase, ()), order)
                 )
             return dict(zip(order, processed, strict=True))
 

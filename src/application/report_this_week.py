@@ -23,8 +23,10 @@ def _event_line(event: EarningsEvent) -> str | None:
     nieznana pora i brak szacunku po prostu nie wchodzą do linii."""
     if event.report_date is None:
         return None
-    parts = [f"{weekday_day_label(date.fromisoformat(event.report_date))} — "
-             f"{company_label(event.symbol)}"]
+    parts = [
+        f"{weekday_day_label(date.fromisoformat(event.report_date))} — "
+        f"{company_label(event.symbol)}"
+    ]
     if event.timing is not None:
         parts.append(earnings_timing_label(event.timing))
     if event.eps_estimate is not None:
@@ -41,9 +43,7 @@ def _section_html(data: SectionInput) -> str:
     lines = _lines(data)
     if not lines:
         return ""
-    items = "".join(
-        f"<li style='margin: 2px 0;'>{_html.escape(line)}</li>" for line in lines
-    )
+    items = "".join(f"<li style='margin: 2px 0;'>{_html.escape(line)}</li>" for line in lines)
     return (
         _section_h2("📅 Ten tydzień")
         + "<p style='font-size: 13px; color: #4b5563; margin: 0 0 6px 0;'>"

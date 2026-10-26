@@ -39,9 +39,7 @@ REQUIRED_SECRET_KEYS = {
 def _run_watch_env() -> dict[str, object]:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = spec["jobs"]["watch-market-shock"]["steps"]
-    run_step = next(
-        s for s in steps if str(s.get("run", "")).endswith("main_watch.py")
-    )
+    run_step = next(s for s in steps if str(s.get("run", "")).endswith("main_watch.py"))
     env: dict[str, object] = run_step.get("env", {})
     return env
 

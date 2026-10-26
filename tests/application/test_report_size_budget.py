@@ -342,7 +342,10 @@ def _full_track_record_context() -> ReportContext:
         track_record_stats=stats,
         calibration_buckets=[
             CalibrationBucket(
-                lower=k / 10, upper=(k + 1) / 10, count=24, mean_confidence=k / 10 + 0.05,
+                lower=k / 10,
+                upper=(k + 1) / 10,
+                count=24,
+                mean_confidence=k / 10 + 0.05,
                 hit_rate=0.5,
             )
             for k in range(5, 10)

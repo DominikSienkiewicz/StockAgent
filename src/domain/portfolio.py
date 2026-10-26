@@ -106,9 +106,7 @@ class Position:
         if self.quantity <= 0:
             raise ValueError(f"quantity must be positive (got {self.quantity})")
         if self.purchase_price < 0:
-            raise ValueError(
-                f"purchase_price must be non-negative (got {self.purchase_price})"
-            )
+            raise ValueError(f"purchase_price must be non-negative (got {self.purchase_price})")
 
     def cost_basis(self) -> Decimal:
         """Kapitał zainwestowany w tę pozycję (ilość × cena zakupu)."""
@@ -400,9 +398,7 @@ class Portfolio:
     positions: tuple[Position, ...]
     as_of: datetime
 
-    def _usable_market_values(
-        self, current_prices: Mapping[str, Decimal]
-    ) -> dict[str, Decimal]:
+    def _usable_market_values(self, current_prices: Mapping[str, Decimal]) -> dict[str, Decimal]:
         """Wartość rynkowa per symbol, TYLKO dla symboli z bieżącą ceną.
 
         Loty tego samego symbolu są agregowane. Symbol bez ceny wypada —
@@ -413,14 +409,10 @@ class Portfolio:
             price = current_prices.get(pos.symbol)
             if price is None:
                 continue
-            values[pos.symbol] = values.get(pos.symbol, Decimal("0")) + (
-                pos.market_value(price)
-            )
+            values[pos.symbol] = values.get(pos.symbol, Decimal("0")) + (pos.market_value(price))
         return values
 
-    def weights(
-        self, current_prices: Mapping[str, Decimal]
-    ) -> dict[str, Decimal]:
+    def weights(self, current_prices: Mapping[str, Decimal]) -> dict[str, Decimal]:
         """Realne wagi kapitału wg wartości rynkowej, sumujące się do 1.
 
         Renormalizacja po `usable_symbols`: symbole bez bieżącej ceny nie
@@ -432,9 +424,7 @@ class Portfolio:
             return {}
         return {symbol: value / total for symbol, value in values.items()}
 
-    def unpriced_symbols(
-        self, current_prices: Mapping[str, Decimal]
-    ) -> tuple[str, ...]:
+    def unpriced_symbols(self, current_prices: Mapping[str, Decimal]) -> tuple[str, ...]:
         """PORT-03: symbole bez bieżącej ceny, posortowane i bez duplikatów.
 
         To dokładnie te pozycje, które `weights` i `unrealized_pnl` pomijają —
@@ -470,9 +460,7 @@ class Portfolio:
         )
         return unpriced / total
 
-    def pln_prices(
-        self, current_prices: Mapping[str, Decimal], rates: PlnRates
-    ) -> PlnPrices:
+    def pln_prices(self, current_prices: Mapping[str, Decimal], rates: PlnRates) -> PlnPrices:
         """Ceny trzymanych symboli w złotych (patrz `PlnPrices`)."""
         currencies: dict[str, set[str]] = {}
         for pos in self.positions:
@@ -497,9 +485,7 @@ class Portfolio:
             as_of=self.as_of,
         )
 
-    def unrealized_pnl(
-        self, current_prices: Mapping[str, Decimal]
-    ) -> PortfolioPnL:
+    def unrealized_pnl(self, current_prices: Mapping[str, Decimal]) -> PortfolioPnL:
         """P/L per pozycja + sumy łączne. Pozycje bez ceny są pomijane."""
         rows: list[PositionPnL] = []
         total_cost = Decimal("0")
@@ -558,9 +544,7 @@ class Portfolio:
             value += pos.market_value(price) * rate
         return PlnValuation(value=value, unrated_symbols=tuple(sorted(unrated)))
 
-    def pln_pnl(
-        self, current_prices: Mapping[str, Decimal], rates: PlnRates
-    ) -> PortfolioPlnPnL:
+    def pln_pnl(self, current_prices: Mapping[str, Decimal], rates: PlnRates) -> PortfolioPlnPnL:
         """PORT-11: P/L w złotych per pozycja i łącznie (pozycje bez ceny pomijane).
 
         Kurs z dnia zakupu bierze `purchase_date` pozycji — bez niej P/L zł jest
@@ -603,14 +587,10 @@ class Portfolio:
             for symbol in quantities
             if symbol in previous_prices and symbol in current_prices
         ]
-        previous_value = sum(
-            (quantities[s] * previous_prices[s] for s in measured), Decimal("0")
-        )
+        previous_value = sum((quantities[s] * previous_prices[s] for s in measured), Decimal("0"))
         if not measured or previous_value == 0:
             return None
-        current_value = sum(
-            (quantities[s] * current_prices[s] for s in measured), Decimal("0")
-        )
+        current_value = sum((quantities[s] * current_prices[s] for s in measured), Decimal("0"))
         moves = [
             SymbolChange(symbol=s, change=change, contribution=change / previous_value)
             for s in measured
@@ -645,9 +625,7 @@ class Portfolio:
         for symbol, weight in weights.items():
             cluster = clusters.get(symbol, symbol)
             grouped.setdefault(cluster, []).append(symbol)
-            weight_by_cluster[cluster] = (
-                weight_by_cluster.get(cluster, Decimal("0")) + weight
-            )
+            weight_by_cluster[cluster] = weight_by_cluster.get(cluster, Decimal("0")) + weight
         exposures = [
             ClusterExposure(
                 cluster=cluster,
@@ -660,9 +638,7 @@ class Portfolio:
         exposures.sort(key=lambda e: (-e.weight, e.cluster))
         return exposures
 
-    def is_stale(
-        self, now: datetime, max_age_days: int = DEFAULT_MAX_POSITION_AGE_DAYS
-    ) -> bool:
+    def is_stale(self, now: datetime, max_age_days: int = DEFAULT_MAX_POSITION_AGE_DAYS) -> bool:
         """Czy tabela pozycji jest przeterminowana względem `now`."""
         return is_stale(self.as_of, now, max_age_days)
 

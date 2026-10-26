@@ -54,9 +54,7 @@ class ProbeModelsUseCase:
                 alerts.append(alert)
         return alerts
 
-    def _check(
-        self, provider: str, model_id: str, roles: str, now: datetime
-    ) -> QuotaAlert | None:
+    def _check(self, provider: str, model_id: str, roles: str, now: datetime) -> QuotaAlert | None:
         catalog = self._catalogs.get(provider)
         if catalog is None:
             logger.warning("Model probe skipped for %s %s — no catalog", provider, model_id)

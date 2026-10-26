@@ -51,8 +51,10 @@ class TestDelegatingAlertNotifier:
 
         kwargs = transport.send_report.call_args
         # plain_text jest trzecim argumentem pozycyjnym lub kwargiem.
-        all_text = " ".join(str(x) for x in kwargs.args) + " " + " ".join(
-            str(v) for v in kwargs.kwargs.values()
+        all_text = (
+            " ".join(str(x) for x in kwargs.args)
+            + " "
+            + " ".join(str(v) for v in kwargs.kwargs.values())
         )
         assert "Resend" in all_text
         assert "email failed" in all_text

@@ -108,9 +108,7 @@ def build_provenance_badges(
 
     # FLAGGED liczy tylko flagi inne niż sam degraded_reason — inaczej ta sama
     # przyczyna byłaby raportowana dwiema odznakami.
-    other_flags = [
-        f for f in data_quality_flags if not (degraded and f == degraded_reason)
-    ]
+    other_flags = [f for f in data_quality_flags if not (degraded and f == degraded_reason)]
     if other_flags:
         badges.append(
             ProvenanceBadge(
@@ -121,8 +119,6 @@ def build_provenance_badges(
         )
 
     if not badges:
-        badges.append(
-            ProvenanceBadge(level=ProvenanceLevel.FRESH, label="Świeże", detail=None)
-        )
+        badges.append(ProvenanceBadge(level=ProvenanceLevel.FRESH, label="Świeże", detail=None))
 
     return badges

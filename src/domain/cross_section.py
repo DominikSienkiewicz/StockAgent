@@ -93,9 +93,9 @@ def cross_section_features(
         )
         for asset_class in {move.asset_class for move in moves.values()}
     }
-    breadth = sum(
-        1 for move in moves.values() if abs(move.ret_1) >= move.gate_threshold
-    ) / len(moves)
+    breadth = sum(1 for move in moves.values() if abs(move.ret_1) >= move.gate_threshold) / len(
+        moves
+    )
     return {
         symbol: CrossSectionFeatures(
             ret_1_rank=ranks[symbol],

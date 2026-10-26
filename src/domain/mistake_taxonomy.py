@@ -92,6 +92,33 @@ def parse_mistake_diagnosis(raw: str) -> MistakeDiagnosis:
     return MistakeDiagnosis(category, insight.strip())
 
 
+def parse_batch_diagnoses(raw: str, count: int) -> tuple[MistakeDiagnosis | None, ...]:
+    """EXP-17: odpowiedź diagnozy zbiorczej → diagnoza per pudło (pozycja 1..count).
+
+    JSON `{"diagnoses": [{"n", "category", "insight"}, …]}` daje diagnozę tym
+    pozycjom, które w nim są (bez wpisu albo z pustym `insight` → None, placeholder
+    zostaje). Odpowiedź bez listy `diagnoses` nie mówi, którego pudła dotyczy tekst,
+    więc żadna pozycja nie dostaje diagnozy — ten sam tekst z OTHER przy każdym pudle
+    zamazałby tydzień, a pudła z placeholderem wrócą w spłacie diagnoz (WIA-53)."""
+    payload = _json_object(raw.strip())
+    entries = payload.get("diagnoses") if payload is not None else None
+    if not isinstance(entries, list):
+        return (None,) * count
+    by_position: dict[int, MistakeDiagnosis] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        position = entry.get("n")
+        insight = entry.get("insight")
+        if isinstance(position, bool) or not isinstance(position, int):
+            continue
+        if not isinstance(insight, str) or not insight.strip():
+            continue
+        category = parse_mistake_category(entry.get("category")) or MistakeCategory.OTHER
+        by_position.setdefault(position, MistakeDiagnosis(category, insight.strip()))
+    return tuple(by_position.get(position) for position in range(1, count + 1))
+
+
 def count_categories(
     categories: Iterable[MistakeCategory | None],
 ) -> dict[MistakeCategory, int]:

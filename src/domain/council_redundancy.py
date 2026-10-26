@@ -113,9 +113,7 @@ def effective_voters(personas: int, mean_kappa: float) -> float:
     return personas / (1.0 + (personas - 1) * correlation)
 
 
-def _pair(
-    first: str, second: str, a: Sequence[str], b: Sequence[str]
-) -> PairAgreement | None:
+def _pair(first: str, second: str, a: Sequence[str], b: Sequence[str]) -> PairAgreement | None:
     kappa = cohen_kappa(a, b)
     agreement = raw_agreement(a, b)
     if kappa is None or agreement is None:

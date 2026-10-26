@@ -11,6 +11,7 @@ Exit code:
 Używaj przed commitem (pre-commit hook w .pre-commit-config.yaml) lub po
 edycji ręcznej, by złapać literówki ZANIM agent wystartuje na produkcji.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,6 +22,7 @@ from src.infrastructure.persona_loader import (
     DEFAULT_PERSONAS_DIR,
     PersonaSchemaError,
     load_council_personas,
+    load_persona_archetypes,
 )
 
 
@@ -38,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         personas = load_council_personas(args.dir)
+        archetypes = load_persona_archetypes(args.dir)
     except FileNotFoundError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
@@ -48,9 +51,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
 
+    # MAIL-38: plik archetypów, gdy jest, zna dokładnie persony rady.
+    names = {p.name for p in personas}
+    if archetypes and set(archetypes) != names:
+        print(
+            f"❌ archetypes.toml ≠ persony: bez archetypu {sorted(names - set(archetypes))}, "
+            f"nieznane {sorted(set(archetypes) - names)}",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"✅ {len(personas)} persona(s) valid in {args.dir}/")
     for p in personas:
-        print(f"   · {p.name}")
+        label = f" → {archetypes[p.name]}" if archetypes else ""
+        print(f"   · {p.name}{label}")
     return 0
 
 

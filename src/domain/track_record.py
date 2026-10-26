@@ -89,9 +89,7 @@ def naive_baselines(
     """
     n = len(changes)
     if n == 0:
-        return NaiveBaselines(
-            always_bullish=None, always_bearish=None, always_sideways=None, n=0
-        )
+        return NaiveBaselines(always_bullish=None, always_bearish=None, always_sideways=None, n=0)
     return NaiveBaselines(
         always_bullish=sum(1 for c in changes if c > 0) / n,
         always_bearish=sum(1 for c in changes if c < 0) / n,

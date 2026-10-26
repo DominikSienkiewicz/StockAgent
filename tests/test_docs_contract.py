@@ -23,9 +23,7 @@ def documented_section_keys(markdown: str) -> list[str]:
     _, _, after = markdown.partition(_TABLE_HEADING)
     table_and_rest = after.split("\n## ", 1)[0]
     return [
-        match.group(1)
-        for line in table_and_rest.splitlines()
-        if (match := _KEY_CELL.match(line))
+        match.group(1) for line in table_and_rest.splitlines() if (match := _KEY_CELL.match(line))
     ]
 
 

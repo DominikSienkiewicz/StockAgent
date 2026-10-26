@@ -22,29 +22,33 @@ import pytest
 
 from src.application.ports import (
     AttestationPublisherPort,
+    BotStatePort,
     PositionsImportPort,
     RepositoryPort,
+    SymbolMutePort,
 )
 from src.infrastructure.adapters.write_guard import (
     DRY_RUN_PREDICTION_PREFIX,
     ReadOnlyAttestationPublisher,
+    ReadOnlyBotState,
     ReadOnlyPositionsImport,
     ReadOnlyRepository,
+    ReadOnlySymbolMutes,
 )
 
 GUARDS: list[tuple[type[ABC], Any]] = [
     (RepositoryPort, ReadOnlyRepository),
     (PositionsImportPort, ReadOnlyPositionsImport),
     (AttestationPublisherPort, ReadOnlyAttestationPublisher),
+    (BotStatePort, ReadOnlyBotState),
+    (SymbolMutePort, ReadOnlySymbolMutes),
 ]
 GUARD_IDS = [guard.__name__ for _, guard in GUARDS]
 
 
 def _cases(kind: str) -> list[tuple[type[ABC], Any, str]]:
     return [
-        (port, guard, method)
-        for port, guard in GUARDS
-        for method in sorted(getattr(guard, kind))
+        (port, guard, method) for port, guard in GUARDS for method in sorted(getattr(guard, kind))
     ]
 
 

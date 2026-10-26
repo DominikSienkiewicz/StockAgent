@@ -70,8 +70,7 @@ def test_preserves_most_recent_first_order() -> None:
 def test_limit_caps_items_but_total_counts_all() -> None:
     """limit przycina items, ale total_mistakes liczy wszystkie błędy."""
     resolved = [
-        _resolved(f"S{i}", is_correct=False, insight=f"diagnoza numer {i}")
-        for i in range(10)
+        _resolved(f"S{i}", is_correct=False, insight=f"diagnoza numer {i}") for i in range(10)
     ]
 
     report = build_lessons(resolved, limit=3)
@@ -204,6 +203,25 @@ def test_new_skipped_placeholder_is_not_a_lesson() -> None:
 
     assert [item.symbol for item in report.items] == ["BBB"]
     assert report.total_mistakes == 1
+
+
+def test_rejected_and_batch_pending_diagnoses_are_not_lessons() -> None:
+    # EXP-10 / EXP-17: diagnoza odrzucona przez sędziego i pudło czekające na
+    # tygodniową diagnozę zbiorczą nie są lekcjami.
+    from src.domain.prediction import (
+        DIAGNOSIS_BATCH_PENDING_INSIGHT,
+        DIAGNOSIS_REJECTED_INSIGHT,
+    )
+
+    resolved = [
+        _resolved("AAA", is_correct=False, insight=DIAGNOSIS_REJECTED_INSIGHT),
+        _resolved("BBB", is_correct=False, insight=DIAGNOSIS_BATCH_PENDING_INSIGHT),
+        _resolved("CCC", is_correct=False, insight="rynek zignorował dane"),
+    ]
+
+    report = build_lessons(resolved)
+
+    assert [item.symbol for item in report.items] == ["CCC"]
 
 
 def test_lessons_count_categories() -> None:

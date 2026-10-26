@@ -25,9 +25,7 @@ def _ok_response(payload: dict[str, Any], status_code: int = 200) -> Mock:
 def _error_response(status_code: int) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
-    response.raise_for_status.side_effect = requests.HTTPError(
-        f"{status_code} Client Error"
-    )
+    response.raise_for_status.side_effect = requests.HTTPError(f"{status_code} Client Error")
     return response
 
 
@@ -56,8 +54,11 @@ class TestGetCurrentPrice:
 
         call = mock_get.call_args
         assert call.kwargs["params"] == {"symbol": "VOO", "token": "test-token-123"}
-        assert call.kwargs["url"].endswith("/quote") if "url" in call.kwargs else \
-               call.args[0].endswith("/quote")
+        assert (
+            call.kwargs["url"].endswith("/quote")
+            if "url" in call.kwargs
+            else call.args[0].endswith("/quote")
+        )
 
     def test_sets_request_timeout(self, adapter: FinnhubAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(

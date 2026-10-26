@@ -438,8 +438,7 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
     theme_note = ""
     if lessons.recurring_theme:
         theme_note = (
-            " · powracający motyw: "
-            f"<strong>{_html.escape(lessons.recurring_theme)}</strong>"
+            f" · powracający motyw: <strong>{_html.escape(lessons.recurring_theme)}</strong>"
         )
     parts.append(
         "<p style='font-size: 12px; color: #6b7280; margin: 12px 0 6px 0;'>"
@@ -469,9 +468,7 @@ def _render_lessons_html(lessons: LessonsReport) -> str:
             "</li>"
         )
     parts.append(
-        "<ul style='list-style: none; padding: 0; margin: 0 0 16px 0;'>"
-        + "".join(items)
-        + "</ul>"
+        "<ul style='list-style: none; padding: 0; margin: 0 0 16px 0;'>" + "".join(items) + "</ul>"
     )
     return "".join(parts)
 

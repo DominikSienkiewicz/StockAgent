@@ -127,7 +127,9 @@ def test_import_positions_reports_a_missing_file(
 
 
 def test_import_positions_apply_says_nothing_was_written_without_db_writes(
-    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    positions_adapter: MagicMock,
+    mocker: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # BEZ-08: lokalny run jest domyślnie tylko do odczytu — `--apply` nie może
@@ -148,7 +150,9 @@ def test_import_positions_apply_says_nothing_was_written_without_db_writes(
 
 
 def test_import_positions_dry_run_is_unchanged_without_db_writes(
-    positions_adapter: MagicMock, mocker: Any, tmp_path: Path,
+    positions_adapter: MagicMock,
+    mocker: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     settings = mocker.patch("src.config.Settings.from_env").return_value
@@ -197,6 +201,8 @@ def test_cost_envelope_prints_the_bound_for_the_configured_watchlist(
     settings.debate_mode_enabled = False
     settings.tool_use_enabled = True
     settings.tool_use_max_rounds = 3
+    settings.frontier_escalations_per_cycle.return_value = 0
+    settings.shadow_calls_per_cycle.return_value = 0
     from src.domain.finops import WeeklyCostBudget
 
     settings.fast_loop_weekly_budget.return_value = WeeklyCostBudget(
@@ -245,6 +251,45 @@ def test_cost_envelope_prints_the_weekly_worst_case_against_the_budget(
     assert "`fast_loop_weekly_budget_usd` = 7.00 USD, within the budget." in out
 
 
+def test_cost_envelope_counts_frontier_escalations_and_shadow_calls(
+    mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # WIA-11: routing modeli (FIN-21) i wariant w cieniu (EXP-26) z config.toml trafiają
+    # do tabeli cyklu i do wiersza tygodniowego.
+    from src.config import Settings, ShadowPromptVariantSettings
+
+    real = Settings(
+        **NO_ENV_FILE,
+        openai_api_key="sk-test",
+        anthropic_api_key="sk-ant-test",
+        finnhub_api_key="fh",
+        alpha_vantage_api_keys=["av1"],
+        supabase_url="https://t.supabase.co",
+        supabase_key="anon",
+        symbols=[f"S{i:02d}" for i in range(42)],
+        crypto_symbols=[],
+        model_routing_enabled=True,
+        routing_max_escalations=5,
+        shadow_prompt_variant_enabled=True,
+        shadow_prompt_variant=ShadowPromptVariantSettings(
+            name="mini_rounded", max_calls_per_cycle=3
+        ),
+        max_paid_llm_calls_per_cycle=100,
+        symbol_concurrency=4,
+        fast_loop_weekly_budget_usd=7.0,
+    )
+    mocker.patch("src.config.Settings.from_env", return_value=real)
+
+    code = main_tools.main(["cost-envelope"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "| `llm` | 0 | 89 |" in out
+    assert "| `shadow_llm` | 0 | 3 |" in out
+    # Cykl przy suficie: 1.2112 + 5 eskalacji i 3 wywołania cienia po 0.01 USD.
+    assert "1.2912 USD = 6.4559 USD" in out
+
+
 # --- DX-01: render-sample-report ----------------------------------------------
 
 
@@ -262,6 +307,7 @@ def test_render_sample_report_writes_both_bodies_without_settings(
     assert html.startswith("<") and "Krypto" in html
     assert "przebieg #sample" in text
     assert "report-email.html" in capsys.readouterr().out
+
 
 # --- WIA-56: explain ----------------------------------------------------------
 
@@ -292,6 +338,18 @@ def test_explain_by_symbol_and_date_reads_that_utc_day(
     assert code == 0
     repo_cls.return_value.find_receipts.assert_called_once_with("NVDA", date(2026, 8, 14))
     assert "brak predykcji NVDA z 2026-08-14 (UTC)" in capsys.readouterr().out
+
+
+def test_explain_reads_the_council_votes_of_the_first_round(mocker: Any) -> None:
+    # ML-40: kwit z głosami rady pokazuje niezależną rundę 1 — po 082 także wtedy,
+    # gdy debata (rewizja w rundzie 2) jest już wyłączona.
+    mocker.patch("src.config.Settings.from_env")
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_receipt.return_value = None
+
+    main_tools.main(["explain", "pred-404"])
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_from_schema"] is True
 
 
 @pytest.mark.parametrize(
@@ -341,6 +399,7 @@ def test_persona_ablation_without_migration_045_says_so(
 
     assert code == 1
     assert "045" in capsys.readouterr().err
+
 
 # --- DOC-17: render-graph-diagram -----------------------------------------------
 
@@ -447,8 +506,10 @@ def test_verify_attestation_exits_two_for_a_missing_file(
     code = main_tools.main(
         [
             "verify-attestation",
-            "--commitments", str(tmp_path / "missing.jsonl"),
-            "--reveals", str(tmp_path / "missing-too.jsonl"),
+            "--commitments",
+            str(tmp_path / "missing.jsonl"),
+            "--reveals",
+            str(tmp_path / "missing-too.jsonl"),
         ]
     )
 
@@ -456,9 +517,7 @@ def test_verify_attestation_exits_two_for_a_missing_file(
     assert "missing.jsonl" in capsys.readouterr().err
 
 
-def test_verify_attestation_needs_no_settings_and_no_network(
-    tmp_path: Path, mocker: Any
-) -> None:
+def test_verify_attestation_needs_no_settings_and_no_network(tmp_path: Path, mocker: Any) -> None:
     # Weryfikator ma działać u sceptyka, który nie ma żadnych kluczy.
     from_env = mocker.patch("src.config.Settings.from_env")
     commitments, reveals = _write_ledger(tmp_path)
@@ -473,6 +532,59 @@ def test_verify_attestation_defaults_to_the_published_ledger_paths() -> None:
 
     assert str(args.commitments) == "public/attestation/commitments.jsonl"
     assert str(args.reveals) == "public/attestation/reveals.jsonl"
+
+
+def test_verify_attestation_checks_rekor_entries_against_the_fast_loop_by_default() -> None:
+    # WIA-73: tożsamość workflowu, którą musi nazywać certyfikat wpisu Rekora.
+    args = main_tools.build_parser().parse_args(["verify-attestation"])
+
+    assert (getattr(args, "rekor_repository", None), getattr(args, "rekor_workflow", None)) == (
+        "DominikSienkiewicz/StockAgent",
+        ".github/workflows/fast_loop_12h.yml",
+    )
+
+
+def test_verify_attestation_takes_the_rekor_identity_of_a_fork(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from src.domain import attestation
+    from tests.sigstore_support import rekor_entry_for
+
+    committed_at = datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC)
+    line = attestation.cycle_root_record(
+        cycle_id="1.1.20261026T053000Z", committed_at=committed_at, commitments=["aa" * 32]
+    )
+    fork = "https://github.com/someone/fork/.github/workflows/agent.yml@refs/heads/main"
+    line["rekor"] = rekor_entry_for(
+        str(line["root"]), integrated_at=committed_at + timedelta(seconds=3), uri=fork
+    )
+    commitments = tmp_path / "commitments.jsonl"
+    commitments.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    (tmp_path / "reveals.jsonl").write_text("", encoding="utf-8")
+    base = [
+        "verify-attestation",
+        "--commitments",
+        str(commitments),
+        "--reveals",
+        str(tmp_path / "reveals.jsonl"),
+    ]
+
+    default_code = main_tools.main(base)
+    fork_code = main_tools.main(
+        [
+            *base,
+            "--rekor-repository",
+            "someone/fork",
+            "--rekor-workflow",
+            ".github/workflows/agent.yml",
+        ]
+    )
+
+    assert (default_code, fork_code) == (1, 0)
+    assert "Cycle roots logged in Rekor: 1" in capsys.readouterr().out
 
 
 # --- ML-22: reproduce-training ---------------------------------------------------
@@ -491,9 +603,7 @@ def _reproduction_case(mocker: Any, tmp_path: Path, *, train: bool = True) -> tu
     stamps = [datetime(2026, 10, 1, tzinfo=UTC) + timedelta(hours=12 * i) for i in range(200)]
     features: list[dict[str, float | None]] = [
         {"price_delta": float(delta), "llm_trend_signal": float(signal)}
-        for delta, signal in zip(
-            rng.normal(0, 0.05, 200), rng.choice([-1, 0, 1], 200), strict=True
-        )
+        for delta, signal in zip(rng.normal(0, 0.05, 200), rng.choice([-1, 0, 1], 200), strict=True)
     ]
     target = [
         0.4 * float(row["price_delta"] or 0.0) + 0.02 * float(row["llm_trend_signal"] or 0.0)

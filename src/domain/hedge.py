@@ -23,24 +23,22 @@ from src.domain.macro_risk import MacroRiskInstrumentType
 # instrumenty odwrotne do akcji i długa zmienność. Złoto (SAFE_HAVEN), proxy
 # suwerenne (EPOL) czy odwrotne obligacje trzymane w portfelu to inwestycja,
 # nie zabezpieczenie akcji — nie mogą obniżać bandy jako „nieskuteczny hedge”.
-EQUITY_HEDGE_TYPES: frozenset[MacroRiskInstrumentType] = frozenset({
-    MacroRiskInstrumentType.INVERSE_EQUITY,
-    MacroRiskInstrumentType.VOLATILITY,
-})
+EQUITY_HEDGE_TYPES: frozenset[MacroRiskInstrumentType] = frozenset(
+    {
+        MacroRiskInstrumentType.INVERSE_EQUITY,
+        MacroRiskInstrumentType.VOLATILITY,
+    }
+)
 
 
 def equity_hedge_symbols(
     symbol_types: Mapping[str, MacroRiskInstrumentType],
 ) -> frozenset[str]:
     """Symbole, które w sizingu liczą się jako hedge portfela akcji."""
-    return frozenset(
-        symbol for symbol, kind in symbol_types.items() if kind in EQUITY_HEDGE_TYPES
-    )
+    return frozenset(symbol for symbol, kind in symbol_types.items() if kind in EQUITY_HEDGE_TYPES)
 
 
-def realized_correlation(
-    book_returns: Sequence[float], hedge_returns: Sequence[float]
-) -> float:
+def realized_correlation(book_returns: Sequence[float], hedge_returns: Sequence[float]) -> float:
     """Zrealizowana korelacja Pearsona między zwrotami książki a hedge'a.
 
     Wynik w [-1, 1]. Różne długości serii są przycinane do krótszej. Mniej niż

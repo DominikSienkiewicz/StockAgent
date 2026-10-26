@@ -44,10 +44,7 @@ class TestSelfSuppression:
     def test_steady_state_returns_no_subject_even_for_large_portfolio(self) -> None:
         # Rdzeń ryzyka: duża liczba instrumentów NIE może włączyć powitania,
         # jeśli domena mówi STEADY_STATE (to np. masowa awaria, nie Dzień 1).
-        assert (
-            onboarding_subject(CycleMaturity.STEADY_STATE, instrument_count=999)
-            is None
-        )
+        assert onboarding_subject(CycleMaturity.STEADY_STATE, instrument_count=999) is None
 
 
 class TestFirstRun:

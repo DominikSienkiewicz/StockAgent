@@ -28,9 +28,10 @@ ROOT = Path(__file__).parent.parent
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 ENV_KEY = "DB_WRITES_ENABLED"
 
-# Zapisują do bazy przez strażnika (`build_repository` i fabryki portów zapisu).
+# Zapisują do bazy przez strażnika (`build_repository` i fabryki portów zapisu; bot
+# MAIL-48: offset `bot_state` i wyciszenia `symbol_mutes` przez `build_bot_store`).
 WRITING_ENTRYPOINTS = frozenset(
-    {"main_agent.py", "main_trainer.py", "main_watch.py", "main_tools.py"}
+    {"main_agent.py", "main_trainer.py", "main_watch.py", "main_tools.py", "main_bot.py"}
 )
 # Tylko czytają: deadman (probe + ślady życia), backtest (czysta ewaluacja)
 # i publiczny scorecard (WIA-52: zamknięte predykcje, zapis tylko pliku strony).

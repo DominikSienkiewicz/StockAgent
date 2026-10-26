@@ -253,9 +253,7 @@ class XGBoostAdapter(MLPredictionPort):
     def booster_dump(self) -> str:
         """ML-22: zrzut drzew wczytanego modelu (JSON) — porównanie z refitem."""
         if self._model is None:
-            raise RuntimeError(
-                f"Model not trained — no weights at '{self._model_path}'."
-            )
+            raise RuntimeError(f"Model not trained — no weights at '{self._model_path}'.")
         return _dump(self._model)
 
     @staticmethod
@@ -373,9 +371,7 @@ class XGBoostAdapter(MLPredictionPort):
             )
         )
 
-        def report(
-            outcome: TrainingOutcome, model_path: str | None = None
-        ) -> DirectionReport:
+        def report(outcome: TrainingOutcome, model_path: str | None = None) -> DirectionReport:
             return DirectionReport(
                 outcome,
                 n_samples=len(keep),
@@ -505,9 +501,7 @@ class XGBoostAdapter(MLPredictionPort):
         booster = self._model.get_booster()
         # pred_contribs zwraca macierz [n_próbek, n_cech + 1]; ostatnia kolumna to
         # bias (base value). Mamy jedną próbkę → bierzemy wiersz 0.
-        contributions = booster.predict(
-            xgb.DMatrix(frame), pred_contribs=True
-        )
+        contributions = booster.predict(xgb.DMatrix(frame), pred_contribs=True)
         row = np.asarray(contributions, dtype=float).reshape(-1)
         feature_names = [str(c) for c in frame.columns]
         result: dict[str, float] = {
@@ -549,9 +543,7 @@ def _aligned_frame(model: Any, current_features: Mapping[str, float]) -> pd.Data
     expected_cols = [str(c) for c in expected]
     missing = [c for c in expected_cols if c not in current_features]
     if missing:
-        raise KeyError(
-            f"Missing required ML features for prediction: {missing}"
-        )
+        raise KeyError(f"Missing required ML features for prediction: {missing}")
     return pd.DataFrame([{c: current_features[c] for c in expected_cols}])
 
 
@@ -603,9 +595,7 @@ def _training_report(
         feature_stats=feature_stats,
         metric_note=METRIC_NOTE,
         model_path=model_path,
-        extras=(
-            {} if target_unit is TargetUnit.RETURN else {"target_unit": target_unit.value}
-        ),
+        extras=({} if target_unit is TargetUnit.RETURN else {"target_unit": target_unit.value}),
         weights_sha256=weights_sha256,
         provenance=provenance,
     )
@@ -634,9 +624,7 @@ def _write_sidecar(model_path: Path, report: TrainingReport, target_unit: Target
     )
 
 
-def _baseline_predictions(
-    train_y: pd.Series, valid_x: pd.DataFrame, size: int
-) -> dict[str, Any]:
+def _baseline_predictions(train_y: pd.Series, valid_x: pd.DataFrame, size: int) -> dict[str, Any]:
     """ML-10: prognozy baseline'ów „dryf" i „llm" na walidacji foldu.
 
     Dryf przewiduje stały średni target części treningowej. „Sam LLM" przewiduje
@@ -806,9 +794,7 @@ def _feature_distribution_stats(
             "std": float(series.std(ddof=0)),
             "edges": list(edges),
             "fractions": list(bin_fractions(values, edges)),
-            "psi_recent_30d": (
-                recent_window_psi(values, stamps) if stamps is not None else None
-            ),
+            "psi_recent_30d": (recent_window_psi(values, stamps) if stamps is not None else None),
         }
     return stats
 
@@ -863,7 +849,6 @@ def _sign_turnover(predicted: Any) -> float:
     if signs.size < 2:
         return 0.0
     return float(np.mean(np.abs(np.diff(signs)) / 2))
-
 
 
 # ML-33: cel boostera, który pasuje do rodzaju challengera — plik innego rodzaju

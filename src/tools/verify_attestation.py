@@ -19,6 +19,11 @@ dowodu (`inclusion`) sprawdza względem rootu, który ledger faktycznie opubliko
 cyklu. Reveal ze statusem `incomplete_cycle` przyznaje, że root jego cyklu nigdy nie wyszedł:
 jest jawny, ale niczego nie dowodzi, więc werdykt pozostaje FAIL z osobną kategorią.
 
+WIA-73: linia rootu z polem `rekor` (wpis Sigstore Rekor) musi go potwierdzać —
+`verify_rekor.rekor_problems` sprawdza powiązanie z rootem i podpis, inclusion proof, czas
+wpisu i tożsamość workflowu. Linia bez wpisu nie jest porażką (flaga mogła być wyłączona);
+liczba zakotwiczonych rootów trafia do raportu.
+
 Commitment bez revealu jest „jeszcze nieujawniony", nie porażką: predykcja może się nie
 rozliczyć. Liczba takich wpisów trafia do raportu, żeby długo nieujawniane commitmenty
 były widoczne. Czytanie plików i kod wyjścia należą do `main_tools.py verify-attestation`
@@ -40,6 +45,12 @@ from src.domain.attestation import (
     verify,
     verify_canonical,
     verify_inclusion,
+)
+from src.tools.verify_rekor import (
+    FAST_LOOP_IDENTITY,
+    REKOR_FIELD,
+    WorkflowIdentity,
+    rekor_problems,
 )
 
 # Te same ścieżki co `attestation_commitments_path` / `attestation_reveals_path` w config.toml
@@ -88,6 +99,7 @@ class LedgerReport:
     pending: int
     problems: tuple[str, ...] = ()
     cycles: int = 0
+    rekor_entries: int = 0
 
     @property
     def ok(self) -> bool:
@@ -120,19 +132,25 @@ def verify_ledger(
     reveals: Iterable[Mapping[str, Any]],
     *,
     malformed: Sequence[str] = (),
+    rekor_identity: WorkflowIdentity = FAST_LOOP_IDENTITY,
 ) -> LedgerReport:
     """Sprawdza każdy reveal względem opublikowanych commitmentów.
 
     `malformed` to miejsca uszkodzonych linii z `parse_jsonl` — każda jest porażką,
-    bo ledger, którego nie da się w pełni przeczytać, niczego nie dowodzi."""
+    bo ledger, którego nie da się w pełni przeczytać, niczego nie dowodzi. Linia rootu
+    z wpisem Rekora (WIA-73) musi go potwierdzać dla workflowu `rekor_identity`."""
     problems = [f"unreadable line {place}" for place in malformed]
     published: set[str] = set()
     roots: dict[str, str] = {}
+    rekor_entries = 0
     for record in commitments:
         cycle = CycleRoot.from_record(record)
         if cycle is not None:
             problems.extend(_cycle_problems(cycle, roots))
             published.update(cycle.leaves)
+            if REKOR_FIELD in record:
+                rekor_entries += 1
+                problems.extend(rekor_problems(record, cycle.root, rekor_identity))
             continue
         commitment = _hash_of(record)
         if commitment is None:
@@ -157,6 +175,7 @@ def verify_ledger(
         pending=len(published - revealed),
         problems=tuple(problems),
         cycles=len(roots),
+        rekor_entries=rekor_entries,
     )
 
 
@@ -292,6 +311,8 @@ def format_report(report: LedgerReport) -> str:
     ]
     if report.cycles:
         lines.insert(1, f"Cycle roots: {report.cycles}")
+    if report.rekor_entries:
+        lines.insert(2, f"Cycle roots logged in Rekor: {report.rekor_entries}")
     lines.extend(f"  ! {problem}" for problem in report.problems)
     for check in report.checks:
         if not check.valid:
@@ -300,9 +321,7 @@ def format_report(report: LedgerReport) -> str:
             )
     bad = sum(1 for check in report.checks if not check.valid)
     if report.ok:
-        lines.append(
-            f"OK: all {len(report.checks)} reveals reproduce their published commitments"
-        )
+        lines.append(f"OK: all {len(report.checks)} reveals reproduce their published commitments")
     else:
         lines.append(
             f"FAIL: {bad} of {len(report.checks)} reveals do not reproduce their commitments"

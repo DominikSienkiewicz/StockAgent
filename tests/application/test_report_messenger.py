@@ -206,7 +206,6 @@ def test_hard_clamp_never_cuts_the_disclaimer() -> None:
     assert digest.endswith(_PUSH_DISCLAIMER)
 
 
-
 # --- MAIL-25: awaria odczytu rozliczeń ------------------------------------
 
 
@@ -223,12 +222,30 @@ def test_scorecard_on_read_failure_does_not_claim_nothing_closed() -> None:
 def _ranked_input() -> list[SymbolResult]:
     """Watchlista A, B, C; siła = pewność × |ruch| × 100 → A 1,0 · B 5,0 · C 3,0."""
     return [
-        SymbolResult(symbol="AAA", status="saved", trend="BULLISH", confidence_score=0.5,
-                     current_price=Decimal("100"), target_price=Decimal("102")),
-        SymbolResult(symbol="BBB", status="saved", trend="BEARISH", confidence_score=0.5,
-                     current_price=Decimal("100"), target_price=Decimal("90")),
-        SymbolResult(symbol="CCC", status="saved", trend="BULLISH", confidence_score=0.5,
-                     current_price=Decimal("100"), target_price=Decimal("106")),
+        SymbolResult(
+            symbol="AAA",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.5,
+            current_price=Decimal("100"),
+            target_price=Decimal("102"),
+        ),
+        SymbolResult(
+            symbol="BBB",
+            status="saved",
+            trend="BEARISH",
+            confidence_score=0.5,
+            current_price=Decimal("100"),
+            target_price=Decimal("90"),
+        ),
+        SymbolResult(
+            symbol="CCC",
+            status="saved",
+            trend="BULLISH",
+            confidence_score=0.5,
+            current_price=Decimal("100"),
+            target_price=Decimal("106"),
+        ),
     ]
 
 
@@ -240,9 +257,7 @@ def test_digest_lists_signals_in_ranking_order() -> None:
     results = _ranked_input()
     ranked = build_trade_signals(results)
 
-    line = _signals_line(
-        build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked)
-    )
+    line = _signals_line(build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked))
 
     assert [s.strength for s in ranked] == [5.0, 3.0, 1.0]
     assert line.index("BBB") < line.index("CCC") < line.index("AAA")
@@ -255,9 +270,7 @@ def test_digest_shows_at_most_three_signals_with_calibrated_confidence() -> None
         for sig in build_trade_signals(results)
     ]
 
-    line = _signals_line(
-        build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked)
-    )
+    line = _signals_line(build_messenger_digest(results, _STARTED_AT, [], ranked_signals=ranked))
 
     assert line.startswith("Sygnały: 1. 📉 BBB 41%")
     assert "2. 📈 CCC 50%" in line
@@ -268,8 +281,7 @@ def test_digest_shows_at_most_three_signals_with_calibrated_confidence() -> None
 
 def test_digest_opens_with_up_to_three_lead_items() -> None:
     lead = [
-        LeadItem(icon="⚖️", headline=f"S{i} -4,2%, rada PODZIELONA", detail="x")
-        for i in range(4)
+        LeadItem(icon="⚖️", headline=f"S{i} -4,2%, rada PODZIELONA", detail="x") for i in range(4)
     ]
 
     lines = build_messenger_digest([], _STARTED_AT, [], lead_items=lead).splitlines()

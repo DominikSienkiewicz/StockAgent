@@ -56,8 +56,19 @@ class TestSuggestBand:
         assert band.max_pct == pytest.approx(3.0)
 
     def test_clamps_consensus_above_one(self) -> None:
-        # Wejście poza [0,1] nie może wysadzić reguły — clamp do sensownego zakresu.
+        # Wejście poza [0,1] nie może wysadzić reguły — konsensus i dissent clampujemy,
+        # a hit-rate spoza [0,1] to nieznany track record (PORT-14), więc bez pełnej bandy.
         band = suggest_band(consensus_strength=5.0, dissent_ratio=-2.0, hit_rate=2.0)
+        assert band.tier == "standard"
+
+    @pytest.mark.parametrize("hit_rate", [1.0001, 2.0, 55.0])
+    def test_hit_rate_above_one_is_treated_as_cold_start(self, hit_rate: float) -> None:
+        # PORT-14: hit-rate > 1 to błąd skali albo danych, nie „trafia zawsze”.
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=hit_rate)
+        assert band.tier == "standard"
+
+    def test_hit_rate_of_exactly_one_still_allows_full_band(self) -> None:
+        band = suggest_band(consensus_strength=0.9, dissent_ratio=0.0, hit_rate=1.0)
         assert band.tier == "full"
 
     def test_clamps_negative_inputs_to_conservative(self) -> None:
@@ -241,17 +252,13 @@ class TestSizingKnowsPortfolioRisk:
     def test_risk_steps_add_up(self) -> None:
         # Każdy sygnał ryzyka to osobny stopień; starter jest dnem.
         assert (
-            suggest_band(0.9, 0.1, 0.7, portfolio_var=0.05, hedge_effective=False).tier
-            == "starter"
+            suggest_band(0.9, 0.1, 0.7, portfolio_var=0.05, hedge_effective=False).tier == "starter"
         )
 
     def test_risk_applies_after_the_existing_exposure(self) -> None:
         # Ekspozycja zdejmuje stopień, VaR kolejny.
         assert suggest_band(0.9, 0.1, 0.7, current_weight=0.2).tier == "standard"
-        assert (
-            suggest_band(0.9, 0.1, 0.7, current_weight=0.2, portfolio_var=0.05).tier
-            == "starter"
-        )
+        assert suggest_band(0.9, 0.1, 0.7, current_weight=0.2, portfolio_var=0.05).tier == "starter"
 
     @pytest.mark.parametrize(
         ("consensus", "dissent", "hit_rate", "weight", "cluster"), _PRE_RISK_CASES
@@ -268,16 +275,19 @@ class TestSizingKnowsPortfolioRisk:
             consensus, dissent, hit_rate, current_weight=weight, cluster_exposure=cluster
         )
 
-        assert suggest_band(
-            consensus,
-            dissent,
-            hit_rate,
-            current_weight=weight,
-            cluster_exposure=cluster,
-            portfolio_var=None,
-            drawdown=None,
-            hedge_effective=None,
-        ) == phase_two
+        assert (
+            suggest_band(
+                consensus,
+                dissent,
+                hit_rate,
+                current_weight=weight,
+                cluster_exposure=cluster,
+                portfolio_var=None,
+                drawdown=None,
+                hedge_effective=None,
+            )
+            == phase_two
+        )
 
     def test_risk_never_widens_the_band(self) -> None:
         import itertools
@@ -307,7 +317,14 @@ class TestSizingKnowsPortfolioRisk:
                 hedge_effective=hedge,
             )
             assert _TIER_RANK[risky.tier] <= _TIER_RANK[base.tier], (
-                consensus, dissent, hit, weight, cluster, var, dd, hedge
+                consensus,
+                dissent,
+                hit,
+                weight,
+                cluster,
+                var,
+                dd,
+                hedge,
             )
 
 

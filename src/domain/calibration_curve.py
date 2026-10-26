@@ -183,15 +183,11 @@ def expected_calibration_error(buckets: Sequence[CalibrationBucket]) -> float:
     total = sum(b.count for b in buckets)
     if total == 0:
         return 0.0
-    weighted = sum(
-        b.count * abs(b.hit_rate - b.mean_confidence) for b in buckets
-    )
+    weighted = sum(b.count * abs(b.hit_rate - b.mean_confidence) for b in buckets)
     return weighted / total
 
 
-def find_bucket(
-    raw: float, buckets: Sequence[CalibrationBucket]
-) -> CalibrationBucket | None:
+def find_bucket(raw: float, buckets: Sequence[CalibrationBucket]) -> CalibrationBucket | None:
     """Znajduje kubełek, do którego wpada `raw` (semantyka reliability_curve).
 
     Dopasowanie w przedziale półotwartym `[lower, upper)` — spójne z tym, jak
@@ -355,9 +351,7 @@ def probability_scores(
     )
 
 
-def _ece(
-    samples: Sequence[tuple[float, bool]], n_buckets: int, strategy: BucketStrategy
-) -> float:
+def _ece(samples: Sequence[tuple[float, bool]], n_buckets: int, strategy: BucketStrategy) -> float:
     return expected_calibration_error(reliability_curve(samples, n_buckets, strategy))
 
 
@@ -539,4 +533,3 @@ def confidence_reorders_ranking(evidence: DiscriminationEvidence) -> bool:
     if evidence.auc is None or evidence.n_eff < MIN_RANKING_DISCRIMINATION_N_EFF:
         return True
     return evidence.auc >= MIN_INFORMATIVE_AUC
-

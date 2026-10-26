@@ -351,7 +351,9 @@ class TestChangeSince:
 
     def test_top_three_contributors_by_absolute_change(self) -> None:
         portfolio = _portfolio(
-            _pos("A", "10", "1"), _pos("B", "10", "1"), _pos("C", "10", "1"),
+            _pos("A", "10", "1"),
+            _pos("B", "10", "1"),
+            _pos("C", "10", "1"),
             _pos("D", "10", "1"),
         )
         previous = {s: Decimal("10") for s in "ABCD"}
@@ -487,8 +489,9 @@ class TestMarketValueInPln:
 _BOUGHT = date(2025, 3, 3)
 
 
-def _dated(symbol: str, qty: str, price: str, currency: str = "USD",
-           day: date | None = _BOUGHT) -> Position:
+def _dated(
+    symbol: str, qty: str, price: str, currency: str = "USD", day: date | None = _BOUGHT
+) -> Position:
     return Position(
         symbol=symbol,
         quantity=Decimal(qty),
@@ -566,7 +569,10 @@ class TestPlnPnl:
         row = pnl.positions[0]
         assert row.value_pln == Decimal("4840.00")
         assert (row.cost_pln, row.pnl_pln, row.instrument_pln, row.fx_pln) == (
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
         )
         assert row.gap is PlnPnlGap.PURCHASE_DATE_UNKNOWN
         assert pnl.incomplete_symbols == ("AAPL",)
@@ -602,7 +608,9 @@ class TestPlnPnl:
         row = portfolio.pln_pnl({"PKN.WA": Decimal("70")}, PlnRates()).positions[0]
 
         assert (row.pnl_pln, row.instrument_pln, row.fx_pln) == (
-            Decimal("30"), Decimal("30"), Decimal("0"),
+            Decimal("30"),
+            Decimal("30"),
+            Decimal("0"),
         )
 
     def test_unpriced_positions_are_left_out(self) -> None:
@@ -662,9 +670,7 @@ class TestPlnPrices:
     def test_only_held_symbols_are_converted(self) -> None:
         portfolio = _portfolio(_lot("AAPL", "1", "100", "USD"))
 
-        pln = portfolio.pln_prices(
-            {"AAPL": Decimal("100"), "MSFT": Decimal("400")}, _RATES_USD_EUR
-        )
+        pln = portfolio.pln_prices({"AAPL": Decimal("100"), "MSFT": Decimal("400")}, _RATES_USD_EUR)
 
         assert set(pln.prices) == {"AAPL"}
 

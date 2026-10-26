@@ -100,9 +100,7 @@ def test_config_toml_exists() -> None:
 
 
 def test_dependency_sync_installs_anthropic_extra() -> None:
-    sync_cmds = [
-        str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))
-    ]
+    sync_cmds = [str(s.get("run", "")) for s in _steps() if "uv sync" in str(s.get("run", ""))]
     assert sync_cmds, "brak kroku `uv sync` w workflow"
     assert any("--extra anthropic" in cmd for cmd in sync_cmds), (
         "krok `uv sync` musi instalować `--extra anthropic` (LLM_PROVIDER=anthropic)."
@@ -281,9 +279,7 @@ def test_durable_guard_never_counts_a_push_without_the_ledger() -> None:
     script = "git add data/models/price_predictor.ubj && git commit -m weights && git push"
     steps = _agent_publication_steps({"jobs": {"agent": _agent_job({"run": script})}})
 
-    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == [
-        "attestation_enabled"
-    ]
+    assert _missing_publications(_repo_config(**ATTESTATION_ONLY), steps) == ["attestation_enabled"]
 
 
 def test_real_fast_loop_publishes_the_scorecard_once_its_flag_is_on() -> None:
@@ -460,9 +456,7 @@ def test_pages_upload_path_must_be_the_scorecard_dir(path: str | None) -> None:
 def test_pages_upload_never_publishes_public_root_even_for_a_scorecard_there() -> None:
     config = _repo_config(public_scorecard_path="public/index.html")
 
-    violations = _pages_publication_violations(
-        config, _synthetic_workflow(*_pages_steps("public"))
-    )
+    violations = _pages_publication_violations(config, _synthetic_workflow(*_pages_steps("public")))
 
     assert violations, "artefakt Pages `public` zabrałby `public/attestation/`"
 
@@ -489,9 +483,7 @@ def test_third_party_pages_action_must_publish_the_scorecard_dir(
 ) -> None:
     step = _third_party_pages_step(uses, key, path)
 
-    violations = _pages_publication_violations(
-        _repo_config(), _synthetic_workflow(step)
-    )
+    violations = _pages_publication_violations(_repo_config(), _synthetic_workflow(step))
 
     assert violations, f"{uses} z `{key}: {path}` przeszedł strażnika"
 
@@ -502,9 +494,7 @@ def test_third_party_pages_action_of_the_scorecard_dir_alone_is_allowed(
 ) -> None:
     step = _third_party_pages_step(uses, key, "public/scorecard")
 
-    violations = _pages_publication_violations(
-        _repo_config(), _synthetic_workflow(step)
-    )
+    violations = _pages_publication_violations(_repo_config(), _synthetic_workflow(step))
 
     assert violations == []
 
@@ -598,6 +588,69 @@ def test_publication_guard_accepts_the_scorecard_and_the_ledger(
     steps: tuple[dict[str, Any], ...],
 ) -> None:
     assert _unexpected_publications(_repo_config(), _synthetic_workflow(*steps)) == []
+
+
+# WIA-73: Rekor podpisuje root cyklu tokenem OIDC joba agenta. Bez `id-token: write`
+# runner nie wystawia tokenu, więc włączona flaga dawałaby co cykl WARNING zamiast wpisu —
+# twierdzenie bez pokrycia, jak publiczny artefakt bez kroku publikacji.
+REKOR_FLAG = "attestation_rekor_enabled"
+
+
+def _rekor_oidc_violations(
+    config: Mapping[str, Any], specs: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """Joby z `main_agent.py` bez `id-token: write`, gdy flaga Rekora jest włączona.
+
+    Własny blok `permissions:` joba zastępuje uprawnienia workflowu w całości."""
+    if config.get(REKOR_FLAG) is not True:
+        return []
+    violations: list[str] = []
+    for workflow, spec in specs.items():
+        for name, job in (spec.get("jobs") or {}).items():
+            runs_agent = any(
+                "main_agent.py" in str(step.get("run", "")) for step in job.get("steps", [])
+            )
+            permissions = job.get("permissions", spec.get("permissions")) or {}
+            if runs_agent and permissions.get("id-token") != "write":
+                violations.append(f"{workflow}: {name}")
+    return violations
+
+
+def test_rekor_flag_needs_oidc_on_every_agent_job() -> None:
+    assert _rekor_oidc_violations(_repo_config(), _all_workflow_specs()) == []
+
+
+def _oidc_job(permissions: Mapping[str, str] | None) -> dict[str, Any]:
+    job = _agent_job()
+    if permissions is not None:
+        job["permissions"] = dict(permissions)
+    return job
+
+
+def test_rekor_guard_catches_an_agent_job_without_oidc() -> None:
+    specs = {"loop.yml": {"permissions": {"contents": "read"}, "jobs": {"agent": _oidc_job(None)}}}
+
+    assert _rekor_oidc_violations({REKOR_FLAG: True}, specs) == ["loop.yml: agent"]
+
+
+def test_rekor_guard_reads_the_job_permissions_over_the_workflow_ones() -> None:
+    granted = {"contents": "read", "id-token": "write"}
+    specs: dict[str, dict[str, Any]] = {
+        "job.yml": {"jobs": {"agent": _oidc_job(granted)}},
+        "workflow.yml": {"permissions": granted, "jobs": {"agent": _oidc_job(None)}},
+        "narrowed.yml": {
+            "permissions": granted,
+            "jobs": {"agent": _oidc_job({"contents": "read"})},
+        },
+    }
+
+    assert _rekor_oidc_violations({REKOR_FLAG: True}, specs) == ["narrowed.yml: agent"]
+
+
+def test_rekor_guard_is_silent_while_the_flag_is_off() -> None:
+    specs = {"loop.yml": {"jobs": {"agent": _oidc_job(None)}}}
+
+    assert _rekor_oidc_violations({REKOR_FLAG: False}, specs) == []
 
 
 # WIA-16/WIA-52: deploy publicznego scorecardu na Pages. Artefakt to sam katalog
@@ -753,9 +806,7 @@ def test_enabled_push_features_have_channel_secrets_mapped() -> None:
     if not enabled:
         pytest.skip("żadna funkcja push nie jest włączona")
     env = _run_agent_env()
-    unmapped = [
-        key for key in PUSH_CHANNEL_SECRETS if env.get(key) != f"${{{{ secrets.{key} }}}}"
-    ]
+    unmapped = [key for key in PUSH_CHANNEL_SECRETS if env.get(key) != f"${{{{ secrets.{key} }}}}"]
     assert not unmapped, (
         f"{enabled} włączone, ale krok agenta nie mapuje {unmapped} — push nie ma kanału."
     )
@@ -1475,14 +1526,11 @@ def test_ledger_artifact_carries_both_ledger_files_from_config() -> None:
     config = _repo_config()
 
     uploaded = {
-        _normalized(line)
-        for line in str(dict(upload["with"])["path"]).splitlines()
-        if line.strip()
+        _normalized(line) for line in str(dict(upload["with"])["path"]).splitlines() if line.strip()
     }
 
     assert uploaded == {
-        _normalized(str(config[key]))
-        for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
+        _normalized(str(config[key])) for key in (*ATTESTATION_LEDGER_KEYS, PAPER_LEDGER_HEADS_KEY)
     }
 
 
@@ -1494,9 +1542,7 @@ def test_publish_step_commits_the_paper_ledger_heads_next_to_the_ledger() -> Non
     scripts = [str(step.get("run", "")) for job in publish.values() for step in job["steps"]]
 
     assert posixpath.dirname(heads) == _ledger_dir()
-    assert any(
-        _contains(path, heads) for script in scripts for path in _git_added_paths(script)
-    )
+    assert any(_contains(path, heads) for script in scripts for path in _git_added_paths(script))
 
 
 def test_publish_step_commits_the_paper_ledger_heads_it_got(

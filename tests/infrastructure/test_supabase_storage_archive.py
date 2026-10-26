@@ -42,9 +42,7 @@ def test_store_uploads_private_and_returns_signed_url() -> None:
     assert path == "20261015T0530Z-1823.html"
     assert body == "<html>ż</html>".encode()
     assert options == {"content-type": "text/html; charset=utf-8", "upsert": "true"}
-    bucket.create_signed_url.assert_called_once_with(
-        "20261015T0530Z-1823.html", expires_in=604800
-    )
+    bucket.create_signed_url.assert_called_once_with("20261015T0530Z-1823.html", expires_in=604800)
     assert SIGNED_URL_TTL_SECONDS == 604800
     assert url == SIGNED
 

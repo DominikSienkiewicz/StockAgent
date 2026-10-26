@@ -8,15 +8,24 @@ Linie ledgera powstają tu tymi samymi funkcjami domeny, którymi pisze je agent
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pytest_mock import MockerFixture
 
 from src.domain import attestation
 from src.tools import verify_attestation as tool
+from src.tools.verify_rekor import WorkflowIdentity
+from tests.sigstore_support import (
+    OIDC_ENVIRON,
+    fulcio_response,
+    identity_token,
+    json_response,
+    rekor_entry_for,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 _SALT = "0123456789abcdef0123456789abcdef"
@@ -272,9 +281,10 @@ def test_a_ledger_written_by_the_file_publisher_verifies(tmp_path: Path) -> None
     report = tool.verify_ledger(commitments, reveals, malformed=[*bad_commitments, *bad_reveals])
 
     assert report.ok
-    assert json.loads((tmp_path / "commitments.jsonl").read_text(encoding="utf-8"))[
-        "prediction_id"
-    ] == "pred-1"
+    assert (
+        json.loads((tmp_path / "commitments.jsonl").read_text(encoding="utf-8"))["prediction_id"]
+        == "pred-1"
+    )
 
 
 @pytest.mark.parametrize("value", [None, 5, ["x"]])
@@ -392,3 +402,84 @@ def test_a_reveal_from_an_incomplete_cycle_is_reported_as_unproven() -> None:
     assert [check.status for check in report.checks] == [tool.STATUS_INCOMPLETE_CYCLE]
     assert not report.ok
     assert "incomplete cycle" in tool.format_report(report)
+
+
+# --- WIA-73: wpis Rekora w linii rootu cyklu -------------------------------------------
+
+
+def _logged(root_line: dict[str, Any], **entry: Any) -> dict[str, Any]:
+    """Linia rootu z polem `rekor`, jak ją pisze `RekorAttestationPublisher`."""
+    integrated_at = entry.pop("integrated_at", _NOW + timedelta(seconds=3))
+    rekor = rekor_entry_for(str(root_line["root"]), integrated_at=integrated_at, **entry)
+    return {**root_line, "rekor": rekor}
+
+
+def test_a_cycle_root_logged_by_another_workflow_fails_the_verdict() -> None:
+    reveals = _three_reveals()
+    root_line = _logged(
+        _cycle(*reveals),
+        uri="https://github.com/someone/fork/.github/workflows/fast_loop_12h.yml@refs/heads/main",
+    )
+
+    report = tool.verify_ledger([root_line], [_anchored(reveal, root_line) for reveal in reveals])
+
+    assert not report.ok
+    assert any("workflow" in problem for problem in report.problems), report.problems
+
+
+def test_a_cycle_root_logged_by_its_workflow_verifies_and_is_counted() -> None:
+    reveals = _three_reveals()
+    root_line = _logged(_cycle(*reveals))
+
+    report = tool.verify_ledger([root_line], [_anchored(reveal, root_line) for reveal in reveals])
+
+    assert report.ok, tool.format_report(report)
+    assert report.rekor_entries == 1
+    assert "Cycle roots logged in Rekor: 1" in tool.format_report(report)
+
+
+def test_rekor_identity_of_a_fork_is_chosen_by_the_caller() -> None:
+    fork = "https://github.com/someone/fork/.github/workflows/fast_loop_12h.yml@refs/heads/main"
+    root_line = _logged(_cycle(*_three_reveals()), uri=fork)
+
+    report = tool.verify_ledger(
+        [root_line], [], rekor_identity=WorkflowIdentity(repository="someone/fork")
+    )
+
+    assert report.ok, tool.format_report(report)
+
+
+def test_a_ledger_written_by_the_rekor_publisher_verifies(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    # Kontrakt pola `rekor`: to, co pisze adapter, czyta weryfikator.
+    from src.infrastructure.adapters.attestation_publisher import FileAttestationPublisher
+    from src.infrastructure.adapters.rekor_publisher import (
+        FULCIO_SIGNING_CERT_URL,
+        keyless_rekor_publisher,
+    )
+
+    reveals = _three_reveals()
+    root_line = _cycle(*reveals)
+    entry = rekor_entry_for(str(root_line["root"]), integrated_at=_NOW + timedelta(seconds=3))
+    uuid = entry.pop("uuid")
+    mocker.patch("requests.Session.get", return_value=json_response({"value": identity_token()}))
+    mocker.patch(
+        "requests.Session.post",
+        side_effect=lambda url, **_: json_response(
+            fulcio_response() if url == FULCIO_SIGNING_CERT_URL else {uuid: entry}
+        ),
+    )
+    file_publisher = FileAttestationPublisher(
+        commitment_path=str(tmp_path / "commitments.jsonl"),
+        reveal_path=str(tmp_path / "reveals.jsonl"),
+    )
+    keyless_rekor_publisher(file_publisher, OIDC_ENVIRON).publish_commitment(root_line)
+    commitments, malformed = tool.parse_jsonl(
+        (tmp_path / "commitments.jsonl").read_text(encoding="utf-8"), "commitments.jsonl"
+    )
+
+    report = tool.verify_ledger(commitments, [], malformed=malformed)
+
+    assert report.ok, tool.format_report(report)
+    assert report.rekor_entries == 1

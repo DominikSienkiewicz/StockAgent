@@ -84,9 +84,7 @@ def test_aci_interval_is_wider_than_nominal_after_a_volatility_regime_shift() ->
 
 def test_coverage_counts_hits_inside_interval() -> None:
     # Granice wliczają się do pokrycia (przedział domknięty).
-    coverage = realized_coverage(
-        [(-0.02, 0.02, 0.01), (-0.02, 0.02, 0.03), (-0.02, 0.02, -0.02)]
-    )
+    coverage = realized_coverage([(-0.02, 0.02, 0.01), (-0.02, 0.02, 0.03), (-0.02, 0.02, -0.02)])
 
     assert coverage == IntervalCoverage(hits=2, n=3, nominal=1 - NOMINAL_ALPHA)
     assert coverage.rate == pytest.approx(2 / 3)

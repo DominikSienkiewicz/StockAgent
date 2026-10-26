@@ -182,7 +182,9 @@ def test_configure_logging_twice_keeps_one_context_filter() -> None:
         configure_logging("main_agent", (), environ={}, stream=io.StringIO())
 
         filters = [
-            f for handler in root.handlers for f in handler.filters
+            f
+            for handler in root.handlers
+            for f in handler.filters
             if isinstance(f, RunContextFilter)
         ]
     assert len(filters) == 1

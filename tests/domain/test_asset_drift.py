@@ -19,14 +19,16 @@ CYCLE = PriceDelta(Decimal("-0.019"))
 
 class TestEvaluateVolatilityWithDrift:
     def test_cumulative_drift_opens_the_gate_below_the_cycle_move(self) -> None:
-        assert Asset("AAPL").evaluate_volatility(
-            CYCLE, GATE, drift=PriceDelta(Decimal("-0.175"))
-        ) is True
+        assert (
+            Asset("AAPL").evaluate_volatility(CYCLE, GATE, drift=PriceDelta(Decimal("-0.175")))
+            is True
+        )
 
     def test_small_drift_keeps_the_gate_closed(self) -> None:
-        assert Asset("AAPL").evaluate_volatility(
-            CYCLE, GATE, drift=PriceDelta(Decimal("0.0199"))
-        ) is False
+        assert (
+            Asset("AAPL").evaluate_volatility(CYCLE, GATE, drift=PriceDelta(Decimal("0.0199")))
+            is False
+        )
 
     def test_without_drift_the_gate_is_the_cycle_move(self) -> None:
         assert Asset("AAPL").evaluate_volatility(CYCLE, GATE) is False
@@ -34,9 +36,12 @@ class TestEvaluateVolatilityWithDrift:
 
     def test_stale_reference_closes_the_gate_despite_the_drift(self) -> None:
         # FIN-14: po pauzie najpierw re-baseline — dryf nie omija tej reguły.
-        assert Asset("AAPL").evaluate_volatility(
-            CYCLE, GATE, reference_stale=True, drift=PriceDelta(Decimal("-0.3"))
-        ) is False
+        assert (
+            Asset("AAPL").evaluate_volatility(
+                CYCLE, GATE, reference_stale=True, drift=PriceDelta(Decimal("-0.3"))
+            )
+            is False
+        )
 
 
 class TestDriftReference:

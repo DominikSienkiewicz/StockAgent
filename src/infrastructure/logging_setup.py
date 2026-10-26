@@ -153,7 +153,9 @@ def configure_logging(
             handler.removeFilter(stale)
         handler.addFilter(context_filter)
         formatter = handler.formatter
-        if use_json and handler.get_name() == OWNED_HANDLER_NAME and isinstance(
-            formatter, RedactingFormatter
+        if (
+            use_json
+            and handler.get_name() == OWNED_HANDLER_NAME
+            and isinstance(formatter, RedactingFormatter)
         ):
             formatter.inner = JsonFormatter()

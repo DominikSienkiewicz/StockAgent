@@ -156,9 +156,7 @@ class TestPolishRecommendationLabels:
     SPRZEDAJ / TRZYMAJ), jak temat, lead i tabela rady; BUY/SELL zostają w logach."""
 
     def test_flip_html_reads_sprzedaj_kup_without_english(self) -> None:
-        shifts = [
-            ("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))
-        ]
+        shifts = [("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))]
 
         html = render_consensus_shift_html(shifts)
         visible = re.sub(r"<[^>]+>", "", html)
@@ -168,9 +166,7 @@ class TestPolishRecommendationLabels:
         assert "BUY" not in html
 
     def test_flip_text_reads_sprzedaj_kup_without_english(self) -> None:
-        shifts = [
-            ("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))
-        ]
+        shifts = [("NVDA", _shift(ShiftKind.FLIP, previous="SELL", current="BUY", votes_changed=4))]
 
         text = render_consensus_shift_text(shifts)
 

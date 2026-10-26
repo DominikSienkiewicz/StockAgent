@@ -38,7 +38,7 @@ class PriceDelta:
     `fraction` to UŁAMEK zmiany (jednostka `Ratio`: 0.02 = +2%), NIE procent — na
     nim działa bramka volatility i on trafia do stanu grafu (`AgentState.delta`).
     Procent do prezentacji daje `percent`. Dawna nazwa `percentage` była myląca
-    i groziła 100x błędem (finding #33, gap4-1).
+    i groziła 100x błędem (finding #33, gap4-1); alias usunięty w ARCH-14.
     """
 
     fraction: Decimal
@@ -49,16 +49,6 @@ class PriceDelta:
         dla warstwy prezentacji — nie używać do bramki volatility, która
         operuje na ułamku."""
         return to_percent(Ratio(self.fraction))
-
-    @property
-    def percentage(self) -> Decimal:
-        """DEPRECATED alias na `fraction` (zwraca UŁAMEK, nie procent).
-
-        Kod produkcyjny czyta już `fraction` (ARCH-04); alias zostaje tylko dla
-        zgodności wstecz do czasu usunięcia (ARCH-14). Nowy kod używa `fraction`
-        (ułamek) albo `percent` (procent).
-        """
-        return self.fraction
 
     @staticmethod
     def calculate(previous: Money, current: Money) -> "PriceDelta":
@@ -105,9 +95,7 @@ def effective_threshold(
     mnożą się, a oba są >= 1.0 z kontraktu domeny — bramka tylko się zacieśnia.
     `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1."""
     chosen = (
-        crypto_override
-        if asset_type is AssetType.CRYPTO and crypto_override is not None
-        else base
+        crypto_override if asset_type is AssetType.CRYPTO and crypto_override is not None else base
     )
     multiplier = max(regime_multiplier * earnings_multiplier, 1.0)
     if math.isclose(multiplier, 1.0):
@@ -185,9 +173,7 @@ class Asset:
         # ALR-10: ten sam próg (z tymi samymi mnożnikami) dla ruchu od referencji dryfu.
         return drift is not None and abs(drift.fraction) >= threshold.value
 
-    def evaluate_valuation(
-        self, fundamentals: Fundamentals | None
-    ) -> ValuationVerdict:
+    def evaluate_valuation(self, fundamentals: Fundamentals | None) -> ValuationVerdict:
         if self.asset_type is not AssetType.STOCK:
             return ValuationVerdict.UNKNOWN
         if fundamentals is None or fundamentals.peg_ratio is None:
@@ -207,9 +193,7 @@ class Asset:
             return ValuationVerdict.UNDERVALUED
 
         if peg > PEG_OVERVALUED_THRESHOLD or (
-            forward is not None
-            and forward > FORWARD_PE_HIGH
-            and growth < EPS_GROWTH_LOW
+            forward is not None and forward > FORWARD_PE_HIGH and growth < EPS_GROWTH_LOW
         ):
             return ValuationVerdict.OVERVALUED
 

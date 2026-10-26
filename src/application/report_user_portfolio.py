@@ -201,9 +201,7 @@ def _row_weights(pnl: PortfolioPnL, valuation: PlnPrices | None) -> list[str]:
         for row in pnl.positions
     ]
     total = sum((value for value in values if value is not None), Decimal("0"))
-    return [
-        "—" if value is None or total == 0 else _format_pct(value / total) for value in values
-    ]
+    return ["—" if value is None or total == 0 else _format_pct(value / total) for value in values]
 
 
 def _unrated_note(valuation: PlnPrices | None) -> str:
@@ -231,9 +229,7 @@ def _dominant_cluster(exposures: list[ClusterExposure]) -> ClusterExposure | Non
 PORTFOLIO_CHANGE_DEFAULT_LABEL = "od ostatniego maila"
 
 
-def portfolio_change_label(
-    since: datetime | None, now: datetime, display_timezone: str
-) -> str:
+def portfolio_change_label(since: datetime | None, now: datetime, display_timezone: str) -> str:
     """PORT-06: „od ostatniego maila” albo — po pauzie (stęchła referencja wg
     domeny, FIN-14) — „od 19.09.2026”, bo wtedy Δ obejmuje wiele dni."""
     if since is not None and is_reference_stale(since, now):
@@ -305,9 +301,7 @@ def _render_change_text(
     return f"  Zmiana {label}: {_change_amount(change, currency)}{details}"
 
 
-def _change_amounts(
-    change: PortfolioChange, usd_pln: Decimal | None, currency: str
-) -> list[str]:
+def _change_amounts(change: PortfolioChange, usd_pln: Decimal | None, currency: str) -> list[str]:
     amounts = [_format_money(change.change, currency, signed=True)]
     extra = _usd_extra(usd_pln, currency)
     if extra is not None:
@@ -381,8 +375,7 @@ def render_user_portfolio_html(
     freshness = portfolio.freshness(now, max_age_days)
 
     parts: list[str] = [
-        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        + "💼 Twój portfel</h2>"
+        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>" + "💼 Twój portfel</h2>"
     ]
     if freshness is PortfolioFreshness.STALE:
         parts.append(_render_stale_badge_html(max_age_days))
@@ -395,9 +388,7 @@ def render_user_portfolio_html(
                 f"⚠️ {_html.escape(note)}</p>"
             )
     parts.append(
-        _render_totals_html(
-            pnl, usd_pln, partial=bool(unpriced_note), pln=pln, pln_rates=pln_rates
-        )
+        _render_totals_html(pnl, usd_pln, partial=bool(unpriced_note), pln=pln, pln_rates=pln_rates)
     )
     if change is not None:
         parts.append(_render_change_html(change, change_label, usd_pln, change_currency))
@@ -592,8 +583,7 @@ def _cluster_warning_message(cluster: ClusterExposure) -> str:
     symbols = ", ".join(cluster.symbols)
     pct = _format_pct(cluster.weight)
     return (
-        f"Twoje {count} pozycji ({symbols}) to jeden sektor "
-        f"«{cluster.cluster}» — {pct} kapitału."
+        f"Twoje {count} pozycji ({symbols}) to jeden sektor «{cluster.cluster}» — {pct} kapitału."
     )
 
 
@@ -635,10 +625,7 @@ def render_user_portfolio_text(
 
     lines: list[str] = ["=== 💼 Twój portfel ==="]
     if freshness is PortfolioFreshness.STALE:
-        lines.append(
-            f"[STALE] Pozycje starsze niż {max_age_days} dni — "
-            "P/L może być nieaktualny."
-        )
+        lines.append(f"[STALE] Pozycje starsze niż {max_age_days} dni — P/L może być nieaktualny.")
     lines.append("")
 
     weights = _row_weights(pnl, valuation)

@@ -12,8 +12,14 @@ from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import CommitmentLedger, StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.corporate_events import CorporateEventSnapshot
-from src.domain.council import CouncilInput, CouncilVerdict, InvestorOpinion
+from src.domain.council import (
+    FIRST_COUNCIL_ROUND,
+    CouncilInput,
+    CouncilVerdict,
+    InvestorOpinion,
+)
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.direction_variant import DirectionReport
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
 from src.domain.finops import LLMCallEntry, LLMUsage
@@ -41,12 +47,14 @@ from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
-from src.domain.shock import DailyChange
+from src.domain.shadow_prompt import ShadowTrendForecast
+from src.domain.shock import DailyChange, SentShockLevel
 from src.domain.social_velocity import SocialVelocitySnapshot
 from src.domain.subscriber import Subscriber
 from src.domain.training_labels import FeatureSnapshot
 from src.domain.training_provenance import DatasetDescription
 from src.domain.value_objects import AssetType, Fundamentals, Money, Quote
+from src.domain.watchlist import SymbolMute
 
 
 class MarketDataPort(ABC):
@@ -195,6 +203,21 @@ class DeferredDiagnosis:
 
 
 @dataclass(frozen=True)
+class JudgeableDiagnosis:
+    """EXP-10 — błędna predykcja z diagnozą do oceny sędziego z rubryką.
+
+    `prediction` niesie nagłówki, uzasadnienie i ceny wejścia i celu (dowody, na
+    których diagnoza ma się opierać); `actual_price` — cenę rozliczenia; `insight` —
+    tekst, który dziś stoi w `correction_insights` (zapis odrzucenia podmienia go tylko,
+    gdy wciąż tam jest)."""
+
+    prediction: Prediction
+    actual_price: Decimal
+    insight: str
+    predicted_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class OpenReferenceCall:
     """WIA-24 — nierozliczone wywołanie sygnału referencyjnego z id wiersza
     `reference_predictions` (migracja 042), którym rozlicza je kolejny przebieg."""
@@ -211,9 +234,7 @@ class RepositoryPort(ABC):
         """Najnowszy snapshot ceny z `price_snapshots` (nie z prediction_logs)."""
 
     @abstractmethod
-    def get_price_history(
-        self, symbol: str, days: int
-    ) -> list[tuple[datetime, Money]]:
+    def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         """Chronologiczna historia cen z `price_snapshots` (rosnąco po czasie),
         za ostatnie `days` dni. Zasila analizy portfelowe (drawdown, korelacje) —
         wszystko liczone z DARMOWYCH snapshotów, bez płatnych portów. Pusta lista
@@ -278,6 +299,15 @@ class RepositoryPort(ABC):
         `shadow_predictions_enabled`."""
 
     @abstractmethod
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        """EXP-26 — trend i pewność wariantu promptu albo modelu LLM dla jednej
+        predykcji (`shadow_predictions`, kolumny z migracji 083), upsertem po
+        (prediction_id, model_name) jak prognozy nogi ML. Wołane z save_node tylko za
+        flagą `shadow_prompt_variant_enabled`."""
+
+    @abstractmethod
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         """ML-33 — prognozy cienia zapisane od `since` dla ROZLICZONYCH predykcji
         (paginacja), ze zwrotem zrealizowanym 12 h (cena rozliczenia / cena przy
@@ -292,9 +322,7 @@ class RepositoryPort(ABC):
         `regime_hysteresis_enabled`."""
 
     @abstractmethod
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         """ALR-03 — jeden wiersz `regime_history` na cykl: surowy reżim
         z `classify()`, reżim efektywny po histerezie i seria potwierdzeń
         wyjścia z RISK_OFF."""
@@ -507,9 +535,7 @@ class RepositoryPort(ABC):
         parametry nic nie zmieniają."""
 
     @abstractmethod
-    def get_council_votes_for_prediction(
-        self, prediction_id: str
-    ) -> list[InvestorOpinion]:
+    def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         """Głosy rady zapisane dla danej predykcji (`council_votes`).
 
         Napędza counterfactual dissent-replay: gdy predykcja okazała się błędna,
@@ -528,26 +554,18 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def get_resolved_for_calibration(self, days: int) -> list[dict[str, Any]]:
-        """#4 — rozliczone predykcje z `id`, `confidence_score`,
+        """#4 — rozliczone predykcje z `id`, `symbol`, `confidence_score`,
         `is_trend_correct`, `predicted_trend`, `timestamp`, `reasoning_text` do
-        oceny kalibracji (Slow Loop) i krzywych kalibracji (WIA-39).
+        oceny kalibracji (Slow Loop) i krzywych kalibracji (WIA-39); `symbol`
+        wyznacza klasę aktywa mapy izotonicznej (ML-54).
         Pomija wiersze bez `confidence_score`/`is_trend_correct`."""
 
     @abstractmethod
-    def save_calibration(
-        self,
-        prediction_id: str,
-        score: float,
-        insight: str,
-        *,
-        score_version: int | None = None,
-    ) -> None:
-        """#4 — zapisuje ocenę kalibracji pewności (sędzia-LLM, Slow Loop):
-        `confidence_calibration` (0-1, czy deklarowana pewność była uzasadniona)
-        + `calibration_insight` na `prediction_logs` (migracja 016).
-
-        `score_version` (WIA-37) trafia do `calibration_score_version`
-        (migracja 044); None = bez tego klucza w zapisie (wiersz v1)."""
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
+        """WIA-65 — arytmetyczne oceny kalibracji (`id predykcji → confidence_calibration`)
+        JEDNYM zapisem zbiorczym (RPC `save_calibration_scores`, migracja 077) razem
+        z wersją reguły (`calibration_score_version`, 044: 1 liniowa, 2 Brier).
+        `calibration_insight` zostaje bez zmian. Zwraca liczbę zaktualizowanych wierszy."""
 
     @abstractmethod
     def get_persona_accuracy(
@@ -559,9 +577,7 @@ class RepositoryPort(ABC):
         → ważenie wyłączone (każda persona waży 1.0)."""
 
     @abstractmethod
-    def get_persona_track_record(
-        self, window_days: int = 90
-    ) -> dict[str, tuple[float, int]]:
+    def get_persona_track_record(self, window_days: int = 90) -> dict[str, tuple[float, int]]:
         """#3 — surowy track record person rady pod leaderboard w raporcie:
         `{investor_name: (hit_rate, liczba_rozliczonych_głosów)}` (migracja 018).
 
@@ -606,6 +622,22 @@ class RepositoryPort(ABC):
         (WIA-57, migracja 046) jak w `update_prediction_accuracy`."""
 
     @abstractmethod
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        """EXP-10 — błędne predykcje (`is_trend_correct` = false) z ostatnich `days`
+        dni z diagnozą bez oceny sędziego (`diagnosis_judge_score` NULL, migracja
+        078), od najświeższej. Placeholdery bez diagnozy odsiewa wołający
+        (`is_substantive_insight`); atrapy po awarii LLM odpadają."""
+
+    @abstractmethod
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        """EXP-10 — zapisuje wynik rubryki (0–3) w `diagnosis_judge_score` (078).
+        `rejected_insight` (diagnoza poniżej progu) przenosi ten tekst do
+        `rejected_diagnosis` i wstawia w `correction_insights` placeholder
+        `DIAGNOSIS_REJECTED_INSIGHT` — tylko gdy kolumna wciąż niesie ten tekst."""
+
+    @abstractmethod
     def get_persona_vote_outcomes(self, window_days: int = 90) -> list[PersonaVoteOutcome]:
         """WIA-51 — rozliczone głosy person z okna `window_days` (po chwili
         predykcji), bez oceny: RPC `persona_vote_outcomes` (migracja 045).
@@ -631,9 +663,7 @@ class RepositoryPort(ABC):
         dniach. None = okno po dacie utworzenia (działa bez migracji)."""
 
     @abstractmethod
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         """ML-34 — rozliczone predykcje z ostatnich `days` dni, ROSNĄCO po czasie:
         `symbol`, `timestamp`, `price_at_prediction`, `predicted_target_price`,
         `actual_price_after_12h`. Zasila okno kalibracyjne przedziału ruchu.
@@ -707,6 +737,12 @@ class RepositoryPort(ABC):
         Brak funkcji (071 niezaaplikowana) albo baza nie odpowiada leci `PortError`."""
 
     @abstractmethod
+    def get_db_size_report(self) -> list[RelationSize]:
+        """NIEZ-37 — rozmiar każdej relacji schematu `public` z indeksami i TOAST
+        (RPC `db_size_report`, migracja 077), od największej. Brak funkcji przed
+        migracją wychodzi jako `NotFound`."""
+
+    @abstractmethod
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         """FIN-05 — które z `columns` nie istnieją w `prediction_logs` (select bez
         wierszy). Brak kolumny to wyłącznie kod 42703; każdy inny błąd (sieć, timeout,
@@ -722,10 +758,28 @@ class RepositoryPort(ABC):
 
     @abstractmethod
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
-        """#11 — persystuje wysłany alert szoku (migracja 021).
-        `UNIQUE(symbol, alert_date)` egzekwuje debounce po stronie bazy."""
+        """#11 — persystuje alert szoku PO jego wysyłce (migracja 021).
+
+        Kontrakt at-least-once (ALR-14, ALR-23): watch wysyła push PRZED zapisem, więc
+        `UNIQUE(symbol, alert_date)` — od migracji 081 `UNIQUE(symbol, alert_date, level)`
+        — chroni tylko przed drugim WIERSZEM, nie przed drugim pushem. Dwa nakładające się
+        przebiegi albo nieudany zapis mogą wysłać ten sam alert (ten sam szczebel) dwa
+        razy; kolizja klucza kończy się wyjątkiem, który watch tylko loguje. Nie polegaj
+        na tym zapisie jako blokadzie wysyłki — debounce przed wysyłką robią
+        `should_emit` / `should_escalate` na odczycie `get_sent_shock_alerts` /
+        `get_shock_alert_levels`.
+
+        `level` (ALR-16) to szczebel drabiny eskalacji: 1 = pierwszy alert dnia, zapisany
+        bez klucza `level` (DEFAULT z 081, zapis jak przed migracją); 2 = eskalacja,
+        tylko za flagą `shock_escalation_enabled` po migracji 081."""
+
+    @abstractmethod
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        """ALR-16 — szczeble drabiny eskalacji wysłane w dniu `alert_date` (kolumna
+        `level`, migracja 081): symbol → szczeble rosnąco. Bez 081 → `PortError`;
+        wołający pilnuje flagi `shock_escalation_enabled`."""
 
     @abstractmethod
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
@@ -821,6 +875,8 @@ class RepositoryPort(ABC):
         prediction_id: str,
         symbol: str,
         votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         """Strukturalny audit trail rady — jedna linia per inwestor.
 
@@ -836,6 +892,14 @@ class RepositoryPort(ABC):
         Same tokeny, koszt i identyfikatory — bez treści promptu. Pusta lista =
         no-op. Wołający pilnuje flagi `cost_ledger_enabled` (bez migracji 040
         zapis kończyłby się błędem PostgREST)."""
+
+    @abstractmethod
+    def get_llm_cost_since(self, since: datetime) -> float:
+        """FIN-25 — suma `llm_calls.cost_usd` z wierszy od `since` (włącznie), w USD.
+
+        Wiersz bez wyceny (`cost_usd` NULL, model spoza cennika) nie wchodzi do sumy,
+        więc wynik jest dolną granicą wydatku. Bez migracji 040 → `PortError`;
+        wołający decyduje, czy błąd odczytu zamyka płatne wywołania (FIN-25: nie)."""
 
     @abstractmethod
     def save_cycle_run(self, run: CycleRun) -> None:
@@ -1091,6 +1155,13 @@ class TrainingDataPort(ABC):
 # je przed normalizacją analizy i dopisuje flagę jakości `llm_failover`.
 LLM_FAILOVER_PROVIDER_KEY = "_llm_provider"
 LLM_FAILOVER_MODEL_KEY = "_llm_model"
+# FIN-21: klucz, którym kaskada routingu modeli znakuje wynik `LLMPort.analyze`
+# modelem, który faktycznie odpowiedział (`dostawca:model`). Graf zdejmuje go przed
+# normalizacją analizy i zapisuje jako `model_used` w kwicie v2.
+LLM_ROUTED_MODEL_KEY = "_llm_routed_model"
+# FIN-21 (G50): znacznik kaskady, że eskalacja do frontiera padła i wynik to opłacona
+# odpowiedź taniego modelu. Graf zdejmuje go i dopisuje flagę jakości `escalation_failed`.
+LLM_ESCALATION_FAILED_KEY = "_llm_escalation_failed"
 
 
 class LLMPort(ABC):
@@ -1101,7 +1172,8 @@ class LLMPort(ABC):
         """Główna analiza — zwraca ustrukturyzowany JSON wg output_schema z promptu.
 
         Wynik od dostawcy zapasowego (NIEZ-44) niesie dodatkowo
-        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`."""
+        `LLM_FAILOVER_PROVIDER_KEY` i `LLM_FAILOVER_MODEL_KEY`, a wynik kaskady
+        routingu modeli (FIN-21) — `LLM_ROUTED_MODEL_KEY`."""
 
     @abstractmethod
     def analyze_mistake(self, prompt: str) -> str:
@@ -1337,6 +1409,74 @@ class DigestArchivePort(ABC):
 
 
 @dataclass(frozen=True)
+class UserMessage:
+    """MAIL-48 — wiadomość właściciela z czatu bota: `update_id` dostawcy, czat, treść."""
+
+    update_id: int
+    chat_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class UserMessageBatch:
+    """MAIL-48 — paczka nowych wiadomości z dozwolonych czatów.
+
+    `next_offset` to offset, od którego pobrać następną paczkę (ostatni widziany
+    `update_id` + 1, także gdy wiadomość odpadła na allowliście albo nie miała
+    tekstu); None = nic nowego, offset bez zmian."""
+
+    messages: tuple[UserMessage, ...]
+    next_offset: int | None
+
+
+class UserCommandSourcePort(ABC):
+    """MAIL-48 — źródło komend właściciela (Telegram `getUpdates`).
+
+    Adapter przepuszcza wyłącznie czaty z allowlisty — obcy czat nie dociera do
+    use case'u. Błąd dostawcy leci jako `PortError`."""
+
+    @abstractmethod
+    def fetch_messages(self, offset: int | None) -> UserMessageBatch: ...
+
+
+class CommandReplyPort(ABC):
+    """MAIL-48 — odpowiedź bota na komendę (czysty tekst). Błąd → `PortError`."""
+
+    @abstractmethod
+    def reply(self, chat_id: str, text: str) -> None: ...
+
+
+class BotStatePort(ABC):
+    """MAIL-48 — offset pollingu bota (tabela `bot_state`, migracja 079)."""
+
+    @abstractmethod
+    def get_update_offset(self) -> int | None:
+        """Zapisany offset; None = bot jeszcze niczego nie obsłużył."""
+
+    @abstractmethod
+    def save_update_offset(self, offset: int) -> None: ...
+
+
+class SymbolMutePort(ABC):
+    """MAIL-45 — wyciszenia symboli z bota (tabela `symbol_mutes`, migracja 080).
+
+    Decyzja 2026-10-23 (opcja b): baza trzyma tylko wyciszenia, symbole dodaje
+    wyłącznie config.toml. Błąd odczytu i zapisu leci jako `PortError`."""
+
+    @abstractmethod
+    def get_symbol_mutes(self) -> list[SymbolMute]:
+        """Wszystkie zapisane wyciszenia, także wygasłe — aktywność ocenia domena."""
+
+    @abstractmethod
+    def mute_symbol(self, symbol: str, muted_until: datetime, *, muted_at: datetime) -> None:
+        """Wycisza symbol do `muted_until`; ponowne wyciszenie nadpisuje poprzednie."""
+
+    @abstractmethod
+    def unmute_symbol(self, symbol: str) -> None:
+        """Usuwa wyciszenie symbolu; brak wyciszenia to nie błąd."""
+
+
+@dataclass(frozen=True)
 class Tool:
     """#6 — read-only narzędzie udostępniane modelowi w pętli tool-use.
 
@@ -1355,9 +1495,7 @@ class ToolUseLLMPort(ABC):
     cap rund (FinOps). Zwraca ustrukturyzowany JSON jak `LLMPort.analyze`."""
 
     @abstractmethod
-    def analyze_with_tools(
-        self, prompt: str, tools: Sequence[Tool]
-    ) -> dict[str, Any]: ...
+    def analyze_with_tools(self, prompt: str, tools: Sequence[Tool]) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -1503,4 +1641,3 @@ class CircuitStatePort(ABC):
     @abstractmethod
     def circuit_states(self) -> tuple[CircuitState, ...]:
         """Obwody hostów, z którymi proces rozmawiał (otwarte i zamknięte)."""
-

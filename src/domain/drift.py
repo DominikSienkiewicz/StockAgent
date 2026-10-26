@@ -105,9 +105,7 @@ def recent_window_psi(
     if len(_finite(reference)) < MIN_PSI_SAMPLES or len(_finite(recent)) < MIN_PSI_SAMPLES:
         return None
     edges = quantile_edges(reference, bins)
-    return population_stability_index(
-        bin_fractions(reference, edges), bin_fractions(recent, edges)
-    )
+    return population_stability_index(bin_fractions(reference, edges), bin_fractions(recent, edges))
 
 
 @dataclass(frozen=True)

@@ -99,9 +99,7 @@ def overdue_jobs(
     now: datetime,
 ) -> tuple[str, ...]:
     """Nazwy spóźnionych jobów, w kolejności oczekiwań."""
-    return tuple(
-        e.job for e in expectations if _expectation_overdue(e, last_seen.get(e.job), now)
-    )
+    return tuple(e.job for e in expectations if _expectation_overdue(e, last_seen.get(e.job), now))
 
 
 class JobState(StrEnum):

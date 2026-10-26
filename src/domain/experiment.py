@@ -183,9 +183,7 @@ def validate_experiments(experiments: Sequence[Experiment]) -> None:
                 )
 
 
-def active_arms(
-    experiments: Iterable[Experiment], symbol: str, cycle_date: date
-) -> dict[str, str]:
+def active_arms(experiments: Iterable[Experiment], symbol: str, cycle_date: date) -> dict[str, str]:
     """Ramiona AKTYWNYCH eksperymentów symbolu w dniu cyklu: `{id: ramię}`.
     Puste = brak aktywnego eksperymentu, cykl jak bez eksperymentów."""
     return {

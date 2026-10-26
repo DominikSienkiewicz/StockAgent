@@ -232,9 +232,7 @@ def test_previous_verdict_reads_the_latest_saved_council_verdict() -> None:
         dissenting_views=("Warren Buffett: drogo",),
         investor_opinions=(_opinion("Cathie Wood", "BUY"),),
     )
-    repo.save_prediction(
-        _record(council_verdict=dataclasses.asdict(verdict), sentiment_score=0.25)
-    )
+    repo.save_prediction(_record(council_verdict=dataclasses.asdict(verdict), sentiment_score=0.25))
 
     previous = repo.get_previous_verdict("NVDA")
 
@@ -242,3 +240,121 @@ def test_previous_verdict_reads_the_latest_saved_council_verdict() -> None:
     assert previous.verdict == verdict
     assert previous.sentiment_score == pytest.approx(0.25)
     assert previous.timestamp == START
+
+
+def test_llm_cost_since_sums_priced_calls_saved_in_the_window() -> None:
+    """FIN-25: okno limitu liczy wiersze ledgera po chwili zapisu (jak
+    `llm_calls.created_at`); wiersz bez wyceny nie wchodzi do sumy."""
+    from src.domain.finops import LLMCallEntry, LLMUsage
+
+    def entry(cost: float | None) -> LLMCallEntry:
+        return LLMCallEntry(
+            run_id="local",
+            node="predict",
+            symbol="NVDA",
+            usage=LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1),
+            cost_usd=cost,
+            price_as_of=None,
+        )
+
+    clock = _Clock()
+    repo = _repo(clock)
+    repo.save_llm_calls([entry(0.5)])
+    clock.advance(hours=2)
+    repo.save_llm_calls([entry(0.25), entry(None)])
+
+    assert repo.get_llm_cost_since(START + timedelta(hours=1)) == pytest.approx(0.25)
+    assert repo.get_llm_cost_since(START) == pytest.approx(0.75)
+
+
+def test_variant_trend_row_stays_out_of_the_ml_leg_read() -> None:
+    # EXP-26: wiersz wariantu LLM dzieli tabelę z nogą ML, ale odczyt ML-33 go pomija.
+    from src.domain.prediction import TrendDirection
+    from src.domain.promotion import ShadowForecast
+    from src.domain.shadow_prompt import ShadowTrendForecast
+
+    clock = _Clock()
+    repo = _repo(clock)
+    prediction_id = repo.save_prediction(_record())
+    repo.save_shadow_predictions(
+        prediction_id, "NVDA", [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+    )
+    repo.save_shadow_trend_prediction(
+        prediction_id,
+        "NVDA",
+        ShadowTrendForecast("llm_variant", "e" * 64, TrendDirection.BEARISH, 0.7),
+    )
+    clock.advance(12)
+    repo.update_prediction_accuracy(prediction_id, Decimal("103.00"), 1.0, True, "Trafiona.")
+
+    settled = repo.get_settled_shadow_predictions(START - timedelta(hours=1))
+
+    assert [row.forecast.model_name for row in settled] == ["champion"]
+
+
+def test_judged_diagnoses_leave_the_sample_and_a_rejection_hides_the_lesson() -> None:
+    # EXP-10: ocena wypisuje diagnozę z próbki, odrzucenie zostawia tekst w
+    # `rejected_diagnosis`, a w `correction_insights` placeholder poza lessons i RAG.
+    from src.domain.prediction import DIAGNOSIS_REJECTED_INSIGHT
+
+    clock = _Clock()
+    repo = _repo(clock)
+    kept = repo.save_prediction(_record("NVDA"))
+    rejected = repo.save_prediction(_record("AMD"))
+    clock.advance(12)
+    repo.update_prediction_accuracy(kept, Decimal("90"), 0.1, False, "Zignorowałem Fed.")
+    repo.update_prediction_accuracy(rejected, Decimal("90"), 0.1, False, "Rynek był zmienny.")
+
+    sample = repo.get_diagnoses_to_judge(7)
+    repo.save_diagnosis_judgement(kept, score=3)
+    repo.save_diagnosis_judgement(rejected, score=1, rejected_insight="Inny tekst.")
+    repo.save_diagnosis_judgement(rejected, score=1, rejected_insight="Rynek był zmienny.")
+    repo.save_diagnosis_judgement("missing", score=0)
+
+    assert sorted(row.insight for row in sample) == ["Rynek był zmienny.", "Zignorowałem Fed."]
+    assert repo.get_diagnoses_to_judge(7) == []
+    rows = {row["symbol"]: row for row in repo.get_recently_resolved_predictions(24)}
+    assert rows["AMD"]["correction_insights"] == DIAGNOSIS_REJECTED_INSIGHT
+    assert rows["AMD"]["rejected_diagnosis"] == "Rynek był zmienny."
+    assert rows["NVDA"]["correction_insights"] == "Zignorowałem Fed."
+
+
+def test_shock_alert_levels_follow_the_ladder_rungs() -> None:
+    # ALR-16: drugi szczebel dnia mieści się obok pierwszego, ten sam szczebel odbija
+    # się jak UNIQUE(symbol, alert_date, level) z migracji 081.
+    from datetime import date
+
+    from src.domain.shock import SentShockLevel, ShockDirection
+
+    repo = _repo(_Clock())
+    day = date(2026, 10, 24)
+    repo.save_shock_alert("NVDA", day, -0.045, "DOWN")
+    repo.save_shock_alert("NVDA", day, -0.095, "DOWN", level=2)
+
+    assert repo.get_sent_shock_alerts(day) == {("NVDA", day)}
+    assert repo.get_shock_alert_levels(day) == {
+        "NVDA": (
+            SentShockLevel(level=1, direction=ShockDirection.DOWN),
+            SentShockLevel(level=2, direction=ShockDirection.DOWN),
+        )
+    }
+    with pytest.raises(ValueError, match="already exists"):
+        repo.save_shock_alert("NVDA", day, -0.12, "DOWN", level=2)
+
+
+def test_revision_votes_sit_next_to_the_first_round_and_reads_stay_on_round_one() -> None:
+    # ML-40: klucz jak UNIQUE(prediction_id, investor_name, round) z migracji 082;
+    # odczyty (dissent-replay, historia, redundancja) biorą niezależną rundę 1.
+    repo = _repo(_Clock())
+    prediction_id = repo.save_prediction(_record())
+    repo.save_council_votes(prediction_id, "NVDA", [_opinion("Cathie Wood", "SELL")])
+    repo.save_council_votes(prediction_id, "NVDA", [_opinion("Cathie Wood", "BUY")], debate_round=2)
+
+    votes = repo.get_council_votes_for_prediction(prediction_id)
+    history = repo.get_council_vote_history(["NVDA"], window_days=30)
+
+    assert [(vote.investor_name, vote.recommendation) for vote in votes] == [
+        ("Cathie Wood", "SELL")
+    ]
+    assert [h.recommendations for h in history] == [("SELL",)]
+    assert [s.recommendation for s in repo.get_council_vote_samples()] == ["SELL"]

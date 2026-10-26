@@ -57,9 +57,7 @@ def adapter_with_client(
 ) -> tuple[ToolCallingAnthropicAdapter, MagicMock]:
     mock_client = MagicMock()
     mock_anthropic_class.return_value = mock_client
-    adapter = ToolCallingAnthropicAdapter(
-        api_key="sk-ant-test", model="claude-sonnet-4-6"
-    )
+    adapter = ToolCallingAnthropicAdapter(api_key="sk-ant-test", model="claude-sonnet-4-6")
     return adapter, mock_client
 
 
@@ -122,9 +120,7 @@ class TestSingleToolRound:
         tool_func = MagicMock(return_value={"pe": 18.5})
         tool = _make_tool(tool_func)
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("tu_1", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("tu_1", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response(json.dumps({"trend_direction": "BEARISH"})),
         ]
 
@@ -140,9 +136,7 @@ class TestSingleToolRound:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 18.5}))
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("tu_42", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("tu_42", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response("{}"),
         ]
 
@@ -153,9 +147,7 @@ class TestSingleToolRound:
         # Ostatnia wiadomość to user z blokiem tool_result.
         last = messages[-1]
         assert last["role"] == "user"
-        tool_results = [
-            b for b in last["content"] if b.get("type") == "tool_result"
-        ]
+        tool_results = [b for b in last["content"] if b.get("type") == "tool_result"]
         assert len(tool_results) == 1
         assert tool_results[0]["tool_use_id"] == "tu_42"
         assert json.loads(tool_results[0]["content"]) == {"pe": 18.5}
@@ -167,9 +159,7 @@ class TestSingleToolRound:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("tu_a", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("tu_a", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response("{}"),
         ]
 
@@ -206,12 +196,8 @@ class TestMaxRoundsCap:
         mock_anthropic_class.return_value = client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("c1", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
-            _tool_use_response(
-                [_tool_use_block("c2", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("c1", "get_fundamentals", {"symbol": "AAPL"})]),
+            _tool_use_response([_tool_use_block("c2", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response(json.dumps({"trend_direction": "NEUTRAL"})),
         ]
         adapter = ToolCallingAnthropicAdapter(
@@ -231,9 +217,7 @@ class TestMaxRoundsCap:
         mock_anthropic_class.return_value = client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("c1", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("c1", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response(json.dumps({"trend_direction": "NEUTRAL"})),
         ]
         adapter = ToolCallingAnthropicAdapter(
@@ -260,9 +244,7 @@ class TestToolErrorResilience:
 
         tool = _make_tool(boom)
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("tu_err", "get_fundamentals", {"symbol": "AAPL"})]
-            ),
+            _tool_use_response([_tool_use_block("tu_err", "get_fundamentals", {"symbol": "AAPL"})]),
             _final_response(json.dumps({"trend_direction": "BULLISH"})),
         ]
 
@@ -271,9 +253,7 @@ class TestToolErrorResilience:
         assert result == {"trend_direction": "BULLISH"}
         second_call = client.messages.create.call_args_list[1]
         last = second_call.kwargs["messages"][-1]
-        tool_results = [
-            b for b in last["content"] if b.get("type") == "tool_result"
-        ]
+        tool_results = [b for b in last["content"] if b.get("type") == "tool_result"]
         payload = json.loads(tool_results[0]["content"])
         assert "error" in payload
         assert "network down" in payload["error"]
@@ -284,18 +264,14 @@ class TestToolErrorResilience:
         adapter, client = adapter_with_client
         tool = _make_tool(MagicMock(return_value={"pe": 1.0}))
         client.messages.create.side_effect = [
-            _tool_use_response(
-                [_tool_use_block("tu_u", "nonexistent_tool", {"x": 1})]
-            ),
+            _tool_use_response([_tool_use_block("tu_u", "nonexistent_tool", {"x": 1})]),
             _final_response("{}"),
         ]
 
         adapter.analyze_with_tools("Predict.", [tool])
 
         last = client.messages.create.call_args_list[1].kwargs["messages"][-1]
-        tool_results = [
-            b for b in last["content"] if b.get("type") == "tool_result"
-        ]
+        tool_results = [b for b in last["content"] if b.get("type") == "tool_result"]
         assert "error" in json.loads(tool_results[0]["content"])
 
 

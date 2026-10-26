@@ -148,7 +148,6 @@ def price_features(history: Iterable[tuple[datetime, float]], as_of: datetime) -
     )
 
 
-
 # ML-11: σ zwrotów symbolu do normalizacji targetu modelu wspólnego (zwrot / σ).
 # Zwroty liczone między KOLEJNYMI snapshotami ceny (cykl do cyklu — ta sama skala co
 # target „zwrot do następnego cyklu”), z ostatnich `SIGMA_WINDOW_CYCLES` cykli.
@@ -181,14 +180,10 @@ def return_sigma(history: Iterable[tuple[datetime, float]], as_of: datetime) -> 
     cutoff = as_of - SAME_CYCLE_TOLERANCE
     prices = [
         float(price)
-        for moment, price in sorted(
-            (moment, price) for moment, price in history if moment < cutoff
-        )
+        for moment, price in sorted((moment, price) for moment, price in history if moment < cutoff)
         if math.isfinite(price) and price > 0
     ]
-    returns = [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)][
-        -SIGMA_WINDOW_CYCLES:
-    ]
+    returns = [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)][-SIGMA_WINDOW_CYCLES:]
     if len(returns) < SIGMA_MIN_RETURNS:
         return None
     return max(statistics.stdev(returns), SIGMA_FLOOR)

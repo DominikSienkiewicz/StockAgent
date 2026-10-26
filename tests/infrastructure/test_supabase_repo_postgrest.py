@@ -40,7 +40,10 @@ from testcontainers.core.network import Network
 from testcontainers.postgres import PostgresContainer
 
 from src.application.errors import NotFound, PortError
+from src.domain.council import InvestorOpinion, Recommendation
+from src.domain.watchlist import SymbolMute
 from src.infrastructure.adapters import supabase_repo
+from src.infrastructure.adapters.bot_store import SupabaseBotStore
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from tests.infrastructure.test_migrations import (
     PGVECTOR_IMAGE,
@@ -399,10 +402,172 @@ class TestPagination:
         assert stamps == sorted(stamps)
 
 
-class TestSchemaAndRoles:
-    def test_unknown_column_is_rejected_as_not_found(
+class TestLlmCostLedger:
+    def test_llm_cost_since_sums_priced_rows_of_the_window_past_the_row_cap(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # FIN-25: suma okna limitu z wierszy `llm_calls` (040) — także ponad limit
+        # 1000 wierszy PostgREST; wiersz bez wyceny i wiersz sprzed okna poza sumą.
+        since = datetime(2026, 10, 25, tzinfo=UTC)
+        in_window = POSTGREST_MAX_ROWS + 205
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) "
+                "SELECT 't17-fin25', 'predict', 'anthropic', 'm', 1, 1, 0.002, "
+                "%s::timestamptz + g * interval '1 second' "
+                "FROM generate_series(1, %s) AS g",
+                (since.isoformat(), in_window),
+            )
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) VALUES "
+                "('t17-fin25', 'predict', 'anthropic', 'm', 1, 1, NULL, %s), "
+                "('t17-fin25', 'predict', 'anthropic', 'm', 1, 1, 5.0, %s)",
+                (
+                    (since + timedelta(hours=1)).isoformat(),
+                    (since - timedelta(seconds=1)).isoformat(),
+                ),
+            )
+
+        spent = repository.get_llm_cost_since(since)
+
+        assert spent == pytest.approx(in_window * 0.002)
+
+
+class TestShadowTrendPrediction:
+    """EXP-26 (migracja 083): trend wariantu promptu albo modelu LLM ląduje w
+    `shadow_predictions` obok predykcji, upsertem po (prediction_id, model_name),
+    a odczyt nogi ML (ML-33) go pomija."""
+
+    VERSION = "e" * 64
+
+    @staticmethod
+    def _rows(conn: psycopg2.extensions.connection, prediction_id: str) -> list[tuple[Any, ...]]:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT model_name, model_version, predicted_trend, confidence_score, "
+                "predicted_return, proba FROM shadow_predictions WHERE prediction_id = %s",
+                (prediction_id,),
+            )
+            return list(cur.fetchall())
+
+    def test_variant_trend_round_trips_and_a_rerun_overwrites_it(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        from src.domain.prediction import TrendDirection
+        from src.domain.shadow_prompt import ShadowTrendForecast
+
+        prediction_id = repository.save_prediction(prediction_record("T17SHT"))
+
+        for trend, confidence in ((TrendDirection.BEARISH, 0.7), (TrendDirection.BULLISH, 0.6)):
+            repository.save_shadow_trend_prediction(
+                prediction_id,
+                "T17SHT",
+                ShadowTrendForecast("llm_variant", self.VERSION, trend, confidence),
+            )
+
+        assert self._rows(postgrest_stack.conn, prediction_id) == [
+            ("llm_variant", self.VERSION, "BULLISH", 0.6, None, None)
+        ]
+
+    def test_the_ml_leg_read_skips_variant_rows(self, repository: SupabaseRepository) -> None:
+        from src.domain.prediction import TrendDirection
+        from src.domain.promotion import ShadowForecast
+        from src.domain.shadow_prompt import ShadowTrendForecast
+
+        since = datetime.now(UTC) - timedelta(minutes=1)
+        prediction_id = repository.save_prediction(prediction_record("T17SHML"))
+        repository.save_shadow_predictions(
+            prediction_id, "T17SHML", [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+        )
+        repository.save_shadow_trend_prediction(
+            prediction_id,
+            "T17SHML",
+            ShadowTrendForecast("llm_variant", self.VERSION, TrendDirection.SIDEWAYS, 0.5),
+        )
+        repository.update_prediction_accuracy(
+            prediction_id, Decimal("190.0"), 0.9, True, "Trafiona predykcja."
+        )
+
+        settled = [
+            row
+            for row in repository.get_settled_shadow_predictions(since)
+            if row.prediction_id == prediction_id
+        ]
+
+        assert [row.forecast.model_name for row in settled] == ["champion"]
+
+
+class TestShockAlertLevels:
+    """ALR-16 (migracja 081): szczebel 1 bez klucza `level`, eskalacja z kluczem —
+    oba przez prawdziwy PostgREST, odczyt szczebli dnia i odbicie powtórzonego szczebla."""
+
+    def test_rungs_round_trip_and_a_repeated_rung_is_rejected(
         self, repository: SupabaseRepository
     ) -> None:
+        from datetime import date
+
+        from src.domain.shock import SentShockLevel, ShockDirection
+
+        day = date(2026, 10, 24)
+        repository.save_shock_alert("T17SA", day, -0.045, "DOWN")
+        repository.save_shock_alert("T17SA", day, -0.095, "DOWN", level=2)
+
+        assert repository.get_shock_alert_levels(day)["T17SA"] == (
+            SentShockLevel(level=1, direction=ShockDirection.DOWN),
+            SentShockLevel(level=2, direction=ShockDirection.DOWN),
+        )
+        with pytest.raises(PortError):
+            repository.save_shock_alert("T17SA", day, -0.12, "DOWN", level=2)
+
+
+class TestCouncilVoteRounds:
+    """ML-40 (migracja 082): runda 1 bez klucza `round`, rewizja z kluczem, upsert na
+    (prediction_id, investor_name, round) — przez prawdziwy PostgREST."""
+
+    @staticmethod
+    def _vote(recommendation: Recommendation) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name="Cathie Wood",
+            recommendation=recommendation,
+            confidence=0.7,
+            reasoning="Test.",
+            key_factors=("test",),
+        )
+
+    def test_rounds_upsert_side_by_side_and_reads_take_round_one(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+            rounds = SupabaseRepository(
+                url=postgrest_stack.base_url,
+                key=jwt_for("service_role"),
+                council_votes_upsert_enabled=True,
+                council_vote_rounds_enabled=True,
+            )
+        prediction_id = repository.save_prediction(prediction_record("T17CV"))
+
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("SELL")])
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("BUY")], debate_round=2)
+        # Re-run tej samej godziny: upsert nadpisuje rundę 1 zamiast dopisać trzeci wiersz.
+        rounds.save_council_votes(prediction_id, "T17CV", [self._vote("HOLD")])
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT round, recommendation FROM council_votes "
+                "WHERE prediction_id = %s ORDER BY round",
+                (prediction_id,),
+            )
+            stored = cur.fetchall()
+        assert stored == [(1, "HOLD"), (2, "BUY")]
+        assert [
+            vote.recommendation for vote in rounds.get_council_votes_for_prediction(prediction_id)
+        ] == ["HOLD"]
+
+
+class TestSchemaAndRoles:
+    def test_unknown_column_is_rejected_as_not_found(self, repository: SupabaseRepository) -> None:
         # Incydent 013: klucz bez migracji → PGRST204 i cały zapis predykcji przepada.
         with pytest.raises(NotFound) as excinfo:
             repository.save_prediction(prediction_record("T17NC", not_a_column=1))
@@ -410,9 +575,7 @@ class TestSchemaAndRoles:
         assert isinstance(excinfo.value, APIError)
         assert excinfo.value.code == "PGRST204"
 
-    def test_anon_key_cannot_write_predictions(
-        self, postgrest_stack: PostgrestStack
-    ) -> None:
+    def test_anon_key_cannot_write_predictions(self, postgrest_stack: PostgrestStack) -> None:
         # 038: RLS bez polityk i granty odebrane rolom publicznym — klucz anon
         # nie zapisze ani nie przeczyta niczego.
         anonymous = make_repository(postgrest_stack, role="anon")
@@ -421,3 +584,109 @@ class TestSchemaAndRoles:
             anonymous.save_prediction(prediction_record("T17AN"))
 
         assert _stored_target_prices(postgrest_stack.conn, "T17AN") == []
+
+
+class TestBotStoreContract:
+    """MAIL-48 / MAIL-45: `SupabaseBotStore` na prawdziwym PostgREST — upsert offsetu
+    po kanale, upsert i usunięcie wyciszenia po symbolu, odczyt jako `SymbolMute`."""
+
+    def test_offset_and_mutes_round_trip_through_postgrest(
+        self, postgrest_stack: PostgrestStack
+    ) -> None:
+        store = SupabaseBotStore(
+            _root_rest_client(postgrest_stack.base_url, jwt_for("service_role"))
+        )
+        until = datetime(2026, 11, 8, 8, 0, tzinfo=UTC)
+        muted_at = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
+
+        assert store.get_update_offset() is None
+        store.save_update_offset(870000002)
+        store.save_update_offset(870000004)
+        store.mute_symbol("t17mu", until - timedelta(days=7), muted_at=muted_at)
+        store.mute_symbol("T17MU", until, muted_at=muted_at)
+        store.mute_symbol("T17UN", until, muted_at=muted_at)
+        store.unmute_symbol("t17un")
+
+        assert store.get_update_offset() == 870000004
+        assert store.get_symbol_mutes() == [SymbolMute("T17MU", until)]
+
+
+class TestCalibrationScoresRpc:
+    """WIA-65: zbiorczy zapis ocen kalibracji przez prawdziwy PostgREST (migracja 077)."""
+
+    def test_bulk_write_reaches_every_listed_prediction(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        first = repository.save_prediction(prediction_record("T17CAL"))
+        second = repository.save_prediction(prediction_record("T17CAL", timestamp=_hours_ago(2)))
+
+        updated = repository.save_calibration_scores(
+            {str(first): 0.19, str(second): 0.96}, score_version=2
+        )
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT id::text, confidence_calibration, calibration_score_version "
+                "FROM prediction_logs WHERE symbol = 'T17CAL'"
+            )
+            rows = {row[0]: row[1:] for row in cur.fetchall()}
+        assert updated == 2
+        assert rows == {str(first): (0.19, 2), str(second): (0.96, 2)}
+
+    def test_anon_key_cannot_call_the_bulk_write(self, postgrest_stack: PostgrestStack) -> None:
+        anon = make_repository(postgrest_stack, role="anon")
+
+        with pytest.raises(PortError):
+            anon.save_calibration_scores(
+                {"00000000-0000-0000-0000-000000000077": 0.5}, score_version=1
+            )
+
+
+class TestDiagnosisJudgementColumns:
+    """EXP-10: kolumny oceny diagnozy (migracja 078) przez prawdziwy PostgREST."""
+
+    def test_rejection_round_trips_and_leaves_the_sample(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        saved = repository.save_prediction(prediction_record("T17JD"))
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE prediction_logs SET is_trend_correct = false, "
+                "actual_price_after_12h = 180, correction_insights = 'Rynek był zmienny.' "
+                "WHERE id = %s",
+                (str(saved),),
+            )
+
+        sample = [row.prediction.id for row in repository.get_diagnoses_to_judge(7)]
+        repository.save_diagnosis_judgement(
+            str(saved), score=1, rejected_insight="Rynek był zmienny."
+        )
+
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "SELECT diagnosis_judge_score, rejected_diagnosis, correction_insights "
+                "FROM prediction_logs WHERE id = %s",
+                (str(saved),),
+            )
+            row = cur.fetchone()
+        assert str(saved) in sample
+        assert row == (1, "Rynek był zmienny.", "Diagnoza odrzucona przez sędziego jakości.")
+        assert str(saved) not in [r.prediction.id for r in repository.get_diagnoses_to_judge(7)]
+
+
+class TestDbSizeReportRpc:
+    """NIEZ-37: raport rozmiaru bazy przez prawdziwy PostgREST (migracja 077)."""
+
+    def test_service_role_reads_the_size_of_known_tables(
+        self, repository: SupabaseRepository
+    ) -> None:
+        sizes = {size.name: size.total_bytes for size in repository.get_db_size_report()}
+
+        assert {"prediction_logs", "price_snapshots"} <= set(sizes)
+        assert sizes["prediction_logs"] > 0
+
+    def test_anon_key_cannot_read_the_report(self, postgrest_stack: PostgrestStack) -> None:
+        anon = make_repository(postgrest_stack, role="anon")
+
+        with pytest.raises(PortError):
+            anon.get_db_size_report()

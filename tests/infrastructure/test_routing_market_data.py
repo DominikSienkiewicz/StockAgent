@@ -63,13 +63,9 @@ class TestRouting:
         equity_port.get_current_price.assert_called_once_with("AAPL")
         crypto_port.get_current_price.assert_not_called()
 
-    def test_crypto_symbols_default_empty(
-        self, equity_port: Mock, crypto_port: Mock
-    ) -> None:
+    def test_crypto_symbols_default_empty(self, equity_port: Mock, crypto_port: Mock) -> None:
         """Bez listy crypto_symbols wszystko idzie do equity portu."""
-        router = RoutingMarketDataPort(
-            equity=equity_port, crypto=crypto_port, crypto_symbols=set()
-        )
+        router = RoutingMarketDataPort(equity=equity_port, crypto=crypto_port, crypto_symbols=set())
 
         router.get_current_price("BTC")
 
@@ -115,9 +111,7 @@ class TestDailyChangeRouting:
         assert router.get_daily_change("AAPL").fraction == Decimal("-0.09")
         crypto.get_daily_change.assert_not_called()
 
-    def test_source_without_daily_change_raises(
-        self, equity_port: Mock, crypto_port: Mock
-    ) -> None:
+    def test_source_without_daily_change_raises(self, equity_port: Mock, crypto_port: Mock) -> None:
         router = RoutingMarketDataPort(
             equity=equity_port, crypto=crypto_port, crypto_symbols={"BTC"}
         )

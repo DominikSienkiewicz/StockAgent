@@ -141,7 +141,7 @@ def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
         return ""
     rows = "".join(
         "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
-        "background: #fef3c7; border-radius: 3px; font-size: 12px;'>"
+        "background: #fefce8; border-radius: 3px; font-size: 12px;'>"
         f"<strong>{_html(r.symbol)}</strong> "
         f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
         for r in cut
@@ -329,10 +329,7 @@ def _render_errors_html(errors: list[SymbolResult]) -> str:
     """⚠️ Symbole, które padły w cyklu. Pusty string, gdy brak błędów."""
     if not errors:
         return ""
-    parts = [
-        "<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>"
-        "⚠️ Błędy</h2>"
-    ]
+    parts = ["<h2 style='font-size: 16px; margin: 20px 0 8px 0; color: #991b1b;'>⚠️ Błędy</h2>"]
     for r in errors:
         parts.append(f"""
               <div style="{_ERROR_ROW_STYLE}">

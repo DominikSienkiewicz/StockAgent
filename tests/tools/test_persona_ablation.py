@@ -58,9 +58,7 @@ def test_weights_come_only_from_votes_settled_before_each_prediction() -> None:
 
 
 def test_since_limits_the_scored_predictions_but_not_the_history() -> None:
-    report = replay_persona_weighting(
-        _two_cycles(), since=_T0 + timedelta(days=1), window_days=90
-    )
+    report = replay_persona_weighting(_two_cycles(), since=_T0 + timedelta(days=1), window_days=90)
 
     assert report.evaluated == 1
     assert report.without_weights == 0

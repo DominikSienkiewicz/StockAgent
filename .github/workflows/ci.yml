@@ -42,6 +42,10 @@ jobs:
       - name: 🔍 Ruff (lint)
         run: uv run --frozen --no-build --no-sync ruff check .
 
+      - name: 🎨 Ruff (format)
+        # CI-17: repo sformatowane jednym commitem (`.git-blame-ignore-revs`).
+        run: uv run --frozen --no-build --no-sync ruff format --check .
+
       - name: 🔎 Mypy (strict type check)
         # Gołe `mypy` = pliki z `[tool.mypy].files` (src + wszystkie main_*.py
         # + katalogi tests/ dodane ratchetem, od tests/domain).
@@ -115,7 +119,7 @@ jobs:
         # całego `src` i entry-pointów; ten job raportuje do Sonara, bramkuje quality.
         run: >-
           uv run --frozen --no-build --no-sync pytest -m "not integration"
-          --cov=src --cov=main_agent --cov=main_backtest --cov=main_deadman --cov=main_scorecard
+          --cov=src --cov=main_agent --cov=main_backtest --cov=main_bot --cov=main_deadman --cov=main_scorecard
           --cov=main_tools --cov=main_trainer --cov=main_watch --cov-report=xml
           --cov-fail-under=0
 

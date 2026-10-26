@@ -87,10 +87,11 @@ def suggest_band(
 
     Reguła Kelly-lite, deterministyczna i czysta (stdlib only):
 
-    - Wejścia są clampowane do sensownych zakresów (consensus/dissent ∈ [0,1],
-      hit_rate ∈ [0,1] gdy podany) — żadne ekstremum nie wysadza klasyfikacji.
-      Wartość niefinitna (NaN, ±inf) w consensus/dissent daje `starter`, a w
-      hit_rate znaczy „nieznany” (PORT-12).
+    - consensus/dissent są clampowane do [0,1] — żadne ekstremum nie wysadza
+      klasyfikacji. Wartość niefinitna (NaN, ±inf) w consensus/dissent daje
+      `starter`, a w hit_rate znaczy „nieznany” (PORT-12). hit_rate spoza [0,1]
+      też znaczy „nieznany” (PORT-14, fail-closed): 2.0 to błąd skali albo danych,
+      nie track record uprawniający do pełnej bandy.
     - `full` (4-5%) wymaga JEDNOCZEŚNIE: mocnego konsensusu, niskiego dissentu
       ORAZ znanego, przyzwoitego hit-rate. Brak track recordu (cold-start) lub
       słaby hit-rate nigdy nie sięgają po pełną bandę.
@@ -128,13 +129,13 @@ def suggest_band(
     # (`_clamp` zamieniał NaN i +inf na 1.0, czyli na pełną bandę).
     if hit_rate is not None and not math.isfinite(hit_rate):
         hit_rate = None
-    clamped_hit_rate = _clamp(hit_rate, 0.0, 1.0) if hit_rate is not None else None
+    # PORT-14: hit-rate spoza [0, 1] to cold-start (fail-closed), nie clamp do 1.0.
+    if hit_rate is not None and not 0.0 <= hit_rate <= 1.0:
+        hit_rate = None
 
     strong_consensus = consensus >= STRONG_CONSENSUS_THRESHOLD
     low_dissent = dissent <= LOW_DISSENT_THRESHOLD
-    good_hit_rate = (
-        clamped_hit_rate is not None and clamped_hit_rate >= GOOD_HIT_RATE_THRESHOLD
-    )
+    good_hit_rate = hit_rate is not None and hit_rate >= GOOD_HIT_RATE_THRESHOLD
 
     if not (strong_consensus and low_dissent):
         # Rada niepewna albo rozłam — zostajemy przy bandzie startowej.
@@ -153,9 +154,7 @@ def suggest_band(
 _DOWNGRADE = {"full": "standard", "standard": "starter", "starter": "starter"}
 
 
-def _apply_exposure(
-    tier: str, current_weight: float | None, cluster_exposure: float | None
-) -> str:
+def _apply_exposure(tier: str, current_weight: float | None, cluster_exposure: float | None) -> str:
     """Zwęża bandę o tyle stopni, ile każe istniejąca ekspozycja.
 
     Monotoniczność jest kontraktem: funkcja NIGDY nie podnosi bandy. Pusty
@@ -163,9 +162,7 @@ def _apply_exposure(
     informacji, a nie sygnał kupna.
     """
     weight = _clamp(current_weight, 0.0, 1.0) if current_weight is not None else 0.0
-    cluster = (
-        _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
-    )
+    cluster = _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
     if _saturated(weight, cluster):
         return "starter"
     if weight >= CROWDED_WEIGHT_THRESHOLD or cluster >= CROWDED_CLUSTER_THRESHOLD:
@@ -208,10 +205,7 @@ _TIER_LABEL_PREFIX = {
 def _band(tier: str, span: tuple[float, float]) -> SizeBand:
     """Składa SizeBand z gotową polską etykietą `Prefiks min-max% portfela`."""
     min_pct, max_pct = span
-    label = (
-        f"{_TIER_LABEL_PREFIX[tier]} "
-        f"{_fmt_pct(min_pct)}-{_fmt_pct(max_pct)}% portfela"
-    )
+    label = f"{_TIER_LABEL_PREFIX[tier]} {_fmt_pct(min_pct)}-{_fmt_pct(max_pct)}% portfela"
     return SizeBand(tier=tier, min_pct=min_pct, max_pct=max_pct, label=label)
 
 
@@ -270,8 +264,6 @@ def position_action(
     if trend == "BEARISH":
         return PositionAction.REDUCE if weight > 0.0 else PositionAction.AVOID
     if trend == "BULLISH":
-        cluster = (
-            _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
-        )
+        cluster = _clamp(cluster_exposure, 0.0, 1.0) if cluster_exposure is not None else 0.0
         return PositionAction.HOLD if _saturated(weight, cluster) else PositionAction.BUY
     return PositionAction.WATCH

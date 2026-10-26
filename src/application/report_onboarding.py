@@ -61,8 +61,7 @@ READING_GUIDE_TITLE = "📖 Jak czytać ten mail"
 READING_GUIDE = (
     "Pewność przy prognozie to deklarowana siła sygnału modelu, nie prawdopodobieństwo "
     "trafienia — ile jest warta, pokazuje kalibracja w Track Recordzie.",
-    "KUP / SPRZEDAJ / TRZYMAJ to sygnał modelu i rady person, nie rekomendacja "
-    "inwestycyjna.",
+    "KUP / SPRZEDAJ / TRZYMAJ to sygnał modelu i rady person, nie rekomendacja inwestycyjna.",
     "Wyniki portfela to paper-PnL: symulacja na papierze, bez realnych zleceń, "
     "poślizgu i podatków.",
     "Ile model naprawdę trafia, mówi sekcja 📈 Track Record w Zapleczu (trafność "
@@ -100,14 +99,11 @@ def render_onboarding_html(
 
     instruments = _html.escape(_instruments_label(instrument_count))
     rows = "".join(
-        "<li style='margin: 2px 0;'>"
-        f"<strong>{_html.escape(name)}</strong>"
-        f" — {count}</li>"
+        f"<li style='margin: 2px 0;'><strong>{_html.escape(name)}</strong> — {count}</li>"
         for name, count in _ordered_sectors(sectors, sector_order)
     )
     composition = (
-        "<ul style='margin: 8px 0 0 0; padding-left: 18px; "
-        f"color: #374151;'>{rows}</ul>"
+        f"<ul style='margin: 8px 0 0 0; padding-left: 18px; color: #374151;'>{rows}</ul>"
         if rows
         else ""
     )
@@ -149,9 +145,7 @@ def render_onboarding_text(
             "historii."
         ),
     ]
-    lines += [
-        f"  • {name} — {count}" for name, count in _ordered_sectors(sectors, sector_order)
-    ]
+    lines += [f"  • {name} — {count}" for name, count in _ordered_sectors(sectors, sector_order)]
     lines += ["", READING_GUIDE_TITLE, *(f"  • {sentence}" for sentence in READING_GUIDE)]
     return "\n".join(lines)
 

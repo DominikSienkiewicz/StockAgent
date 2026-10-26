@@ -62,16 +62,18 @@ def _use_case(repo: Mock, market: Mock, *, drift_gate_enabled: bool) -> AnalyzeM
     news = Mock(spec=NewsPort)
     news.get_news_context.return_value = [{"title": "Headline"}]
     repo.save_prediction.return_value = "uuid-drift"
-    return AnalyzeMarketUseCase(AgentGraphDeps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repo,
-        ml_port=ml,
-        llm_port=llm,
-        threshold=Threshold(Decimal("0.02")),
-        drift_gate_enabled=drift_gate_enabled,
-    ))
+    return AnalyzeMarketUseCase(
+        AgentGraphDeps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repo,
+            ml_port=ml,
+            llm_port=llm,
+            threshold=Threshold(Decimal("0.02")),
+            drift_gate_enabled=drift_gate_enabled,
+        )
+    )
 
 
 def _latest(price: str, days_ago: float) -> LatestPrediction:

@@ -31,9 +31,16 @@ ENV_KEY = "PAID_CALLS_ENABLED"
 # (fundamenty AV, recap, sędzia kalibracji).
 PAYING_ENTRYPOINTS = frozenset({"main_agent.py", "main_trainer.py"})
 # Nie wołają żadnego płatnego portu (watch i deadman z założenia, CLAUDE.md;
-# publiczny scorecard WIA-52: repozytorium i zapis pliku).
+# publiczny scorecard WIA-52: repozytorium i zapis pliku; bot MAIL-48: Bot API i odczyty).
 FREE_ENTRYPOINTS = frozenset(
-    {"main_watch.py", "main_deadman.py", "main_backtest.py", "main_tools.py", "main_scorecard.py"}
+    {
+        "main_watch.py",
+        "main_deadman.py",
+        "main_backtest.py",
+        "main_tools.py",
+        "main_scorecard.py",
+        "main_bot.py",
+    }
 )
 
 _ENTRYPOINT_RUN = re.compile(r"python\s+(main_\w+\.py)")

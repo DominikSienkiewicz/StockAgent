@@ -81,9 +81,7 @@ class TestClassifyStatus:
         assert classify_status("trained_successfully") is TrainingOutcome.ACCEPTED
 
     def test_validation_failed_is_rejected(self) -> None:
-        assert (
-            classify_status("skipped_validation_failed") is TrainingOutcome.REJECTED
-        )
+        assert classify_status("skipped_validation_failed") is TrainingOutcome.REJECTED
 
     def test_unknown_status_is_skipped(self) -> None:
         # np. brak próbek (ValueError w adapterze) → orkiestrator melduje skipped
@@ -146,9 +144,7 @@ class TestSummarizeRun:
 
     def test_summarize_run_accepts_status_strings(self) -> None:
         # wygoda: agregacja przyjmuje też surowe stringi `status` z train()
-        summary = summarize_run(
-            ["trained_successfully", "skipped_validation_failed", "boom"]
-        )
+        summary = summarize_run(["trained_successfully", "skipped_validation_failed", "boom"])
         assert summary.accepted == 1
         assert summary.rejected == 1
         assert summary.skipped == 1

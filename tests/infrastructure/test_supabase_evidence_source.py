@@ -57,9 +57,7 @@ def test_reads_requested_columns_in_stable_order(
     mock_client.table.return_value.select.return_value.order.assert_called_with("id")
 
 
-def test_paginates_past_the_postgrest_cap(
-    repo: SupabaseRepository, mock_client: MagicMock
-) -> None:
+def test_paginates_past_the_postgrest_cap(repo: SupabaseRepository, mock_client: MagicMock) -> None:
     full = [{"id": i} for i in range(1000)]
     _order(mock_client).range.return_value.execute.side_effect = [
         _response(full),

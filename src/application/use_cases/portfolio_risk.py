@@ -216,8 +216,7 @@ class PortfolioRiskUseCase:
         )
         # Granica Decimal → float: matematyka ryzyka liczy na floatach.
         weights = {
-            symbol: float(weight)
-            for symbol, weight in portfolio.weights(weight_prices).items()
+            symbol: float(weight) for symbol, weight in portfolio.weights(weight_prices).items()
         }
         portfolio_returns = self._weighted_returns(returns_by_symbol, weights)
         if not portfolio_returns:
@@ -225,9 +224,7 @@ class PortfolioRiskUseCase:
         var_gap = self._shortfall("var", len(portfolio_returns))
         return PositionRisk(
             var=(
-                historical_var(portfolio_returns, RISK_VAR_CONFIDENCE)
-                if var_gap is None
-                else None
+                historical_var(portfolio_returns, RISK_VAR_CONFIDENCE) if var_gap is None else None
             ),
             drawdown=drawdown_from_returns(portfolio_returns),
             hedge_effective=self._hedge_effective(
@@ -267,9 +264,7 @@ class PortfolioRiskUseCase:
         if not series or total <= 0:
             return []
         n = min(len(r) for r in series.values())
-        return [
-            sum(weights[s] * r[t] for s, r in series.items()) / total for t in range(n)
-        ]
+        return [sum(weights[s] * r[t] for s, r in series.items()) / total for t in range(n)]
 
     def _shortfall(self, stat: RiskStat, n: int) -> tuple[RiskStat, int, int] | None:
         """`(stat, n, wymagane)` gdy próba jest za mała; None gdy wystarcza albo
@@ -303,16 +298,12 @@ class PortfolioRiskUseCase:
         """
         return self._aligned_returns(self._collect_history(symbols))
 
-    def _collect_history(
-        self, symbols: list[str]
-    ) -> dict[str, list[tuple[datetime, Money]]]:
+    def _collect_history(self, symbols: list[str]) -> dict[str, list[tuple[datetime, Money]]]:
         """Historia cen per symbol z ≥3 snapshotami; błąd odczytu → pominięty."""
         raw: dict[str, list[tuple[datetime, Money]]] = {}
         for symbol in symbols:
             try:
-                history = self._repository.get_price_history(
-                    symbol, PRICE_HISTORY_DAYS
-                )
+                history = self._repository.get_price_history(symbol, PRICE_HISTORY_DAYS)
             except Exception:
                 logger.exception("portfolio_risk history fetch failed for %s", symbol)
                 continue
@@ -373,9 +364,7 @@ class PortfolioRiskUseCase:
         )
 
     @staticmethod
-    def _avg_intra_corr(
-        matrix: dict[tuple[str, str], float], cluster: tuple[str, ...]
-    ) -> float:
+    def _avg_intra_corr(matrix: dict[tuple[str, str], float], cluster: tuple[str, ...]) -> float:
         """Średnia korelacja parami wewnątrz klastra (do werdyktu)."""
         pairs: list[float] = []
         for i, left in enumerate(cluster):

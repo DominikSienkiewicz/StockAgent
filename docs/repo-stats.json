@@ -1,8 +1,8 @@
 {
-  "adapter_modules": 47,
-  "domain_modules": 81,
+  "adapter_modules": 55,
+  "domain_modules": 92,
   "domain_stdlib_only": true,
-  "migrations": 65,
-  "ports": 38,
-  "test_functions": 6141
+  "migrations": 79,
+  "ports": 44,
+  "test_functions": 7059
 }

@@ -81,6 +81,7 @@ MAIL_ORDER = (
     "finops",
     "budget_exhausted",
     "ignored",
+    "watchlist_mutes",
     "errors",
     "footer",
 )
@@ -163,9 +164,7 @@ def test_every_report_context_field_has_exactly_one_consumer() -> None:
         for name in section.context_fields:
             consumers.setdefault(name, []).append(section.key)
 
-    assert {
-        name: owners for name, owners in consumers.items() if len(owners) != 1
-    } == {}
+    assert {name: owners for name, owners in consumers.items() if len(owners) != 1} == {}
     assert set(consumers) == CONTEXT_FIELDS, "deklaracja pola, którego ReportContext nie ma"
 
 
@@ -193,3 +192,30 @@ def test_the_guard_flags_a_section_reading_another_sections_field() -> None:
     peeking = ReportSection(key="peeking", render_html=peeking_html, render_text=no_text)
 
     assert _foreign_reads((peeking,)) == {"peeking": {"cycle_cost"}}
+
+
+# ---------------------------------------------------------------------------
+# MAIL-35: zwarty mail cichego dnia
+# ---------------------------------------------------------------------------
+
+
+def test_compact_layout_keeps_the_mail_order_and_adds_only_the_quiet_day_block() -> None:
+    from src.application.reporting.registry import COMPACT_REPORT_SECTIONS
+
+    keys = [section.key for section in COMPACT_REPORT_SECTIONS]
+    shared = [key for key in keys if key != "quiet_day"]
+
+    assert keys.count("quiet_day") == 1
+    assert shared == [key for key in MAIL_ORDER if key in shared]
+    # Bannery limitów, stan źródeł i pełna stopka (źródła, warunki) zostają.
+    assert {"quota_banner", "source_health", "footer"} <= set(keys)
+    assert keys[-1] == "footer"
+
+
+def test_compact_sections_read_only_their_own_or_shared_context_fields() -> None:
+    from src.application.reporting.registry import COMPACT_REPORT_SECTIONS
+
+    quiet_day = next(s for s in COMPACT_REPORT_SECTIONS if s.key == "quiet_day")
+
+    assert quiet_day.context_fields == frozenset()
+    assert _foreign_reads(COMPACT_REPORT_SECTIONS) == {}

@@ -27,6 +27,7 @@ from src.domain.coverage import CoverageReport
 
 logger = logging.getLogger(__name__)
 
+
 class _Once[T]:
     """Wynik pierwszego udanego wywołania `load`, oddawany przy każdym `get`.
 

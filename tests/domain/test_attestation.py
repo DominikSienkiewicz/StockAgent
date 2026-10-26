@@ -196,9 +196,10 @@ def test_v1_and_v2_commitments_of_the_same_payload_differ() -> None:
     v2 = attestation.commit(_PAYLOAD_1, _SALT_A, schema_version=attestation.SCHEMA_VERSION)
     assert v1 == _HASH_1
     assert v2 != v1
-    assert attestation.verify(
-        _PAYLOAD_1, _SALT_A, v2, schema_version=attestation.SCHEMA_VERSION
-    ) is True
+    assert (
+        attestation.verify(_PAYLOAD_1, _SALT_A, v2, schema_version=attestation.SCHEMA_VERSION)
+        is True
+    )
     assert attestation.verify(_PAYLOAD_1, _SALT_A, v2) is False
 
 
@@ -611,3 +612,21 @@ def test_lines_that_are_not_a_well_formed_cycle_root_are_not_roots(
 def test_incomplete_cycle_reveal_status_is_frozen() -> None:
     # Publiczny kontrakt ledgera: zmiana napisu rozjechałaby weryfikator z historią.
     assert attestation.REVEAL_STATUS_INCOMPLETE_CYCLE == "incomplete_cycle"
+
+
+# WIA-73: artefakt wpisu `hashedrekord` to 32 bajty rootu — reguła zamrożona golden testem,
+# bo weryfikator liczy ten sam hash z linii ledgera latami później.
+_GOLDEN_ROOT_ABC_ARTIFACT_SHA256 = (
+    "ff56b960c3d1e1f581d065b766ba775befbdcc53451a0ced46d7b011aeea6761"
+)
+
+
+def test_golden_rekor_artifact_hash_of_a_known_root() -> None:
+    assert attestation.root_artifact(_GOLDEN_ROOT_ABC) == bytes.fromhex(_GOLDEN_ROOT_ABC)
+    assert attestation.root_artifact_sha256(_GOLDEN_ROOT_ABC) == _GOLDEN_ROOT_ABC_ARTIFACT_SHA256
+
+
+@pytest.mark.parametrize("root", ["ab" * 31, "ab" * 33, "zz" * 32])
+def test_rekor_artifact_is_exactly_the_32_bytes_of_a_root(root: str) -> None:
+    with pytest.raises(ValueError):
+        attestation.root_artifact(root)

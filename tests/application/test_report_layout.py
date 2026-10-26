@@ -113,8 +113,13 @@ def test_credibility_bar_gives_directional_hit_rate_and_n_on_the_first_screen() 
 
 def test_credibility_bar_is_hidden_without_directional_counts() -> None:
     context = dataclasses.replace(
-        _full_context(), accuracy_stats={"mean_accuracy": 0.6, "sample_count": 10,
-                                         "correct_count": 6, "days_window": 30}
+        _full_context(),
+        accuracy_stats={
+            "mean_accuracy": 0.6,
+            "sample_count": 10,
+            "correct_count": 6,
+            "days_window": 30,
+        },
     )
     html, text = build_html_report([], STARTED, DURATION_SECONDS, context)
 
@@ -125,8 +130,12 @@ def test_credibility_bar_is_hidden_without_directional_counts() -> None:
 def test_credibility_bar_without_directional_calls_says_so() -> None:
     context = ReportContext(
         accuracy_stats={
-            "mean_accuracy": 1.0, "sample_count": 3, "correct_count": 3,
-            "days_window": 30, "directional_count": 0, "directional_correct_count": 0,
+            "mean_accuracy": 1.0,
+            "sample_count": 3,
+            "correct_count": 3,
+            "days_window": 30,
+            "directional_count": 0,
+            "directional_correct_count": 0,
         }
     )
     html, text = build_html_report([], STARTED, DURATION_SECONDS, context)
@@ -137,12 +146,14 @@ def test_credibility_bar_without_directional_calls_says_so() -> None:
 
 def test_new_reference_point_is_a_change_since_yesterday_in_the_today_zone() -> None:
     stale = SymbolResult(
-        symbol="AAPL", status="ignored", delta=Decimal("0.12"),
-        current_price=Decimal("250"), skip_reason=SkipReason.STALE_REFERENCE,
+        symbol="AAPL",
+        status="ignored",
+        delta=Decimal("0.12"),
+        current_price=Decimal("250"),
+        skip_reason=SkipReason.STALE_REFERENCE,
         reference_at=datetime(2026, 9, 19, 5, 30, tzinfo=UTC),
     )
     html, text = build_html_report([stale], STARTED, DURATION_SECONDS)
 
     assert html.index("🔄 Nowy punkt odniesienia") < html.index(BACKOFFICE)
     assert text.index("NOWY PUNKT ODNIESIENIA") < text.index("ZAPLECZE")
-

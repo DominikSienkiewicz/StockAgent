@@ -68,12 +68,22 @@ LEGACY_DIAGNOSIS_DEFERRED_INSIGHT = "Niska zmienność — diagnoza LLM odłożo
 # więc nie ma czego diagnozować (płatny LLM pominięty).
 STALE_QUOTE_INSIGHT = "Nieaktualne notowanie — rozliczenie bez oceny i bez diagnozy LLM."
 
+# EXP-17: za `batch_diagnosis_enabled` reflect nie płaci za diagnozę błędu — robi
+# ją raz w tygodniu Slow Loop (`BatchDiagnosisUseCase`) nad wszystkimi pudłami tygodnia.
+DIAGNOSIS_BATCH_PENDING_INSIGHT = "Diagnoza czeka na tygodniową diagnozę zbiorczą."
+
+# EXP-10: diagnoza, której sędzia z rubryką dał wynik poniżej progu — jej tekst
+# przechodzi do `rejected_diagnosis` (migracja 078), żeby nie trafiała do lessons ani
+# RAG. Nie jest „bez diagnozy”: spłata diagnoz (WIA-53) jej nie ponawia.
+DIAGNOSIS_REJECTED_INSIGHT = "Diagnoza odrzucona przez sędziego jakości."
+
 # WIA-53: błędne predykcje z tymi placeholderami nie mają diagnozy, za którą
 # ktoś zapłacił — job Slow Loopa (`BackfillDiagnosesUseCase`) diagnozuje je
 # w tygodniowym budżecie. „Trafiona predykcja.” nie wymaga diagnozy.
 UNDIAGNOSED_MISTAKE_PLACEHOLDERS: tuple[str, ...] = (
     DIAGNOSIS_SKIPPED_INSIGHT,
     LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
+    DIAGNOSIS_BATCH_PENDING_INSIGHT,
 )
 
 _PLACEHOLDER_INSIGHTS = frozenset(
@@ -83,6 +93,8 @@ _PLACEHOLDER_INSIGHTS = frozenset(
         DIAGNOSIS_SKIPPED_INSIGHT,
         LEGACY_DIAGNOSIS_DEFERRED_INSIGHT,
         STALE_QUOTE_INSIGHT,
+        DIAGNOSIS_BATCH_PENDING_INSIGHT,
+        DIAGNOSIS_REJECTED_INSIGHT,
     )
 )
 

@@ -142,8 +142,10 @@ def test_offline_subcommand_writes_one_mail_per_cycle(
     out = capsys.readouterr().out
     assert exit_code == 0
     assert (tmp_path / "cycle-1" / "report-email.html").is_file()
-    assert (tmp_path / "cycle-2" / "report-email.txt").read_text(encoding="utf-8").startswith(
-        "Temat: "
+    assert (
+        (tmp_path / "cycle-2" / "report-email.txt")
+        .read_text(encoding="utf-8")
+        .startswith("Temat: ")
     )
     assert "Cykl 1" in out and "Cykl 2" in out
     assert "NVDA ✓" in out

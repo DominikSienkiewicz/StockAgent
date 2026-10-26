@@ -79,9 +79,13 @@ class TestSummarizeEvaluation:
         # hit-rate jeśli ma is_trend_correct.
         rows = [
             _row("BULLISH", True, 100, 104, 105),
-            {"predicted_trend": "BULLISH", "is_trend_correct": True,
-             "price_at_prediction": 100, "predicted_target_price": None,
-             "actual_price_after_12h": None},
+            {
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": True,
+                "price_at_prediction": 100,
+                "predicted_target_price": None,
+                "actual_price_after_12h": None,
+            },
         ]
         report = summarize_evaluation(rows)
         assert report.sample_count == 2
@@ -103,15 +107,15 @@ class TestDirectionalHitRateSplit:
         # Mieszanka: 2 kierunkowe (1 trafiona) + 2 SIDEWAYS (obie „trafione",
         # bo dni spokojne). Blended = 3/4. Directional-only = 1/2 — różne liczby.
         rows = [
-            _row("BULLISH", True, 100, 105, 106),    # kierunkowa, trafiona
-            _row("BEARISH", False, 100, 95, 101),    # kierunkowa, pudło
+            _row("BULLISH", True, 100, 105, 106),  # kierunkowa, trafiona
+            _row("BEARISH", False, 100, 95, 101),  # kierunkowa, pudło
             _row("SIDEWAYS", True, 100, 100, 100.1),  # cisza, „trafiona"
-            _row("SIDEWAYS", True, 100, 100, 99.9),   # cisza, „trafiona"
+            _row("SIDEWAYS", True, 100, 100, 99.9),  # cisza, „trafiona"
         ]
         report = summarize_evaluation(rows)
 
-        assert report.hit_rate == 3 / 4               # blended (back-compat)
-        assert report.directional_hit_rate == 1 / 2   # tylko BULLISH/BEARISH
+        assert report.hit_rate == 3 / 4  # blended (back-compat)
+        assert report.directional_hit_rate == 1 / 2  # tylko BULLISH/BEARISH
         assert report.directional_count == 2
         assert report.sideways_count == 2
 
@@ -180,8 +184,8 @@ class TestReturnSpaceRmse:
 
     def test_rmse_is_scale_free_btc_does_not_dominate(self) -> None:
         rows = [
-            _row("BULLISH", True, 100_000, 101_000, 100_000),   # błąd zwrotu 1%
-            _row("BULLISH", False, 200, 200, 210),              # błąd zwrotu 5%
+            _row("BULLISH", True, 100_000, 101_000, 100_000),  # błąd zwrotu 1%
+            _row("BULLISH", False, 200, 200, 210),  # błąd zwrotu 5%
         ]
 
         report = summarize_evaluation(rows)
@@ -284,7 +288,7 @@ class TestConfidenceScores:
         scores = summarize_evaluation(rows).confidence_scores
 
         assert scores is not None
-        assert scores.n == 2          # SIDEWAYS nie stawia zakładu kierunkowego
+        assert scores.n == 2  # SIDEWAYS nie stawia zakładu kierunkowego
         assert scores.brier == pytest.approx(((0.9 - 1) ** 2 + (0.8 - 0) ** 2) / 2)
         assert scores.log_loss == pytest.approx(-(math.log(0.9) + math.log(0.2)) / 2)
 
@@ -328,9 +332,7 @@ class TestJsonOutput:
         assert payload["sample_count"] == 2
         assert payload["directional"] == {"hit_rate": 0.5, "n": 2, "sideways": 0}
         assert payload["rmse_return"]["verdict"] in {"beats", "does_not_beat", "undetermined"}
-        assert payload["rmse_return"]["model"] == pytest.approx(
-            math.sqrt((0.01**2 + 0.1**2) / 2)
-        )
+        assert payload["rmse_return"]["model"] == pytest.approx(math.sqrt((0.01**2 + 0.1**2) / 2))
 
     def test_json_lists_classes_and_confidence_scores(self) -> None:
         payload = json.loads(render_evaluation_json(self._rows(), days=30))
@@ -345,20 +347,23 @@ class TestJsonOutput:
 
         assert payload["sample_count"] == 0
         assert payload["rmse_return"] == {
-            "model": None, "baseline": None, "verdict": "undetermined",
+            "model": None,
+            "baseline": None,
+            "verdict": "undetermined",
         }
         assert payload["confidence"] is None
 
     def test_json_includes_requested_segments(self) -> None:
         rows = [
-            {**_row("BULLISH", True, 100, 101, 101), "asset_class": "STOCK",
-             "timestamp": f"2026-10-{day:02d}T14:00:00+00:00"}
+            {
+                **_row("BULLISH", True, 100, 101, 101),
+                "asset_class": "STOCK",
+                "timestamp": f"2026-10-{day:02d}T14:00:00+00:00",
+            }
             for day in range(1, 4)
         ]
 
-        payload = json.loads(
-            render_evaluation_json(rows, days=30, segmentations=("asset_class",))
-        )
+        payload = json.loads(render_evaluation_json(rows, days=30, segmentations=("asset_class",)))
 
         segment = payload["segments"]["asset_class"][0]
         assert segment["key"] == "STOCK"
@@ -379,8 +384,11 @@ class TestScoresCli:
         settings.symbols_etf = []
         repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
         repo_cls.return_value.get_resolved_predictions_for_eval.return_value = [
-            {**_row("BULLISH", True, 100_000, 101_000, 100_000), "symbol": "BTC",
-             "confidence_score": 0.9},
+            {
+                **_row("BULLISH", True, 100_000, 101_000, 100_000),
+                "symbol": "BTC",
+                "confidence_score": 0.9,
+            },
             {**_row("BULLISH", False, 200, 200, 210), "symbol": "AAPL", "confidence_score": 0.6},
         ]
 
@@ -449,8 +457,10 @@ class TestSignificanceVerdict:
 
     def test_formatted_report_states_the_verdict(self) -> None:
         rows = [
-            {**_row("BULLISH", i % 2 == 0, 100, 101, 101 if i % 2 == 0 else 99),
-             "timestamp": f"2026-10-{i + 1:02d}T14:00:00+00:00"}
+            {
+                **_row("BULLISH", i % 2 == 0, 100, 101, 101 if i % 2 == 0 else 99),
+                "timestamp": f"2026-10-{i + 1:02d}T14:00:00+00:00",
+            }
             for i in range(6)
         ]
 
@@ -575,18 +585,36 @@ class TestComponentSegmentation:
         # Trzy wiersze bez zakładu (LLM SIDEWAYS, rada HOLD albo pominięta).
         # XGBoost bez wag: cel = cena (baseline „cena bez zmian”) → brak zakładu.
         return [
-            {**_row("BULLISH", True, 100, 100, 102), "council_recommendation": "BUY",
-             "timestamp": _day(0)},
-            {**_row("BEARISH", False, 100, 100, 102), "council_recommendation": "BUY",
-             "timestamp": _day(1)},
-            {**_row("BEARISH", False, 100, 100, 101), "council_recommendation": "BUY",
-             "timestamp": _day(2)},
-            {**_row("SIDEWAYS", True, 100, 100, 100.2), "council_recommendation": "HOLD",
-             "timestamp": _day(3)},
-            {**_row("SIDEWAYS", True, 100, 100, 99.9), "council_recommendation": "HOLD",
-             "timestamp": _day(4)},
-            {**_row("SIDEWAYS", False, 100, 100, 101), "council_recommendation": None,
-             "timestamp": _day(5)},
+            {
+                **_row("BULLISH", True, 100, 100, 102),
+                "council_recommendation": "BUY",
+                "timestamp": _day(0),
+            },
+            {
+                **_row("BEARISH", False, 100, 100, 102),
+                "council_recommendation": "BUY",
+                "timestamp": _day(1),
+            },
+            {
+                **_row("BEARISH", False, 100, 100, 101),
+                "council_recommendation": "BUY",
+                "timestamp": _day(2),
+            },
+            {
+                **_row("SIDEWAYS", True, 100, 100, 100.2),
+                "council_recommendation": "HOLD",
+                "timestamp": _day(3),
+            },
+            {
+                **_row("SIDEWAYS", True, 100, 100, 99.9),
+                "council_recommendation": "HOLD",
+                "timestamp": _day(4),
+            },
+            {
+                **_row("SIDEWAYS", False, 100, 100, 101),
+                "council_recommendation": None,
+                "timestamp": _day(5),
+            },
         ]
 
     def test_component_segment_scores_council_and_llm_on_the_same_rows(self) -> None:
@@ -655,13 +683,19 @@ class TestContextSegmentation:
         # RISK_ON: 20 trafień na zmianę BULLISH/BEARISH w 20 dniach (baseline 50%)
         # → istotne. RISK_OFF: 10 zakładów, połowa trafiona → nieistotne.
         strong = [
-            {**_row(trend, True, 100, 100, 101 if trend == "BULLISH" else 99),
-             "regime": "RISK_ON", "timestamp": _day(i)}
+            {
+                **_row(trend, True, 100, 100, 101 if trend == "BULLISH" else 99),
+                "regime": "RISK_ON",
+                "timestamp": _day(i),
+            }
             for i, trend in enumerate(["BULLISH", "BEARISH"] * 10)
         ]
         weak = [
-            {**_row("BULLISH", i % 2 == 0, 100, 100, 101 if i % 2 == 0 else 99),
-             "regime": "RISK_OFF", "timestamp": _day(i)}
+            {
+                **_row("BULLISH", i % 2 == 0, 100, 100, 101 if i % 2 == 0 else 99),
+                "regime": "RISK_OFF",
+                "timestamp": _day(i),
+            }
             for i in range(10)
         ]
 
@@ -695,10 +729,8 @@ class TestContextSegmentation:
 
     def test_alpha_fusion_sign_and_edge_label_segments(self) -> None:
         rows = [
-            {**_row("BULLISH", True, 100, 100, 101),
-             "alpha_fusion_score": 0.4, "edge_sigma": 2.0},
-            {**_row("BEARISH", True, 100, 100, 99),
-             "alpha_fusion_score": -0.2, "edge_sigma": None},
+            {**_row("BULLISH", True, 100, 100, 101), "alpha_fusion_score": 0.4, "edge_sigma": 2.0},
+            {**_row("BEARISH", True, 100, 100, 99), "alpha_fusion_score": -0.2, "edge_sigma": None},
         ]
 
         report = summarize_evaluation(rows, segment_by=("alpha_fusion_sign", "edge_label"))
@@ -772,9 +804,7 @@ class TestSegmentationCli:
         )
 
 
-def _gated(
-    trend: str, gate_delta: float | None, actual: float, day: int = 0
-) -> dict[str, Any]:
+def _gated(trend: str, gate_delta: float | None, actual: float, day: int = 0) -> dict[str, Any]:
     """Rozliczona predykcja z deltą bramki (EXP-01); cena przy predykcji 100."""
     return {
         **_row(trend, _trend_correct(trend, actual), 100, 100, actual),
@@ -814,10 +844,10 @@ def test_momentum_baseline_hit_rate_uses_gate_delta_sign() -> None:
     from src.tools.evaluate import summarize_echo
 
     rows = [
-        _gated("BULLISH", 0.030, 101, day=0),   # momentum ✓, LLM ✓ (echo)
+        _gated("BULLISH", 0.030, 101, day=0),  # momentum ✓, LLM ✓ (echo)
         _gated("BULLISH", -0.030, 101, day=1),  # momentum ✗, LLM ✓ (odwrócenie)
-        _gated("BEARISH", -0.025, 98, day=2),   # momentum ✓, LLM ✓ (echo)
-        _gated("BEARISH", 0.040, 101, day=3),   # momentum ✓, LLM ✗ (odwrócenie)
+        _gated("BEARISH", -0.025, 98, day=2),  # momentum ✓, LLM ✓ (echo)
+        _gated("BEARISH", 0.040, 101, day=3),  # momentum ✓, LLM ✗ (odwrócenie)
     ]
 
     echo = summarize_echo(rows)
@@ -929,15 +959,19 @@ class TestLlmFallbackRowsAreSkipped:
 
         create_client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
         client = create_client.return_value
-        order = (
-            client.table.return_value.select.return_value.gte.return_value
-            .not_.is_.return_value.order.return_value
-        )
+        settled = client.table.return_value.select.return_value.gte.return_value.not_.is_
+        order = settled.return_value.order.return_value
         order.range.return_value.execute.return_value.data = [
-            {**_gated("BULLISH", 0.030, 101, day=0), "council_recommendation": "BUY",
-             "data_quality_flags": []},
-            {**_gated("SIDEWAYS", 0.030, 101, day=1), "council_recommendation": "HOLD",
-             "data_quality_flags": ["llm_analysis_failed"]},
+            {
+                **_gated("BULLISH", 0.030, 101, day=0),
+                "council_recommendation": "BUY",
+                "data_quality_flags": [],
+            },
+            {
+                **_gated("SIDEWAYS", 0.030, 101, day=1),
+                "council_recommendation": "HOLD",
+                "data_quality_flags": ["llm_analysis_failed"],
+            },
         ]
         repo = SupabaseRepository(url="https://test.supabase.co", key="anon-key")
         return repo.get_resolved_predictions_for_eval(
@@ -988,9 +1022,7 @@ def _council_experiment() -> Experiment:
     )
 
 
-def _arm_row(
-    arm: str | None, day: int, *, source: str = "column", **fields: Any
-) -> dict[str, Any]:
+def _arm_row(arm: str | None, day: int, *, source: str = "column", **fields: Any) -> dict[str, Any]:
     """Rozliczona predykcja BULLISH z ramieniem EXP-02 w kolumnie albo w kwicie."""
     row = {
         **_row("BULLISH", True, 100, 100, 101),
@@ -1035,7 +1067,8 @@ class TestExperimentEvaluation:
         row = {**_arm_row("blind", 0), "receipt_experiment_arms": {"EXP-02": "sighted"}}
 
         assert summarize_experiment([row], _council_experiment()).arm_counts == {
-            "sighted": 0, "blind": 1,
+            "sighted": 0,
+            "blind": 1,
         }
 
     def test_council_brier_uses_the_consensus_strength(self) -> None:

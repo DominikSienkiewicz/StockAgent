@@ -72,9 +72,7 @@ def test_build_research_tools_returns_expected_tool_names() -> None:
 
 
 def test_get_fundamentals_tool_has_well_formed_schema() -> None:
-    tools = build_research_tools(
-        Mock(spec=FundamentalsPort), Mock(spec=MacroIndicatorsPort)
-    )
+    tools = build_research_tools(Mock(spec=FundamentalsPort), Mock(spec=MacroIndicatorsPort))
     tool = _find_tool(tools, "get_fundamentals")
 
     schema = tool.parameters
@@ -87,9 +85,7 @@ def test_get_fundamentals_tool_has_well_formed_schema() -> None:
 
 
 def test_get_macro_tool_has_empty_object_schema() -> None:
-    tools = build_research_tools(
-        Mock(spec=FundamentalsPort), Mock(spec=MacroIndicatorsPort)
-    )
+    tools = build_research_tools(Mock(spec=FundamentalsPort), Mock(spec=MacroIndicatorsPort))
     tool = _find_tool(tools, "get_macro")
 
     schema = tool.parameters

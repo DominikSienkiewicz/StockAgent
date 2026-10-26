@@ -131,9 +131,7 @@ def adapter() -> EdgarInsiderAdapter:
 
 
 class TestGetInsiderFlow:
-    def test_aggregates_buy_and_sell(
-        self, adapter: EdgarInsiderAdapter, mocker: Any
-    ) -> None:
+    def test_aggregates_buy_and_sell(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         buy_xml = _form4_xml(code="P", shares=1000.0)
         sell_xml = _form4_xml(code="S", shares=400.0)
 
@@ -224,9 +222,7 @@ class TestGetInsiderFlow:
         # User-Agent ustawiony na sesji (SEC wymaga go na każdym żądaniu).
         assert USER_AGENT in adapter._session.headers.get("User-Agent", "")
 
-    def test_sets_timeout_on_every_call(
-        self, adapter: EdgarInsiderAdapter, mocker: Any
-    ) -> None:
+    def test_sets_timeout_on_every_call(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         buy_xml = _form4_xml(code="P", shares=1.0)
 
         def get(url: str, **_: object) -> Mock:
@@ -260,16 +256,11 @@ class TestGetInsiderFlow:
 
         adapter.get_insider_flow("AAPL")
 
-        urls = [
-            c.args[0] if c.args else c.kwargs.get("url", "")
-            for c in mock_get.call_args_list
-        ]
+        urls = [c.args[0] if c.args else c.kwargs.get("url", "") for c in mock_get.call_args_list]
         # CIK 320193 → 0000320193 (10 cyfr) w URL submissions.
         assert any("CIK0000320193.json" in u for u in urls)
 
-    def test_unknown_ticker_returns_none(
-        self, adapter: EdgarInsiderAdapter, mocker: Any
-    ) -> None:
+    def test_unknown_ticker_returns_none(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_json(_company_tickers()),
@@ -282,9 +273,7 @@ class TestGetInsiderFlow:
     def test_ticker_lookup_http_error_returns_none(
         self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
-        mocker.patch(
-            "requests.Session.get", return_value=_error_response(503)
-        )
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
 
         snap = adapter.get_insider_flow("AAPL")
 
@@ -377,9 +366,7 @@ class TestGetInsiderFlow:
 
     def test_respects_max_form4_cap(self, mocker: Any) -> None:
         # max_form4=1: bierzemy tylko najnowszy Form 4 (kupno sprzed 5 dni).
-        adapter = EdgarInsiderAdapter(
-            user_agent=USER_AGENT, window_days=90, max_form4=1
-        )
+        adapter = EdgarInsiderAdapter(user_agent=USER_AGENT, window_days=90, max_form4=1)
         buy_xml = _form4_xml(code="P", shares=1000.0)
         sell_xml = _form4_xml(code="S", shares=400.0)
 
@@ -401,9 +388,7 @@ class TestGetInsiderFlow:
         assert snap.sell_count == 0
         assert snap.net_shares == pytest.approx(1000.0)
 
-    def test_strips_xsl_rendering_prefix(
-        self, adapter: EdgarInsiderAdapter, mocker: Any
-    ) -> None:
+    def test_strips_xsl_rendering_prefix(self, adapter: EdgarInsiderAdapter, mocker: Any) -> None:
         # Kształt z prawdziwego submissions API: primaryDocument Form 4 wskazuje
         # widok renderowany przez XSL (HTML), a surowy XML leży w tym samym
         # katalogu accession pod ostatnim segmentem ścieżki.
@@ -581,9 +566,7 @@ class TestTickerMapAndPacing:
             sleeps.append(seconds)
             clock[0] += seconds
 
-        adapter = EdgarInsiderAdapter(
-            user_agent=USER_AGENT, clock=lambda: clock[0], sleep=sleep
-        )
+        adapter = EdgarInsiderAdapter(user_agent=USER_AGENT, clock=lambda: clock[0], sleep=sleep)
 
         adapter.get_insider_flow("AAPL")
 
@@ -787,9 +770,7 @@ class TestSecFairAccess:
     def test_403_on_ticker_lookup_stops_requests_for_later_symbols(
         self, adapter: EdgarInsiderAdapter, mocker: Any
     ) -> None:
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_error_response(403)
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=_error_response(403))
 
         snaps = [adapter.get_insider_flow(s) for s in ("AAPL", "MSFT", "NVDA")]
 
@@ -950,8 +931,7 @@ class TestEdgarLive:
 
         roots = [_xml_root_name(body) for body in archive_bodies]
         assert "ownershipDocument" in roots, (
-            f"żaden Form 4 nie jest surowym XML-em; primaryDocument={filings}, "
-            f"root={roots}"
+            f"żaden Form 4 nie jest surowym XML-em; primaryDocument={filings}, root={roots}"
         )
         assert any(result is not None for result in parsed)
 
@@ -993,9 +973,7 @@ class TestPortErrorTaxonomy:
 
         broken = _ok_json({})
         broken.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
-        mocker.patch(
-            "requests.Session.get", side_effect=[_ok_json(_company_tickers()), broken]
-        )
+        mocker.patch("requests.Session.get", side_effect=[_ok_json(_company_tickers()), broken])
 
         assert adapter.get_insider_flow("AAPL") is None
         assert issubclass(self._logged_error_class(caplog), MalformedPayload)

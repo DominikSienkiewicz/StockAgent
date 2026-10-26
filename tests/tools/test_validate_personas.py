@@ -1,5 +1,6 @@
 # tests/tools/test_validate_personas.py
 """Smoke testy CLI walidatora person."""
+
 from __future__ import annotations
 
 import json
@@ -56,11 +57,36 @@ class TestValidatePersonasCLI:
         rc = validate_main(["--dir", str(tmp_path)])
         assert rc == 1
 
-    def test_default_dir_is_data_council_personas(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_default_dir_is_data_council_personas(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Brak --dir → użyj DEFAULT_PERSONAS_DIR. W repo ten katalog istnieje
         # z 7 wygenerowanymi plikami (rada ograniczona do 7 doradców).
         rc = validate_main([])
         assert rc == 0
         assert "7 persona" in capsys.readouterr().out
+
+
+class TestValidateArchetypes:
+    """MAIL-38: walidator pilnuje, że plik archetypów zna dokładnie persony rady."""
+
+    def test_lists_the_archetype_of_each_persona(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_persona(tmp_path, "Cathie Wood")
+        (tmp_path / "archetypes.toml").write_text(
+            '"Cathie Wood" = "Innowacja i wzrost"\n', encoding="utf-8"
+        )
+
+        assert validate_main(["--dir", str(tmp_path)]) == 0
+        assert "Cathie Wood → Innowacja i wzrost" in capsys.readouterr().out
+
+    def test_exits_one_when_a_persona_has_no_archetype(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _write_persona(tmp_path, "Cathie Wood")
+        _write_persona(tmp_path, "Warren Buffett")
+        (tmp_path / "archetypes.toml").write_text(
+            '"Cathie Wood" = "Innowacja i wzrost"\n', encoding="utf-8"
+        )
+
+        assert validate_main(["--dir", str(tmp_path)]) == 1
+        assert "Warren Buffett" in capsys.readouterr().err

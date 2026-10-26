@@ -19,6 +19,7 @@ from src.application.ml_features import feature_set_version
 from src.application.ports import RepositoryPort
 from src.application.use_cases.backtest import BacktestUseCase
 from src.config import Settings
+from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
 from src.infrastructure.logging_setup import configure_logging
@@ -66,17 +67,13 @@ def backtest_symbols(settings: Settings) -> list[str]:
 def main(settings: Settings | None = None) -> int:
     settings = settings or Settings.from_env()
     configure_logging("main_backtest", settings.secret_values())
-    repository = SupabaseRepository(
-        url=settings.supabase_url, key=settings.supabase_key
-    )
+    repository = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
     symbols = backtest_symbols(settings)
     crypto = set(settings.crypto_symbols)
     stock_backtest = build_use_case(settings, repository=repository)
     # WIA-50: krypto ma własny koszt obrotu; bez krypto drugi use case nie powstaje.
     crypto_backtest = (
-        build_use_case(
-            settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps
-        )
+        build_use_case(settings, repository=repository, cost_bps=settings.crypto_paper_cost_bps)
         if crypto
         else stock_backtest
     )
@@ -86,9 +83,7 @@ def main(settings: Settings | None = None) -> int:
     try:
         repository.refresh_feature_store()
     except Exception:
-        logger.exception(
-            "refresh_feature_store failed — backtest na ostatnim widoku"
-        )
+        logger.exception("refresh_feature_store failed — backtest na ostatnim widoku")
 
     failures = 0
     for symbol in symbols:
@@ -125,8 +120,10 @@ def main(settings: Settings | None = None) -> int:
             logger.exception("Backtest failed for %s", symbol)
 
     logger.info("Backtest done — symbols=%d failures=%d", len(symbols), failures)
-    # NIEZ-18: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
-    return 1 if symbols and failures == len(symbols) else 0
+    # NIEZ-18, NIEZ-38: jak Fast Loop — exit 1 tylko, gdy padły wszystkie symbole.
+    if is_partial_failure(failures, len(symbols)):
+        logger.warning(PARTIAL_FAILURE_LOG, "Backtest", failures, len(symbols))
+    return run_exit_code(failures, len(symbols))
 
 
 if __name__ == "__main__":

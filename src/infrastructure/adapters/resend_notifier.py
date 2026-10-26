@@ -76,16 +76,10 @@ class ResendNotifier(ReportNotifierPort):
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
-                    f"Resend nieosiągalny ({type(exc).__name__}) — mail nie został "
-                    "dostarczony."
+                    f"Resend nieosiągalny ({type(exc).__name__}) — mail nie został dostarczony."
                 ),
-                action=(
-                    "Sprawdź status Resend i sieć runnera; kolejny przebieg ponowi "
-                    "wysyłkę."
-                ),
-                log_message=(
-                    f"Resend unreachable ({type(exc).__name__}) — email not delivered."
-                ),
+                action=("Sprawdź status Resend i sieć runnera; kolejny przebieg ponowi wysyłkę."),
+                log_message=(f"Resend unreachable ({type(exc).__name__}) — email not delivered."),
             )
             raise
         # Resend zwraca 429 gdy free tier (100 mails/dobę) wyczerpany.
@@ -137,9 +131,7 @@ class ResendNotifier(ReportNotifierPort):
         raise_for_status_redacted(response)
         message_id = response.json().get("id", "<no-id>")
         # BEZ-11: repo i logi GHA są publiczne — adres odbiorcy tylko zamaskowany.
-        logger.info(
-            "Resend: sent report to %s (id=%s)", masked_email(self._recipient), message_id
-        )
+        logger.info("Resend: sent report to %s (id=%s)", masked_email(self._recipient), message_id)
 
     def _emit_quota_alert(
         self, severity: QuotaSeverity, message: str, action: str, log_message: str

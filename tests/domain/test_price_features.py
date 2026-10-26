@@ -94,9 +94,7 @@ def test_last_snapshot_of_a_day_is_its_close_and_the_gate_uses_raw_snapshots() -
 
     assert features.ret_1 == pytest.approx(second[1] / history[-2][1] - 1.0)
     assert features.log_realized_vol_20 is not None
-    assert features.gate_move_z == pytest.approx(
-        0.02 / math.exp(features.log_realized_vol_20)
-    )
+    assert features.gate_move_z == pytest.approx(0.02 / math.exp(features.log_realized_vol_20))
 
 
 def test_distance_from_the_high_is_non_positive() -> None:

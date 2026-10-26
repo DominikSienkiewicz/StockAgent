@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from src.application.agent_graph import AgentGraphDeps, ShadowSetup
+from src.application.agent_graph import (
+    AgentGraphDeps,
+    PromptVariant,
+    ShadowPromptSetup,
+    ShadowSetup,
+)
 from src.application.attestation_cycle import (
     CycleCommitmentCollector,
     attestation_cycle_id,
@@ -34,6 +39,7 @@ from src.application.circuit_alerts import record_open_circuit_alerts
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.errors import PortError
 from src.application.http_metering import HttpCallMeter
+from src.application.llm_budget import find_budget_breach
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.move_interval import (
     CALIBRATION_LOOKBACK_DAYS,
@@ -67,6 +73,7 @@ from src.application.ports import (
     RepositoryPort,
     SentimentPort,
     SocialVelocityPort,
+    SymbolMutePort,
     ToolUseLLMPort,
     UsageSink,
     WebPublisherPort,
@@ -102,6 +109,7 @@ from src.application.report_models import ResolvedPrediction, TradeSignal
 from src.application.report_onboarding import onboarding_subject
 from src.application.report_ops import render_cycle_summary_markdown
 from src.application.report_regime import RegimeBanner
+from src.application.report_skipped import is_budget_cut
 from src.application.report_symbol_record import SymbolTrackRecordView
 from src.application.report_track_record import TrackRecordStats
 from src.application.run_context import RunContext
@@ -171,10 +179,12 @@ from src.domain.calibration_curve import (
 from src.domain.conformal import CalibrationPoint
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, lead_headline
+from src.domain.digest_policy import DigestForm, DigestPolicy, should_send
 from src.domain.earnings import EarningsEvent, earnings_due_within, earnings_this_week
 from src.domain.equity_curve import EquityCurve
+from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
-from src.domain.finops import CycleCost, estimate_cycle_cost
+from src.domain.finops import BudgetBreach, BudgetWindow, CycleCost, estimate_cycle_cost
 from src.domain.hedge import equity_hedge_symbols
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.liveness import FAST_LOOP_TRADING_DAY_SLOT, LivenessExpectation
@@ -191,8 +201,10 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.recipe import PredictionRecipe, universe_version
 from src.domain.regime import MarketRegime, RegimeDetector, apply_hysteresis, risk_off_change
 from src.domain.scenarios import Scenario
+from src.domain.shadow_prompt import variant_version
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
+from src.domain.watchlist import EffectiveWatchlist, effective
 from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
 from src.infrastructure.adapters._http import (
     RateLimiter,
@@ -315,8 +327,9 @@ def build_llm_adapter(
     NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
     (`_with_llm_fallback`); request do zapasowego liczy `telemetry` pod `llm`,
     a `fallback_allowance` (Slow Loop) odrzuca go ponad przydział joba.
+    FIN-21: `telemetry` liczy pod `llm` także eskalację kaskady do frontiera.
     """
-    primary = _build_primary_llm(settings, quota_monitor, usage_sink)
+    primary = _build_primary_llm(settings, quota_monitor, usage_sink, telemetry)
     return _with_llm_fallback(
         settings, primary, quota_monitor, usage_sink, telemetry, fallback_allowance
     )
@@ -378,8 +391,13 @@ def _build_primary_llm(
     settings: Settings,
     quota_monitor: QuotaMonitor | None,
     usage_sink: UsageSink | None,
+    telemetry: CycleTelemetry | None = None,
 ) -> LLMPort:
-    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`."""
+    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`.
+
+    FIN-12 / FIN-21: eskalacja do frontiera to drugi płatny request jednego
+    `analyze`, którego graf nie widzi (liczy tylko wywołanie kaskady), więc
+    `MeteredLLMPort` liczy go w `telemetry` pod `llm` — widzi go sufit cyklu."""
     if settings.model_routing_enabled:
         from src.infrastructure.llm.cascading import CascadingLLMAdapter
         from src.infrastructure.llm.openai_client import OpenAIAdapter
@@ -397,12 +415,19 @@ def _build_primary_llm(
             quota_monitor,
             usage_sink,
         )
+        if telemetry is not None:
+            frontier = MeteredLLMPort(frontier, telemetry, "llm")
+        # FIN-21: tożsamości w notacji przepisu — kwit dostaje `model_used`, czyli
+        # połówkę `llm_model`, która faktycznie odpowiedziała.
+        cheap_model, frontier_model = _routing_identities(settings)
         return CascadingLLMAdapter(
             cheap=cheap,
             frontier=frontier,
             routing_floor=settings.routing_floor,
             max_escalations=settings.routing_max_escalations,
             quota_monitor=quota_monitor,
+            cheap_model=cheap_model,
+            frontier_model=frontier_model,
         )
 
     if settings.llm_provider == "anthropic":
@@ -518,11 +543,7 @@ def build_notifier(
     (`build_legacy_push_notifier`), bo kwoty P/L nie mają trafiać do komunikatorów.
     """
     channels: list[ReportNotifierPort] = []
-    if (
-        settings.notifications_enabled
-        and settings.resend_api_key
-        and settings.digest_to_email
-    ):
+    if settings.notifications_enabled and settings.resend_api_key and settings.digest_to_email:
         channels.append(
             ResendNotifier(
                 api_key=settings.resend_api_key,
@@ -646,9 +667,7 @@ def _dispatch_push_digest(
             ranked_signals=ranked_signals,
             archive_url=archive_url,
         )
-        push_notifier.send_report(
-            subject=subject, html_body=digest, plain_text=digest
-        )
+        push_notifier.send_report(subject=subject, html_body=digest, plain_text=digest)
     except Exception:
         logger.exception("Failed to send messenger digest")
         return False
@@ -764,7 +783,9 @@ def _portfolio_clusters(settings: Settings) -> dict[str, str]:
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
     """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
-    tylko do odczytu bez `db_writes_enabled` (BEZ-08)."""
+    tylko do odczytu bez `db_writes_enabled` (BEZ-08). WIA-73: z
+    `attestation_rekor_enabled` root cyklu idzie najpierw do Sigstore Rekor
+    (token OIDC z env joba GitHub Actions)."""
     from src.infrastructure.adapters.attestation_publisher import (
         FileAttestationPublisher,
         NullAttestationPublisher,
@@ -772,10 +793,14 @@ def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
 
     if not settings.attestation_enabled:
         return NullAttestationPublisher()
-    publisher = FileAttestationPublisher(
+    publisher: AttestationPublisherPort = FileAttestationPublisher(
         commitment_path=settings.attestation_commitments_path,
         reveal_path=settings.attestation_reveals_path,
     )
+    if settings.attestation_rekor_enabled:
+        from src.infrastructure.adapters.rekor_publisher import keyless_rekor_publisher
+
+        publisher = keyless_rekor_publisher(publisher, os.environ)
     if settings.db_writes_enabled:
         return publisher
     # BEZ-08: predykcja z runu tylko do odczytu ma id `dry-run-…` i nie istnieje
@@ -995,10 +1020,55 @@ def build_repository(settings: Settings) -> RepositoryPort:
         rag_point_in_time_enabled=settings.rag_point_in_time_enabled,
         receipts_enabled=settings.receipts_enabled,
         executable_entry_enabled=settings.executable_entry_enabled,
+        # ML-40: z debatą głosy rady mają rundy (migracja 082) — odczyty biorą rundę 1;
+        # bez debaty rundę 1 wymusza baza z 082 (rewizje z okresu debaty zostają).
+        council_vote_rounds_enabled=settings.debate_mode_enabled,
+        council_vote_rounds_from_schema=True,
     )
     if settings.db_writes_enabled:
         return repository
     return ReadOnlyRepository(repository)
+
+
+def build_symbol_mutes(settings: Settings) -> SymbolMutePort:
+    """MAIL-45: wyciszenia z bota (tabela `symbol_mutes`, migracja 080) — Fast Loop
+    tylko je czyta; zapisuje wyłącznie `main_bot.py`."""
+    from src.infrastructure.adapters.bot_store import SupabaseBotStore
+
+    return SupabaseBotStore.connect(settings.supabase_url, settings.supabase_key)
+
+
+def resolve_watchlist_mutes(settings: Settings, now: datetime) -> EffectiveWatchlist | None:
+    """MAIL-45: efektywna watchlista cyklu za `symbol_mutes_enabled`; None = flaga off
+    (zero odczytów tabeli). Nieczytelne wyciszenia = WARNING i cykl bez wyciszeń —
+    awaria tabeli nie może zabrać symboli z analizy."""
+    if not settings.symbol_mutes_enabled:
+        return None
+    try:
+        mutes = build_symbol_mutes(settings).get_symbol_mutes()
+    except PortError as exc:
+        logger.warning(
+            "symbol_mutes unreadable (%s) — the cycle analyses every config symbol",
+            type(exc).__name__,
+        )
+        mutes = []
+    return effective([*settings.symbols, *settings.crypto_symbols], mutes, now)
+
+
+def snapshot_muted_symbols(
+    settings: Settings, repository: RepositoryPort, symbols: Sequence[str]
+) -> None:
+    """MAIL-45: wyciszony symbol nie idzie do grafu, ale dostaje snapshot ceny z darmowego
+    `/quote` — bez niego pierwszy cykl po wyciszeniu liczyłby Δ od ceny sprzed tygodni.
+    Błąd ceny jednego symbolu to WARNING, nie przerwany cykl."""
+    if not symbols:
+        return
+    market = build_market_port(settings)
+    for symbol in symbols:
+        try:
+            repository.save_price_snapshot(symbol, market.get_current_price(symbol))
+        except (PortError, ValueError) as exc:
+            logger.warning("%s: muted — price snapshot skipped (%s)", symbol, type(exc).__name__)
 
 
 def build_digest_archive(settings: Settings) -> DigestArchivePort | None:
@@ -1086,9 +1156,7 @@ def build_council_llm_adapter(
     provider = settings.council_llm_provider or settings.llm_provider
     if provider == "anthropic":
         if not settings.anthropic_api_key:
-            raise ValueError(
-                "council_llm_provider=anthropic but ANTHROPIC_API_KEY is not set."
-            )
+            raise ValueError("council_llm_provider=anthropic but ANTHROPIC_API_KEY is not set.")
         from src.infrastructure.llm.anthropic_client import (
             DEFAULT_MODEL as ANTHROPIC_DEFAULT,
         )
@@ -1353,19 +1421,23 @@ def _provider_default_model(provider: str) -> str:
     return OPENAI_DEFAULT
 
 
+def _routing_identities(settings: Settings) -> tuple[str, str]:
+    """(tani, frontier) kaskady routingu jako `dostawca:model` — tani jest zawsze
+    OpenAI (`_build_primary_llm`)."""
+    return (
+        f"openai:{settings.router_cheap_model}",
+        f"{settings.router_frontier_provider}:{settings.router_frontier_model}",
+    )
+
+
 def _main_llm_identity(settings: Settings) -> tuple[str, str]:
     """(provider, model) głównego LLM — te same reguły co `build_llm_adapter`."""
     if settings.model_routing_enabled:
-        return "routing", (
-            f"openai:{settings.router_cheap_model}"
-            f"|{settings.router_frontier_provider}:{settings.router_frontier_model}"
-        )
+        return "routing", "|".join(_routing_identities(settings))
     return settings.llm_provider, _provider_default_model(settings.llm_provider)
 
 
-def _council_llm_identity(
-    settings: Settings, main_identity: tuple[str, str]
-) -> tuple[str, str]:
+def _council_llm_identity(settings: Settings, main_identity: tuple[str, str]) -> tuple[str, str]:
     """(provider, model) rady — te same reguły co `build_council_llm_adapter`."""
     if settings.council_llm_provider is None and settings.council_llm_model is None:
         return main_identity
@@ -1413,6 +1485,68 @@ def build_shadow_setup(settings: Settings) -> ShadowSetup | None:
     )
 
 
+def build_shadow_prompt_setup(
+    settings: Settings,
+    quota_monitor: QuotaMonitor | None = None,
+    usage_sink: UsageSink | None = None,
+) -> ShadowPromptSetup | None:
+    """EXP-26: wariant promptu albo modelu LLM w cieniu, RAZ na cykl. Flaga off albo
+    brak definicji → None (graf nie woła wariantu). Model wariantu to pojedynczy adapter
+    — bez kaskady routingu i failovera; bez klucza jego dostawcy wariant zostaje off
+    z WARNING-iem. Run z atrapami (FIN-35) daje wariantowi atrapę LLM.
+
+    Wersja wariantu to sha256 tożsamości: dostawca, model, hash szablonu promptu,
+    `config_hash` (opcje promptu, których wariant nie nadpisuje, dziedziczy z produkcji)
+    i nadpisania. Udział podpróbki i limit wywołań nie zmieniają prognozy — poza wersją."""
+    variant = settings.shadow_prompt_variant
+    if not settings.shadow_prompt_variant_enabled or variant is None:
+        return None
+    provider = variant.llm_provider or settings.llm_provider
+    model = variant.llm_model or _provider_default_model(provider)
+    llm_port: LLMPort
+    if not settings.paid_calls_enabled:
+        llm_port = LocalStubLLMAdapter()
+    else:
+        key_name, key = _provider_api_key(settings, provider)
+        if not key:
+            logger.warning(
+                "shadow_prompt_variant %s: %s nie jest ustawiony — wariant w cieniu wyłączony",
+                variant.name,
+                key_name,
+            )
+            return None
+        llm_port = _build_single_llm(settings, provider, model, quota_monitor, usage_sink)
+    prompt = PromptVariant(
+        prompt_delta_rounding=variant.prompt_delta_rounding,
+        prompt_taint_fence=variant.prompt_taint_fence,
+        trend_probabilities=variant.trend_probabilities,
+        without_memory=variant.without_memory,
+    )
+    identity = {
+        "name": variant.name,
+        "llm_provider": provider,
+        "llm_model": model,
+        "prompt_sha256": prompt_templates_sha256(),
+        "config_hash": settings.config_hash(),
+        **{field: str(value) for field, value in dataclasses.asdict(prompt).items()},
+    }
+    return ShadowPromptSetup(
+        name=variant.name,
+        version=variant_version(identity),
+        llm_port=llm_port,
+        variant=prompt,
+        sample_share=variant.sample_share,
+        max_calls_per_cycle=variant.max_calls_per_cycle,
+    )
+
+
+def _provider_api_key(settings: Settings, provider: str) -> tuple[str, str | None]:
+    """(nazwa zmiennej, wartość) klucza API dostawcy LLM."""
+    if provider == "anthropic":
+        return "ANTHROPIC_API_KEY", settings.anthropic_api_key
+    return "OPENAI_API_KEY", settings.openai_api_key
+
+
 def build_move_calibration(
     settings: Settings, repository: RepositoryPort
 ) -> dict[AssetType, tuple[CalibrationPoint, ...]] | None:
@@ -1426,9 +1560,7 @@ def build_move_calibration(
     except Exception:
         logger.exception("Settled moves unavailable — cykl bez przedziałów ruchu")
         return None
-    return calibration_windows(
-        rows, lambda symbol: classify_asset(symbol, crypto_set, etf_set)
-    )
+    return calibration_windows(rows, lambda symbol: classify_asset(symbol, crypto_set, etf_set))
 
 
 class _PaidPorts(NamedTuple):
@@ -1514,9 +1646,7 @@ def _alpha_vantage_client(
 # EXP-27: porty feedu fazy 2 dla symboli za bramką (w kolejności fazy 2).
 
 
-def build_phase_two_feeds(
-    settings: Settings, quota_monitor: QuotaMonitor | None
-) -> PhaseTwoFeeds:
+def build_phase_two_feeds(settings: Settings, quota_monitor: QuotaMonitor | None) -> PhaseTwoFeeds:
     """EXP-27: fabryka feedu fazy 2 — `AlphaVantageClient` z samymi symbolami za
     bramką, w trybie leniwym FIN-04: request idzie tylko dla symbolu, który
     faktycznie dostaje analizę (odcięty sufitem FIN-12 nie kosztuje AV), a cechy
@@ -1588,10 +1718,20 @@ def build_use_case(
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
+    *,
+    llm_budget_spent: bool = False,
 ) -> AnalyzeMarketUseCase:
-    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`."""
+    """DI Container — Use Case Fast Loopa na deps z `build_agent_graph_deps`.
+    `llm_budget_spent` (FIN-25): limit USD doby albo miesiąca wyczerpany przed cyklem."""
     return AnalyzeMarketUseCase(
-        build_agent_graph_deps(settings, repository, quota_monitor, run_context, usage_ledger)
+        build_agent_graph_deps(
+            settings,
+            repository,
+            quota_monitor,
+            run_context,
+            usage_ledger,
+            llm_budget_spent=llm_budget_spent,
+        )
     )
 
 
@@ -1601,6 +1741,8 @@ def build_agent_graph_deps(
     quota_monitor: QuotaMonitor | None = None,
     run_context: RunContext | None = None,
     usage_ledger: UsageLedger | None = None,
+    *,
+    llm_budget_spent: bool = False,
 ) -> AgentGraphDeps:
     """Buduje wszystkie adaptery Fast Loopa w jeden obiekt `AgentGraphDeps`.
 
@@ -1639,37 +1781,28 @@ def build_agent_graph_deps(
         crypto_symbols=settings.crypto_symbols,
     )
     crypto_threshold = (
-        Threshold(settings.crypto_volatility_threshold)
-        if settings.crypto_symbols
-        else None
+        Threshold(settings.crypto_volatility_threshold) if settings.crypto_symbols else None
     )
     # Próg rady dla krypto — używamy tego samego co głównego (5%), bo i tak
     # bramka volatility już odsiała pierwszy poziom; council ma jedynie
     # drugie sito kosztowe i nie ma sensu robić go ostrzejszego.
     crypto_council_threshold = (
-        Threshold(settings.crypto_volatility_threshold)
-        if settings.crypto_symbols
-        else None
+        Threshold(settings.crypto_volatility_threshold) if settings.crypto_symbols else None
     )
     # #6: tool-use research agent — adapter + read-only toole (fundamenty z cache,
     # makro NBP). Budowane tylko gdy włączony. Toole NIE robią nowych płatnych
     # wywołań: fast loop czyta fundamenty z cache, a NBP jest darmowe i bezkluczowe.
     tool_use_port = paid.tool_use
     research_tools = (
-        build_research_tools(fundamentals_port, NbpClient())
-        if tool_use_port is not None
-        else []
+        build_research_tools(fundamentals_port, NbpClient()) if tool_use_port is not None else []
     )
     tool_use_threshold = (
-        Threshold(settings.tool_use_volatility_threshold)
-        if tool_use_port is not None
-        else None
+        Threshold(settings.tool_use_volatility_threshold) if tool_use_port is not None else None
     )
     # FIN-08: osobny próg tool-use krypto; brak = krypto bierze `tool_use_threshold`.
     crypto_tool_use_threshold = (
         Threshold(settings.crypto_tool_use_volatility_threshold)
-        if tool_use_port is not None
-        and settings.crypto_tool_use_volatility_threshold is not None
+        if tool_use_port is not None and settings.crypto_tool_use_volatility_threshold is not None
         else None
     )
     return AgentGraphDeps(
@@ -1762,6 +1895,8 @@ def build_agent_graph_deps(
         split_detection_enabled=settings.split_detection_enabled,
         # DAT-15: strażnik anomalii ceny (darmowy odczyt historii snapshotów); off.
         price_outlier_guard_enabled=settings.price_outlier_guard_enabled,
+        # EXP-17: reflect bez diagnozy per błąd — robi ją tygodniowo Slow Loop; off.
+        batch_diagnosis_enabled=settings.batch_diagnosis_enabled,
         # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
@@ -1774,10 +1909,39 @@ def build_agent_graph_deps(
         ),
         # ML-33: prognozy cienia championa i challengerów (migracja 075) za flagą.
         shadow=build_shadow_setup(settings),
+        # EXP-26: wariant promptu albo modelu w cieniu (kolumny z migracji 083) za flagą.
+        shadow_prompt=build_shadow_prompt_setup(
+            settings, quota_monitor=quota_monitor, usage_sink=usage_ledger
+        ),
         telemetry=telemetry,
         # FIN-12: sufit płatnych wywołań LLM cyklu; None = bez limitu.
         paid_call_cap=settings.max_paid_llm_calls_per_cycle,
+        # FIN-25: wyczerpany limit USD doby albo miesiąca — cykl bez płatnych wywołań.
+        llm_budget_spent=llm_budget_spent,
     )
+
+
+def llm_budget_breach(
+    settings: Settings, repository: RepositoryPort, *, now: datetime
+) -> BudgetBreach | None:
+    """FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls`.
+
+    Czytany raz, przed budową grafu (przed pierwszym płatnym wywołaniem). Bez
+    `cost_ledger_enabled` ledger nie przybywa, więc limit niczego by nie mierzył —
+    WARNING i bez odczytu. Odczyt, który padł, też nie zamyka cyklu (fail-open)."""
+    caps = {
+        BudgetWindow.DAY: settings.daily_llm_budget_usd,
+        BudgetWindow.MONTH: settings.monthly_llm_budget_usd,
+    }
+    if all(cap is None for cap in caps.values()):
+        return None
+    if not settings.cost_ledger_enabled:
+        logger.warning(
+            "LLM budget caps set but cost_ledger_enabled is off — the llm_calls ledger "
+            "is not written, so the daily and monthly caps are not enforced"
+        )
+        return None
+    return find_budget_breach(repository, now=now, caps=caps)
 
 
 def cycle_cost(
@@ -1867,9 +2031,7 @@ def _regime_tagging_enabled(settings: Settings) -> bool:
     return settings.regime_tagging_enabled
 
 
-def _run_risk_watch(
-    settings: Settings, repository: RepositoryPort
-) -> MacroRiskReport | None:
+def _run_risk_watch(settings: Settings, repository: RepositoryPort) -> MacroRiskReport | None:
     """Risk Watch przed pętlą (zasila też reżim rynku #7). Off / błąd → None."""
     risk_use_case = build_macro_risk_use_case(settings, repository)
     if risk_use_case is None:
@@ -1938,9 +2100,7 @@ def _resolve_regime(
     detector = RegimeDetector()
     raw_regime = detector.classify(macro_risk_report.overall_alert, risk_signals)
     regime, previous_regime = (
-        _apply_regime_hysteresis(
-            settings, repository, raw_regime, cycle_at or datetime.now(UTC)
-        )
+        _apply_regime_hysteresis(settings, repository, raw_regime, cycle_at or datetime.now(UTC))
         if repository is not None
         else (raw_regime, None)
     )
@@ -2005,9 +2165,7 @@ def _apply_regime_hysteresis(
     try:
         repository.save_regime_state(cycle_at, raw_regime, state)
     except Exception:
-        logger.exception(
-            "regime_history write failed — następny cykl użyje starszego stanu"
-        )
+        logger.exception("regime_history write failed — następny cykl użyje starszego stanu")
     if state.regime is not raw_regime:
         logger.info(
             "Histereza reżimu — trzymam %s (surowy %s, potwierdzenia wyjścia %d/%d)",
@@ -2145,9 +2303,7 @@ def _build_portfolio_radar(
             var_enabled=settings.portfolio_var_enabled,
             stress_enabled=settings.stress_test_enabled,
             var_confidence=settings.var_confidence,
-            scenarios=(
-                DEFAULT_STRESS_SCENARIOS if settings.stress_test_enabled else ()
-            ),
+            scenarios=(DEFAULT_STRESS_SCENARIOS if settings.stress_test_enabled else ()),
         ).run(all_symbols)
         logger.info(
             "Portfolio Radar — clusters=%d watchlist=%d",
@@ -2285,6 +2441,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         calibration_curve_enabled=settings.calibration_curve_enabled,
         calibrated_confidence_enabled=settings.calibrated_confidence_enabled,
         isotonic_calibration_enabled=settings.isotonic_calibration_enabled,
+        isotonic_class_calibration_enabled=settings.isotonic_class_calibration_enabled,
         interval_coverage_enabled=settings.interval_coverage_enabled,
         model_scorecard_enabled=settings.model_scorecard_enabled,
         cycle_diff_enabled=settings.cycle_diff_enabled,
@@ -2387,6 +2544,8 @@ def _without_owner_portfolio(context: ReportContext) -> ReportContext:
         portfolio_fx=None,
         # MAIL-24: podpisany URL otwiera mail właściciela z portfelem.
         archive_url=None,
+        # MAIL-45: wyciszenia to preferencje właściciela (np. właśnie sprzedana spółka).
+        watchlist_mutes=None,
     )
 
 
@@ -2609,6 +2768,9 @@ def deliver_report(
         # raportu nie ma (report_sent False), a alerty i tak zapisuje `finally`.
         report = assemble()
         context = report.context
+        # MAIL-35: postać maila z polityki cichego dnia — liczona raz, nad pełnymi
+        # wynikami (jak temat); archiwum i tak dostaje pełny mail poniżej.
+        compact = _digest_form(settings, results, context) is DigestForm.COMPACT
         html, text = _render_report(context, results, started_at, duration)
         # Subject prefix gdy są CRITICAL — wymusza zwrócenie uwagi w skrzynce.
         max_sev = quota_monitor.max_severity()
@@ -2647,6 +2809,9 @@ def deliver_report(
             if archive_url is not None:
                 context = dataclasses.replace(context, archive_url=archive_url)
                 html, text = _render_report(context, results, started_at, duration)
+        if compact:
+            logger.info("Quiet day — compact digest (digest_quiet_policy=compact_when_quiet)")
+            html, text = _render_report(context, results, started_at, duration, compact=True)
 
         # U2: jeśli są subskrybenci, każdy dostaje raport TNIĘTY do swojej
         # watchlisty (analiza poszła RAZ nad unią — to tylko re-slicing). Bez
@@ -2670,6 +2835,7 @@ def deliver_report(
                     duration,
                     symbols_filter=symbols_for(sub, all_syms),
                     include_portfolio=owner,
+                    compact=compact,
                 )
                 channels.append(
                     _send_subscriber_digest(
@@ -2689,7 +2855,12 @@ def deliver_report(
                         legacy_push_notifier,
                         subject,
                         _render_report(
-                            context, results, started_at, duration, user_portfolio_in_text=False
+                            context,
+                            results,
+                            started_at,
+                            duration,
+                            user_portfolio_in_text=False,
+                            compact=compact,
                         ),
                     )
                 )
@@ -2747,10 +2918,12 @@ def _render_report(
     symbols_filter: frozenset[str] | None = None,
     user_portfolio_in_text: bool = True,
     include_portfolio: bool = True,
+    compact: bool = False,
 ) -> tuple[str, str]:
     """HTML i tekst raportu dla jednego odbiorcy. Raport subskrybenta różni się
     filtrem symboli (i bez portfela, gdy to nie właściciel — BEZ-01); stary
-    push — brakiem sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów)."""
+    push — brakiem sekcji portfela w tekście (kwoty P/L nie idą do komunikatorów).
+    `compact` (MAIL-35) — zwarty mail cichego dnia."""
     recipient_context = dataclasses.replace(
         context,
         symbols_filter=symbols_filter,
@@ -2760,10 +2933,30 @@ def _render_report(
         archive_url=context.archive_url if user_portfolio_in_text else None,
     )
     return build_html_report(
-        results, started_at, duration,
-        recipient_context
-        if include_portfolio
-        else _without_owner_portfolio(recipient_context),
+        results,
+        started_at,
+        duration,
+        recipient_context if include_portfolio else _without_owner_portfolio(recipient_context),
+        compact=compact,
+    )
+
+
+def _digest_form(
+    settings: Settings, results: list[SymbolResult], context: ReportContext
+) -> DigestForm:
+    """MAIL-35: pełny czy zwarty mail — reguła w domenie (`should_send`), tu liczby
+    cyklu: lead (jak temat), rozliczenia (None = odczyt padł), szoki z watcha,
+    symbole za bramką (zapisane i odcięte budżetem), błędy i pierwszy cykl."""
+    return should_send(
+        build_cycle_lead(results, context),
+        resolved=(
+            None if context.resolved_unavailable else len(context.resolved_predictions or [])
+        ),
+        shocks=len(context.shock_alerts or []),
+        policy=DigestPolicy(settings.digest_quiet_policy),
+        gated=sum(1 for r in results if r.status == "saved" or is_budget_cut(r)),
+        errors=sum(1 for r in results if r.status == "error"),
+        onboarding=context.cycle_maturity is CycleMaturity.FIRST_RUN,
     )
 
 
@@ -2857,9 +3050,7 @@ def _record_weekly_budget_alert(settings: Settings, quota_monitor: QuotaMonitor)
     try:
         personas = load_council_personas(Path(settings.council_personas_dir))
     except (OSError, ValueError) as exc:
-        logger.warning(
-            "Fast Loop weekly budget not checked: council personas unreadable (%s)", exc
-        )
+        logger.warning("Fast Loop weekly budget not checked: council personas unreadable (%s)", exc)
         return
     weekly = settings.fast_loop_weekly_budget(personas=min(len(personas), COUNCIL_MAX_PERSONAS))
     if weekly.ok:
@@ -2970,8 +3161,7 @@ def flag_undelivered_report(
         severity=QuotaSeverity.CRITICAL,
         message="Raport z tego przebiegu nie dotarł do właściciela.",
         action=(
-            "Sprawdź log przebiegu w GitHub Actions: klucz Resend, domenę nadawcy "
-            "i kanały push."
+            "Sprawdź log przebiegu w GitHub Actions: klucz Resend, domenę nadawcy i kanały push."
         ),
         occurred_at=now,
     )
@@ -3054,18 +3244,14 @@ def run_with_heartbeat(settings: Settings, run: Callable[[], int]) -> int:
     return exit_code
 
 
-def main(
-    settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now
-) -> int:
+def main(settings: Settings | None = None, *, clock: Callable[[], datetime] = _utc_now) -> int:
     """`clock` to zegar cyklu: dzień NYSE (FIN-34) i `started_at` raportu."""
     resolved = settings or Settings.from_env()
     configure_logging("main_agent", resolved.secret_values())
     return run_with_heartbeat(resolved, lambda: _run_fast_loop_metered(resolved, clock))
 
 
-def prediction_columns_missing(
-    repository: RepositoryPort, use_case: AnalyzeMarketUseCase
-) -> bool:
+def prediction_columns_missing(repository: RepositoryPort, use_case: AnalyzeMarketUseCase) -> bool:
     """FIN-05: preflight kolumn `prediction_logs` raz na cykl, przed płatnymi węzłami.
 
     Brak kolumny, którą ten config zapisuje (niezaaplikowana migracja), to ERROR
@@ -3181,6 +3367,9 @@ def _run_fast_loop(
     settings, repository = gate_flags_by_schema(
         settings, repository, quota_monitor, now=clock(), rebuild=build_repository
     )
+    # FIN-25: limit USD doby i miesiąca z ledgera — raz, przed pierwszym płatnym
+    # wywołaniem; wyczerpany zamyka płatne wywołania całego cyklu.
+    budget_breach = llm_budget_breach(settings, repository, now=clock())
     # FIN-13: jeden ledger tokenów na przebieg — adaptery zgłaszają, mail wycenia.
     usage_ledger = UsageLedger()
     use_case = build_use_case(
@@ -3189,6 +3378,7 @@ def _run_fast_loop(
         quota_monitor=quota_monitor,
         run_context=run_context,
         usage_ledger=usage_ledger,
+        llm_budget_spent=budget_breach is not None,
     )
     if http_meter is not None:
         use_case.telemetry.bind_http_meter(http_meter)
@@ -3236,6 +3426,18 @@ def _run_fast_loop(
     # FIN-34: symbole TEGO cyklu — w dzień zamknięcia NYSE samo krypto. Watchlista
     # (`all_symbols`) zostaje pełna dla kontekstu raportu (trafność, radar, portfel).
     cycle_symbols = [*stock_symbols, *settings.crypto_symbols]
+    # MAIL-45: wyciszone z bota wypadają z cyklu (bez płatnej analizy i sekcji), ale
+    # dostają snapshot ceny. Flaga off = watchlist_mutes None i lista bez zmian.
+    watchlist_mutes = resolve_watchlist_mutes(settings, started_at)
+    muted = {mute.symbol for mute in watchlist_mutes.muted} if watchlist_mutes else set()
+    if muted:
+        logger.info("Wyciszone z bota (bez analizy, ze snapshotem): %s", sorted(muted))
+        snapshot_muted_symbols(
+            settings,
+            repository,
+            [s for s in cycle_symbols if s in muted and s not in unsupported],
+        )
+        cycle_symbols = [s for s in cycle_symbols if s not in muted]
     # Eligible — symbole, dla których pójdzie pełna analiza. Unsupported tickery
     # są oznaczone "ignored" przed pętlą, więc throttle policzy je poprawnie.
     eligible = [s for s in cycle_symbols if s not in unsupported]
@@ -3356,6 +3558,7 @@ def _run_fast_loop(
             alpha_prices=alpha_prices,
             yield_curve=yield_curve,
             cycle_cost=cost,
+            llm_budget_breach=budget_breach,
             ml_model_loaded=use_case.ml_model_loaded,
             run_context=run_context,
             expired_unverified=expired_unverified,
@@ -3366,6 +3569,7 @@ def _run_fast_loop(
                 max_age_days=settings.insider_lead_max_age_days,
             ),
             source_health=source_health,
+            watchlist_mutes=watchlist_mutes,
         ),
     )
     report_delivery = _report_delivery(
@@ -3407,13 +3611,13 @@ def _run_fast_loop(
     if public_status_enabled(settings):
         status_page_use_case(settings, repository, clock).run()
 
-    # Exit code 1 tylko gdy wszystkie symbole padły (catastrophic failure).
+    # NIEZ-38: exit 1 tylko gdy wszystkie symbole padły (catastrophic failure).
     # Pojedyncze błędy per-symbol (np. ticker niewspierany przez Finnhub free)
     # są raportowane w mailu i nie powinny psuć całego cyklu w GHA.
     total = len(eligible)
-    if total > 0 and failures == total:
-        return 1
-    return 0
+    if is_partial_failure(failures, total):
+        logger.warning(PARTIAL_FAILURE_LOG, "Fast Loop", failures, total)
+    return run_exit_code(failures, total)
 
 
 if __name__ == "__main__":

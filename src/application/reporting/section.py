@@ -58,6 +58,7 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "accuracy_stats",
         "signal_calibration_buckets",
         "signal_isotonic_calibration",
+        "signal_isotonic_class_calibration",
         "position_risk",
         "portfolio_clusters",
         "symbol_track_record",

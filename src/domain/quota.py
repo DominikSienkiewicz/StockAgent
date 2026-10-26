@@ -33,8 +33,8 @@ class QuotaSeverity(Enum):
 
 @dataclass(frozen=True)
 class QuotaAlert:
-    source: str            # "Alpha Vantage" / "OpenAI" / "Finnhub" / "Resend"
+    source: str  # "Alpha Vantage" / "OpenAI" / "Finnhub" / "Resend"
     severity: QuotaSeverity
-    message: str           # co się stało, krótko
-    action: str            # konkretny krok do podjęcia przez właściciela
+    message: str  # co się stało, krótko
+    action: str  # konkretny krok do podjęcia przez właściciela
     occurred_at: datetime

@@ -151,8 +151,10 @@ class TestCouncilVerdictBehavior:
     Zachowanie należy do agregata, nie do warstwy prezentacji."""
 
     def _verdict(
-        self, opinions: list[InvestorOpinion],
-        final: str = "BUY", consensus: float = 0.7,
+        self,
+        opinions: list[InvestorOpinion],
+        final: str = "BUY",
+        consensus: float = 0.7,
     ) -> CouncilVerdict:
         return CouncilVerdict(
             final_recommendation=final,  # type: ignore[arg-type]
@@ -413,13 +415,19 @@ class TestOpinionShift:
             _make_opinion("BUY"),  # Warren Buffett (nazwa z _make_opinion)
         ]
         before[0] = InvestorOpinion(
-            investor_name="A", recommendation="SELL", confidence=0.8,
-            reasoning="x", key_factors=(),
+            investor_name="A",
+            recommendation="SELL",
+            confidence=0.8,
+            reasoning="x",
+            key_factors=(),
         )
         after = [
             InvestorOpinion(
-                investor_name="A", recommendation="BUY", confidence=0.8,
-                reasoning="y", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.8,
+                reasoning="y",
+                key_factors=(),
             )
         ]
         v = self._verdict(after)
@@ -428,14 +436,20 @@ class TestOpinionShift:
     def test_zero_when_nobody_changed(self) -> None:
         before = [
             InvestorOpinion(
-                investor_name="A", recommendation="BUY", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             )
         ]
         after = [
             InvestorOpinion(
-                investor_name="A", recommendation="BUY", confidence=0.9,
-                reasoning="changed reasoning only", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning="changed reasoning only",
+                key_factors=(),
             )
         ]
         v = self._verdict(after)
@@ -444,22 +458,34 @@ class TestOpinionShift:
     def test_matches_by_investor_name(self) -> None:
         before = [
             InvestorOpinion(
-                investor_name="A", recommendation="SELL", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="A",
+                recommendation="SELL",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             ),
             InvestorOpinion(
-                investor_name="B", recommendation="HOLD", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="B",
+                recommendation="HOLD",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         after = [
             InvestorOpinion(
-                investor_name="A", recommendation="BUY", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             ),
             InvestorOpinion(
-                investor_name="B", recommendation="HOLD", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="B",
+                recommendation="HOLD",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             ),
         ]
         v = self._verdict(after)
@@ -470,14 +496,20 @@ class TestOpinionShift:
         # Inwestor obecny tylko w "before" (nie ma go w werdykcie) nie liczy się.
         before = [
             InvestorOpinion(
-                investor_name="Ghost", recommendation="SELL", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="Ghost",
+                recommendation="SELL",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             )
         ]
         after = [
             InvestorOpinion(
-                investor_name="A", recommendation="BUY", confidence=0.8,
-                reasoning="x", key_factors=(),
+                investor_name="A",
+                recommendation="BUY",
+                confidence=0.8,
+                reasoning="x",
+                key_factors=(),
             )
         ]
         v = self._verdict(after)
@@ -582,3 +614,41 @@ class TestParseRecommendation:
 
     def test_without_a_default_unknown_value_is_none(self) -> None:
         assert parse_recommendation("STRONG_BUY") is None
+
+
+class TestVotesByRound:
+    """ML-40: głosy do zapisu w `council_votes` z numerem rundy."""
+
+    @staticmethod
+    def _op(name: str, rec: Literal["BUY", "SELL", "HOLD"]) -> InvestorOpinion:
+        return InvestorOpinion(
+            investor_name=name, recommendation=rec, confidence=0.6, reasoning="", key_factors=()
+        )
+
+    def _verdict(self, *, first_round: tuple[InvestorOpinion, ...] = ()) -> CouncilVerdict:
+        return CouncilVerdict(
+            final_recommendation="BUY",
+            consensus_strength=0.7,
+            summary="",
+            dissenting_views=(),
+            investor_opinions=(self._op("A", "BUY"), self._op("B", "BUY")),
+            first_round_opinions=first_round,
+        )
+
+    def test_without_revision_the_verdict_votes_are_round_one(self) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND
+
+        verdict = self._verdict()
+
+        assert verdict.votes_by_round() == ((FIRST_COUNCIL_ROUND, verdict.investor_opinions),)
+
+    def test_after_revision_round_one_comes_first_then_the_revised_votes(self) -> None:
+        from src.domain.council import FIRST_COUNCIL_ROUND, REVISION_COUNCIL_ROUND
+
+        first = (self._op("A", "BUY"), self._op("B", "SELL"))
+        verdict = self._verdict(first_round=first)
+
+        assert verdict.votes_by_round() == (
+            (FIRST_COUNCIL_ROUND, first),
+            (REVISION_COUNCIL_ROUND, verdict.investor_opinions),
+        )

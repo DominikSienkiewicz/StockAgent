@@ -101,23 +101,94 @@ def test_timed_samples_keep_directional_rows_with_their_moment() -> None:
     from src.application.signal_calibration import timed_directional_samples
 
     rows: list[dict[str, Any]] = [
-        {"confidence_score": 0.7, "is_trend_correct": True, "predicted_trend": "BULLISH",
-         "timestamp": "2026-10-01T05:30:00+00:00"},
-        {"confidence_score": 0.6, "is_trend_correct": False, "predicted_trend": "BEARISH",
-         "timestamp": "2026-10-02T07:30:00+02:00"},
-        {"confidence_score": 0.9, "is_trend_correct": True, "predicted_trend": "SIDEWAYS",
-         "timestamp": "2026-10-03T05:30:00+00:00"},
-        {"confidence_score": 0.8, "is_trend_correct": True, "predicted_trend": "BULLISH",
-         "timestamp": "not a date"},
-        {"confidence_score": 0.8, "is_trend_correct": None, "predicted_trend": "BULLISH",
-         "timestamp": "2026-10-04T05:30:00+00:00"},
+        {
+            "confidence_score": 0.7,
+            "is_trend_correct": True,
+            "predicted_trend": "BULLISH",
+            "timestamp": "2026-10-01T05:30:00+00:00",
+        },
+        {
+            "confidence_score": 0.6,
+            "is_trend_correct": False,
+            "predicted_trend": "BEARISH",
+            "timestamp": "2026-10-02T07:30:00+02:00",
+        },
+        {
+            "confidence_score": 0.9,
+            "is_trend_correct": True,
+            "predicted_trend": "SIDEWAYS",
+            "timestamp": "2026-10-03T05:30:00+00:00",
+        },
+        {
+            "confidence_score": 0.8,
+            "is_trend_correct": True,
+            "predicted_trend": "BULLISH",
+            "timestamp": "not a date",
+        },
+        {
+            "confidence_score": 0.8,
+            "is_trend_correct": None,
+            "predicted_trend": "BULLISH",
+            "timestamp": "2026-10-04T05:30:00+00:00",
+        },
         {"confidence_score": 0.8, "is_trend_correct": True, "predicted_trend": "BULLISH"},
-        {"confidence_score": 0.5, "is_trend_correct": True, "predicted_trend": "BULLISH",
-         "timestamp": "2026-10-05T05:30:00"},
+        {
+            "confidence_score": 0.5,
+            "is_trend_correct": True,
+            "predicted_trend": "BULLISH",
+            "timestamp": "2026-10-05T05:30:00",
+        },
     ]
 
     assert timed_directional_samples(rows) == [
         (datetime(2026, 10, 1, 5, 30, tzinfo=UTC), 0.7, True),
         (datetime(2026, 10, 2, 5, 30, tzinfo=UTC), 0.6, False),
         (datetime(2026, 10, 5, 5, 30, tzinfo=UTC), 0.5, True),
+    ]
+
+
+def test_classed_samples_take_the_asset_class_from_the_symbol() -> None:
+    # ML-54: krypto = symbol z `crypto_symbols`, reszta = akcje i ETF-y; wiersz bez
+    # symbolu nie ma klasy (tylko mapa globalna). SIDEWAYS odpada jak w ML-28.
+    from datetime import UTC, datetime
+
+    from src.application.signal_calibration import timed_classed_directional_samples
+    from src.domain.isotonic_calibration import CalibrationClass
+
+    stamp = "2026-10-01T05:30:00+00:00"
+    rows: list[dict[str, Any]] = [
+        {
+            "symbol": "BTC",
+            "confidence_score": 0.7,
+            "is_trend_correct": True,
+            "predicted_trend": "BULLISH",
+            "timestamp": stamp,
+        },
+        {
+            "symbol": "SPY",
+            "confidence_score": 0.6,
+            "is_trend_correct": False,
+            "predicted_trend": "BEARISH",
+            "timestamp": stamp,
+        },
+        {
+            "confidence_score": 0.8,
+            "is_trend_correct": True,
+            "predicted_trend": "BULLISH",
+            "timestamp": stamp,
+        },
+        {
+            "symbol": "ETH",
+            "confidence_score": 0.9,
+            "is_trend_correct": True,
+            "predicted_trend": "SIDEWAYS",
+            "timestamp": stamp,
+        },
+    ]
+
+    moment = datetime(2026, 10, 1, 5, 30, tzinfo=UTC)
+    assert timed_classed_directional_samples(rows, ["BTC", "ETH"]) == [
+        (moment, 0.7, True, CalibrationClass.CRYPTO),
+        (moment, 0.6, False, CalibrationClass.NON_CRYPTO),
+        (moment, 0.8, True, None),
     ]

@@ -34,11 +34,7 @@ def _varied(length: int = 30) -> list[Recommendation]:
 
 
 def test_identical_voters_give_effective_n_one() -> None:
-    votes = [
-        vote
-        for name in ("Graham", "Buffett", "Marks")
-        for vote in _votes(name, _varied())
-    ]
+    votes = [vote for name in ("Graham", "Buffett", "Marks") for vote in _votes(name, _varied())]
 
     report = assess_council_redundancy(votes)
 
@@ -127,11 +123,7 @@ def test_pairs_use_only_the_predictions_both_personas_voted_on() -> None:
 
 def test_most_redundant_pair_comes_first() -> None:
     shifted = _varied()[1:] + _varied()[:1]
-    votes = (
-        _votes("Graham", _varied())
-        + _votes("Buffett", _varied())
-        + _votes("Wood", shifted)
-    )
+    votes = _votes("Graham", _varied()) + _votes("Buffett", _varied()) + _votes("Wood", shifted)
 
     report = assess_council_redundancy(votes)
 
@@ -170,9 +162,7 @@ def test_personas_without_shared_predictions_make_no_pair() -> None:
 def test_persona_without_shared_predictions_with_the_llm_is_left_out() -> None:
     recommendations = _varied(12)
     votes = _votes("Alfa", recommendations) + _votes("Beta", recommendations)
-    trends = {
-        f"p-{index + 500}": "BULLISH" for index in range(len(recommendations))
-    }
+    trends = {f"p-{index + 500}": "BULLISH" for index in range(len(recommendations))}
 
     report = assess_council_redundancy(votes, trends, min_overlap=0)
 

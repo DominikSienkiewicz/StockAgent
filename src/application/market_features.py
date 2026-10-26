@@ -69,7 +69,8 @@ def _symbol_price_features(
         quote = market_port.get_current_price(symbol)
     except Exception:
         logger.warning(
-            "ML-31: brak kursu %s w fazie cech — symbol bez cech rynkowych", symbol,
+            "ML-31: brak kursu %s w fazie cech — symbol bez cech rynkowych",
+            symbol,
             exc_info=True,
         )
         return None

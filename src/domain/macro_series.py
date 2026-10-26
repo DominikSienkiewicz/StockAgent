@@ -79,8 +79,10 @@ class MacroSeriesSnapshot:
 
     @property
     def is_empty(self) -> bool:
-        return not self.vix and not self.hy_oas and all(
-            series is None for series in (self.vxn, self.term_spread, self.nfci)
+        return (
+            not self.vix
+            and not self.hy_oas
+            and all(series is None for series in (self.vxn, self.term_spread, self.nfci))
         )
 
 

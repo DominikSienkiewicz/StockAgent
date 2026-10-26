@@ -49,9 +49,7 @@ def test_v1_receipt_reads_without_a_recipe() -> None:
     assert receipt.schema_version == 1
     assert receipt.effective_threshold == "0.02"
     assert receipt.precedents == ({"id": "pred-1", "similarity": 0.9},)
-    assert receipt.feature_attribution == (
-        {"feature": "price_delta", "contribution": 0.01},
-    )
+    assert receipt.feature_attribution == ({"feature": "price_delta", "contribution": 0.01},)
     assert receipt.recipe == {}
     assert receipt.recipe_version is None
 
@@ -106,3 +104,22 @@ def test_v1_receipt_has_no_experiment_arms() -> None:
 
     assert receipt is not None
     assert receipt.experiment_arms == {}
+
+
+def test_v2_reads_the_model_used_and_tolerates_its_absence() -> None:
+    # FIN-21: opcjonalny klucz v2 — model, który odpowiedział przy routingu modeli.
+    routed = read_decision_receipt({"schema_version": 2, "model_used": "openai:gpt-5-mini"})
+    plain = read_decision_receipt({"schema_version": 2})
+    garbage = read_decision_receipt({"schema_version": 2, "model_used": 7})
+
+    assert routed is not None and plain is not None and garbage is not None
+    assert routed.model_used == "openai:gpt-5-mini"
+    assert plain.model_used is None
+    assert garbage.model_used is None
+
+
+def test_v1_receipt_has_no_model_used() -> None:
+    receipt = read_decision_receipt({**_V1, "model_used": "openai:gpt-5-mini"})
+
+    assert receipt is not None
+    assert receipt.model_used is None

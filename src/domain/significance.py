@@ -57,9 +57,7 @@ def binomial_test_greater(k: int, n: int, p0: float) -> float:
         sd = math.sqrt(n * p0 * (1.0 - p0))
         z = (k - 0.5 - mean) / sd
         return 0.5 * math.erfc(z / math.sqrt(2.0))
-    tail = sum(
-        math.comb(n, i) * p0**i * (1.0 - p0) ** (n - i) for i in range(k, n + 1)
-    )
+    tail = sum(math.comb(n, i) * p0**i * (1.0 - p0) ** (n - i) for i in range(k, n + 1))
     return min(1.0, tail)
 
 

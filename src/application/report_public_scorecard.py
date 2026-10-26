@@ -248,9 +248,7 @@ def _ece_line(
     ece: float, calibration_by_cycle: Sequence[Sequence[tuple[float, bool]]] | None
 ) -> str:
     """„ECE = 7.0%” albo z cyklami (WIA-58): przedział, n, n_eff i ECE po korekcie."""
-    evidence = (
-        calibration_error_evidence(calibration_by_cycle) if calibration_by_cycle else None
-    )
+    evidence = calibration_error_evidence(calibration_by_cycle) if calibration_by_cycle else None
     if evidence is None:
         return f"<strong>ECE = {ece * 100:.1f}%</strong>"
     if evidence.interval is None:
@@ -328,9 +326,7 @@ def _render_calibration_sparkline(buckets: Sequence[CalibrationBucket]) -> str:
             f"<div class='spark-count'>n={bucket.count}</div>"
             "</td>"
         )
-    return (
-        "<table class='sparkline'><tr>" + "".join(cells) + "</tr></table>"
-    )
+    return "<table class='sparkline'><tr>" + "".join(cells) + "</tr></table>"
 
 
 def _render_equity_section(
@@ -560,10 +556,7 @@ def _wrap_page(body: str, generated_on: str) -> str:
     """Owija treść w kompletny, samodzielny dokument HTML (inline CSS)."""
     footer = ""
     if generated_on:
-        footer = (
-            "<footer class='foot'>Wygenerowano: "
-            f"{_html.escape(generated_on)}</footer>"
-        )
+        footer = f"<footer class='foot'>Wygenerowano: {_html.escape(generated_on)}</footer>"
     return (
         "<!DOCTYPE html>"
         "<html lang='pl'>"
@@ -603,8 +596,7 @@ def _page_css() -> str:
         "padding:16px;margin:16px 0}"
         ".block h2{font-size:17px;margin:0 0 8px}"
         ".desc{color:#475569;font-size:13px;margin:0 0 12px}"
-        ".sparkline{border-collapse:collapse;height:" + str(_SPARKLINE_MAX_PX)
-        + "px;margin:8px 0}"
+        ".sparkline{border-collapse:collapse;height:" + str(_SPARKLINE_MAX_PX) + "px;margin:8px 0}"
         ".spark-cell{vertical-align:bottom;padding:0 2px;text-align:center}"
         ".spark-bar{width:14px;background:#0ea5e9;border-radius:2px;"
         "margin:0 auto}"
@@ -670,9 +662,7 @@ def render_public_scorecard_json(
         **_hit_rate_document(hit_rate_evidence(predictions)),
         "calibration": _calibration_document(samples, calibration_by_cycle),
         "equity_curve": (
-            _equity_document(equity, costs)
-            if equity is not None and equity.n_trades > 0
-            else None
+            _equity_document(equity, costs) if equity is not None and equity.n_trades > 0 else None
         ),
     }
 

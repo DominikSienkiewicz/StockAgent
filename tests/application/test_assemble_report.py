@@ -6,6 +6,7 @@ Wiring z `Settings` (aliasy w `main_agent`) pilnują testy w
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import Mock
@@ -208,10 +209,17 @@ def test_model_scorecard_carries_the_snapshot_model_cards() -> None:
     # okna karty trafiają do maila jedną linią obok werdyktu modelu wspólnego.
     repo = _repo()
     repo.get_recent_model_scorecards.return_value = [
-        {"symbol": "ALL", "status": "trained_successfully",
-         "timestamp": "2026-10-17T03:35:00+00:00"},
-        {"symbol": "ALL_FREE", "status": "skipped", "n_samples": 12,
-         "timestamp": "2026-10-17T03:36:00+00:00"},
+        {
+            "symbol": "ALL",
+            "status": "trained_successfully",
+            "timestamp": "2026-10-17T03:35:00+00:00",
+        },
+        {
+            "symbol": "ALL_FREE",
+            "status": "skipped",
+            "n_samples": 12,
+            "timestamp": "2026-10-17T03:36:00+00:00",
+        },
     ]
 
     context = _assemble(
@@ -238,9 +246,7 @@ class TestPersonaBrierRanking:
 
     def _fetch(self, repo: Mock, *, enabled: bool) -> list[PersonaTrackRecord]:
         monitor = QuotaMonitor()
-        *_, ranking = fetch_report_context(
-            repo, monitor, ["AAPL"], persona_brier_ranking=enabled
-        )
+        *_, ranking = fetch_report_context(repo, monitor, ["AAPL"], persona_brier_ranking=enabled)
         return ranking
 
     def test_flag_orders_the_leaderboard_by_brier_skill(self) -> None:
@@ -524,6 +530,74 @@ def test_sideways_rows_stay_out_of_the_isotonic_history() -> None:
 
     context = _assemble(_history_repo(history), _isotonic_flags())
 
+    assert context.signal_isotonic_calibration is None
+
+
+def _classed_history() -> list[dict[str, Any]]:
+    """ML-54: 40 próbek na okno w każdej klasie (45 i 10 dni temu); BTC trafia
+    rzadziej niż AAPL przy każdej pewności."""
+    rows: list[dict[str, Any]] = []
+    levels = {"BTC": ((0.6, 8, 12), (0.9, 7, 13)), "AAPL": ((0.6, 12, 8), (0.9, 11, 9))}
+    for days_ago in (45, 10):
+        for symbol, symbol_levels in levels.items():
+            for confidence, hits, misses in symbol_levels:
+                hit = {**_calibration_row(days_ago, confidence, True), "symbol": symbol}
+                miss = {**_calibration_row(days_ago, confidence, False), "symbol": symbol}
+                rows += [hit] * hits + [miss] * misses
+    return rows
+
+
+def _older_samples(history: list[dict[str, Any]], symbol: str) -> list[tuple[float, bool]]:
+    cutoff = (STARTED_AT - timedelta(days=30)).isoformat()
+    return [
+        (row["confidence_score"], row["is_trend_correct"])
+        for row in history
+        if row["symbol"] == symbol and row["timestamp"] < cutoff
+    ]
+
+
+def _class_flags(**overrides: bool) -> ReportFlags:
+    return dataclasses.replace(
+        _isotonic_flags(isotonic_class_calibration_enabled=True, **overrides),
+        crypto_symbols=("BTC",),
+    )
+
+
+def test_class_isotonic_maps_reach_the_ranking_when_enabled() -> None:
+    from src.domain.isotonic_calibration import CalibrationClass, fit_isotonic
+
+    history = _classed_history()
+    repo = _history_repo(history)
+
+    context = _assemble(repo, _class_flags())
+
+    selection = context.signal_isotonic_class_calibration
+    assert selection is not None
+    assert selection.calibrator_for(CalibrationClass.CRYPTO) == fit_isotonic(
+        _older_samples(history, "BTC")
+    )
+    assert selection.calibrator_for(CalibrationClass.NON_CRYPTO) == fit_isotonic(
+        _older_samples(history, "AAPL")
+    )
+    assert context.signal_isotonic_calibration == selection.global_selection.calibrator
+    assert [c.args for c in repo.get_resolved_for_calibration.call_args_list] == [(30,), (60,)]
+
+
+def test_class_isotonic_flag_off_keeps_the_global_map_only() -> None:
+    repo = _history_repo(_classed_history())
+
+    context = _assemble(repo, dataclasses.replace(_isotonic_flags(), crypto_symbols=("BTC",)))
+
+    assert context.signal_isotonic_class_calibration is None
+    assert context.signal_isotonic_calibration is not None
+
+
+def test_class_isotonic_needs_the_global_isotonic_flag() -> None:
+    repo = _history_repo(_classed_history())
+
+    context = _assemble(repo, _class_flags(isotonic_calibration_enabled=False))
+
+    assert context.signal_isotonic_class_calibration is None
     assert context.signal_isotonic_calibration is None
 
 

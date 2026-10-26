@@ -31,7 +31,5 @@ def select_refresh_batch(fetched_at: Mapping[str, datetime | None], budget: int)
     if budget <= 0:
         return []
     missing = sorted(symbol for symbol, stamp in fetched_at.items() if stamp is None)
-    known = sorted(
-        (stamp, symbol) for symbol, stamp in fetched_at.items() if stamp is not None
-    )
+    known = sorted((stamp, symbol) for symbol, stamp in fetched_at.items() if stamp is not None)
     return [*missing, *(symbol for _, symbol in known)][:budget]

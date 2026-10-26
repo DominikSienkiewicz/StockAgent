@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://www.alphavantage.co"
 DEFAULT_TIMEOUT = 30
-DEFAULT_RELEVANCE_THRESHOLD = 0.5   # odsiewamy artykuły gdzie ticker jest tylko wzmianką
-DEFAULT_LIMIT = 50                   # max artykułów per batch (free tier OK)
+DEFAULT_RELEVANCE_THRESHOLD = 0.5  # odsiewamy artykuły gdzie ticker jest tylko wzmianką
+DEFAULT_LIMIT = 50  # max artykułów per batch (free tier OK)
 
 # AV NEWS_SENTIMENT z parametrem `tickers=A,B,C` filtruje artykuły wspominające
 # WSZYSTKIE tickery (AND, nie OR — z dokumentacji). Heterogeniczna lista
@@ -121,9 +121,7 @@ class AlphaVantageClient:
         # plain → wire (BTC → CRYPTO:BTC) i zamieniamy zarówno w requestach
         # jak i przy lookupie ticker_sentiment.
         self._crypto_symbols: set[str] = set(crypto_symbols or ())
-        self._symbols = [
-            self._to_wire(s) for s in self._filter_supported(list(symbols))
-        ]
+        self._symbols = [self._to_wire(s) for s in self._filter_supported(list(symbols))]
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._threshold = relevance_threshold
@@ -362,9 +360,7 @@ class AlphaVantageClient:
         if self._degraded_reason is None:
             self._degraded_reason = "av_fetch_error"
 
-    def _mark_unexpected_payload(
-        self, tickers: list[str], payload: dict[str, Any]
-    ) -> None:
+    def _mark_unexpected_payload(self, tickers: list[str], payload: dict[str, Any]) -> None:
         """Payload bez `feed` i bez markera limitu (`Error Message`, `{}`) —
         flaga tylko dla tickerów tego batcha. Log niesie same klucze payloadu:
         wartości bywają długie, a do diagnozy kształtu wystarczą nazwy pól."""
@@ -417,13 +413,9 @@ class AlphaVantageClient:
                 "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
                 "alphavantage.co) albo poczekaj na reset o północy UTC."
             )
-        self._emit_quota_alert(
-            severity=QuotaSeverity.CRITICAL, message=message, action=action
-        )
+        self._emit_quota_alert(severity=QuotaSeverity.CRITICAL, message=message, action=action)
 
-    def _fetch_batch_with_rotation(
-        self, tickers: list[str]
-    ) -> dict[str, Any] | None:
+    def _fetch_batch_with_rotation(self, tickers: list[str]) -> dict[str, Any] | None:
         """Próbuje wszystkich kluczy od `_active_key_idx` w górę.
 
         Zwraca payload przy sukcesie (i aktualizuje `_active_key_idx`),
@@ -474,9 +466,7 @@ class AlphaVantageClient:
                 self._active_key_idx = key_idx + 1
                 self._exhausted_by_frequency_limit = frequency_limit
 
-    def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str
-    ) -> None:
+    def _emit_quota_alert(self, severity: QuotaSeverity, message: str, action: str) -> None:
         """Wystawia alert do QuotaMonitor jeśli ten jest skonfigurowany."""
         if self._quota_monitor is None:
             return
@@ -626,8 +616,7 @@ def _sentiment_features(articles: list[dict[str, Any]]) -> dict[str, Any]:
 
     total_weight = sum(a["relevance_score"] for a in articles) or 1.0
     weighted_sentiment = (
-        sum(a["ticker_sentiment_score"] * a["relevance_score"] for a in articles)
-        / total_weight
+        sum(a["ticker_sentiment_score"] * a["relevance_score"] for a in articles) / total_weight
     )
     avg_relevance = sum(a["relevance_score"] for a in articles) / len(articles)
     high_rel = sum(1 for a in articles if a["relevance_score"] >= HIGH_RELEVANCE_BAR)

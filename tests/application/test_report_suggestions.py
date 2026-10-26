@@ -128,8 +128,6 @@ class TestRender:
 
 def test_drivers_are_written_with_a_decimal_comma() -> None:
     # MAIL-58: „CRWD +6,0%, PANW +4,2%”, jak reszta maila, nie „+6.0%”.
-    html = render_suggestions_html(
-        _suggest([_saved("CRWD", "0.06"), _saved("PANW", "0.042")])
-    )
+    html = render_suggestions_html(_suggest([_saved("CRWD", "0.06"), _saved("PANW", "0.042")]))
 
     assert "CRWD +6,0%, PANW +4,2%" in html

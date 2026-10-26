@@ -192,8 +192,10 @@ class TestClusterBootstrapDifference:
     @staticmethod
     def _cycles(count: int) -> list[tuple[list[float], list[float]]]:
         return [
-            ([1.0 if (day + i) % 4 else 0.0 for i in range(3)],
-             [1.0 if (day + i) % 2 else 0.0 for i in range(3)])
+            (
+                [1.0 if (day + i) % 4 else 0.0 for i in range(3)],
+                [1.0 if (day + i) % 2 else 0.0 for i in range(3)],
+            )
             for day in range(count)
         ]
 
@@ -263,7 +265,6 @@ class TestClusterBootstrapStatistic:
         cycles = [[1.0]] * MIN_BOOTSTRAP_CYCLES
 
         assert cluster_bootstrap_statistic_ci(cycles, lambda _: None, n_boot=50) is None
-
 
 
 class TestVerdictPlExplicitDecision:

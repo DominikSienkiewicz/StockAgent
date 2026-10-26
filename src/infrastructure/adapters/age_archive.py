@@ -91,9 +91,7 @@ class AgeEncryptedArchive(EvidenceArchivePort):
             "check": False,
             "timeout": AGE_TIMEOUT_S,
         }
-        completed = self._run(
-            [self._binary, "--encrypt", "--recipient", self._recipient], **kwargs
-        )
+        completed = self._run([self._binary, "--encrypt", "--recipient", self._recipient], **kwargs)
         if completed.returncode != 0:
             raise AgeEncryptionError(f"age exited with code {completed.returncode}")
         if not completed.stdout.startswith(AGE_HEADER):

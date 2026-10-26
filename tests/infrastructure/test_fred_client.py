@@ -29,9 +29,7 @@ def _ok_response(value: str) -> Mock:
     """Odpowiedź FRED z jedną obserwacją o danej wartości."""
     response = Mock(spec=requests.Response)
     response.status_code = 200
-    response.json.return_value = {
-        "observations": [{"date": "2026-06-20", "value": value}]
-    }
+    response.json.return_value = {"observations": [{"date": "2026-06-20", "value": value}]}
     response.raise_for_status = Mock()
     return response
 
@@ -39,9 +37,7 @@ def _ok_response(value: str) -> Mock:
 def _error_response(status_code: int) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
-    response.raise_for_status.side_effect = requests.HTTPError(
-        f"{status_code} error"
-    )
+    response.raise_for_status.side_effect = requests.HTTPError(f"{status_code} error")
     return response
 
 
@@ -91,9 +87,7 @@ class TestFetchYieldCurve:
         assert round(snap.spread_10y_2y, 2) == pytest.approx(-0.55)
         assert snap.state() == YieldCurveState.INVERTED
 
-    def test_sets_timeout_on_every_call(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_sets_timeout_on_every_call(self, client: FredClient, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(
@@ -112,9 +106,7 @@ class TestFetchYieldCurve:
             assert "timeout" in call.kwargs
             assert call.kwargs["timeout"] > 0
 
-    def test_passes_api_key_and_series_params(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_passes_api_key_and_series_params(self, client: FredClient, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(
@@ -137,14 +129,11 @@ class TestFetchYieldCurve:
             assert params.get("api_key") == "test-key"
 
         sent_series = {
-            (call.kwargs.get("params") or {}).get("series_id")
-            for call in mock_get.call_args_list
+            (call.kwargs.get("params") or {}).get("series_id") for call in mock_get.call_args_list
         }
         assert sent_series == {"DGS10", "DGS2", "DFF"}
 
-    def test_missing_value_dot_becomes_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_missing_value_dot_becomes_none(self, client: FredClient, mocker: Any) -> None:
         """FRED zwraca "." dla braku — ta seria ma być None, reszta bez zmian."""
         mocker.patch(
             "requests.Session.get",
@@ -167,9 +156,7 @@ class TestFetchYieldCurve:
         assert snap.spread_10y_2y is None
         assert snap.state() == YieldCurveState.NORMAL
 
-    def test_one_series_non_200_becomes_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_one_series_non_200_becomes_none(self, client: FredClient, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(
@@ -188,9 +175,7 @@ class TestFetchYieldCurve:
         assert snap.two_year is None
         assert snap.fed_funds == pytest.approx(5.33)
 
-    def test_unparseable_value_becomes_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_unparseable_value_becomes_none(self, client: FredClient, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             side_effect=_by_series(
@@ -209,9 +194,7 @@ class TestFetchYieldCurve:
         assert snap.two_year == pytest.approx(4.80)
         assert snap.fed_funds == pytest.approx(5.33)
 
-    def test_all_series_non_200_returns_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_all_series_non_200_returns_none(self, client: FredClient, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
             return_value=_error_response(503),
@@ -221,9 +204,7 @@ class TestFetchYieldCurve:
 
         assert snap is None
 
-    def test_network_error_returns_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_network_error_returns_none(self, client: FredClient, mocker: Any) -> None:
         """Wyjątek sieciowy nie może wyciec — to opcjonalne źródło alpha."""
         mocker.patch(
             "requests.Session.get",
@@ -234,9 +215,7 @@ class TestFetchYieldCurve:
 
         assert snap is None
 
-    def test_empty_observations_returns_none(
-        self, client: FredClient, mocker: Any
-    ) -> None:
+    def test_empty_observations_returns_none(self, client: FredClient, mocker: Any) -> None:
         response = Mock(spec=requests.Response)
         response.status_code = 200
         response.json.return_value = {"observations": []}
@@ -361,7 +340,8 @@ class TestMacroSeries:
         assert snapshot.vix[-1] == SeriesObservation(date(2026, 10, 20), 18.5)
         assert snapshot.nfci == SeriesObservation(date(2026, 10, 16), -0.48)
         vix_params = next(
-            c.kwargs["params"] for c in get.call_args_list
+            c.kwargs["params"]
+            for c in get.call_args_list
             if c.kwargs["params"]["series_id"] == "VIXCLS"
         )
         assert vix_params["observation_end"] == "2026-10-21"

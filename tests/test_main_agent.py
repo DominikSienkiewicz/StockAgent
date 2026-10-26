@@ -15,6 +15,7 @@ import main_backtest
 import main_trainer
 from src.application.agent_graph import AgentGraphDeps
 from src.application.alpha_signals import AlphaSignals
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import PreviousVerdict, RepositoryPort
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
@@ -32,6 +33,7 @@ from src.domain.council import CouncilVerdict, Recommendation
 from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem
 from src.domain.earnings import EarningsEvent
+from src.domain.finops import PAID_LLM_SOURCES
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.macro_risk import MacroAlertLevel
@@ -103,6 +105,72 @@ class TestModelRoutingWiring:
         assert isinstance(llm, CascadingLLMAdapter)
         assert llm._max_escalations == 2
         assert llm._quota_monitor is monitor
+
+    def test_cascade_marks_the_answer_with_the_model_from_the_recipe_notation(
+        self, settings: Settings, mocker: Any
+    ) -> None:
+        # FIN-21: kwit dostaje model, który odpowiedział, w notacji przepisu
+        # (`dostawca:model`, jak połówki `llm_model` przy routingu).
+        from src.application.ports import LLM_ROUTED_MODEL_KEY
+
+        mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+        mocker.patch(
+            "src.infrastructure.llm.openai_client.OpenAIAdapter.analyze",
+            return_value={"trend_direction": "BULLISH", "confidence_score": 0.9},
+        )
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+
+        answer = main_agent.build_llm_adapter(settings).analyze("prompt")
+
+        assert answer.get(LLM_ROUTED_MODEL_KEY) == "openai:gpt-5-mini"
+
+    @staticmethod
+    def _routed_cycle_telemetry(
+        settings: Settings, mocker: Any, cheap_confidence: float
+    ) -> CycleTelemetry:
+        """Fast Loop z routingiem: jedno `llm_port.analyze` przez deps z DI i telemetria
+        cyklu, którą czyta sufit FIN-12."""
+        mocker.patch(
+            "src.infrastructure.llm.openai_client.OpenAIAdapter.analyze",
+            return_value={"trend_direction": "BULLISH", "confidence_score": cheap_confidence},
+        )
+        mocker.patch(
+            "src.infrastructure.llm.anthropic_client.AnthropicAdapter.analyze",
+            return_value={"trend_direction": "BEARISH", "confidence_score": 0.8},
+        )
+        settings.model_routing_enabled = True
+        settings.anthropic_api_key = "sk-ant-test"
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        main_agent.build_use_case(settings)
+        deps: AgentGraphDeps = use_case_cls.call_args.args[0]
+
+        deps.llm_port.analyze("prompt")
+
+        return deps.telemetry
+
+    def test_frontier_escalation_counts_towards_the_cycle_ceiling(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        # FIN-12 / FIN-21: eskalacja to drugi płatny request; wywołanie taniego modelu
+        # liczy graf (`_log_paid_call`), więc telemetria z DI widzi tylko frontiera.
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+
+        telemetry = self._routed_cycle_telemetry(settings, mocker, cheap_confidence=0.1)
+
+        assert dict(telemetry.snapshot().paid_calls) == {"llm": 1}
+        assert telemetry.paid_calls_of(PAID_LLM_SOURCES) == 1
+
+    def test_confident_cheap_answer_adds_no_paid_call(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        # Bez eskalacji nic ponad wywołanie taniego modelu (liczone w grafie).
+        mocker.patch("src.infrastructure.llm.anthropic_client.Anthropic")
+
+        telemetry = self._routed_cycle_telemetry(settings, mocker, cheap_confidence=0.9)
+
+        assert dict(telemetry.snapshot().paid_calls) == {}
 
 
 class TestCouncilLLMFactory:
@@ -263,8 +331,7 @@ class TestMainAgent:
         # Throttle między symbolami (NIE po ostatnim) → n-1 wywołań sleep.
         expected_sleeps = len(s.symbols) - 1
         sleep_calls = [
-            c for c in mock_sleep.call_args_list
-            if c.args and c.args[0] == pytest.approx(0.05)
+            c for c in mock_sleep.call_args_list if c.args and c.args[0] == pytest.approx(0.05)
         ]
         assert len(sleep_calls) == expected_sleeps
 
@@ -279,10 +346,7 @@ class TestMainAgent:
 
         main_agent.main(settings)
 
-        sleep_with_zero = [
-            c for c in mock_sleep.call_args_list
-            if c.args and c.args[0] > 0
-        ]
+        sleep_with_zero = [c for c in mock_sleep.call_args_list if c.args and c.args[0] > 0]
         assert sleep_with_zero == []
 
     def test_done_log_denominator_counts_eligible_not_settings_symbols(
@@ -303,11 +367,13 @@ class TestMainAgent:
         # eligible = [AAPL, BTC] (2). len(settings.symbols)=2 też jest 2, więc
         # dobieramy liczby tak, by oba mianowniki RÓŻNIŁY się: bez unsupported,
         # z krypto → eligible=3, ale settings.symbols=2.
-        s = settings.model_copy(update={
-            "symbols": ["AAPL", "VOO"],
-            "crypto_symbols": ["BTC"],
-            "symbols_unsupported_price": [],
-        })
+        s = settings.model_copy(
+            update={
+                "symbols": ["AAPL", "VOO"],
+                "crypto_symbols": ["BTC"],
+                "symbols_unsupported_price": [],
+            }
+        )
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         mocker.patch("main_agent.build_use_case", return_value=fake_uc)
@@ -315,10 +381,7 @@ class TestMainAgent:
         with caplog.at_level(logging.INFO, logger="main_agent"):
             main_agent.main(s)
 
-        done_logs = [
-            rec.message for rec in caplog.records
-            if "Fast Loop done" in rec.message
-        ]
+        done_logs = [rec.message for rec in caplog.records if "Fast Loop done" in rec.message]
         assert done_logs, "spodziewany log 'Fast Loop done'"
         # eligible = AAPL + VOO + BTC = 3 (nic nie unsupported), a
         # len(settings.symbols) = 2 → mianownik MUSI być 3.
@@ -329,10 +392,12 @@ class TestMainAgent:
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         """Tickery z SYMBOLS_UNSUPPORTED_PRICE nie wchodzą w use_case.run()."""
-        s = settings.model_copy(update={
-            "symbols": ["AAPL", "CSPX.L", "XDWD.DE"],
-            "symbols_unsupported_price": ["CSPX.L", "XDWD.DE"],
-        })
+        s = settings.model_copy(
+            update={
+                "symbols": ["AAPL", "CSPX.L", "XDWD.DE"],
+                "symbols_unsupported_price": ["CSPX.L", "XDWD.DE"],
+            }
+        )
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         mocker.patch("main_agent.build_use_case", return_value=fake_uc)
@@ -498,6 +563,100 @@ class TestBuildAgentGraphDeps:
 
         assert main_agent.build_agent_graph_deps(settings).shadow is None
         load.assert_not_called()
+
+    def test_shadow_prompt_flag_off_wires_no_variant(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        # EXP-26: bez flagi graf nie woła wariantu, nawet gdy config niesie jego definicję.
+        from src.config import ShadowPromptVariantSettings
+
+        settings.shadow_prompt_variant_enabled = False
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini")
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_shadow_prompt_flag_without_a_variant_wires_nothing(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        settings.shadow_prompt_variant_enabled = True
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_shadow_prompt_flag_wires_the_variant_model_and_overrides(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.application.agent_graph import PromptVariant
+        from src.config import ShadowPromptVariantSettings
+        from src.infrastructure.llm.openai_client import OpenAIAdapter
+
+        settings.shadow_prompt_variant_enabled = True
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(
+            name="mini",
+            llm_provider="openai",
+            llm_model="gpt-5-mini",
+            prompt_delta_rounding=True,
+            without_memory=True,
+            sample_share=0.25,
+            max_calls_per_cycle=2,
+        )
+
+        setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+
+        assert setup is not None
+        assert setup.name == "mini"
+        assert len(setup.version) == 64 and int(setup.version, 16) >= 0
+        assert setup.variant == PromptVariant(prompt_delta_rounding=True, without_memory=True)
+        assert (setup.sample_share, setup.max_calls_per_cycle) == (0.25, 2)
+        assert isinstance(setup.llm_port, OpenAIAdapter)
+        assert cast(Any, setup.llm_port)._model == "gpt-5-mini"
+
+    def test_shadow_prompt_version_follows_the_variant_identity(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.config import ShadowPromptVariantSettings
+
+        def version(**variant: Any) -> str:
+            settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini", **variant)
+            setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+            assert setup is not None
+            return setup.version
+
+        settings.shadow_prompt_variant_enabled = True
+
+        rounded = version(prompt_delta_rounding=True)
+        assert rounded == version(prompt_delta_rounding=True, sample_share=0.1)
+        assert rounded != version(prompt_delta_rounding=False)
+        assert rounded != version(prompt_delta_rounding=True, llm_model="gpt-5")
+
+    def test_shadow_prompt_without_the_variant_provider_key_stays_off(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        from src.config import ShadowPromptVariantSettings
+
+        settings.shadow_prompt_variant_enabled = True
+        settings.anthropic_api_key = None
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(
+            name="sonnet", llm_provider="anthropic"
+        )
+
+        assert main_agent.build_agent_graph_deps(settings).shadow_prompt is None
+
+    def test_stub_run_gives_the_variant_the_stub_llm(
+        self, settings: Settings, mock_external_clients: None
+    ) -> None:
+        # FIN-35: lokalny run bez płatnych wywołań — wariant też dostaje atrapę.
+        from src.config import ShadowPromptVariantSettings
+        from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
+
+        settings.paid_calls_enabled = False
+        settings.db_writes_enabled = False
+        settings.shadow_prompt_variant_enabled = True
+        settings.shadow_prompt_variant = ShadowPromptVariantSettings(name="mini")
+
+        setup = main_agent.build_agent_graph_deps(settings).shadow_prompt
+
+        assert setup is not None
+        assert isinstance(setup.llm_port, LocalStubLLMAdapter)
 
     def test_shadow_flag_wires_the_champion_version_and_the_loadable_challengers(
         self, settings: Settings, mock_external_clients: None, mocker: Any
@@ -837,9 +996,7 @@ class TestProcessOneSymbol:
     def test_success_returns_result_not_failure(self, settings: Settings) -> None:
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
-        proc = main_agent._process_one_symbol(
-            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
-        )
+        proc = main_agent._process_one_symbol("AAPL", peer_ctx=(), **self._kwargs(settings, uc))
         assert proc.is_failure is False
         assert proc.result.symbol == "AAPL"
         uc.run.assert_called_once()
@@ -847,9 +1004,7 @@ class TestProcessOneSymbol:
     def test_exception_returns_failure_with_error(self, settings: Settings) -> None:
         uc = MagicMock()
         uc.run.side_effect = RuntimeError("boom")
-        proc = main_agent._process_one_symbol(
-            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
-        )
+        proc = main_agent._process_one_symbol("AAPL", peer_ctx=(), **self._kwargs(settings, uc))
         assert proc.is_failure is True
         assert proc.result.status == "error"
 
@@ -873,7 +1028,10 @@ class TestProcessOneSymbol:
             "status": "saved",
             "delta": Decimal("0.03"),
             "fundamentals": Fundamentals(
-                trailing_pe=None, forward_pe=None, peg_ratio=None, eps_growth_yoy=None,
+                trailing_pe=None,
+                forward_pe=None,
+                peg_ratio=None,
+                eps_growth_yoy=None,
                 fetched_at=cycle_at - timedelta(hours=24),
             ),
         }
@@ -891,9 +1049,7 @@ class TestProcessOneSymbol:
             "401 Client Error: Unauthorized for url: "
             "https://finnhub.io/api/v1/quote?symbol=AAPL&token=symbol-secret-token"
         )
-        proc = main_agent._process_one_symbol(
-            "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
-        )
+        proc = main_agent._process_one_symbol("AAPL", peer_ctx=(), **self._kwargs(settings, uc))
         assert proc.is_failure is True
         assert proc.result.error_message is not None
         assert "401 Client Error" in proc.result.error_message
@@ -911,9 +1067,7 @@ class TestProcessOneSymbol:
         uc = MagicMock()
         uc.run.side_effect = ProviderUnavailable("finnhub.io circuit open")
         with caplog.at_level(logging.WARNING):
-            proc = main_agent._process_one_symbol(
-                "AAPL", peer_ctx=(), **self._kwargs(settings, uc)
-            )
+            proc = main_agent._process_one_symbol("AAPL", peer_ctx=(), **self._kwargs(settings, uc))
 
         assert proc.is_failure is True
         assert proc.result.error_type == "ProviderUnavailable"
@@ -953,7 +1107,9 @@ class TestAnalyzeSymbolsParallel:
         s = settings.model_copy(update={"symbol_concurrency": 4})
         uc = MagicMock()
         uc.run.side_effect = lambda sym, **kw: {
-            "status": "ignored", "delta": Decimal("0"), "symbol": sym,
+            "status": "ignored",
+            "delta": Decimal("0"),
+            "symbol": sym,
         }
         eligible = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
         results, failures, _signals, _prices = main_agent._analyze_symbols(
@@ -974,16 +1130,17 @@ class TestAnalyzeSymbolsParallel:
 
         uc.run.side_effect = _run
         eligible = ["AAPL", "MSFT", "NVDA"]
-        results, failures, _s, _p = main_agent._analyze_symbols(
-            eligible, **self._kwargs(s, uc)
-        )
+        results, failures, _s, _p = main_agent._analyze_symbols(eligible, **self._kwargs(s, uc))
         assert failures == 1
         assert len(results) == 3  # reszta przetworzona mimo błędu jednego
 
     def test_parallel_does_not_build_peer_context(self, settings: Settings, mocker: Any) -> None:
-        s = settings.model_copy(update={
-            "symbol_concurrency": 4, "contagion_enabled": False,
-        })
+        s = settings.model_copy(
+            update={
+                "symbol_concurrency": 4,
+                "contagion_enabled": False,
+            }
+        )
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         spy = mocker.patch(f"{CYCLE}.build_peer_context")
@@ -993,9 +1150,12 @@ class TestAnalyzeSymbolsParallel:
     def test_contagion_forces_sequential_despite_concurrency(
         self, settings: Settings, mocker: Any
     ) -> None:
-        s = settings.model_copy(update={
-            "symbol_concurrency": 4, "contagion_enabled": True,
-        })
+        s = settings.model_copy(
+            update={
+                "symbol_concurrency": 4,
+                "contagion_enabled": True,
+            }
+        )
         uc = MagicMock()
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         spy = mocker.patch(f"{CYCLE}.build_peer_context", return_value=())
@@ -1030,9 +1190,7 @@ class TestAnalyzeSymbolsParallel:
         uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
         spy = mocker.spy(run_cycle, "to_symbol_result")
         cycle_at = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
-        main_agent._analyze_symbols(
-            ["AAPL", "MSFT"], cycle_at=cycle_at, **self._kwargs(s, uc)
-        )
+        main_agent._analyze_symbols(["AAPL", "MSFT"], cycle_at=cycle_at, **self._kwargs(s, uc))
         assert [c.kwargs.get("now") for c in spy.call_args_list] == [cycle_at, cycle_at]
 
 
@@ -1059,25 +1217,17 @@ class TestFetchReportContextPersonaTrackRecord:
         return monitor
 
     def test_ranks_personas_from_repository_stats(self) -> None:
-        repo = self._repo(
-            get_persona_track_record={"Wood": (0.41, 18), "Buffett": (0.68, 22)}
-        )
+        repo = self._repo(get_persona_track_record={"Wood": (0.41, 18), "Buffett": (0.68, 22)})
 
-        *_, track_record = main_agent._fetch_report_context(
-            repo, self._monitor(), ["AAPL"]
-        )
+        *_, track_record = main_agent._fetch_report_context(repo, self._monitor(), ["AAPL"])
 
         assert [r.investor_name for r in track_record] == ["Buffett", "Wood"]
 
     def test_applies_domain_min_votes_threshold(self) -> None:
         # Persona z 1 głosem i 100% trafności nie może wejść do rankingu.
-        repo = self._repo(
-            get_persona_track_record={"Nowicjusz": (1.0, 1), "Buffett": (0.68, 22)}
-        )
+        repo = self._repo(get_persona_track_record={"Nowicjusz": (1.0, 1), "Buffett": (0.68, 22)})
 
-        *_, track_record = main_agent._fetch_report_context(
-            repo, self._monitor(), ["AAPL"]
-        )
+        *_, track_record = main_agent._fetch_report_context(repo, self._monitor(), ["AAPL"])
 
         assert [r.investor_name for r in track_record] == ["Buffett"]
 
@@ -1085,9 +1235,7 @@ class TestFetchReportContextPersonaTrackRecord:
         repo = self._repo()
         repo.get_persona_track_record.side_effect = Exception("RPC missing")
 
-        *_, track_record = main_agent._fetch_report_context(
-            repo, self._monitor(), ["AAPL"]
-        )
+        *_, track_record = main_agent._fetch_report_context(repo, self._monitor(), ["AAPL"])
 
         assert track_record == []
 
@@ -1188,9 +1336,7 @@ class TestResolveRegimeMacroSeriesVotes:
         start = date(2025, 10, 1)
         values = [15.0 + (i % 7) for i in range(250)] + [35.0]
         return MacroSeriesSnapshot(
-            vix=tuple(
-                SeriesObservation(start + timedelta(days=i), v) for i, v in enumerate(values)
-            )
+            vix=tuple(SeriesObservation(start + timedelta(days=i), v) for i, v in enumerate(values))
         )
 
     @staticmethod
@@ -1478,11 +1624,18 @@ class TestPolishNumbersInSubjectAndPush:
         mocker.patch("main_agent.build_push_notifier", return_value=push)
         email = MagicMock()
         split = CouncilVerdict(
-            final_recommendation="HOLD", consensus_strength=0.5, summary="1 KUP / 1 SPRZEDAJ",
+            final_recommendation="HOLD",
+            consensus_strength=0.5,
+            summary="1 KUP / 1 SPRZEDAJ",
             dissenting_views=(),
             investor_opinions=tuple(
-                InvestorOpinion(investor_name=name, recommendation=cast(Recommendation, rec),
-                                confidence=0.8, reasoning="x", key_factors=())
+                InvestorOpinion(
+                    investor_name=name,
+                    recommendation=cast(Recommendation, rec),
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
+                )
                 for name, rec in (("A", "BUY"), ("B", "SELL"))
             ),
         )
@@ -1490,8 +1643,11 @@ class TestPolishNumbersInSubjectAndPush:
         main_agent._dispatch_reports(
             results=[
                 SymbolResult(
-                    symbol="NVDA", status="saved", delta=Decimal("-0.042"),
-                    current_price=Decimal("180"), council_verdict=split,
+                    symbol="NVDA",
+                    status="saved",
+                    delta=Decimal("-0.042"),
+                    current_price=Decimal("180"),
+                    council_verdict=split,
                 ),
             ],
             started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
@@ -1535,7 +1691,9 @@ class TestCriticalQuotaSubjectPrefix:
         main_agent._dispatch_reports(
             results=[
                 SymbolResult(
-                    symbol="NVDA", status="saved", delta=Decimal("-0.042"),
+                    symbol="NVDA",
+                    status="saved",
+                    delta=Decimal("-0.042"),
                     current_price=Decimal("180"),
                 ),
             ],
@@ -1558,8 +1716,11 @@ class TestCriticalQuotaSubjectPrefix:
         self, settings: Settings, mocker: Any
     ) -> None:
         critical = QuotaAlert(
-            source="OpenAI", severity=QuotaSeverity.CRITICAL, message="429",
-            action="Doładuj konto.", occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
+            source="OpenAI",
+            severity=QuotaSeverity.CRITICAL,
+            message="429",
+            action="Doładuj konto.",
+            occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
         )
 
         subject = self._subject(settings, mocker, [critical])
@@ -1571,8 +1732,11 @@ class TestCriticalQuotaSubjectPrefix:
         self, settings: Settings, mocker: Any
     ) -> None:
         warning = QuotaAlert(
-            source="OpenAI", severity=QuotaSeverity.WARNING, message="TPM",
-            action="Poczekaj.", occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
+            source="OpenAI",
+            severity=QuotaSeverity.WARNING,
+            message="TPM",
+            action="Poczekaj.",
+            occurred_at=datetime(2026, 10, 18, 5, 0, tzinfo=UTC),
         )
 
         subject = self._subject(settings, mocker, [warning])
@@ -1628,10 +1792,7 @@ class TestMessengerDigestSplit:
         from src.application.report_messenger import MAX_DIGEST_CHARS
 
         push = MagicMock()
-        results = [
-            SymbolResult(symbol=f"SYM{i}", status="ignored")
-            for i in range(60)
-        ]
+        results = [SymbolResult(symbol=f"SYM{i}", status="ignored") for i in range(60)]
 
         main_agent._dispatch_push_digest(
             push_notifier=push,
@@ -1666,25 +1827,46 @@ class TestMessengerDigestSplit:
         push = MagicMock()
         mocker.patch("main_agent.build_push_notifier", return_value=push)
         split = CouncilVerdict(
-            final_recommendation="HOLD", consensus_strength=0.5, summary="1 KUP / 1 SPRZEDAJ",
+            final_recommendation="HOLD",
+            consensus_strength=0.5,
+            summary="1 KUP / 1 SPRZEDAJ",
             dissenting_views=(),
             investor_opinions=(
-                InvestorOpinion(investor_name="A", recommendation="BUY",
-                                confidence=0.8, reasoning="x", key_factors=()),
-                InvestorOpinion(investor_name="B", recommendation="SELL",
-                                confidence=0.8, reasoning="x", key_factors=()),
+                InvestorOpinion(
+                    investor_name="A",
+                    recommendation="BUY",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
+                ),
+                InvestorOpinion(
+                    investor_name="B",
+                    recommendation="SELL",
+                    confidence=0.8,
+                    reasoning="x",
+                    key_factors=(),
+                ),
             ),
         )
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved", delta=Decimal("0.03"), trend="BULLISH",
-                confidence_score=0.5, current_price=Decimal("100"),
+                symbol="AAPL",
+                status="saved",
+                delta=Decimal("0.03"),
+                trend="BULLISH",
+                confidence_score=0.5,
+                current_price=Decimal("100"),
                 target_price=Decimal("101"),
             ),
             SymbolResult(
-                symbol="NVDA", status="saved", delta=Decimal("-0.042"), trend="BEARISH",
-                confidence_score=0.8, current_price=Decimal("100"),
-                target_price=Decimal("95"), council_verdict=split,
+                symbol="NVDA",
+                status="saved",
+                delta=Decimal("-0.042"),
+                trend="BEARISH",
+                confidence_score=0.8,
+                current_price=Decimal("100"),
+                target_price=Decimal("95"),
+                council_verdict=split,
             ),
         ]
 
@@ -2085,9 +2267,7 @@ class TestPublicScorecard:
     def test_flag_off_publishes_nothing(self) -> None:
         publisher = MagicMock()
 
-        main_agent._publish_public_scorecard(
-            self._settings(False), self._repo(), publisher
-        )
+        main_agent._publish_public_scorecard(self._settings(False), self._repo(), publisher)
 
         publisher.publish.assert_not_called()
 
@@ -2096,18 +2276,14 @@ class TestPublicScorecard:
         # od `equity_curve_enabled` / `calibration_curve_enabled`.
         publisher = MagicMock()
 
-        main_agent._publish_public_scorecard(
-            self._settings(True), self._repo(), publisher
-        )
+        main_agent._publish_public_scorecard(self._settings(True), self._repo(), publisher)
 
         publisher.publish.assert_called_once()
 
     def test_published_page_never_leaks_a_watchlist_symbol(self) -> None:
         publisher = MagicMock()
 
-        main_agent._publish_public_scorecard(
-            self._settings(True), self._repo(), publisher
-        )
+        main_agent._publish_public_scorecard(self._settings(True), self._repo(), publisher)
 
         page = publisher.publish.call_args.args[0]
         assert "NVDA" not in page
@@ -2132,9 +2308,7 @@ class TestPublicScorecard:
         repo = MagicMock(spec=RepositoryPort)
         repo.get_resolved_predictions.side_effect = Exception("supabase down")
 
-        main_agent._publish_public_scorecard(
-            self._settings(True), repo, MagicMock()
-        )
+        main_agent._publish_public_scorecard(self._settings(True), repo, MagicMock())
 
 
 class TestDispatchReportsDelivery:
@@ -2189,7 +2363,10 @@ class TestDispatchReportsDelivery:
         notifier.send_report.side_effect = RuntimeError("Resend 503")
 
         push = self._dispatch(
-            settings, mocker, notifier=notifier, quota_monitor=QuotaMonitor(),
+            settings,
+            mocker,
+            notifier=notifier,
+            quota_monitor=QuotaMonitor(),
             repository=MagicMock(spec=RepositoryPort),
         )
 
@@ -2205,7 +2382,10 @@ class TestDispatchReportsDelivery:
         notifier.send_report.side_effect = RuntimeError("Resend 503")
 
         push = self._dispatch(
-            settings, mocker, notifier=notifier, quota_monitor=QuotaMonitor(),
+            settings,
+            mocker,
+            notifier=notifier,
+            quota_monitor=QuotaMonitor(),
             repository=MagicMock(spec=RepositoryPort),
         )
 
@@ -2438,9 +2618,7 @@ class TestAlphaVantageNewsWindowWiring:
 
         from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
 
-        client_cls = mocker.patch(
-            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
-        )
+        client_cls = mocker.patch("main_agent.AlphaVantageClient", wraps=AlphaVantageClient)
 
         main_agent.build_use_case(settings)
 
@@ -2452,9 +2630,7 @@ class TestAlphaVantageNewsWindowWiring:
         # FIN-04: symbol pod bramką volatility nie pociąga requestu AV za innych.
         from src.infrastructure.adapters.alpha_vantage_client import AlphaVantageClient
 
-        client_cls = mocker.patch(
-            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
-        )
+        client_cls = mocker.patch("main_agent.AlphaVantageClient", wraps=AlphaVantageClient)
 
         main_agent.build_use_case(settings)
 
@@ -2470,9 +2646,7 @@ class TestAlphaVantageNewsWindowWiring:
 
         settings.symbols = ["AAPL", "SSNLF"]
         settings.symbols_unsupported_price = ["SSNLF"]
-        client_cls = mocker.patch(
-            "main_agent.AlphaVantageClient", wraps=AlphaVantageClient
-        )
+        client_cls = mocker.patch("main_agent.AlphaVantageClient", wraps=AlphaVantageClient)
 
         main_agent.build_use_case(settings)
 
@@ -2496,10 +2670,12 @@ class TestAlphaVantageBudgetBanner:
     def test_worst_case_above_capacity_lands_in_the_banner(
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
-        over = settings.model_copy(update={
-            "symbols": [f"S{i:02d}" for i in range(30)],
-            "alpha_vantage_api_keys": ["av1"],
-        })
+        over = settings.model_copy(
+            update={
+                "symbols": [f"S{i:02d}" for i in range(30)],
+                "alpha_vantage_api_keys": ["av1"],
+            }
+        )
 
         alerts = self._alerts(over, mocker)
 
@@ -2582,7 +2758,11 @@ class TestHeldPositionsOutsideWatchlist:
         )
 
     def _dispatch(
-        self, settings: Settings, mocker: Any, portfolio: Portfolio | None, market: MagicMock,
+        self,
+        settings: Settings,
+        mocker: Any,
+        portfolio: Portfolio | None,
+        market: MagicMock,
         unsupported: tuple[str, ...] = ("XDWD.DE",),
     ) -> tuple[MagicMock, MagicMock, dict[str, MagicMock], MagicMock]:
         from src.application.ports import LLMPort
@@ -2608,11 +2788,7 @@ class TestHeldPositionsOutsideWatchlist:
         }
         repository = MagicMock(spec=RepositoryPort)
         main_agent._dispatch_reports(
-            results=[
-                SymbolResult(
-                    symbol="AAPL", status="saved", current_price=Decimal("230")
-                )
-            ],
+            results=[SymbolResult(symbol="AAPL", status="saved", current_price=Decimal("230"))],
             started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
             duration=1.0,
             failures=0,
@@ -2658,8 +2834,11 @@ class TestHeldPositionsOutsideWatchlist:
         # AAPL i XDWD.DE są w watchliście (XDWD.DE także w unsupported), IUSN.DE
         # tylko w unsupported — Finnhub free i tak go nie wyceni.
         self._dispatch(
-            settings, mocker, self._portfolio("AAPL", "XDWD.DE", "IUSN.DE", "MSFT"),
-            market, unsupported=("XDWD.DE", "IUSN.DE"),
+            settings,
+            mocker,
+            self._portfolio("AAPL", "XDWD.DE", "IUSN.DE", "MSFT"),
+            market,
+            unsupported=("XDWD.DE", "IUSN.DE"),
         )
 
         market.get_current_price.assert_called_once_with("MSFT")
@@ -2679,9 +2858,7 @@ class TestHeldPositionsOutsideWatchlist:
 
         market.get_current_price.side_effect = quote
 
-        report, _, _, _ = self._dispatch(
-            settings, mocker, self._portfolio("MSFT", "TSLA"), market
-        )
+        report, _, _, _ = self._dispatch(settings, mocker, self._portfolio("MSFT", "TSLA"), market)
 
         assert report.call_args_list[0].args[3].held_prices == {"TSLA": Decimal("50")}
 
@@ -2705,11 +2882,18 @@ class TestPortfolioAwareSubject:
         from src.domain.council import InvestorOpinion
 
         verdict = CouncilVerdict(
-            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            final_recommendation="SELL",
+            consensus_strength=0.9,
+            summary="Rada: SELL.",
             dissenting_views=(),
             investor_opinions=(
-                InvestorOpinion(investor_name="A", recommendation="SELL",
-                                confidence=0.9, reasoning="x", key_factors=()),
+                InvestorOpinion(
+                    investor_name="A",
+                    recommendation="SELL",
+                    confidence=0.9,
+                    reasoning="x",
+                    key_factors=(),
+                ),
             ),
         )
         settings.messenger_digest_enabled = False
@@ -2731,8 +2915,11 @@ class TestPortfolioAwareSubject:
         main_agent._dispatch_reports(
             results=[
                 SymbolResult(
-                    symbol="AAPL", status="saved", delta=Decimal("-0.05"),
-                    current_price=Decimal("95"), council_verdict=verdict,
+                    symbol="AAPL",
+                    status="saved",
+                    delta=Decimal("-0.05"),
+                    current_price=Decimal("95"),
+                    council_verdict=verdict,
                 ),
             ],
             started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
@@ -2789,9 +2976,7 @@ class TestLegacyPushWithoutPortfolio:
 
         main_agent._dispatch_reports(
             results=[
-                SymbolResult(
-                    symbol="AAPL", status="saved", current_price=Decimal("230")
-                ),
+                SymbolResult(symbol="AAPL", status="saved", current_price=Decimal("230")),
             ],
             started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
             duration=1.0,
@@ -2969,10 +3154,9 @@ class TestDispatchReports:
         mocker.patch("main_agent.ResendNotifier", side_effect=resend)
 
         main_agent._dispatch_reports(
-            results=results or [
-                SymbolResult(
-                    symbol="AAPL", status="saved", current_price=Decimal("230")
-                ),
+            results=results
+            or [
+                SymbolResult(symbol="AAPL", status="saved", current_price=Decimal("230")),
             ],
             started_at=datetime(2026, 10, 18, 5, 30, tzinfo=UTC),
             duration=1.0,
@@ -3035,18 +3219,28 @@ class TestDispatchReports:
         from src.domain.council import InvestorOpinion
 
         verdict = CouncilVerdict(
-            final_recommendation="SELL", consensus_strength=0.9, summary="Rada: SELL.",
+            final_recommendation="SELL",
+            consensus_strength=0.9,
+            summary="Rada: SELL.",
             dissenting_views=(),
             investor_opinions=tuple(
-                InvestorOpinion(investor_name=n, recommendation="SELL",
-                                confidence=0.9, reasoning="x", key_factors=())
+                InvestorOpinion(
+                    investor_name=n,
+                    recommendation="SELL",
+                    confidence=0.9,
+                    reasoning="x",
+                    key_factors=(),
+                )
                 for n in ("A", "B")
             ),
         )
         results = [
             SymbolResult(
-                symbol="AAPL", status="saved", delta=Decimal("-0.05"),
-                current_price=Decimal("95"), council_verdict=verdict,
+                symbol="AAPL",
+                status="saved",
+                delta=Decimal("-0.05"),
+                current_price=Decimal("95"),
+                council_verdict=verdict,
             ),
         ]
 
@@ -3333,9 +3527,7 @@ class TestSettledAtWindowsWiring:
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}
         mocker.patch("main_trainer.build_use_case", return_value=fake_uc)
-        mocker.patch(
-            "main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort)
-        )
+        mocker.patch("main_trainer.SupabaseRepository", return_value=MagicMock(spec=RepositoryPort))
         recap_uc = MagicMock()
         recap_uc.run.return_value = {"status": "skipped_below_threshold", "n_closed": 2}
         mocker.patch("main_trainer.WeeklyRecapUseCase", return_value=recap_uc)
@@ -3719,18 +3911,14 @@ class TestRegimeTaggingWiring:
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
         # Furtka dla deploymentu bez migracji 017 przy włączonym reżimie.
-        deps = self._deps(
-            settings, mocker, regime_aware_enabled=True, regime_tagging_enabled=False
-        )
+        deps = self._deps(settings, mocker, regime_aware_enabled=True, regime_tagging_enabled=False)
 
         assert deps.regime_tagging_enabled is False
 
     def test_explicit_on_without_regime_aware(
         self, settings: Settings, mock_external_clients: None, mocker: Any
     ) -> None:
-        deps = self._deps(
-            settings, mocker, regime_aware_enabled=False, regime_tagging_enabled=True
-        )
+        deps = self._deps(settings, mocker, regime_aware_enabled=False, regime_tagging_enabled=True)
 
         assert deps.regime_tagging_enabled is True
 
@@ -3917,7 +4105,9 @@ class TestRegimeBannerWiring:
         banners: list[RegimeBanner] = []
 
         result = main_agent._resolve_regime(
-            self._settings(), self._macro(MacroAlertLevel.CRITICAL), None,
+            self._settings(),
+            self._macro(MacroAlertLevel.CRITICAL),
+            None,
             on_banner=banners.append,
         )
 
@@ -4104,6 +4294,21 @@ class TestRagPointInTimeWiring:
         assert use_case_cls.call_args.args[0].rag_point_in_time_enabled is enabled
 
 
+class TestBatchDiagnosisWiring:
+    """EXP-17 — flaga z Settings trafia do `AgentGraphDeps` (reflect bez diagnozy)."""
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_flag_reaches_graph_deps(
+        self, settings: Settings, mock_external_clients: None, mocker: Any, enabled: bool
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+        settings.batch_diagnosis_enabled = enabled
+
+        main_agent.build_use_case(settings)
+
+        assert use_case_cls.call_args.args[0].batch_diagnosis_enabled is enabled
+
+
 class TestStaleReferenceWiring:
     """FIN-14 — zegar cyklu dociera do use case'u (wiek referencji ceny liczy się
     od startu cyklu, jak nagłówek maila), a stęchłe referencje dowodzą historii."""
@@ -4130,13 +4335,11 @@ class TestStaleReferenceWiring:
 
     def test_stale_references_keep_new_symbols_from_a_first_run(self) -> None:
         results = [
-            SymbolResult(symbol=f"S{i}", status="ignored",
-                                    skip_reason=SkipReason.STALE_REFERENCE)
+            SymbolResult(symbol=f"S{i}", status="ignored", skip_reason=SkipReason.STALE_REFERENCE)
             for i in range(10)
         ]
         results.append(
-            SymbolResult(symbol="NEW", status="ignored",
-                                    skip_reason=SkipReason.COLD_START)
+            SymbolResult(symbol="NEW", status="ignored", skip_reason=SkipReason.COLD_START)
         )
 
         assert main_agent._classify_cycle_maturity(results) is CycleMaturity.STEADY_STATE
@@ -4149,7 +4352,9 @@ class TestPortfolioChangeDispatch:
 
     _RESULTS = [
         SymbolResult(
-            symbol="AAPL", status="saved", delta=Decimal("0.10"),
+            symbol="AAPL",
+            status="saved",
+            delta=Decimal("0.10"),
             current_price=Decimal("110"),
         ),
     ]
@@ -4293,9 +4498,7 @@ class TestPositionRiskWiring:
         )
         portfolio = self._portfolio()
 
-        risk = main_agent._build_position_risk(
-            settings, MagicMock(spec=RepositoryPort), portfolio
-        )
+        risk = main_agent._build_position_risk(settings, MagicMock(spec=RepositoryPort), portfolio)
 
         assert risk == PositionRisk(var=0.04)
         # GLD i EPOL to inwestycja, nie hedge — nie mogą obniżać bandy.
@@ -4352,7 +4555,9 @@ class TestSectorMapFromConfig:
         settings.crypto_symbols = ["BTC"]
 
         assert main_agent._sector_map(settings) == {
-            "NVDA": "Półprzewodniki/AI", "VT": "ETF", "BTC": "Krypto"
+            "NVDA": "Półprzewodniki/AI",
+            "VT": "ETF",
+            "BTC": "Krypto",
         }
 
     def test_portfolio_sectors_count_by_the_config_map(self) -> None:
@@ -4363,7 +4568,9 @@ class TestSectorMapFromConfig:
         sector_map = {"NVDA": "Półprzewodniki/AI", "AMD": "Półprzewodniki/AI", "BTC": "Krypto"}
 
         assert main_agent._portfolio_sectors(results, sector_map) == {
-            "Półprzewodniki/AI": 2, "Krypto": 1, "Inne": 1
+            "Półprzewodniki/AI": 2,
+            "Krypto": 1,
+            "Inne": 1,
         }
 
     def test_dispatch_hands_the_config_map_and_peers_to_the_report(
@@ -4443,7 +4650,9 @@ class TestPortfolioFxWiring:
 
         build_fx = mocker.patch("main_agent.build_fx_port")
         report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
-            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            settings,
+            mocker,
+            TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
             MagicMock(spec=MarketDataPort),
         )
 
@@ -4470,7 +4679,9 @@ class TestPortfolioFxWiring:
         settings.nbp_enabled = True
         mocker.patch("main_agent.build_fx_port", side_effect=RuntimeError("boom"))
         report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
-            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            settings,
+            mocker,
+            TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
             MagicMock(spec=MarketDataPort),
         )
 
@@ -4533,7 +4744,9 @@ class TestPositionRiskInPln:
         build = mocker.patch("main_agent._build_position_risk", return_value=None)
 
         report, _, _, _ = TestHeldPositionsOutsideWatchlist()._dispatch(
-            settings, mocker, TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
+            settings,
+            mocker,
+            TestHeldPositionsOutsideWatchlist._portfolio("AAPL"),
             MagicMock(spec=MarketDataPort),
         )
 
@@ -4552,8 +4765,12 @@ class TestPositionRiskInPln:
         )
         portfolio = Portfolio(
             positions=(
-                Position(symbol="AAPL", quantity=Decimal("1"), purchase_price=Decimal("1"),
-                         purchase_date=date(2026, 1, 2)),
+                Position(
+                    symbol="AAPL",
+                    quantity=Decimal("1"),
+                    purchase_price=Decimal("1"),
+                    purchase_date=date(2026, 1, 2),
+                ),
             ),
             as_of=datetime(2026, 10, 18, tzinfo=UTC),
         )
@@ -4841,9 +5058,7 @@ class TestSymbolErrorRedactsSettingsSecrets:
         }
 
     @pytest.mark.parametrize("concurrency", [1, 4], ids=["sequential", "parallel"])
-    def test_error_message_omits_literal_secret(
-        self, settings: Settings, concurrency: int
-    ) -> None:
+    def test_error_message_omits_literal_secret(self, settings: Settings, concurrency: int) -> None:
         s = settings.model_copy(
             update={"finnhub_api_key": self.ODD_SECRET, "symbol_concurrency": concurrency}
         )
@@ -4908,6 +5123,32 @@ def test_build_repository_passes_the_council_votes_upsert_flag(
     main_agent.build_repository(settings)
 
     assert repo_cls.call_args.kwargs["council_votes_upsert_enabled"] is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_build_repository_records_council_rounds_with_debate_mode(
+    settings: Settings, mocker: Any, enabled: bool
+) -> None:
+    # ML-40: kolumna `council_votes.round` (migracja 082) jest w użyciu tylko z debatą.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.debate_mode_enabled = enabled
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_enabled"] is enabled
+
+
+def test_build_repository_reads_council_rounds_from_the_schema(
+    settings: Settings, mocker: Any
+) -> None:
+    # ML-40: po 082 odczyty głosów biorą rundę 1 także bez debaty — wyłączenie debaty
+    # nie przywraca rewizji do historii person, redundancji i dissent-replay.
+    repo_cls = mocker.patch("main_agent.SupabaseRepository")
+    settings.debate_mode_enabled = False
+
+    main_agent.build_repository(settings)
+
+    assert repo_cls.call_args.kwargs["council_vote_rounds_from_schema"] is True
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -5031,6 +5272,29 @@ def test_attestation_publisher_follows_db_writes_flag(settings: Settings, enable
     assert type(publisher) is expected
 
 
+@pytest.mark.parametrize("db_writes", [False, True])
+def test_rekor_flag_anchors_cycle_roots_of_the_ledger_publisher(
+    settings: Settings, db_writes: bool
+) -> None:
+    # WIA-73: Rekor owija publisher pliku (graf dalej ma jedno pole), a run tylko do
+    # odczytu nie loguje niczego — wpis w Rekorze jest publiczny na zawsze.
+    from src.infrastructure.adapters.rekor_publisher import RekorAttestationPublisher
+    from src.infrastructure.adapters.write_guard import ReadOnlyAttestationPublisher
+
+    settings = settings.model_copy(
+        update={
+            "attestation_enabled": True,
+            "attestation_rekor_enabled": True,
+            "db_writes_enabled": db_writes,
+        }
+    )
+
+    publisher = main_agent.build_attestation_publisher(settings)
+
+    expected = RekorAttestationPublisher if db_writes else ReadOnlyAttestationPublisher
+    assert type(publisher) is expected
+
+
 @pytest.mark.parametrize("available", [False, True])
 def test_attestation_needs_the_commitment_columns(
     settings: Settings, mock_external_clients: None, mocker: Any, available: bool
@@ -5116,6 +5380,128 @@ class TestPaidCallCapWiring:
         assert use_case_cls.call_args.args[0].paid_call_cap is None
 
 
+class TestLlmLedgerBudgetWiring:
+    """FIN-25: limit USD doby i miesiąca z ledgera `llm_calls` czytany raz przed
+    budową grafu. Wyczerpany → `AgentGraphDeps.llm_budget_spent` (graf nie płaci
+    za nic) i banner w mailu; odczyt nieudany → cykl płaci dalej (fail-open)."""
+
+    NOW = datetime(2026, 10, 22, 5, 30, tzinfo=UTC)
+
+    def _ledger(self, *costs: float) -> RepositoryPort:
+        from src.domain.finops import LLMCallEntry, LLMUsage
+        from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
+
+        repository = InMemoryRepository(clock=lambda: self.NOW - timedelta(hours=1))
+        repository.save_llm_calls(
+            [
+                LLMCallEntry(
+                    run_id="earlier",
+                    node="predict",
+                    symbol="NVDA",
+                    usage=LLMUsage(
+                        provider="anthropic", model="m", input_tokens=1, output_tokens=1
+                    ),
+                    cost_usd=cost,
+                    price_as_of=None,
+                )
+                for cost in costs
+            ]
+        )
+        return repository
+
+    def _run(
+        self, settings: Settings, repository: RepositoryPort, mocker: Any
+    ) -> tuple[MagicMock, MagicMock]:
+        mocker.patch("main_agent.build_repository", return_value=repository)
+        fake_uc = MagicMock()
+        fake_uc.run.return_value = {"status": "ignored", "delta": Decimal("0")}
+        build_use_case = mocker.patch("main_agent.build_use_case", return_value=fake_uc)
+        dispatch = mocker.patch("main_agent._dispatch_reports")
+
+        main_agent.main(settings, clock=lambda: self.NOW)
+
+        return build_use_case, dispatch
+
+    def _capped(self, settings: Settings, *, ledger: bool = True) -> Settings:
+        return settings.model_copy(
+            update={
+                "daily_llm_budget_usd": 2.0,
+                "monthly_llm_budget_usd": 30.0,
+                "cost_ledger_enabled": ledger,
+            }
+        )
+
+    def test_cycle_skips_paid_ports_when_daily_budget_spent(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        from src.domain.finops import BudgetBreach, BudgetWindow
+
+        build_use_case, dispatch = self._run(
+            self._capped(settings), self._ledger(1.5, 0.75), mocker
+        )
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is True
+        context: ReportContext = dispatch.call_args.kwargs["context"]
+        assert context.llm_budget_breach == BudgetBreach(
+            BudgetWindow.DAY, spent_usd=2.25, cap_usd=2.0
+        )
+
+    def test_spend_within_the_caps_keeps_the_paid_calls(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        build_use_case, dispatch = self._run(self._capped(settings), self._ledger(0.5), mocker)
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        assert dispatch.call_args.kwargs["context"].llm_budget_breach is None
+
+    def test_failed_ledger_read_keeps_the_paid_calls(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        from src.application.errors import ProviderUnavailable
+
+        repository = self._ledger(5.0)
+        mocker.patch.object(
+            repository, "get_llm_cost_since", side_effect=ProviderUnavailable("timeout")
+        )
+
+        build_use_case, dispatch = self._run(self._capped(settings), repository, mocker)
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        assert dispatch.call_args.kwargs["context"].llm_budget_breach is None
+
+    def test_caps_without_the_cost_ledger_are_not_enforced(
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        # Bez zapisu ledgera suma stoi w miejscu — limit nic by nie mierzył.
+        repository = self._ledger(5.0)
+        read = mocker.spy(repository, "get_llm_cost_since")
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            build_use_case, _ = self._run(self._capped(settings, ledger=False), repository, mocker)
+
+        assert build_use_case.call_args.kwargs["llm_budget_spent"] is False
+        read.assert_not_called()
+        assert "cost_ledger_enabled" in caplog.text
+
+    def test_build_use_case_passes_the_spent_budget_to_graph_deps(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
+
+        main_agent.build_use_case(settings, llm_budget_spent=True)
+        spent = use_case_cls.call_args.args[0].llm_budget_spent
+        main_agent.build_use_case(settings)
+
+        assert spent is True
+        assert use_case_cls.call_args.args[0].llm_budget_spent is False
+
+
 class TestNyseClosedDay:
     """FIN-34: w dzień zamknięcia NYSE (święto, weekend) Fast Loop pomija akcje
     z jawnym logiem. Krypto handluje w święta, więc idzie normalnie; bez krypto
@@ -5171,9 +5557,7 @@ class TestNyseClosedDay:
 
         fake_uc = build_use_case.return_value
         assert [c.args[0] for c in fake_uc.run.call_args_list] == ["BTC"]
-        assert any(
-            "święto NYSE" in rec.message and "BTC" in rec.message for rec in caplog.records
-        )
+        assert any("święto NYSE" in rec.message and "BTC" in rec.message for rec in caplog.records)
 
     def test_weekend_skips_stocks_too(
         self,
@@ -5529,11 +5913,7 @@ class TestClosedDayHeldStockQuotes:
         repository = MagicMock(spec=RepositoryPort)
 
         main_agent._dispatch_reports(
-            results=[
-                SymbolResult(
-                    symbol="BTC", status="ignored", current_price=Decimal("65000")
-                )
-            ],
+            results=[SymbolResult(symbol="BTC", status="ignored", current_price=Decimal("65000"))],
             started_at=self._CHRISTMAS,
             duration=1.0,
             failures=0,
@@ -5685,9 +6065,7 @@ class TestCostLedgerWiring:
         repository = MagicMock(spec=RepositoryPort)
         settings.cost_ledger_enabled = True
         settings.llm_pricing_as_of = date(2026, 10, 20)
-        settings.llm_pricing = {
-            "claude-sonnet-4-6": _sonnet_price()
-        }
+        settings.llm_pricing = {"claude-sonnet-4-6": _sonnet_price()}
 
         main_agent.persist_llm_calls(
             settings=settings,
@@ -5795,9 +6173,7 @@ class TestCycleCostFromTokens:
         telemetry.record_paid_call("sentiment")
         settings.cost_ledger_enabled = False
         settings.llm_pricing_as_of = date(2026, 10, 20)
-        settings.llm_pricing = {
-            "claude-sonnet-4-6": _sonnet_price()
-        }
+        settings.llm_pricing = {"claude-sonnet-4-6": _sonnet_price()}
 
         cost = main_agent.cycle_cost(settings, telemetry, self._ledger())
 
@@ -5843,9 +6219,7 @@ class TestCycleCostFromTokens:
         mocker.patch("main_agent.UsageLedger", return_value=self._ledger())
         dispatch = mocker.patch("main_agent._dispatch_reports")
         settings.llm_pricing_as_of = date(2026, 10, 20)
-        settings.llm_pricing = {
-            "claude-sonnet-4-6": _sonnet_price()
-        }
+        settings.llm_pricing = {"claude-sonnet-4-6": _sonnet_price()}
 
         main_agent.main(settings)
 
@@ -6005,8 +6379,8 @@ class TestTwoPhaseCycle:
         _, session_get = self._wire(settings, mocker, prices)
         repository = self._repository(unverified=True)
         events: Any = []
-        repository.update_prediction_accuracy.side_effect = (
-            lambda prediction_id, **_: events.append(f"settle:{prediction_id}")
+        repository.update_prediction_accuracy.side_effect = lambda prediction_id, **_: (
+            events.append(f"settle:{prediction_id}")
         )
         response = session_get.return_value
         session_get.side_effect = lambda *_a, **kw: (
@@ -6134,9 +6508,7 @@ class TestUndeliveredReportSignal:
     ) -> None:
         from src.infrastructure.adapters.resend_notifier import NullNotifier
 
-        _, repository = self._run_main(
-            settings, mocker, delivered=False, notifier=NullNotifier()
-        )
+        _, repository = self._run_main(settings, mocker, delivered=False, notifier=NullNotifier())
 
         assert "::error" not in capsys.readouterr().out
         repository.save_quota_alert.assert_not_called()
@@ -6318,13 +6690,15 @@ class TestFastLoopWeeklyBudgetBanner:
 
     def _production_like(self, settings: Settings, budget: float | None) -> Settings:
         # 42 symbole za bramką, sufit 100, cztery symbole naraz, 7 person rady.
-        return settings.model_copy(update={
-            "symbols": self._WATCHLIST,
-            "alpha_vantage_api_keys": ["av1", "av2"],
-            "max_paid_llm_calls_per_cycle": 100,
-            "symbol_concurrency": 4,
-            "fast_loop_weekly_budget_usd": budget,
-        })
+        return settings.model_copy(
+            update={
+                "symbols": self._WATCHLIST,
+                "alpha_vantage_api_keys": ["av1", "av2"],
+                "max_paid_llm_calls_per_cycle": 100,
+                "symbol_concurrency": 4,
+                "fast_loop_weekly_budget_usd": budget,
+            }
+        )
 
     def test_worst_case_above_the_budget_lands_in_the_banner_and_the_log(
         self,
@@ -6517,9 +6891,7 @@ class TestEarningsSoon:
 
         calendar = main_agent._earnings_calendar(settings, self.MONDAY_MORNING)
         week = main_agent._earnings_this_week(settings, self.MONDAY_MORNING, calendar)
-        soon = main_agent._earnings_soon(
-            settings, self.MONDAY_MORNING, self._portfolio(), calendar
-        )
+        soon = main_agent._earnings_soon(settings, self.MONDAY_MORNING, self._portfolio(), calendar)
 
         assert week is not None and soon is not None
         assert [event.symbol for event in soon] == ["MSFT"]
@@ -6714,9 +7086,9 @@ class TestAlphaEnrichmentWiring:
             "AAPL", soon, datetime.now(UTC)
         )
 
-        event = main_agent.build_alpha_enrichment(
-            settings, repository=repository
-        ).fetch_earnings("AAPL")
+        event = main_agent.build_alpha_enrichment(settings, repository=repository).fetch_earnings(
+            "AAPL"
+        )
 
         assert event == EarningsEvent("AAPL", days_until=1, report_date=soon.isoformat())
         get.assert_not_called()
@@ -6864,16 +7236,18 @@ class TestRegimeChangeWiring:
         }
         return build_settings(**(values | overrides))
 
-    def _banner(
-        self, settings: Settings, level: MacroAlertLevel, previous: object
-    ) -> RegimeBanner:
+    def _banner(self, settings: Settings, level: MacroAlertLevel, previous: object) -> RegimeBanner:
         repo = MagicMock(spec=RepositoryPort)
         repo.get_latest_regime_state.return_value = previous
         macro = MagicMock()
         macro.overall_alert = level
         banners: list[RegimeBanner] = []
         main_agent._resolve_regime(
-            settings, macro, None, repository=repo, cycle_at=self._CYCLE_AT,
+            settings,
+            macro,
+            None,
+            repository=repo,
+            cycle_at=self._CYCLE_AT,
             on_banner=banners.append,
         )
         [banner] = banners
@@ -7034,9 +7408,7 @@ class TestPaperLedgerHeadPublication:
         from datetime import date
 
         path = tmp_path / "paper_ledger_heads.jsonl"
-        settings = settings.model_copy(
-            update={**self._ON, "paper_ledger_heads_path": str(path)}
-        )
+        settings = settings.model_copy(update={**self._ON, "paper_ledger_heads_path": str(path)})
 
         main_agent.publish_paper_ledger_head(settings, self._repo(), today=date(2026, 10, 19))
         main_agent.publish_paper_ledger_head(settings, self._repo(), today=date(2026, 10, 19))
@@ -7462,8 +7834,15 @@ class TestPublicStatusPage:
         repository = MagicMock(spec=RepositoryPort)
         repository.get_cycle_runs_since.return_value = [
             CycleRun(
-                loop="fast", run_id="1", run_attempt=1, started_at=now - timedelta(days=9),
-                duration_s=1.0, eligible=1, saved=1, failures=0, paid_calls={},
+                loop="fast",
+                run_id="1",
+                run_attempt=1,
+                started_at=now - timedelta(days=9),
+                duration_s=1.0,
+                eligible=1,
+                saved=1,
+                failures=0,
+                paid_calls={},
                 report_delivered=True,
             )
         ]

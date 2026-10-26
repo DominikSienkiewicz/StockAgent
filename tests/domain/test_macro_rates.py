@@ -59,24 +59,15 @@ class TestYieldCurveAlertLevel:
         from src.domain.macro_rates import yield_curve_alert_level
         from src.domain.macro_risk import MacroAlertLevel
 
-        assert (
-            yield_curve_alert_level(YieldCurveState.INVERTED)
-            is MacroAlertLevel.ELEVATED
-        )
+        assert yield_curve_alert_level(YieldCurveState.INVERTED) is MacroAlertLevel.ELEVATED
 
     def test_flat_and_normal_map_to_normal(self) -> None:
         # Zdrowa/płaska krzywa nie jest sygnałem ryzyka → poziom neutralny.
         from src.domain.macro_rates import yield_curve_alert_level
         from src.domain.macro_risk import MacroAlertLevel
 
-        assert (
-            yield_curve_alert_level(YieldCurveState.FLAT)
-            is MacroAlertLevel.NORMAL
-        )
-        assert (
-            yield_curve_alert_level(YieldCurveState.NORMAL)
-            is MacroAlertLevel.NORMAL
-        )
+        assert yield_curve_alert_level(YieldCurveState.FLAT) is MacroAlertLevel.NORMAL
+        assert yield_curve_alert_level(YieldCurveState.NORMAL) is MacroAlertLevel.NORMAL
 
     def test_covers_every_state(self) -> None:
         # Każdy wariant enuma ma zdefiniowane mapowanie (brak KeyError).

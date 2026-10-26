@@ -44,9 +44,7 @@ def _render_reflections_text(saved: list[SymbolResult]) -> list[str]:
     if not reflections:
         return []
     lines = ["WNIOSKI Z POPRZEDNICH CYKLI (Self-Reflection)", "-" * 64]
-    lines.extend(
-        f"  {_company_label(r.symbol)}: {r.reflection_insight}" for r in reflections
-    )
+    lines.extend(f"  {_company_label(r.symbol)}: {r.reflection_insight}" for r in reflections)
     lines.append("")
     return lines
 

@@ -71,9 +71,7 @@ def _is_week_apart(earlier: datetime, later: datetime) -> bool:
     return BASELINE_MIN_AGE <= later - earlier <= BASELINE_MAX_AGE
 
 
-def select_baseline(
-    reads: Iterable[ReferenceRead], current: ReferenceRead
-) -> ReferenceRead | None:
+def select_baseline(reads: Iterable[ReferenceRead], current: ReferenceRead) -> ReferenceRead | None:
     """Najnowszy wcześniejszy odczyt tego symbolu sprzed 6–8 dni albo None.
 
     Ręczny przebieg w środku tygodnia nie staje się bazą (za świeży), a pominięty
@@ -99,9 +97,7 @@ def may_call(recent_calls: Iterable[ReferenceCall], current: ReferenceRead) -> b
     )
 
 
-def momentum_call(
-    baseline: ReferenceRead | None, current: ReferenceRead
-) -> ReferenceCall | None:
+def momentum_call(baseline: ReferenceRead | None, current: ReferenceRead) -> ReferenceCall | None:
     """Znak zmiany od odczytu bazowego: BULLISH w górę, BEARISH w dół.
 
     Brak bazy (pierwszy przebieg), cena bez zmian albo niedodatnia → abstynencja.

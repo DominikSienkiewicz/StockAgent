@@ -130,9 +130,7 @@ def hero_verdict(highlight: RecapHighlight) -> str:
     )
     if highlight.direction_correct is None:
         return error_label
-    direction = (
-        "✅ kierunek trafiony" if highlight.direction_correct else "❌ kierunek chybiony"
-    )
+    direction = "✅ kierunek trafiony" if highlight.direction_correct else "❌ kierunek chybiony"
     return f"{direction} · {error_label}"
 
 
@@ -207,7 +205,7 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
         # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
-        + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
+         + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
         "padding-top: 8px; border-top: 1px solid #e5e7eb;'>"
         f"{_html.escape(INVESTMENT_DISCLAIMER)}</div>"
     )

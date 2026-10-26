@@ -8,6 +8,11 @@ from typing import Literal, overload
 
 from src.domain.value_objects import AssetType, Fundamentals, Percent, ValuationVerdict
 
+# ML-40: numery rund rady w `council_votes.round` (migracja 082) — runda 1 to
+# niezależne głosy person, runda 2 to głosy po jedynej rundzie rewizji debate mode.
+FIRST_COUNCIL_ROUND = 1
+REVISION_COUNCIL_ROUND = 2
+
 
 @dataclass(frozen=True)
 class CouncilInput:
@@ -120,12 +125,18 @@ class CouncilVerdict:
     # limit czasu). Ich głosu nie ma w `investor_opinions` (NIEZ-09). 0 = cała rada
     # odpowiedziała — tak czytamy też werdykty zapisane przed tym polem.
     failed_personas: int = 0
+    # ML-40: głosy rundy 1, gdy rada przeszła rundę rewizji (debate mode) — wtedy
+    # `investor_opinions` to głosy po rewizji. Puste = rewizji nie było i
+    # `investor_opinions` to runda 1. Nie trafia do JSONB `council_verdict`
+    # (`save_node`); rundy niesie `council_votes.round` (migracja 082).
+    first_round_opinions: tuple[InvestorOpinion, ...] = ()
 
     def __post_init__(self) -> None:
         # Tuple zamiast list — frozen=True nie chroni przed mutacją kolekcji
         # w miejscu; koercja daje realną niezmienność (i przyjmuje listę callera).
         object.__setattr__(self, "dissenting_views", tuple(self.dissenting_views))
         object.__setattr__(self, "investor_opinions", tuple(self.investor_opinions))
+        object.__setattr__(self, "first_round_opinions", tuple(self.first_round_opinions))
         if self.failed_personas < 0:
             raise ValueError(f"failed_personas must be >= 0, got {self.failed_personas}")
 
@@ -133,9 +144,20 @@ class CouncilVerdict:
         """Skład rady wezwanej w cyklu: oddane głosy + persony, które padły."""
         return len(self.investor_opinions) + self.failed_personas
 
-    def has_strong_consensus(
-        self, threshold: float = STRONG_CONSENSUS_THRESHOLD
-    ) -> bool:
+    def votes_by_round(self) -> tuple[tuple[int, tuple[InvestorOpinion, ...]], ...]:
+        """ML-40: głosy do `council_votes` z numerem rundy, od rundy 1.
+
+        Bez rewizji jedyną rundą są głosy werdyktu. Po rewizji runda 1 to niezależne
+        głosy person, a runda 2 — głosy, z których policzono werdykt; dopiero obie
+        pozwalają ocenić, czy rewizja poprawia trafność, czy spłaszcza dysydentów."""
+        if not self.first_round_opinions:
+            return ((FIRST_COUNCIL_ROUND, self.investor_opinions),)
+        return (
+            (FIRST_COUNCIL_ROUND, self.first_round_opinions),
+            (REVISION_COUNCIL_ROUND, self.investor_opinions),
+        )
+
+    def has_strong_consensus(self, threshold: float = STRONG_CONSENSUS_THRESHOLD) -> bool:
         """Czy rada wyraźnie się zgadza (consensus_strength ≥ threshold).
 
         Używane przez raport (czerwona/zielona banda) i potencjalnie przez
@@ -175,8 +197,7 @@ class CouncilVerdict:
         if not self.investor_opinions:
             return 0.0
         dissenting = sum(
-            1 for op in self.investor_opinions
-            if op.recommendation != self.final_recommendation
+            1 for op in self.investor_opinions if op.recommendation != self.final_recommendation
         )
         return dissenting / len(self.investor_opinions)
 
@@ -192,8 +213,7 @@ class CouncilVerdict:
         return sum(
             1
             for op in self.investor_opinions
-            if op.investor_name in prior
-            and prior[op.investor_name] != op.recommendation
+            if op.investor_name in prior and prior[op.investor_name] != op.recommendation
         )
 
 

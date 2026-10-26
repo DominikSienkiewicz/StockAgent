@@ -81,9 +81,9 @@ _COUNCIL_REC_EMOJI = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
 
 _VERDICT_COLOR = {
     "UNDERVALUED": "#2e7d32",  # zielony
-    "FAIR": "#616161",         # szary
-    "OVERVALUED": "#c62828",   # czerwony
-    "UNKNOWN": "#9e9e9e",      # jasnoszary
+    "FAIR": "#616161",  # szary
+    "OVERVALUED": "#c62828",  # czerwony
+    "UNKNOWN": "#9e9e9e",  # jasnoszary
 }
 
 
@@ -95,11 +95,7 @@ def _render_valuation(section: ValuationSection | None) -> str:
     def fmt(v: float | None) -> str:
         return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
 
-    growth = (
-        _pct(section.eps_growth_yoy, decimals=1)
-        if section.eps_growth_yoy is not None
-        else "—"
-    )
+    growth = _pct(section.eps_growth_yoy, decimals=1) if section.eps_growth_yoy is not None else "—"
     return render_template(
         "valuation_section.html.j2",
         {
@@ -123,11 +119,7 @@ def render_valuation_text(section: ValuationSection | None) -> str:
     def fmt(v: float | None) -> str:
         return _number(v, decimals=2) if isinstance(v, (int, float)) else "—"
 
-    growth = (
-        _pct(section.eps_growth_yoy, decimals=1)
-        if section.eps_growth_yoy is not None
-        else "—"
-    )
+    growth = _pct(section.eps_growth_yoy, decimals=1) if section.eps_growth_yoy is not None else "—"
 
     lines = [
         "  Wycena fundamentalna:",
@@ -154,10 +146,7 @@ def move_interval_label(interval: MoveInterval) -> str:
     historii (n/20)" — krótkie okno nie udaje liczby."""
     level = f"{_pct(interval.nominal_coverage, decimals=0)} przedział"
     if interval.low is None or interval.high is None:
-        return (
-            f"{level}: za mało historii "
-            f"({interval.calibration_size}/{interval.required_size})"
-        )
+        return f"{level}: za mało historii ({interval.calibration_size}/{interval.required_size})"
     return (
         f"{level}: {_signed_move(interval.low)} … {_signed_move(interval.high)} "
         f"(n={interval.calibration_size})"
@@ -212,9 +201,7 @@ def _model_signal_reason_html(r: SymbolResult) -> str:
 def model_signal_reason_text(r: SymbolResult) -> str:
     direction = model_signal(r)
     conf_part = (
-        f"pewność {_pct(r.confidence_score, decimals=0)}"
-        if r.confidence_score is not None
-        else ""
+        f"pewność {_pct(r.confidence_score, decimals=0)}" if r.confidence_score is not None else ""
     )
     change_part = (
         f"prognoza {_pct(r.expected_change, signed=True)}"
@@ -376,9 +363,7 @@ def _render_precedents_block_html(precedents: list[SimilarPrecedent]) -> str:
     return (
         "<div style='font-size: 11px; color: #4b5563; margin-top: 8px;'>"
         "🧭 <strong>Na podstawie analogów:</strong>"
-        "<ul style='margin: 4px 0 0 20px; padding: 0;'>"
-        + "".join(items)
-        + "</ul></div>"
+        "<ul style='margin: 4px 0 0 20px; padding: 0;'>" + "".join(items) + "</ul></div>"
     )
 
 
@@ -494,7 +479,7 @@ def render_reasoning_block_html(
                 <div class="rh">{company}{sector_tag} {trend}{badges_html}</div>
                 {move_line}
                 {rec_block}
-                {f'<div class="rt">{_html(r.reasoning)}</div>' if r.reasoning else ''}
+                {f'<div class="rt">{_html(r.reasoning)}</div>' if r.reasoning else ""}
                 {attribution_block}
                 {precedents_block}
                 {news_block}

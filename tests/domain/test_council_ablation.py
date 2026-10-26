@@ -167,7 +167,7 @@ def test_personas_are_listed_removal_candidates_first() -> None:
 def test_unparsable_recommendations_and_duplicate_votes_do_not_change_the_council() -> None:
     votes = [
         *_pivotal_council(),
-        _vote("p-1", "Alfa", "SELL", 0.99),         # duplikat persony: liczy się pierwszy głos
+        _vote("p-1", "Alfa", "SELL", 0.99),  # duplikat persony: liczy się pierwszy głos
         _vote("p-1", "Delta", "STRONG_BUY", 0.99),  # spoza BUY/SELL/HOLD: odpada
     ]
 

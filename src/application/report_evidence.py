@@ -407,9 +407,7 @@ def uncertainty_note(evidence: HitRateEvidence, *, numbers: NumberStyle = POLISH
             "przedział Wilsona na n_eff"
         )
     if evidence.hit_rate.directional and evidence.n_eff < SMALL_SAMPLE_N_EFF:
-        notes.append(
-            f"mała próbka (n_eff < {SMALL_SAMPLE_N_EFF}) — przedział jest bardzo szeroki"
-        )
+        notes.append(f"mała próbka (n_eff < {SMALL_SAMPLE_N_EFF}) — przedział jest bardzo szeroki")
     return "; ".join(notes)
 
 

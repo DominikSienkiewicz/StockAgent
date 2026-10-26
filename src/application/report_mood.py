@@ -41,12 +41,14 @@ def _render_mood_html(mood: PortfolioMood) -> str:
     bullish_part = (
         f"<strong>{_html(_company_label(mood.most_bullish.symbol))}</strong> "
         f"({_number(mood.most_bullish.sentiment_score, decimals=2, signed=True)})"
-        if mood.most_bullish else "—"
+        if mood.most_bullish
+        else "—"
     )
     bearish_part = (
         f"<strong>{_html(_company_label(mood.most_bearish.symbol))}</strong> "
         f"({_number(mood.most_bearish.sentiment_score, decimals=2, signed=True)})"
-        if mood.most_bearish else "—"
+        if mood.most_bearish
+        else "—"
     )
     high_confidence = f"{mood.high_confidence_count} / {mood.saved_count}"
     return f"""

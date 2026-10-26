@@ -73,9 +73,7 @@ def _positive_price(raw: object) -> float | None:
 def _clean_series(points: Sequence[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
     """Punkty z dodatnią, skończoną ceną, rosnąco po czasie."""
     cleaned = [
-        (moment, price)
-        for moment, raw in points
-        if (price := _positive_price(raw)) is not None
+        (moment, price) for moment, raw in points if (price := _positive_price(raw)) is not None
     ]
     return sorted(cleaned, key=lambda point: point[0])
 
@@ -114,7 +112,6 @@ def label_snapshots(
             )
         )
     return sorted(labeled, key=lambda item: (item.snapshot.as_of, item.snapshot.symbol))
-
 
 
 @dataclass(frozen=True)

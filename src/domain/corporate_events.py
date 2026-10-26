@@ -84,8 +84,6 @@ class CorporateEventSnapshot:
             event for event in self.events if (as_of - event.filed_on).days <= max_age_days
         )
 
-    def has_fresh_event(
-        self, as_of: date, max_age_days: int = FRESH_EVENT_MAX_AGE_DAYS
-    ) -> bool:
+    def has_fresh_event(self, as_of: date, max_age_days: int = FRESH_EVENT_MAX_AGE_DAYS) -> bool:
         """Flaga świeżego 8-K do promptu, cech i lessons (konsumenci za flagą)."""
         return bool(self.fresh_events(as_of, max_age_days))

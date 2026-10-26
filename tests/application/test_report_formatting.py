@@ -91,9 +91,7 @@ class TestSectorLabel:
             etf_symbols=config["symbols_etf"],
             crypto_symbols=config["crypto_symbols"],
         )
-        configured = [
-            *config["symbols"], *config["symbols_etf"], *config["crypto_symbols"]
-        ]
+        configured = [*config["symbols"], *config["symbols_etf"], *config["crypto_symbols"]]
         missing = [s for s in configured if sector_label(s, sector_map) is None]
         assert not missing, f"brak sektora dla: {missing}"
 
@@ -129,7 +127,10 @@ class TestBuildSectorMap:
         )
 
         assert list(dict.fromkeys(sector_map.values())) == [
-            "Mobilność", "Big Tech", "ETF", "Krypto"
+            "Mobilność",
+            "Big Tech",
+            "ETF",
+            "Krypto",
         ]
 
     def test_label_without_a_map_is_none(self) -> None:
@@ -196,9 +197,7 @@ class TestProvenanceBadgesHtml:
 class TestCompanyNamesCoverConfig:
     def test_every_configured_symbol_has_company_name(self) -> None:
         config = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-        configured = {
-            symbol for key in _CONFIGURED_SYMBOL_LISTS for symbol in config[key]
-        }
+        configured = {symbol for key in _CONFIGURED_SYMBOL_LISTS for symbol in config[key]}
 
         missing = sorted(configured - COMPANY_NAMES.keys())
 

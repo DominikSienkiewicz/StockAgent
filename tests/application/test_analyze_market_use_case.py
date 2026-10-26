@@ -165,8 +165,11 @@ def test_analyze_market_passes_council_port_to_graph() -> None:
     market.get_current_price.return_value = Money(Decimal("180.00"))
     sentiment = Mock(spec=SentimentPort)
     sentiment.get_social_score.return_value = {
-        "av_sentiment_score": 0.5, "av_sentiment_label": "Bullish",
-        "av_relevance_avg": 0.7, "news_volume_24h": 10, "high_relevance_count": 3,
+        "av_sentiment_score": 0.5,
+        "av_sentiment_label": "Bullish",
+        "av_relevance_avg": 0.7,
+        "news_volume_24h": 10,
+        "high_relevance_count": 3,
     }
     news = Mock(spec=NewsPort)
     news.get_news_context.return_value = [{"title": "Apple gains"}]
@@ -179,8 +182,11 @@ def test_analyze_market_passes_council_port_to_graph() -> None:
     ml.predict.return_value = Money(Decimal("185.00"))
     llm = Mock(spec=LLMPort)
     llm.analyze.return_value = {
-        "trend_direction": "BULLISH", "confidence_score": 0.8,
-        "av_agreement": 0.9, "target_price_12h": 185.0, "reasoning": "ok",
+        "trend_direction": "BULLISH",
+        "confidence_score": 0.8,
+        "av_agreement": 0.9,
+        "target_price_12h": 185.0,
+        "reasoning": "ok",
     }
     council_port = Mock(spec=AdvisoryCouncilPort)
     verdict = CouncilVerdict(
@@ -200,15 +206,17 @@ def test_analyze_market_passes_council_port_to_graph() -> None:
     )
     council_port.analyze.return_value = verdict
 
-    use_case = AnalyzeMarketUseCase(make_deps(
-        market_port=market,
-        sentiment_port=sentiment,
-        news_port=news,
-        repository_port=repo,
-        ml_port=ml,
-        llm_port=llm,
-        council_port=council_port,
-    ))
+    use_case = AnalyzeMarketUseCase(
+        make_deps(
+            market_port=market,
+            sentiment_port=sentiment,
+            news_port=news,
+            repository_port=repo,
+            ml_port=ml,
+            llm_port=llm,
+            council_port=council_port,
+        )
+    )
     # previous_price much lower to trigger volatility gate
     repo.get_last_price.return_value = Money(Decimal("170.00"))
     use_case.run("AAPL")
@@ -238,18 +246,18 @@ class TestGraphCompiledOnce:
         compiled_app.invoke.return_value = {"status": "ignored"}
         fake_workflow = Mock()
         fake_workflow.compile.return_value = compiled_app
-        monkeypatch.setattr(
-            module, "create_agent_graph", lambda _deps: fake_workflow
-        )
+        monkeypatch.setattr(module, "create_agent_graph", lambda _deps: fake_workflow)
 
-        use_case = module.AnalyzeMarketUseCase(make_deps(
-            market_port=market_port,
-            sentiment_port=Mock(),
-            news_port=Mock(),
-            repository_port=repository_port,
-            ml_port=Mock(),
-            llm_port=Mock(),
-        ))
+        use_case = module.AnalyzeMarketUseCase(
+            make_deps(
+                market_port=market_port,
+                sentiment_port=Mock(),
+                news_port=Mock(),
+                repository_port=repository_port,
+                ml_port=Mock(),
+                llm_port=Mock(),
+            )
+        )
         use_case.run("AAPL")
         use_case.run("MSFT")
         use_case.run("NVDA")
@@ -322,10 +330,12 @@ class TestPaidCallMeter:
         graph_ports: GraphPorts,
     ) -> None:
         meter: Counter[str] = Counter()
-        use_case = AnalyzeMarketUseCase(make_deps(
-            **graph_ports,
-            paid_call_meter=meter,
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                **graph_ports,
+                paid_call_meter=meter,
+            )
+        )
         self._arrange_paid_cycle(
             market_port, sentiment_port, news_port, repository_port, ml_port, llm_port
         )
@@ -366,10 +376,12 @@ class TestAttestationPublisher:
         graph_ports: GraphPorts,
     ) -> None:
         publisher = Mock(spec=AttestationPublisherPort)
-        use_case = AnalyzeMarketUseCase(make_deps(
-            **graph_ports,
-            attestation_publisher=publisher,
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                **graph_ports,
+                attestation_publisher=publisher,
+            )
+        )
 
         assert use_case.attestation_publisher is publisher
 
@@ -383,9 +395,7 @@ class TestRequiredPredictionColumns:
     def test_matches_the_graph_rule_for_its_deps(self, use_case: AnalyzeMarketUseCase) -> None:
         from src.application.agent_graph import required_prediction_columns
 
-        assert use_case.required_prediction_columns() == required_prediction_columns(
-            use_case._deps
-        )
+        assert use_case.required_prediction_columns() == required_prediction_columns(use_case._deps)
         assert "symbol" in use_case.required_prediction_columns()
 
 
@@ -397,10 +407,12 @@ class TestThresholdInjection:
         repository_port: Mock,
         graph_ports: GraphPorts,
     ) -> None:
-        use_case = AnalyzeMarketUseCase(make_deps(
-            **graph_ports,
-            threshold=Threshold(Decimal("0.20")),  # 20% próg
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                **graph_ports,
+                threshold=Threshold(Decimal("0.20")),  # 20% próg
+            )
+        )
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
 
@@ -428,15 +440,17 @@ class TestStaleReferenceRebaseline:
         llm_port: Mock,
         embedding_port: Mock | None,
     ) -> AnalyzeMarketUseCase:
-        return AnalyzeMarketUseCase(make_deps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            embedding_port=embedding_port,
-        ))
+        return AnalyzeMarketUseCase(
+            make_deps(
+                market_port=market_port,
+                sentiment_port=sentiment_port,
+                news_port=news_port,
+                repository_port=repository_port,
+                ml_port=ml_port,
+                llm_port=llm_port,
+                embedding_port=embedding_port,
+            )
+        )
 
     def _arrange_big_move(
         self,
@@ -448,7 +462,8 @@ class TestStaleReferenceRebaseline:
         reference = Money(Decimal("100.0"))
         repository_port.get_last_price.return_value = reference
         repository_port.get_last_price_snapshot.return_value = (
-            reference, self._NOW - reference_age,
+            reference,
+            self._NOW - reference_age,
         )
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10% ≥ próg
 
@@ -463,7 +478,12 @@ class TestStaleReferenceRebaseline:
     ) -> None:
         embedding_port = Mock(spec=EmbeddingPort)
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             embedding_port,
         )
         self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
@@ -482,9 +502,7 @@ class TestStaleReferenceRebaseline:
         repository_port.save_prediction.assert_not_called()
         assert sum(use_case.paid_calls.values()) == 0
         # Nowy punkt odniesienia: następny cykl porówna się do dzisiejszej ceny.
-        repository_port.save_price_snapshot.assert_called_once_with(
-            "AAPL", Money(Decimal("90.0"))
-        )
+        repository_port.save_price_snapshot.assert_called_once_with("AAPL", Money(Decimal("90.0")))
 
     def test_month_old_reference_skips_paid_diagnosis_but_still_scores_prior(
         self,
@@ -505,7 +523,12 @@ class TestStaleReferenceRebaseline:
             predicted_target_price=Decimal("105.0"),
         )
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             None,
         )
         self._arrange_big_move(market_port, repository_port, reference_age=timedelta(days=30))
@@ -535,7 +558,12 @@ class TestStaleReferenceRebaseline:
         ml_port.predict.return_value = Money(Decimal("89.0"))
         repository_port.save_prediction.return_value = "new-uuid"
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             None,
         )
         self._arrange_big_move(market_port, repository_port, reference_age=timedelta(hours=24))
@@ -575,7 +603,12 @@ class TestStaleReferenceRebaseline:
         repository_port.get_last_price_snapshot.side_effect = RuntimeError("Supabase 503")
         market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             None,
         )
 
@@ -620,15 +653,17 @@ class TestExperimentArms:
         *,
         enabled: bool,
     ) -> dict[str, Any]:
-        use_case = AnalyzeMarketUseCase(make_deps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            experiments=(self._experiment(enabled=enabled),),
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                market_port=market_port,
+                sentiment_port=sentiment_port,
+                news_port=news_port,
+                repository_port=repository_port,
+                ml_port=ml_port,
+                llm_port=llm_port,
+                experiments=(self._experiment(enabled=enabled),),
+            )
+        )
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("100.5"))  # +0.5%
         return use_case.run("AAPL", now=self._NOW)
@@ -647,7 +682,12 @@ class TestExperimentArms:
         from src.domain.experiment import assign_arm
 
         result = self._result(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             enabled=True,
         )
 
@@ -664,7 +704,12 @@ class TestExperimentArms:
         llm_port: Mock,
     ) -> None:
         result = self._result(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             enabled=False,
         )
 
@@ -684,10 +729,12 @@ class TestCycleTelemetry:
         from src.application.cycle_telemetry import CycleTelemetry
 
         telemetry = CycleTelemetry()
-        use_case = AnalyzeMarketUseCase(make_deps(
-            **graph_ports,
-            telemetry=telemetry,
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                **graph_ports,
+                telemetry=telemetry,
+            )
+        )
         repository_port.get_last_price.return_value = Money(Decimal("100.0"))
         market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
 
@@ -814,16 +861,18 @@ class TestMarketFeaturesPhase:
         *,
         enabled: bool,
     ) -> AnalyzeMarketUseCase:
-        return AnalyzeMarketUseCase(make_deps(
-            market_port=market_port,
-            sentiment_port=sentiment_port,
-            news_port=news_port,
-            repository_port=repository_port,
-            ml_port=ml_port,
-            llm_port=llm_port,
-            feature_snapshots_enabled=True,
-            market_features_enabled=enabled,
-        ))
+        return AnalyzeMarketUseCase(
+            make_deps(
+                market_port=market_port,
+                sentiment_port=sentiment_port,
+                news_port=news_port,
+                repository_port=repository_port,
+                ml_port=ml_port,
+                llm_port=llm_port,
+                feature_snapshots_enabled=True,
+                market_features_enabled=enabled,
+            )
+        )
 
     def test_cycle_quote_is_fetched_once_and_features_reach_the_snapshot(
         self,
@@ -841,7 +890,12 @@ class TestMarketFeaturesPhase:
         ]
         market_port.get_current_price.return_value = Money(Decimal("99.5"))  # -0.5%
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             enabled=True,
         )
 
@@ -864,7 +918,12 @@ class TestMarketFeaturesPhase:
         llm_port: Mock,
     ) -> None:
         use_case = self._use_case(
-            market_port, sentiment_port, news_port, repository_port, ml_port, llm_port,
+            market_port,
+            sentiment_port,
+            news_port,
+            repository_port,
+            ml_port,
+            llm_port,
             enabled=False,
         )
 
@@ -891,12 +950,14 @@ class TestMarketFeaturesPhase:
         market_port.get_current_price.side_effect = lambda symbol: Money(
             Decimal("103") if symbol == "AAPL" else Decimal("104")
         )
-        use_case = AnalyzeMarketUseCase(make_deps(
-            **graph_ports,
-            crypto_threshold=Threshold(Decimal("0.05")),
-            feature_snapshots_enabled=True,
-            market_features_enabled=True,
-        ))
+        use_case = AnalyzeMarketUseCase(
+            make_deps(
+                **graph_ports,
+                crypto_threshold=Threshold(Decimal("0.05")),
+                feature_snapshots_enabled=True,
+                market_features_enabled=True,
+            )
+        )
 
         use_case.prepare_market_features(
             ["AAPL", "BTC"], asset_types={"BTC": AssetType.CRYPTO}, now=now

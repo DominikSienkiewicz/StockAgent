@@ -375,9 +375,7 @@ def _signal_candidate(signal: LeadSignal) -> _Candidate | None:
     return None
 
 
-def _flip_candidate(
-    signal: LeadSignal, delta_label: str, magnitude: float
-) -> _Candidate | None:
+def _flip_candidate(signal: LeadSignal, delta_label: str, magnitude: float) -> _Candidate | None:
     """MAIL-19: odwrócenie rady (KUP↔SPRZEDAJ). Tylko FLIP — stęchłe porównanie
     (`STALE_COMPARISON`) i złagodzenie nie są leadem."""
     shift = signal.consensus_shift

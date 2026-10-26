@@ -24,11 +24,7 @@ def _format_valuation_block(data: CouncilInput) -> str:
     def _fmt(v: float | None) -> str:
         return f"{v:.2f}" if isinstance(v, (int, float)) else "n/a"
 
-    growth_pct = (
-        f"{f.eps_growth_yoy * 100:.1f}%"
-        if f.eps_growth_yoy is not None
-        else "n/a"
-    )
+    growth_pct = f"{f.eps_growth_yoy * 100:.1f}%" if f.eps_growth_yoy is not None else "n/a"
     return (
         f"\nValuation snapshot (as of {f.fetched_at.isoformat()}):\n"
         f"- Trailing P/E: {_fmt(f.trailing_pe)}\n"

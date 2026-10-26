@@ -1,0 +1,18 @@
+# MAIL-38: archetyp każdej persony rady — polska etykieta stylu inwestowania.
+#
+# Nazwiska person zostają w prywatnym mailu właściciela. Każde publiczne wyjście
+# (przykładowy mail w docs/img, publiczny scorecard) pokazuje archetyp, żeby nie
+# przypisywać żyjącym osobom rekomendacji KUP/SPRZEDAJ. Klucz to `name` z pliku
+# persony — ten sam co w `council_votes` i w rankingu person, więc bez migracji.
+#
+# Plik nie jest personą (loader czyta tylko *.json) i nie wchodzi do hasha person
+# w przepisie predykcji: zmiana etykiety nie tnie track recordu. Archetyp nie może
+# zawierać nazwiska żadnej persony (tests/test_public_persona_guard.py).
+
+"Benjamin Graham" = "Wartość i margines bezpieczeństwa"
+"Cathie Wood" = "Innowacja i wzrost"
+"George Soros" = "Makro i refleksyjność"
+"Howard Marks" = "Cykl rynkowy i ryzyko"
+"Peter Lynch" = "Wzrost w rozsądnej cenie"
+"Ray Dalio" = "Cykle długu i dywersyfikacja"
+"Warren Buffett" = "Jakość i przewaga konkurencyjna"

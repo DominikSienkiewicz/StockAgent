@@ -74,8 +74,13 @@ def test_real_config_toml_parses_and_has_expected_invariants() -> None:
     assert isinstance(data["symbol_concurrency"], int)
     assert data["symbol_concurrency"] >= 1
     # Sekrety NIE mogą wyciec do commitowanego pliku.
-    for secret in ("openai_api_key", "anthropic_api_key", "supabase_key",
-                   "finnhub_api_key", "digest_to_email"):
+    for secret in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "supabase_key",
+        "finnhub_api_key",
+        "digest_to_email",
+    ):
         assert secret not in data, f"sekret {secret} w config.toml!"
 
 
@@ -138,9 +143,7 @@ def test_config_toml_found_regardless_of_cwd(
     assert s.notifications_enabled is data["notifications_enabled"]
 
 
-def test_unknown_toml_key_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_unknown_toml_key_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """TEST-03 (G64): literówka w kluczu `config.toml` przerywa start, zamiast po
     cichu zostawić default (tu: `weekly_recap_enabled` zostałby wyłączony)."""
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
@@ -169,9 +172,7 @@ def test_every_real_config_toml_key_is_a_settings_field() -> None:
     assert set(data) - set(Settings.model_fields) == set()
 
 
-def test_env_overrides_toml(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_env_overrides_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("STOCKAGENT_DISABLE_TOML", raising=False)
     toml = tmp_path / "config.toml"
     toml.write_text("symbol_throttle_seconds = 7.5\n", encoding="utf-8")
@@ -204,8 +205,7 @@ def test_no_flag_set_to_true_sits_under_an_off_comment() -> None:
     contradicted = [
         line.split("=", 1)[0].strip()
         for index, line in enumerate(lines)
-        if line.replace(" ", "").endswith("=true")
-        and _comment_above(lines, index).endswith("Off.")
+        if line.replace(" ", "").endswith("=true") and _comment_above(lines, index).endswith("Off.")
     ]
     assert not contradicted, f"flagi = true pod komentarzem „Off.”: {contradicted}"
 
@@ -507,10 +507,25 @@ def test_real_config_toml_ships_the_shadow_predictions_off_until_migration() -> 
     ]
 
 
+def test_real_config_toml_ships_the_shadow_prompt_variant_off_until_migration() -> None:
+    # EXP-26: kolumny wariantu w `shadow_predictions` (migracja 083); włączenie po
+    # EXP-02/03 (po 2027-01-29), więc config.toml nie niesie jeszcze definicji wariantu.
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+
+    assert data["shadow_prompt_variant_enabled"] is False
+    assert "shadow_prompt_variant" not in data
+
+
 def test_real_config_toml_ships_the_isotonic_calibration_off() -> None:
     """ML-28: mapa izotoniczna w rankingu sygnałów — świadome włączenie właściciela."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["isotonic_calibration_enabled"] is False
+
+
+def test_real_config_toml_ships_the_class_isotonic_calibration_off() -> None:
+    """ML-54: mapy per klasa aktywa — świadome włączenie właściciela po mapie globalnej."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["isotonic_class_calibration_enabled"] is False
 
 
 def test_real_config_toml_ships_the_trend_probabilities_off_until_migration() -> None:
@@ -624,6 +639,7 @@ def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> Non
     assert data["diagnosis_backfill_enabled"] is False
     assert data["diagnosis_backfill_max_calls"] == 5
 
+
 def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> None:
     """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
@@ -689,7 +705,40 @@ def test_real_config_toml_ships_the_point_in_time_rag_off_until_migration() -> N
     assert data["rag_point_in_time_enabled"] is False
 
 
+def test_real_config_toml_ships_the_batch_diagnosis_off() -> None:
+    """EXP-17: lekcje z tygodniowym opóźnieniem zmieniają prompt (EXP-02/03)."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["batch_diagnosis_enabled"] is False
+
+
+def test_real_config_toml_ships_the_diagnosis_judge_off_until_migration() -> None:
+    """EXP-10: kolumny oceny powstają w migracji 078, a odsiew lekcji zmienia prompt."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["diagnosis_judge_enabled"] is False
+
+
+def test_real_config_toml_ships_the_diagnosis_judge_in_shadow_mode() -> None:
+    """EXP-10 (decyzja 2026-10-25): sędzia najpierw tylko ocenia; odrzucanie właściciel
+    włącza po kalibracji na 20 własnych ocenach."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data.get("diagnosis_judge_rejects_enabled") is False
+
+
+def test_real_config_toml_budgets_the_free_supabase_plan() -> None:
+    """NIEZ-37: darmowy plan Supabase ma 500 MB — WARNING od 70%."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data["db_size_budget_mb"] == 500
+
+
 def test_real_config_toml_ships_the_corporate_events_off() -> None:
     """DAT-17: 8-K w prompcie to zmiana przepisu, a EDGAR odpowiada 403 — off."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
     assert data["corporate_events_enabled"] is False
+
+
+def test_real_config_toml_ships_the_owner_bot_and_mutes_off_until_migration() -> None:
+    """MAIL-48 / MAIL-45: offset bota żyje w `bot_state` (079), wyciszenia w
+    `symbol_mutes` (080) — obie flagi wyłączone, dopóki produkcja nie ma migracji."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    assert data.get("telegram_bot_enabled") is False
+    assert data.get("symbol_mutes_enabled") is False

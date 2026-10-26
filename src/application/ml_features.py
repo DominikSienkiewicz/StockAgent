@@ -57,6 +57,7 @@ def feature_set_version(market_features_enabled: bool) -> int:
     """Wersja zestawu cech cyklu: 4 z cechami rynkowymi, inaczej `FEATURE_SET_VERSION`."""
     return MARKET_FEATURE_SET_VERSION if market_features_enabled else FEATURE_SET_VERSION
 
+
 # ML-14: klucze cech DARMOWYCH w `feature_snapshots.features` (migracja 031).
 # Fast Loop zapisuje je w KAŻDYM ukończonym cyklu, także ignored, wyłącznie z
 # danych już obecnych w stanie grafu — bez żadnego nowego wywołania zewnętrznego.

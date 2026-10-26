@@ -108,10 +108,7 @@ def render_council_history_html(histories: list[InvestorHistory]) -> str:
     most_bearish = _bearish_tag(rows)
 
     parts: list[str] = []
-    parts.append(
-        "<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>"
-        "🗳️ Rada — historia głosów</h2>"
-    )
+    parts.append("<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>🗳️ Rada — historia głosów</h2>")
 
     body: list[str] = []
     for h in rows:
@@ -126,9 +123,7 @@ def render_council_history_html(histories: list[InvestorHistory]) -> str:
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Symbol</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Ostatnie głosy</th>"
         "<th scope='col' style='padding: 6px 8px; text-align: left;'>Bilans</th>"
-        "</tr></thead><tbody>"
-        + "".join(body)
-        + "</tbody></table>"
+        "</tr></thead><tbody>" + "".join(body) + "</tbody></table>"
     )
     return "".join(parts)
 
@@ -138,9 +133,7 @@ def _render_history_row_html(h: InvestorHistory, *, is_most_bearish: bool) -> st
     symbol = _html.escape(h.symbol)
     seq = _render_sequence_html(h.recommendations)
     tally = h.tally()
-    tally_str = (
-        f"🟢 {tally['BUY']} · 🔴 {tally['SELL']} · 🟡 {tally['HOLD']}"
-    )
+    tally_str = f"🟢 {tally['BUY']} · 🔴 {tally['SELL']} · 🟡 {tally['HOLD']}"
     bearish_badge = ""
     if is_most_bearish:
         bearish_badge = (
@@ -187,8 +180,7 @@ def render_council_history_text(histories: list[InvestorHistory]) -> str:
         tally = h.tally()
         suffix = " — najbardziej pesymistyczny głos" if h.investor_name == most_bearish else ""
         lines.append(
-            f"  {h.investor_name} — ostatnie {h.window_days} dni na "
-            f"{h.symbol}: {seq}{suffix}"
+            f"  {h.investor_name} — ostatnie {h.window_days} dni na {h.symbol}: {seq}{suffix}"
         )
         lines.append(
             f"    Bilans: {council_recommendation_label('BUY')} {tally['BUY']} · "

@@ -47,7 +47,8 @@ def _sections(text: str) -> dict[str, str]:
 
 def _section(prefix: str) -> str:
     matches = [
-        body for heading, body in _sections(README.read_text(encoding="utf-8")).items()
+        body
+        for heading, body in _sections(README.read_text(encoding="utf-8")).items()
         if heading.startswith(prefix)
     ]
     assert len(matches) == 1, f"README ma mieć dokładnie jedną sekcję „{prefix}…”"

@@ -107,9 +107,7 @@ class TestPerTickerFetch:
         # 3 symbole × 1 request każdy = 3 requesty (potem cache)
         assert mock_get.call_count == 3
         # Każdy request niesie pojedynczy ticker
-        tickers_sent = [
-            call.kwargs["params"]["tickers"] for call in mock_get.call_args_list
-        ]
+        tickers_sent = [call.kwargs["params"]["tickers"] for call in mock_get.call_args_list]
         assert tickers_sent == ["AAPL", "AMD", "NVDA"]
 
     def test_caches_after_first_full_fetch(self, client: AlphaVantageClient, mocker: Any) -> None:
@@ -123,9 +121,9 @@ class TestPerTickerFetch:
         client.articles_for("AAPL")
         client.sentiment_for("AMD")
         client.articles_for("NVDA")
-        client.sentiment_for("AAPL")   # cache
+        client.sentiment_for("AAPL")  # cache
 
-        assert mock_get.call_count == 3   # raz na symbol, nie 4
+        assert mock_get.call_count == 3  # raz na symbol, nie 4
 
     def test_passes_apikey_in_params(self, client: AlphaVantageClient, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
@@ -154,10 +152,7 @@ class TestBatching:
         client.articles_for("SYM00")
 
         assert mock_get.call_count == 3
-        batches = [
-            call.kwargs["params"]["tickers"].split(",")
-            for call in mock_get.call_args_list
-        ]
+        batches = [call.kwargs["params"]["tickers"].split(",") for call in mock_get.call_args_list]
         assert len(batches[0]) == 10
         assert len(batches[1]) == 10
         assert len(batches[2]) == 2
@@ -167,9 +162,7 @@ class TestBatching:
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
 
         symbols = [f"SYM{i:02d}" for i in range(15)]
         client = AlphaVantageClient(api_keys=["k"], symbols=symbols, batch_size=10)
@@ -198,14 +191,17 @@ class TestBatching:
         self, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
+
         caplog.set_level(logging.WARNING)
         # AV przy rate-limit zwraca 200 + Information, bez feed
-        rate_limit_response = _ok_response({
-            "Information": (
-                "Thank you for using Alpha Vantage! "
-                "Please consider spreading out your free API requests..."
-            )
-        })
+        rate_limit_response = _ok_response(
+            {
+                "Information": (
+                    "Thank you for using Alpha Vantage! "
+                    "Please consider spreading out your free API requests..."
+                )
+            }
+        )
         mocker.patch(
             "requests.Session.get",
             return_value=rate_limit_response,
@@ -228,28 +224,22 @@ class TestApiKeyRotation:
 
     def test_rotates_to_next_key_when_first_is_rate_limited(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get"
-        )
+        mock_get = mocker.patch("requests.Session.get")
         # AAPL: rate-limit z key1 → rotacja → sukces z key2.
         # AMD/NVDA: sukces z key2 (już aktywny).
         mock_get.side_effect = [
-            self._rate_limit_response(),       # AAPL / key1 fail
-            _ok_response(_SAMPLE_PAYLOAD),     # AAPL / key2 OK
-            _ok_response(_SAMPLE_PAYLOAD),     # AMD  / key2 OK
-            _ok_response(_SAMPLE_PAYLOAD),     # NVDA / key2 OK
+            self._rate_limit_response(),  # AAPL / key1 fail
+            _ok_response(_SAMPLE_PAYLOAD),  # AAPL / key2 OK
+            _ok_response(_SAMPLE_PAYLOAD),  # AMD  / key2 OK
+            _ok_response(_SAMPLE_PAYLOAD),  # NVDA / key2 OK
         ]
 
-        client = AlphaVantageClient(
-            api_keys=["key1", "key2"], symbols=["AAPL", "AMD", "NVDA"]
-        )
+        client = AlphaVantageClient(api_keys=["key1", "key2"], symbols=["AAPL", "AMD", "NVDA"])
         client._fetch()
 
         # 4 wywołania REST (1 fail + 3 success)
         assert mock_get.call_count == 4
-        keys_used = [
-            call.kwargs["params"]["apikey"] for call in mock_get.call_args_list
-        ]
+        keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
         # Pierwszy z key1 (fail), wszystkie pozostałe z key2 (aktywny po rotacji)
         assert keys_used == ["key1", "key2", "key2", "key2"]
         assert client._active_key_idx == 1
@@ -257,40 +247,31 @@ class TestApiKeyRotation:
     def test_keeps_active_key_across_subsequent_batches(self, mocker: Any) -> None:
         # Gdy key#1 zadziała w pierwszym batchu, nie wracamy do key#0
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get"
-        )
+        mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [
-            self._rate_limit_response(),       # batch 1 z key1 — fail
-            _ok_response(_SAMPLE_PAYLOAD),     # batch 1 z key2 — OK
-            _ok_response(_SAMPLE_PAYLOAD),     # batch 2 z key2 — OK (bez powrotu do key1)
+            self._rate_limit_response(),  # batch 1 z key1 — fail
+            _ok_response(_SAMPLE_PAYLOAD),  # batch 1 z key2 — OK
+            _ok_response(_SAMPLE_PAYLOAD),  # batch 2 z key2 — OK (bez powrotu do key1)
         ]
-        symbols = [f"SYM{i:02d}" for i in range(15)]   # 2 batche
-        client = AlphaVantageClient(
-            api_keys=["key1", "key2"], symbols=symbols, batch_size=10
-        )
+        symbols = [f"SYM{i:02d}" for i in range(15)]  # 2 batche
+        client = AlphaVantageClient(api_keys=["key1", "key2"], symbols=symbols, batch_size=10)
         client._fetch()
 
-        keys_used = [
-            call.kwargs["params"]["apikey"] for call in mock_get.call_args_list
-        ]
+        keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
         assert keys_used == ["key1", "key2", "key2"]
 
     def test_returns_partial_feed_when_all_keys_exhausted(
         self, mocker: Any, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging
+
         caplog.set_level(logging.ERROR)
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get"
-        )
+        mock_get = mocker.patch("requests.Session.get")
         # Wszystkie 3 klucze rate-limited
         mock_get.side_effect = [self._rate_limit_response()] * 3
 
-        client = AlphaVantageClient(
-            api_keys=["k1", "k2", "k3"], symbols=["AAPL"]
-        )
+        client = AlphaVantageClient(api_keys=["k1", "k2", "k3"], symbols=["AAPL"])
         result = client._fetch()
 
         assert result == []
@@ -325,18 +306,14 @@ class TestApiKeyRotation:
         # 2 batche, 2 klucze. Batch 1 z key1 → OK. Batch 2: key1 rate-limit,
         # key2 też rate-limit → klucze wyczerpane, ale batch 1 ma już dane.
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get"
-        )
+        mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [
-            _ok_response(_SAMPLE_PAYLOAD),     # batch 1 / key1 OK
-            self._rate_limit_response(),       # batch 2 / key1 fail
-            self._rate_limit_response(),       # batch 2 / key2 fail
+            _ok_response(_SAMPLE_PAYLOAD),  # batch 1 / key1 OK
+            self._rate_limit_response(),  # batch 2 / key1 fail
+            self._rate_limit_response(),  # batch 2 / key2 fail
         ]
         symbols = [f"SYM{i:02d}" for i in range(15)]
-        client = AlphaVantageClient(
-            api_keys=["k1", "k2"], symbols=symbols, batch_size=10
-        )
+        client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=symbols, batch_size=10)
         client._fetch()
 
         # Mamy częściowy feed z batcha 1
@@ -346,22 +323,22 @@ class TestApiKeyRotation:
     @staticmethod
     def _note_response() -> MagicMock:
         # Historyczny kształt limitu częstotliwości AV: pole `Note` zamiast `Information`.
-        return _ok_response({
-            "Note": "Thank you for using Alpha Vantage! Our standard API call "
-            "frequency is 5 calls per minute."
-        })
+        return _ok_response(
+            {
+                "Note": "Thank you for using Alpha Vantage! Our standard API call "
+                "frequency is 5 calls per minute."
+            }
+        )
 
     def test_rotates_when_soft_limit_uses_note_field(self, mocker: Any) -> None:
         # DAT-06: `Note` to też soft-limit. Bez wspólnego klasyfikatora klient brał
         # go za pusty feed — bez rotacji i bez `degraded_reason`.
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [
-            self._note_response(),             # key1 — limit minutowy
-            self._note_response(),             # key1 po backoffie — nadal limit
-            _ok_response(_SAMPLE_PAYLOAD),     # key2 — OK
+            self._note_response(),  # key1 — limit minutowy
+            self._note_response(),  # key1 po backoffie — nadal limit
+            _ok_response(_SAMPLE_PAYLOAD),  # key2 — OK
         ]
 
         client = AlphaVantageClient(api_keys=["key1", "key2"], symbols=["AAPL"])
@@ -393,9 +370,7 @@ class TestApiKeyRotation:
         from src.application.quota_monitor import QuotaMonitor
 
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=self._note_response()
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=self._note_response())
         monitor = QuotaMonitor()
         client = AlphaVantageClient(
             api_keys=["key1", "key2"], symbols=["AAPL"], quota_monitor=monitor
@@ -488,7 +463,7 @@ class TestSentimentFor:
         assert result["av_sentiment_score"] == pytest.approx(0.65, abs=1e-4)
         assert result["av_relevance_avg"] == pytest.approx(0.92, abs=1e-4)
         assert result["news_volume_24h"] == 1
-        assert result["high_relevance_count"] == 1   # > 0.8 (jeden z relevance 0.92)
+        assert result["high_relevance_count"] == 1  # > 0.8 (jeden z relevance 0.92)
         assert result["av_sentiment_label"] in {"Bullish", "Somewhat-Bullish", "Neutral"}
 
     def test_returns_neutral_defaults_when_no_articles(
@@ -522,6 +497,7 @@ class TestSymbolFiltering:
     ) -> None:
         # CSPX.L (LSE) zawiera kropkę — AV odrzuciłby cały batch.
         import logging
+
         caplog.set_level(logging.WARNING)
         client = AlphaVantageClient(api_keys=["k"], symbols=["AAPL", "CSPX.L", "AMD"])
         assert client._symbols == ["AAPL", "AMD"]
@@ -555,15 +531,13 @@ class TestErrorHandling:
         mock_get = mocker.patch(
             "requests.Session.get",
             side_effect=[
-                _ok_response(_SAMPLE_PAYLOAD),                       # AAPL — OK
+                _ok_response(_SAMPLE_PAYLOAD),  # AAPL — OK
                 requests.ConnectionError(
                     "Max retries exceeded with url: /query?apikey=av-secret-key"
-                ),                                                   # AMD — sieć padła
+                ),  # AMD — sieć padła
             ],
         )
-        client = AlphaVantageClient(
-            api_keys=["av-secret-key"], symbols=["AAPL", "AMD", "NVDA"]
-        )
+        client = AlphaVantageClient(api_keys=["av-secret-key"], symbols=["AAPL", "AMD", "NVDA"])
 
         # Wariant zgodny wstecz: pierwszy caller nadal dostaje wyjątek.
         with caplog.at_level(logging.WARNING), pytest.raises(requests.ConnectionError):
@@ -587,8 +561,9 @@ class TestCryptoPrefix:
     używa czystych BTC/ETH, request idzie z prefiksem, parsowanie też.
     """
 
-    def _ok_with_crypto_feed(self, btc_relevance: float = 0.9,
-                             btc_sentiment: float = 0.3) -> MagicMock:
+    def _ok_with_crypto_feed(
+        self, btc_relevance: float = 0.9, btc_sentiment: float = 0.3
+    ) -> MagicMock:
         response = MagicMock(spec=requests.Response)
         response.raise_for_status = MagicMock()
         response.json.return_value = {
@@ -616,9 +591,7 @@ class TestCryptoPrefix:
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(),
         )
-        client = AlphaVantageClient(
-            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
-        )
+        client = AlphaVantageClient(api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"})
 
         client.articles_for("BTC")
 
@@ -631,9 +604,7 @@ class TestCryptoPrefix:
             "requests.Session.get",
             return_value=self._ok_with_crypto_feed(),
         )
-        client = AlphaVantageClient(
-            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
-        )
+        client = AlphaVantageClient(api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"})
 
         articles = client.articles_for("BTC")
 
@@ -643,13 +614,9 @@ class TestCryptoPrefix:
     def test_sentiment_for_plain_crypto_ticker(self, mocker: Any) -> None:
         mocker.patch(
             "requests.Session.get",
-            return_value=self._ok_with_crypto_feed(
-                btc_relevance=0.9, btc_sentiment=0.4
-            ),
+            return_value=self._ok_with_crypto_feed(btc_relevance=0.9, btc_sentiment=0.4),
         )
-        client = AlphaVantageClient(
-            api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"}
-        )
+        client = AlphaVantageClient(api_keys=["k"], symbols=["BTC"], crypto_symbols={"BTC"})
 
         sentiment = client.sentiment_for("BTC")
 
@@ -670,9 +637,7 @@ class TestCryptoPrefix:
         client.articles_for("BTC")
 
         # AAPL pozostaje czysty, BTC dostał prefix.
-        sent_tickers = set(
-            mock_get.call_args_list[0].kwargs["params"]["tickers"].split(",")
-        )
+        sent_tickers = set(mock_get.call_args_list[0].kwargs["params"]["tickers"].split(","))
         assert "CRYPTO:BTC" in sent_tickers or sent_tickers == {"CRYPTO:BTC"}
 
 
@@ -750,16 +715,12 @@ class TestRateLimitRotationDoesNotSleep:
         return _ok_response({"Information": "rate limit reached"})
 
     def test_no_sleep_between_dead_keys_on_rotation(self, mocker: Any) -> None:
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch("requests.Session.get")
         # 3 klucze, wszystkie rate-limited dla jednego symbolu (1 batch).
         mock_get.side_effect = [self._rate_limit_response()] * 3
 
-        client = AlphaVantageClient(
-            api_keys=["k1", "k2", "k3"], symbols=["AAPL"]
-        )
+        client = AlphaVantageClient(api_keys=["k1", "k2", "k3"], symbols=["AAPL"])
         client._fetch()
 
         # Rotacja po martwych kluczach: żaden request nie poszedł do nich
@@ -769,16 +730,12 @@ class TestRateLimitRotationDoesNotSleep:
     def test_short_circuits_when_all_keys_exhausted_across_batches(self, mocker: Any) -> None:
         # Po wyczerpaniu wszystkich kluczy w batchu 1 NIE re-chodzimy po nich
         # w batchu 2 — short-circuit, zero dodatkowych requestów i sleepów.
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [self._rate_limit_response()] * 2
 
         symbols = [f"SYM{i:02d}" for i in range(15)]  # 2 batche @ batch_size=10
-        client = AlphaVantageClient(
-            api_keys=["k1", "k2"], symbols=symbols, batch_size=10
-        )
+        client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=symbols, batch_size=10)
         client._fetch()
 
         # Batch 1 wyczerpuje oba klucze (2 requesty). Batch 2 nie odpala
@@ -789,17 +746,13 @@ class TestRateLimitRotationDoesNotSleep:
 
     def test_happy_path_pacing_preserved(self, mocker: Any) -> None:
         # Realne requesty dalej rozstawione 1 req/sec: 2 batche → 1 sleep.
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch(
             "requests.Session.get",
             return_value=_ok_response(_SAMPLE_PAYLOAD),
         )
         symbols = [f"SYM{i:02d}" for i in range(15)]
-        client = AlphaVantageClient(
-            api_keys=["k1", "k2"], symbols=symbols, batch_size=10
-        )
+        client = AlphaVantageClient(api_keys=["k1", "k2"], symbols=symbols, batch_size=10)
         client._fetch()
 
         assert sleep_mock.call_count == 1
@@ -974,10 +927,12 @@ def test_soft_limit_log_carries_the_marker_without_the_key(
 
     mocker.patch(
         "requests.Session.get",
-        return_value=_ok_response({
-            "Information": "We have detected your API key as news-secret-key and our "
-            "standard API rate limit is 25 requests per day."
-        }),
+        return_value=_ok_response(
+            {
+                "Information": "We have detected your API key as news-secret-key and our "
+                "standard API rate limit is 25 requests per day."
+            }
+        ),
     )
     client = AlphaVantageClient(api_keys=["news-secret-key"], symbols=["AAPL"])
 
@@ -995,7 +950,9 @@ def test_http_error_message_omits_apikey(mocker: Any) -> None:
     response = requests.Response()
     response.status_code = 401
     response.reason = "Unauthorized"
-    response.url = "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&apikey=news-secret-key"
+    response.url = (
+        "https://www.alphavantage.co/query?function=NEWS_SENTIMENT&apikey=news-secret-key"
+    )
     mocker.patch("requests.Session.get", return_value=response)
     client = AlphaVantageClient(api_keys=["news-secret-key"], symbols=["AAPL"])
 
@@ -1058,9 +1015,7 @@ class TestLazyPerSymbol:
 
     def test_only_requested_symbol_is_fetched(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_ok_response(_SAMPLE_PAYLOAD)
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=_ok_response(_SAMPLE_PAYLOAD))
         client = self._client()
 
         articles = client.articles_for("AMD")
@@ -1073,9 +1028,7 @@ class TestLazyPerSymbol:
 
     def test_feed_is_cached_per_symbol(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_ok_response({"feed": []})
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
         client = self._client()
 
         client.sentiment_for("AAPL")
@@ -1091,9 +1044,7 @@ class TestLazyPerSymbol:
         # o AAPL z feedu AMD nie dolicza się już do AAPL.
         feeds = {
             "AAPL": {"feed": [_article("https://example.com/a1", {"AAPL": "0.9"})]},
-            "AMD": {
-                "feed": [_article("https://example.com/m1", {"AMD": "0.9", "AAPL": "0.9"})]
-            },
+            "AMD": {"feed": [_article("https://example.com/m1", {"AMD": "0.9", "AAPL": "0.9"})]},
         }
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch(
@@ -1119,9 +1070,7 @@ class TestLazyPerSymbol:
             INTER_REQUEST_DELAY_SECONDS,
         )
 
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
         client = self._client()
 
@@ -1135,12 +1084,8 @@ class TestLazyPerSymbol:
     def test_parallel_symbols_share_one_pacer(self, mocker: Any) -> None:
         import threading
 
-        sleep_mock = mocker.patch(
-            "src.infrastructure.adapters.alpha_vantage_client.time.sleep"
-        )
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_ok_response({"feed": []})
-        )
+        sleep_mock = mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
+        mock_get = mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
         client = self._client()
         barrier = threading.Barrier(len(self._SYMBOLS))
 
@@ -1224,8 +1169,8 @@ class TestLazyPerSymbol:
         monitor = QuotaMonitor()
         client = self._client(quota_monitor=monitor)
 
-        aapl = client.sentiment_for("AAPL")   # key1 + key2 → wyczerpane
-        amd = client.sentiment_for("AMD")     # zero HTTP
+        aapl = client.sentiment_for("AAPL")  # key1 + key2 → wyczerpane
+        amd = client.sentiment_for("AMD")  # zero HTTP
 
         assert mock_get.call_count == 2
         assert aapl["degraded_reason"] == amd["degraded_reason"] == "av_keys_exhausted"
@@ -1241,7 +1186,7 @@ class TestLazyPerSymbol:
         mocker.patch(
             "requests.Session.get",
             side_effect=[
-                _ok_response({"feed": []}),                          # AAPL / k1
+                _ok_response({"feed": []}),  # AAPL / k1
                 _ok_response({"Information": "rate limit reached"}),  # AMD / k1
                 _ok_response({"Information": "rate limit reached"}),  # AMD / k2
             ],
@@ -1301,8 +1246,10 @@ class TestLazyPerSymbol:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mocker.patch(
             "requests.Session.get",
-            side_effect=[_ok_response({"Error Message": "Invalid API call."}),
-                         _ok_response({"feed": []})],
+            side_effect=[
+                _ok_response({"Error Message": "Invalid API call."}),
+                _ok_response({"feed": []}),
+            ],
         )
         client = self._client()
 
@@ -1311,13 +1258,13 @@ class TestLazyPerSymbol:
 
     def test_all_symbols_of_a_cycle_share_one_news_window(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_ok_response({"feed": []})
+        mock_get = mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
+        ticks = iter(
+            [
+                datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
+                datetime(2026, 10, 18, 12, 9, tzinfo=UTC),
+            ]
         )
-        ticks = iter([
-            datetime(2026, 10, 18, 12, 0, tzinfo=UTC),
-            datetime(2026, 10, 18, 12, 9, tzinfo=UTC),
-        ])
         client = self._client(news_window=timedelta(hours=24), clock=lambda: next(ticks))
 
         client.sentiment_for("AAPL")
@@ -1328,9 +1275,7 @@ class TestLazyPerSymbol:
 
     def test_crypto_symbol_is_fetched_with_its_prefix(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_ok_response({"feed": []})
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=_ok_response({"feed": []}))
         client = self._client(symbols=["AAPL", "BTC"], crypto_symbols={"BTC"})
 
         client.sentiment_for("BTC")

@@ -58,9 +58,10 @@ def test_recipe_hash_changes_with_model_personas_config_and_ml_weights() -> None
 def test_run_identity_does_not_change_the_recipe_version() -> None:
     """Ten sam przepis w dwóch przebiegach to wciąż jeden przepis — inaczej każdy
     run byłby osobnym segmentem track recordu."""
-    assert _recipe(git_sha="abc1234", run_id="77").version == _recipe(
-        git_sha="def5678", run_id="78"
-    ).version
+    assert (
+        _recipe(git_sha="abc1234", run_id="77").version
+        == _recipe(git_sha="def5678", run_id="78").version
+    )
 
 
 def test_receipt_fields_carry_every_recipe_field_and_the_version() -> None:
@@ -108,9 +109,7 @@ def test_universe_hash_independent_of_order() -> None:
     assert universe_version(["NVDA", "AAPL"], ["BTC"]) == universe_version(
         ["AAPL", "NVDA"], ["BTC"]
     )
-    assert universe_version(["AAPL"], ["BTC", "ETH"]) == universe_version(
-        ["AAPL"], ["ETH", "BTC"]
-    )
+    assert universe_version(["AAPL"], ["BTC", "ETH"]) == universe_version(["AAPL"], ["ETH", "BTC"])
     assert len(universe_version(["AAPL"], [])) == 64
 
 

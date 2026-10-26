@@ -116,3 +116,12 @@ def test_symbol_and_date_without_predictions_says_so() -> None:
     out = explain_symbol_day(repo, "NVDA", date(2026, 8, 14))
 
     assert "brak predykcji NVDA z 2026-08-14 (UTC)" in out
+
+
+def test_routed_receipt_names_the_model_that_answered() -> None:
+    # FIN-21: przy routingu modeli kwit v2 mówi, który model faktycznie odpowiedział.
+    payload = {**_V1, "schema_version": 2, "model_used": "anthropic:claude-sonnet-4-6"}
+
+    out = explain_prediction(_repo(_stored(payload)), "pred-1")
+
+    assert "Model, który odpowiedział: anthropic:claude-sonnet-4-6" in out

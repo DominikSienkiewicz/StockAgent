@@ -1,0 +1,4 @@
+# Commity samego formatowania, pomijane przez `git blame` (GitHub czyta ten plik sam;
+# lokalnie: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# CI-17: jednorazowy `ruff format` całego repo, 2026-10-25.
+b7197a24a191e0c2e27e2d797d71685f43caad27

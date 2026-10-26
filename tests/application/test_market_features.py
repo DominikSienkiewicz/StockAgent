@@ -65,9 +65,7 @@ class TestCollectMarketFeatures:
             ["AAPL"], market_port=market, repository=repository, as_of=_NOW, **_UNIVERSE
         )
 
-        assert set(features["AAPL"]) == set(PRICE_FEATURE_NAMES) | set(
-            CROSS_SECTION_FEATURE_NAMES
-        )
+        assert set(features["AAPL"]) == set(PRICE_FEATURE_NAMES) | set(CROSS_SECTION_FEATURE_NAMES)
         assert features["AAPL"]["ret_1"] == pytest.approx(110.0 / 104.0 - 1.0)
         assert features["AAPL"]["ret_20"] is None
         repository.get_price_history.assert_called_once_with("AAPL", PRICE_HISTORY_DAYS)
@@ -79,7 +77,10 @@ class TestCollectMarketFeatures:
         repository.get_price_history.return_value = _history([49.0])
 
         features = collect_market_features(
-            ["SSNLF", "MSFT"], market_port=market, repository=repository, as_of=_NOW,
+            ["SSNLF", "MSFT"],
+            market_port=market,
+            repository=repository,
+            as_of=_NOW,
             **_UNIVERSE,
         )
 
@@ -105,7 +106,10 @@ class TestCollectMarketFeatures:
         repository.get_price_history.return_value = []
 
         collect_market_features(
-            ["AAPL", "AAPL"], market_port=market, repository=repository, as_of=_NOW,
+            ["AAPL", "AAPL"],
+            market_port=market,
+            repository=repository,
+            as_of=_NOW,
             **_UNIVERSE,
         )
 
@@ -159,8 +163,12 @@ def test_macro_features_of_the_cycle_reach_every_symbol() -> None:
     macro = {"vix_percentile_1y": 93.0, "macro_observed_on": {"VIXCLS": "2026-10-20"}}
 
     features = collect_market_features(
-        ["AAPL", "BTC"], market_port=market, repository=repository, as_of=_NOW,
-        macro_features=macro, **_UNIVERSE,
+        ["AAPL", "BTC"],
+        market_port=market,
+        repository=repository,
+        as_of=_NOW,
+        macro_features=macro,
+        **_UNIVERSE,
     )
 
     assert features["AAPL"]["vix_percentile_1y"] == features["BTC"]["vix_percentile_1y"] == 93.0

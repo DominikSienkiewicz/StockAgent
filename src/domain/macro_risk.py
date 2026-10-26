@@ -51,8 +51,7 @@ class MacroRiskSignal:
         if self.previous_price.amount == 0:
             return Ratio(Decimal("0"))
         return Ratio(
-            (self.current_price.amount - self.previous_price.amount)
-            / self.previous_price.amount
+            (self.current_price.amount - self.previous_price.amount) / self.previous_price.amount
         )
 
     def evaluate_alert(

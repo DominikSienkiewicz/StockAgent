@@ -8,6 +8,7 @@ po sekcji.
 Autoescape włączony dla .html / .j2 — input z LLM-a (reasoning, summary,
 dissenting_views) jest niezaufany i mógłby zawierać HTML/script.
 """
+
 from __future__ import annotations
 
 from typing import Any

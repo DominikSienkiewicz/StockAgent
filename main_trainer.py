@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
 import uuid
 from collections import Counter
@@ -36,7 +37,7 @@ from main_agent import (
     write_step_summary,
 )
 from src.application.cycle_telemetry import CycleTelemetry
-from src.application.errors import PortError
+from src.application.errors import NotFound, PortError
 from src.application.metering import BudgetedLLMPort, MeteredLLMPort, PaidCallAllowance
 from src.application.ml_features import feature_set_version
 from src.application.ports import LLMPort, ModelCatalogPort, RepositoryPort, UsageSink
@@ -54,10 +55,15 @@ from src.application.report_weekly_recap import (
 from src.application.run_context import RunContext
 from src.application.usage_ledger import UsageLedger
 from src.application.use_cases.backfill_diagnoses import BackfillDiagnosesUseCase
-from src.application.use_cases.calibrate_confidence import (
-    PAID_LLM_CALLS_PER_RUN as JUDGE_LLM_CALLS,
+from src.application.use_cases.batch_diagnosis import (
+    PAID_LLM_CALLS_PER_RUN as BATCH_DIAGNOSIS_LLM_CALLS,
 )
+from src.application.use_cases.batch_diagnosis import BatchDiagnosisUseCase
 from src.application.use_cases.export_evidence import ExportEvidenceUseCase
+from src.application.use_cases.judge_diagnoses import (
+    MAX_JUDGED_PER_RUN,
+    JudgeDiagnosesUseCase,
+)
 from src.application.use_cases.monitor_output_drift import (
     MonitorOutputDriftUseCase,
     RowsReader,
@@ -76,7 +82,9 @@ from src.application.use_cases.weekly_recap import (
 )
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
 from src.config import Settings, load_evaluation_protocol
+from src.domain.db_size import BYTES_PER_MB, assess_db_size
 from src.domain.direction_variant import DirectionReport
+from src.domain.exit_policy import PARTIAL_FAILURE_LOG, is_partial_failure, run_exit_code
 from src.domain.finops import slow_loop_paid_budget
 from src.domain.fundamentals_refresh import refresh_budget, select_refresh_batch
 from src.domain.promotion import ChallengerVerdict
@@ -112,9 +120,14 @@ WEEKLY_RECAP_DAYS = 7
 # FIN-30: joby Slow Loopa z płatnym LLM. Kolejność w `_requested_llm_calls` to
 # pierwszeństwo przy przycinaniu budżetem tygodniowym.
 RECAP_JOB = "recap"
-JUDGE_JOB = "judge"
-# WIA-53: spłata długu diagnoz — ostatnia w kolejce, więc przycinana pierwsza.
+# EXP-17: tygodniowa diagnoza zbiorcza — przed spłatą diagnoz (jedno wywołanie nad
+# wszystkimi pudłami tygodnia jest tańsze niż wywołanie per pudło).
+BATCH_DIAGNOSIS_JOB = "batch_diagnosis"
+# WIA-53: spłata długu diagnoz — po diagnozach, które płacą za nowe lekcje.
 DIAGNOSIS_JOB = "diagnosis"
+# EXP-10: sędzia diagnoz z rubryką — audyt jakości, ostatni w kolejce, więc
+# przycinany pierwszy.
+DIAGNOSIS_JUDGE_JOB = "diagnosis_judge"
 # NIEZ-44: rezerwa przydziału joba na request do zapasowego dostawcy LLM.
 FALLBACK_LLM_CALLS_PER_JOB = 1
 # NIEZ-32: katalog zaszyfrowanej kopii; workflow uploaduje z niego wyłącznie *.age.
@@ -148,6 +161,10 @@ def _supabase_repository(settings: Settings) -> SupabaseRepository:
         correction_category_enabled=settings.correction_category_enabled,
         # DAT-21: kapitalizacja w cache fundamentów (migracja 056) za flagą.
         fundamentals_market_cap_enabled=settings.fundamentals_market_cap_enabled,
+        # ML-40: redundancja rady w recapie z rundy 1, gdy debata zapisuje rewizję (082);
+        # bez debaty rundę 1 wymusza baza z 082 (rewizje z okresu debaty zostają).
+        council_vote_rounds_enabled=settings.debate_mode_enabled,
+        council_vote_rounds_from_schema=True,
     )
 
 
@@ -387,9 +404,7 @@ def _train_pooled_model(
     przebiegu. Zwraca liczbę niepowodzeń (0 albo 1); wiersz karty modelu zapisuje
     use case jako `POOLED_MODEL_SYMBOL`."""
     try:
-        result = use_case.run_pooled(
-            trainable, record_scorecard=settings.model_scorecard_enabled
-        )
+        result = use_case.run_pooled(trainable, record_scorecard=settings.model_scorecard_enabled)
     except Exception:
         logger.exception("Pooled training failed")
         return 1
@@ -475,9 +490,9 @@ def _review_challengers(
         return
     dead_band = float(load_evaluation_protocol().directional_dead_zone)
     try:
-        verdicts = ReviewChallengersUseCase(
-            repository, clock=lambda: datetime.now(UTC)
-        ).run(dead_band=dead_band)
+        verdicts = ReviewChallengersUseCase(repository, clock=lambda: datetime.now(UTC)).run(
+            dead_band=dead_band
+        )
     except PortError:
         logger.warning("Champion/challenger review failed — pomijam", exc_info=True)
         return
@@ -525,17 +540,20 @@ def _build_llm_or_unavailable(
 
 
 def _requested_llm_calls(settings: Settings, extra_per_job: int = 0) -> dict[str, int]:
-    """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie przed
-    sędzią kalibracji: to on trafia do użytkownika, więc przycięcie bierze sędziego.
-    Spłata diagnoz (WIA-53) jest ostatnia — przycięcie bierze ją pierwszą.
-    `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy LLM."""
+    """FIN-30: płatne wywołania LLM włączonych jobów przebiegu. Recap idzie pierwszy:
+    to on trafia do użytkownika. Diagnoza zbiorcza (EXP-17) idzie przed spłatą diagnoz
+    (WIA-53), a sędzia diagnoz (EXP-10) jest ostatni — przycięcie bierze go pierwszego.
+    Kalibracja pewności nie woła LLM (WIA-65), więc nie prosi o przydział.
+    `extra_per_job` (NIEZ-44) — rezerwa na request do zapasowego dostawcy."""
     requested: dict[str, int] = {}
     if settings.weekly_recap_enabled:
         requested[RECAP_JOB] = RECAP_LLM_CALLS + extra_per_job
-    if settings.calibration_judge_enabled:
-        requested[JUDGE_JOB] = JUDGE_LLM_CALLS + extra_per_job
+    if settings.batch_diagnosis_enabled:
+        requested[BATCH_DIAGNOSIS_JOB] = BATCH_DIAGNOSIS_LLM_CALLS + extra_per_job
     if settings.diagnosis_backfill_enabled:
         requested[DIAGNOSIS_JOB] = settings.diagnosis_backfill_max_calls + extra_per_job
+    if settings.diagnosis_judge_enabled:
+        requested[DIAGNOSIS_JUDGE_JOB] = MAX_JUDGED_PER_RUN + extra_per_job
     return requested
 
 
@@ -765,6 +783,42 @@ def _run_model_probe(
     _push_critical_alerts(settings, alerts)
 
 
+def _report_db_size(settings: Settings, repository: RepositoryPort) -> None:
+    """NIEZ-37: rozmiar relacji `public` (RPC z migracji 077) i WARNING od 70%
+    `db_size_budget_mb` — darmowy plan po limicie przechodzi w read-only. Sam odczyt,
+    zero płatnych wywołań, bez retencji. Brak funkcji przed DB Migrate tylko loguje."""
+    try:
+        sizes = repository.get_db_size_report()
+    except NotFound:
+        logger.warning("DB size report unavailable — apply migration 077 (DB Migrate)")
+        return
+    except PortError:
+        logger.warning("DB size report failed — pomijam", exc_info=True)
+        return
+    assessment = assess_db_size(sizes, settings.db_size_budget_mb)
+    largest = ", ".join(
+        f"{size.name}={size.total_bytes / BYTES_PER_MB:.1f} MB" for size in assessment.largest
+    )
+    total_mb = assessment.total_bytes / BYTES_PER_MB
+    fraction = assessment.budget_fraction
+    if assessment.needs_warning and fraction is not None:
+        logger.warning(
+            "DB size %.1f MB = %.0f%% of db_size_budget_mb=%s (NIEZ-37, retencja to "
+            "osobna decyzja) — largest: %s",
+            total_mb,
+            fraction * 100,
+            settings.db_size_budget_mb,
+            largest,
+        )
+        return
+    logger.info(
+        "DB size %.1f MB (budget %s MB) — largest: %s",
+        total_mb,
+        settings.db_size_budget_mb,
+        largest,
+    )
+
+
 def _run_evidence_export(
     settings: Settings, now: datetime | None = None, out_dir: Path = EVIDENCE_BACKUP_DIR
 ) -> None:
@@ -794,28 +848,38 @@ def _run_evidence_export(
     )
 
 
-def _run_calibration_judge(
-    repository: RepositoryPort, llm_port: LLMPort, *, brier_score_enabled: bool = False
+def _run_calibration_scores(
+    repository: RepositoryPort, *, brier_score_enabled: bool = False
 ) -> None:
-    """#4: LLM-as-Judge kalibracji pewności (Slow Loop). FIN-30: jego wywołanie
-    LLM liczy się do tygodniowego budżetu Slow Loopa, nie do budżetu Fast Loopa.
-    WIA-37: `brier_score_enabled` = reguła Briera v2 z kolumną wersji (migracja 044).
-    FIN-20: poniżej `MIN_JUDGE_SAMPLES` rozliczonych predykcji sędzia nie woła LLM."""
+    """#4: arytmetyczna ocena kalibracji pewności (Slow Loop), jednym zapisem
+    zbiorczym (migracja 077). WIA-65: bez sędziego LLM — zero płatnych wywołań.
+    WIA-37: `brier_score_enabled` = reguła Briera v2 (bez flagi liniowa v1)."""
     try:
         from src.application.use_cases.calibrate_confidence import (
-            MIN_JUDGE_SAMPLES,
             CalibrateConfidenceUseCase,
         )
 
         cal_result = CalibrateConfidenceUseCase(
             repository_port=repository,
-            llm_port=llm_port,
             brier_score_enabled=brier_score_enabled,
-            min_samples=MIN_JUDGE_SAMPLES,
         ).run(days=30)
-        logger.info("Calibration judge — %s", cal_result.get("status"))
+        logger.info("Calibration scores — %s", cal_result.get("status"))
     except Exception:
-        logger.exception("Calibration judge failed — pomijam")
+        logger.exception("Calibration scores failed — pomijam")
+
+
+def _run_batch_diagnosis(repository: RepositoryPort, llm_port: LLMPort) -> None:
+    """EXP-17: pudła ostatnich 7 dni bez diagnozy — JEDNO wywołanie LLM w tygodniowym
+    budżecie Slow Loopa. Przed spłatą diagnoz, żeby ta nie płaciła za nie osobno.
+    Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = BatchDiagnosisUseCase(
+            repository_port=repository, llm_port=llm_port, clock=lambda: datetime.now(UTC)
+        ).run()
+    except PortError:
+        logger.warning("Batch diagnosis failed — pomijam", exc_info=True)
+        return
+    logger.info("Batch diagnosis — %s", result)
 
 
 def _run_diagnosis_backfill(
@@ -832,6 +896,28 @@ def _run_diagnosis_backfill(
         logger.exception("Diagnosis backfill failed — pomijam")
         return
     logger.info("Diagnosis backfill — %s", result)
+
+
+def _run_diagnosis_judge(
+    repository: RepositoryPort, llm_port: LLMPort, max_samples: int, *, rejects_enabled: bool
+) -> None:
+    """EXP-10: losowa próbka najwyżej `max_samples` diagnoz tygodnia oceniona rubryką;
+    z `rejects_enabled` diagnoza poniżej progu wypada z lessons i RAG, bez niego tryb
+    cienia (tylko ocena). Po diagnozach przebiegu, w tygodniowym budżecie Slow Loopa.
+    Best-effort: błąd kroku nie zmienia exit code'u."""
+    try:
+        result = JudgeDiagnosesUseCase(
+            repository_port=repository,
+            llm_port=llm_port,
+            clock=lambda: datetime.now(UTC),
+            rng=random.Random(),
+            max_samples=max_samples,
+            rejects_enabled=rejects_enabled,
+        ).run()
+    except PortError:
+        logger.warning("Diagnosis judge failed — pomijam", exc_info=True)
+        return
+    logger.info("Diagnosis judge — %s", result)
 
 
 def _send_weekly_recap(
@@ -921,8 +1007,8 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     # przechodziły retrainu — model krypto zostawał na zawsze przy cold-starcie.
     # `dict.fromkeys` zachowuje kolejność i deduplikuje symbol obecny w obu listach.
     trainable = list(dict.fromkeys([*settings.symbols, *settings.crypto_symbols]))
-    failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
-    failures += _train_pooled_model(settings, use_case, trainable, tally)
+    symbol_failures = _train_symbols(settings, repository, use_case, trainable, tally, run_id)
+    failures = symbol_failures + _train_pooled_model(settings, use_case, trainable, tally)
     _evaluate_snapshot_models(settings, use_case, trainable, tally)
     _evaluate_direction_variant(settings, use_case, trainable, tally)
     _review_challengers(settings, repository, tally)
@@ -930,25 +1016,35 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
     _run_reference_signal(settings, repository)
     _run_output_drift(settings, quota_monitor)
     _run_model_probe(settings, quota_monitor)
+    _report_db_size(settings, repository)
     _run_evidence_export(settings)
+
+    if settings.calibration_judge_enabled:
+        _run_calibration_scores(
+            repository, brier_score_enabled=settings.calibration_score_version_enabled
+        )
 
     usage_ledger = UsageLedger()
     paid_llm = _SlowLoopPaidLLM(settings, quota_monitor, usage_ledger)
-    if settings.calibration_judge_enabled:
-        _run_calibration_judge(
-            repository,
-            paid_llm.port_for(JUDGE_JOB),
-            brier_score_enabled=settings.calibration_score_version_enabled,
-        )
 
     if settings.weekly_recap_enabled:
         _send_weekly_recap(settings, repository, quota_monitor, paid_llm.port_for(RECAP_JOB))
+    if settings.batch_diagnosis_enabled:
+        _run_batch_diagnosis(repository, paid_llm.port_for(BATCH_DIAGNOSIS_JOB))
     if settings.diagnosis_backfill_enabled:
         # Rezerwa NIEZ-44 zostaje na zapasowego dostawcę — wierszy nie więcej niż cap.
         _run_diagnosis_backfill(
             repository,
             paid_llm.port_for(DIAGNOSIS_JOB),
             min(settings.diagnosis_backfill_max_calls, paid_llm.allowed(DIAGNOSIS_JOB)),
+        )
+    if settings.diagnosis_judge_enabled:
+        # Rezerwa NIEZ-44 jak wyżej — próbka nie większa niż cap.
+        _run_diagnosis_judge(
+            repository,
+            paid_llm.port_for(DIAGNOSIS_JUDGE_JOB),
+            min(MAX_JUDGED_PER_RUN, paid_llm.allowed(DIAGNOSIS_JUDGE_JOB)),
+            rejects_enabled=settings.diagnosis_judge_rejects_enabled,
         )
     paid_llm.log_spend()
     persist_llm_calls(
@@ -958,11 +1054,27 @@ def _run_slow_loop(settings: Settings, tally: _TrainingTally) -> int:
         run_context=RunContext.from_environ(os.environ),
     )
 
-    # NIEZ-03: alerty z sędziego i recapu (LLM, Resend) powstają po pierwszym zapisie.
+    # NIEZ-03: alerty z recapu i diagnoz (LLM, Resend) powstają po pierwszym zapisie.
     _persist_quota_alerts(repository, quota_monitor, start=persisted_alerts)
 
     logger.info("Slow Loop done — failures=%d/%d", failures, len(trainable) + 1)
-    return 1 if failures else 0
+    return _slow_loop_exit_code(symbol_failures, failures - symbol_failures, len(trainable))
+
+
+def _slow_loop_exit_code(symbol_failures: int, pooled_failures: int, symbols: int) -> int:
+    """NIEZ-38: exit 1 tylko, gdy padły wszystkie symbole (jak Fast Loop). Część
+    symboli albo sam model wspólny to częściowa porażka: WARNING i liczby w step
+    summary, exit 0 — przy padniętym modelu wspólnym wagi zostają z poprzedniego
+    tygodnia."""
+    exit_code = run_exit_code(symbol_failures, symbols)
+    if is_partial_failure(symbol_failures, symbols):
+        logger.warning(PARTIAL_FAILURE_LOG, "Slow Loop", symbol_failures, symbols)
+    if pooled_failures and exit_code == 0:
+        logger.warning(
+            "Slow Loop: model wspólny padł — wagi zostają z poprzedniego przebiegu, exit 0 "
+            "(NIEZ-38)"
+        )
+    return exit_code
 
 
 if __name__ == "__main__":

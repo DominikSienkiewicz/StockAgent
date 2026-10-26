@@ -56,9 +56,9 @@ class TestEquityCurve:
         assert "<h2" in html
         assert "Track Record" in html
         # Wynik łączny, trafność i obsunięcie jako procenty.
-        assert "+7,0%" in html      # total_return
+        assert "+7,0%" in html  # total_return
         assert "66,7%" in html or "67%" in html  # win_rate
-        assert "2,0%" in html       # max_drawdown
+        assert "2,0%" in html  # max_drawdown
 
 
 class TestEntryPriceNote:
@@ -78,12 +78,8 @@ class TestEntryPriceNote:
 class TestCalibration:
     def test_renders_buckets_and_ece(self) -> None:
         buckets = [
-            CalibrationBucket(
-                lower=0.0, upper=0.1, count=10, mean_confidence=0.05, hit_rate=0.1
-            ),
-            CalibrationBucket(
-                lower=0.9, upper=1.0, count=10, mean_confidence=0.95, hit_rate=0.9
-            ),
+            CalibrationBucket(lower=0.0, upper=0.1, count=10, mean_confidence=0.05, hit_rate=0.1),
+            CalibrationBucket(lower=0.9, upper=1.0, count=10, mean_confidence=0.95, hit_rate=0.9),
         ]
         html = render_track_record_html(None, buckets, None)
         assert "<h2" in html
@@ -174,9 +170,7 @@ class TestLessons:
 class TestComposition:
     def test_all_three_sections_present(self) -> None:
         buckets = [
-            CalibrationBucket(
-                lower=0.9, upper=1.0, count=5, mean_confidence=0.95, hit_rate=0.8
-            ),
+            CalibrationBucket(lower=0.9, upper=1.0, count=5, mean_confidence=0.95, hit_rate=0.8),
         ]
         lessons = LessonsReport(
             items=(
@@ -292,9 +286,7 @@ class TestPaperCostLabel:
     _COSTS = PaperCosts(cost_bps=10, crypto_cost_bps=25, crypto_symbols=frozenset({"BTC"}))
 
     def test_label_and_assumptions_name_the_cost(self) -> None:
-        html = render_track_record_html(
-            _curve(), None, None, TrackRecordStats(costs=self._COSTS)
-        )
+        html = render_track_record_html(_curve(), None, None, TrackRecordStats(costs=self._COSTS))
 
         assert "paper-PnL (koszt 10 bps)" in html
         assert "krypto 25 bps" in html
@@ -401,9 +393,7 @@ class TestCompactTrackRecord:
             costs=PaperCosts(cost_bps=10),
             benchmark=comparison,
         )
-        return render_track_record_html(
-            comparison.agent, buckets, lessons, stats, compact=compact
-        )
+        return render_track_record_html(comparison.agent, buckets, lessons, stats, compact=compact)
 
     def test_compact_keeps_the_key_numbers(self) -> None:
         html = self._render(compact=True)
@@ -465,6 +455,7 @@ class TestSidewaysCalibration:
         html = render_track_record_html(None, self._BUCKETS, None, TrackRecordStats())
 
         assert "SIDEWAYS" not in html
+
 
 def test_expired_predictions_count_is_rendered() -> None:
     """WIA-49: cichy brak oceny wygląda jak brak predykcji — sekcja mówi wprost,

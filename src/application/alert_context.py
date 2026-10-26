@@ -151,9 +151,7 @@ def _position_line(position: PositionContext, now: datetime, tz: str) -> str:
         parts.append(f"{format_pct_pl(to_percent(position.return_ratio), signed=True)} od zakupu")
     line = f"💼 Twoja pozycja: {', '.join(parts)}" if parts else "💼 Masz tę pozycję w portfelu"
     if is_stale(position.as_of, now):
-        line += (
-            f" (stan portfela z {format_local_date(position.as_of, tz)} — może być nieaktualny)"
-        )
+        line += f" (stan portfela z {format_local_date(position.as_of, tz)} — może być nieaktualny)"
     return f"{line}."
 
 

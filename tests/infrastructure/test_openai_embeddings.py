@@ -234,9 +234,7 @@ class TestContentHashCache:
     ) -> None:
         client = MagicMock()
         mock_openai_class.return_value = client
-        client.embeddings.create.side_effect = [
-            _embedding_response([float(i)]) for i in range(10)
-        ]
+        client.embeddings.create.side_effect = [_embedding_response([float(i)]) for i in range(10)]
         # Pojemność 2 — po dodaniu trzeciego tekstu najstarszy wypada.
         adapter = OpenAIEmbeddingAdapter(api_key="sk-test", cache_size=2)
 

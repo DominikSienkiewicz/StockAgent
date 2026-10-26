@@ -32,6 +32,7 @@ from typing import Any
 from src.application.ports import (
     CycleRun,
     DeferredDiagnosis,
+    JudgeableDiagnosis,
     LatestPrediction,
     OpenInvalidation,
     OpenReferenceCall,
@@ -43,8 +44,9 @@ from src.application.ports import (
 from src.application.report_council_history import InvestorHistory
 from src.domain.attestation import StoredCommitment
 from src.domain.corporate_actions import SplitSuspicion
-from src.domain.council import InvestorOpinion, parse_recommendation
+from src.domain.council import FIRST_COUNCIL_ROUND, InvestorOpinion, parse_recommendation
 from src.domain.council_redundancy import CouncilVoteSample
+from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.finops import LLMCallEntry
@@ -60,13 +62,20 @@ from src.domain.paper_ledger import (
     utc_timestamp,
 )
 from src.domain.persona_track_record import PersonaScoring, PersonaVoteOutcome
-from src.domain.prediction import UNDIAGNOSED_MISTAKE_PLACEHOLDERS, Prediction, normalize_trend
+from src.domain.prediction import (
+    DIAGNOSIS_REJECTED_INSIGHT,
+    UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+    Prediction,
+    normalize_trend,
+)
 from src.domain.price_levels import PriceLevel, PriceLevelAlert
 from src.domain.promotion import SettledShadowForecast, ShadowForecast
 from src.domain.quota import QuotaAlert
 from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.regime import MarketRegime, RegimeState
 from src.domain.session_close import SessionCloseSettlement
+from src.domain.shadow_prompt import ShadowTrendForecast
+from src.domain.shock import SentShockLevel, ShockDirection
 from src.domain.significance import effective_n
 from src.domain.track_record import group_by_cycle
 from src.domain.value_objects import (
@@ -147,15 +156,18 @@ class InMemoryRepository(RepositoryPort):
         self._snapshots: list[Row] = []
         self._feature_snapshots: dict[tuple[str, str], Row] = {}
         self._shadow: dict[tuple[str, str], Row] = {}
-        self._council_votes: dict[tuple[str, str], Row] = {}
+        # Klucz jak UNIQUE(prediction_id, investor_name, round) z migracji 082 (ML-40).
+        self._council_votes: dict[tuple[str, str, int], Row] = {}
         self._quota_alerts: list[QuotaAlert] = []
         self._fundamentals: dict[str, Fundamentals] = {}
         self._earnings: dict[str, CachedEarningsDate] = {}
         self._regime: list[tuple[datetime, MarketRegime, RegimeState]] = []
-        self._shock_alerts: dict[tuple[str, date], StoredShockAlert] = {}
+        # Klucz jak UNIQUE(symbol, alert_date, level) z migracji 081 (ALR-16).
+        self._shock_alerts: dict[tuple[str, date, int], StoredShockAlert] = {}
         self._price_levels: dict[str, Row] = {}
         self._scorecards: list[Row] = []
-        self._llm_calls: list[LLMCallEntry] = []
+        # FIN-25: chwila zapisu przy wierszu — jak `llm_calls.created_at`.
+        self._llm_calls: list[tuple[datetime, LLMCallEntry]] = []
         self._cycle_runs: list[CycleRun] = []
         self._reference: dict[str, Row] = {}
         self._corporate_actions: dict[tuple[str, str, date], SplitSuspicion] = {}
@@ -183,9 +195,7 @@ class InMemoryRepository(RepositoryPort):
 
     def _current_hour_row(self, symbol: str) -> Row | None:
         hour = _utc_hour_start(self._now()).isoformat()
-        return next(
-            (r for r in self._rows(symbol) if r.get("timestamp_hour") == hour), None
-        )
+        return next((r for r in self._rows(symbol) if r.get("timestamp_hour") == hour), None)
 
     # ------------------------------------------------------------------
     # price_snapshots
@@ -338,9 +348,7 @@ class InMemoryRepository(RepositoryPort):
     def count_expired_unverified(self, days: int) -> int:
         rows = _since(self._rows(), "timestamp", self._now() - timedelta(days=days))
         return sum(
-            1
-            for row in rows
-            if row.get("actual_price_after_12h") is None and not _not_expired(row)
+            1 for row in rows if row.get("actual_price_after_12h") is None and not _not_expired(row)
         )
 
     def update_prediction_accuracy(
@@ -434,9 +442,7 @@ class InMemoryRepository(RepositoryPort):
         rows = self._resolved(self._now() - timedelta(days=days))
         return _countable([r for r in rows if r.get("confidence_score") is not None])
 
-    def get_settled_moves(
-        self, days: int, *, with_intervals: bool = False
-    ) -> list[dict[str, Any]]:
+    def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         start = self._now() - timedelta(days=days)
         rows = [r for r in self._rows() if r.get("actual_price_after_12h") is not None]
         return _without_stale_quote(_oldest_first(_since(rows, "timestamp", start)))
@@ -469,22 +475,17 @@ class InMemoryRepository(RepositoryPort):
         ]
         return [_stored_receipt(row) for row in _oldest_first(rows)]
 
-    def save_calibration(
-        self,
-        prediction_id: str,
-        score: float,
-        insight: str,
-        *,
-        score_version: int | None = None,
-    ) -> None:
+    def save_calibration_scores(self, scores: Mapping[str, float], *, score_version: int) -> int:
+        updated = 0
         with self._lock:
-            row = self._predictions.get(prediction_id)
-            if row is None:
-                return
-            row["confidence_calibration"] = score
-            row["calibration_insight"] = insight
-            if score_version is not None:
+            for prediction_id, score in scores.items():
+                row = self._predictions.get(prediction_id)
+                if row is None:
+                    continue
+                row["confidence_calibration"] = score
                 row["calibration_score_version"] = score_version
+                updated += 1
+        return updated
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         rows = _newest_first(
@@ -513,6 +514,44 @@ class InMemoryRepository(RepositoryPort):
             row["correction_insights"] = insight
             if correction_category is not None:
                 row["correction_category"] = correction_category.value
+
+    def get_diagnoses_to_judge(self, days: int) -> list[JudgeableDiagnosis]:
+        rows = _newest_first(
+            r
+            for r in _since(self._rows(), "timestamp", self._now() - timedelta(days=days))
+            if r.get("is_trend_correct") is False
+            and r.get("diagnosis_judge_score") is None
+            and r.get("correction_insights") is not None
+        )
+        judgeable: list[JudgeableDiagnosis] = []
+        for row in _without_llm_fallback(rows):
+            deferred = _deferred_diagnosis(row)
+            if deferred is not None:
+                judgeable.append(
+                    JudgeableDiagnosis(
+                        prediction=deferred.prediction,
+                        actual_price=deferred.actual_price,
+                        insight=deferred.placeholder,
+                        predicted_at=deferred.predicted_at,
+                    )
+                )
+        return judgeable
+
+    def save_diagnosis_judgement(
+        self, prediction_id: str, *, score: int, rejected_insight: str | None = None
+    ) -> None:
+        with self._lock:
+            row = self._predictions.get(prediction_id)
+            if row is None:
+                return
+            if rejected_insight is None:
+                row["diagnosis_judge_score"] = score
+                return
+            if row.get("correction_insights") != rejected_insight:
+                return
+            row["diagnosis_judge_score"] = score
+            row["rejected_diagnosis"] = rejected_insight
+            row["correction_insights"] = DIAGNOSIS_REJECTED_INSIGHT
 
     # ------------------------------------------------------------------
     # Atestacja (#16, WIA-01) — kolumny w wierszu predykcji
@@ -634,10 +673,26 @@ class InMemoryRepository(RepositoryPort):
                     "model_version": forecast.model_version,
                     "predicted_return": forecast.predicted_return,
                     "proba": forecast.proba,
-                    "created_at": (
-                        previous["created_at"] if previous else self._now().isoformat()
-                    ),
+                    "created_at": (previous["created_at"] if previous else self._now().isoformat()),
                 }
+
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None:
+        with self._lock:
+            key = (prediction_id, forecast.model_name)
+            previous = self._shadow.get(key)
+            self._shadow[key] = {
+                "prediction_id": prediction_id,
+                "symbol": symbol,
+                "model_name": forecast.model_name,
+                "model_version": forecast.model_version,
+                "predicted_return": None,
+                "proba": None,
+                "predicted_trend": forecast.predicted_trend.value,
+                "confidence_score": forecast.confidence,
+                "created_at": (previous["created_at"] if previous else self._now().isoformat()),
+            }
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         settled: list[SettledShadowForecast] = []
@@ -655,9 +710,7 @@ class InMemoryRepository(RepositoryPort):
             return None
         return max(enumerate(self._regime), key=lambda item: (item[1][0], item[0]))[1][2]
 
-    def save_regime_state(
-        self, cycle_at: datetime, raw: MarketRegime, state: RegimeState
-    ) -> None:
+    def save_regime_state(self, cycle_at: datetime, raw: MarketRegime, state: RegimeState) -> None:
         with self._lock:
             self._regime.append((cycle_at, raw, state))
 
@@ -700,19 +753,30 @@ class InMemoryRepository(RepositoryPort):
         return sorted(recent, key=lambda alert: alert.occurred_at, reverse=True)
 
     def save_shock_alert(
-        self, symbol: str, alert_date: date, delta: float, direction: str
+        self, symbol: str, alert_date: date, delta: float, direction: str, *, level: int = 1
     ) -> None:
         with self._lock:
-            # UNIQUE(symbol, alert_date) — drugi alert tego dnia odbija się jak w bazie.
-            key = (symbol, alert_date)
+            # UNIQUE(symbol, alert_date, level) — ten sam szczebel dnia odbija się jak w bazie.
+            key = (symbol, alert_date, level)
             if key in self._shock_alerts:
-                raise ValueError(f"shock alert for {symbol} on {alert_date} already exists")
+                raise ValueError(
+                    f"shock alert for {symbol} on {alert_date} (level {level}) already exists"
+                )
             self._shock_alerts[key] = StoredShockAlert(
                 symbol=symbol, delta=delta, direction=direction, created_at=self._now()
             )
 
     def get_sent_shock_alerts(self, since: date) -> set[tuple[str, date]]:
-        return {key for key in self._shock_alerts if key[1] >= since}
+        return {(symbol, day) for symbol, day, _level in self._shock_alerts if day >= since}
+
+    def get_shock_alert_levels(self, alert_date: date) -> dict[str, tuple[SentShockLevel, ...]]:
+        sent: dict[str, list[SentShockLevel]] = {}
+        for (symbol, day, level), alert in sorted(self._shock_alerts.items()):
+            if day == alert_date:
+                sent.setdefault(symbol, []).append(
+                    SentShockLevel(level=level, direction=ShockDirection(alert.direction))
+                )
+        return {symbol: tuple(levels) for symbol, levels in sent.items()}
 
     def get_shock_alert_times(self, since: datetime) -> dict[str, datetime]:
         latest: dict[str, datetime] = {}
@@ -732,14 +796,21 @@ class InMemoryRepository(RepositoryPort):
     # ------------------------------------------------------------------
 
     def save_council_votes(
-        self, prediction_id: str, symbol: str, votes: list[InvestorOpinion]
+        self,
+        prediction_id: str,
+        symbol: str,
+        votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
     ) -> None:
         now = self._now().isoformat()
         with self._lock:
             for vote in votes:
-                self._council_votes[(prediction_id, vote.investor_name)] = _json_row(
+                key = (prediction_id, vote.investor_name, debate_round)
+                self._council_votes[key] = _json_row(
                     {
                         "id": self._next_id(),
+                        "round": debate_round,
                         "prediction_id": prediction_id,
                         "symbol": symbol,
                         "investor_name": vote.investor_name,
@@ -751,9 +822,14 @@ class InMemoryRepository(RepositoryPort):
                     }
                 )
 
+    def _first_round_votes(self) -> list[Row]:
+        # ML-40: odczyty głosów biorą niezależną rundę 1, jak SupabaseRepository z debatą.
+        rows = self._council_votes.values()
+        return [row for row in rows if row["round"] == FIRST_COUNCIL_ROUND]
+
     def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]:
         opinions: list[InvestorOpinion] = []
-        for row in self._council_votes.values():
+        for row in self._first_round_votes():
             recommendation = parse_recommendation(row.get("recommendation"))
             if row["prediction_id"] != prediction_id or recommendation is None:
                 continue
@@ -771,7 +847,7 @@ class InMemoryRepository(RepositoryPort):
     def _recent_votes(self, window_days: int) -> list[Row]:
         start = self._now() - timedelta(days=window_days)
         return sorted(
-            _since(self._council_votes.values(), "timestamp", start),
+            _since(self._first_round_votes(), "timestamp", start),
             key=lambda row: (str(row["timestamp"]), int(row["id"])),
             reverse=True,
         )
@@ -845,7 +921,18 @@ class InMemoryRepository(RepositoryPort):
 
     def save_llm_calls(self, calls: Sequence[LLMCallEntry]) -> None:
         with self._lock:
-            self._llm_calls.extend(calls)
+            saved_at = self._now()
+            self._llm_calls.extend((saved_at, call) for call in calls)
+
+    def get_llm_cost_since(self, since: datetime) -> float:
+        return sum(
+            (
+                call.cost_usd
+                for saved_at, call in self._llm_calls
+                if saved_at >= since and call.cost_usd is not None
+            ),
+            0.0,
+        )
 
     def save_cycle_run(self, run: CycleRun) -> None:
         with self._lock:
@@ -887,6 +974,10 @@ class InMemoryRepository(RepositoryPort):
 
     def schema_version(self) -> int | None:
         return None
+
+    def get_db_size_report(self) -> list[RelationSize]:
+        # Tryb offline nie ma bazy, więc nie ma czego mierzyć (NIEZ-37).
+        return []
 
     def missing_prediction_columns(self, columns: frozenset[str]) -> frozenset[str]:
         return frozenset()

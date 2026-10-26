@@ -217,9 +217,7 @@ class TestCryptoSidewaysTolerance:
         # 2% na BTC to szum w paśmie dziennej zmienności 3–5%.
         pred = self._sideways("100")
 
-        assert pred.is_trend_correct(
-            Decimal("102"), tolerance=CRYPTO_SIDEWAYS_TOLERANCE
-        )
+        assert pred.is_trend_correct(Decimal("102"), tolerance=CRYPTO_SIDEWAYS_TOLERANCE)
 
     def test_same_move_is_not_sideways_for_equity(self) -> None:
         # Kontrola: ta sama delta na akcji to realny ruch.
@@ -287,6 +285,29 @@ class TestSubstantiveInsight:
         ):
             assert not is_substantive_insight(placeholder)
             assert not is_substantive_insight(f"  {placeholder}\n")
+
+    def test_batch_pending_placeholder_waits_for_a_diagnosis(self) -> None:
+        # EXP-17: placeholder tygodniowej diagnozy zbiorczej nie jest lekcją, a job
+        # Slow Loopa i spłata diagnoz znajdują go jak każde pudło bez diagnozy.
+        from src.domain.prediction import (
+            DIAGNOSIS_BATCH_PENDING_INSIGHT,
+            UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+            is_substantive_insight,
+        )
+
+        assert not is_substantive_insight(DIAGNOSIS_BATCH_PENDING_INSIGHT)
+        assert DIAGNOSIS_BATCH_PENDING_INSIGHT in UNDIAGNOSED_MISTAKE_PLACEHOLDERS
+
+    def test_rejected_diagnosis_is_neither_a_lesson_nor_owed_a_diagnosis(self) -> None:
+        # EXP-10: odrzucona przez sędziego nie wraca do lessons i RAG ani do spłaty.
+        from src.domain.prediction import (
+            DIAGNOSIS_REJECTED_INSIGHT,
+            UNDIAGNOSED_MISTAKE_PLACEHOLDERS,
+            is_substantive_insight,
+        )
+
+        assert not is_substantive_insight(DIAGNOSIS_REJECTED_INSIGHT)
+        assert DIAGNOSIS_REJECTED_INSIGHT not in UNDIAGNOSED_MISTAKE_PLACEHOLDERS
 
     def test_historical_placeholder_texts_are_recognised(self) -> None:
         # Wiersze sprzed WIA-10 niosą dokładnie te literały — zostają w bazie.

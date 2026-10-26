@@ -38,9 +38,7 @@ class CachedFundamentalsAdapter(FundamentalsPort):
     pojedynczego procesu main_agent na cykl.
     """
 
-    def __init__(
-        self, repo: RepositoryPort, delegate: FundamentalsPort
-    ) -> None:
+    def __init__(self, repo: RepositoryPort, delegate: FundamentalsPort) -> None:
         self._repo = repo
         self._delegate = delegate
         # Rejestr locków per symbol + lock chroniący sam rejestr przed

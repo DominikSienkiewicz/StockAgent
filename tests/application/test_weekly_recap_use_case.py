@@ -145,10 +145,7 @@ class TestWeeklyRecapCouncilMapping:
                 ),
             ),
         )
-        winners = [
-            _row(f"WIN{i}", base="100", target="100", actual="100")
-            for i in range(5)
-        ]
+        winners = [_row(f"WIN{i}", base="100", target="100", actual="100") for i in range(5)]
         repo = Mock(spec=RepositoryPort)
         repo.get_resolved_predictions_detailed.return_value = [loser, *winners]
         llm = Mock(spec=LLMPort)
@@ -162,8 +159,13 @@ class TestWeeklyRecapCouncilMapping:
     @staticmethod
     def _loser_with(verdict: dict[str, Any]) -> list[dict[str, Any]]:
         loser = _row(
-            "LOSER", trend="BULLISH", base="100", target="130", actual="90",
-            conf=0.9, verdict=verdict,
+            "LOSER",
+            trend="BULLISH",
+            base="100",
+            target="130",
+            actual="90",
+            conf=0.9,
+            verdict=verdict,
         )
         winners = [_row(f"WIN{i}", base="100", target="100", actual="100") for i in range(5)]
         return [loser, *winners]
@@ -188,9 +190,7 @@ class TestWeeklyRecapCouncilMapping:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level(logging.WARNING):
-            self._recap(
-                _verdict(final="STRONG_BUY", opinions=(("Soros", "SELL", 0.9, "x"),))
-            )
+            self._recap(_verdict(final="STRONG_BUY", opinions=(("Soros", "SELL", 0.9, "x"),)))
 
         assert "STRONG_BUY" in caplog.text
 
@@ -421,9 +421,7 @@ class TestCouncilRedundancy:
             opinions = tuple(
                 (name, rec, 0.8, "zgodnie z resztą") for name in ("Graham", "Buffett", "Marks")
             )
-            rows.append(
-                _row(f"S{index}", target=str(105 + index), verdict=_verdict(rec, opinions))
-            )
+            rows.append(_row(f"S{index}", target=str(105 + index), verdict=_verdict(rec, opinions)))
         return rows
 
     def _run(self, *, enabled: bool) -> WeeklyRecap:
@@ -451,9 +449,7 @@ class TestCouncilRedundancy:
         recap = self._run(enabled=True)
 
         assert recap.redundancy is not None
-        assert {pair.first for pair in recap.redundancy.llm_pairs} == {
-            "Graham", "Buffett", "Marks"
-        }
+        assert {pair.first for pair in recap.redundancy.llm_pairs} == {"Graham", "Buffett", "Marks"}
 
     def test_flag_off_leaves_the_recap_untouched(self) -> None:
         assert self._run(enabled=False).redundancy is None

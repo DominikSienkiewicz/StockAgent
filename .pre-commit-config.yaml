@@ -19,5 +19,5 @@ repos:
         name: Validate council persona JSON files
         entry: uv run python -m src.tools.validate_personas
         language: system
-        files: ^data/council_personas/.*\.json$
+        files: ^data/council_personas/.*\.(json|toml)$
         pass_filenames: false

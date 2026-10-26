@@ -5,8 +5,10 @@ alert. Próg szoku jest CELOWO wyższy niż bramka volatility Fast Loopa — cho
 o rzadkie, gwałtowne ruchy, nie o codzienny szum. Krypto handluje 24/7 i rusza
 się natywnie 3–5% dziennie, więc dostaje osobny, wyższy próg.
 
-Persystencja (tabela `shock_alerts`, `UNIQUE(symbol, alert_date)`) NIE należy do
-tej warstwy — domena dostarcza jedynie czysty predykat debounce `should_emit`.
+Persystencja (tabela `shock_alerts`, `UNIQUE(symbol, alert_date)`, od migracji 081
+`UNIQUE(symbol, alert_date, level)`) NIE należy do tej warstwy — domena dostarcza
+jedynie czyste predykaty debounce: `should_emit` (jeden alert dziennie) i drabinę
+eskalacji `should_escalate` (ALR-16, najwyżej `MAX_SHOCK_ALERTS_PER_DAY` dziennie).
 
 Dwa źródła ruchu (ALR-02): delta wobec snapshotu Fast Loopa (`detect_shock`, z guardem
 wieku) albo dzienna zmiana z darmowego /quote (`DailyChange`, z guardem dnia
@@ -18,7 +20,7 @@ pozycjach i porównuje z progiem portfela. Debounce idzie tym samym `should_emit
 pod kluczem `PORTFOLIO_ALERT_SYMBOL`.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -53,6 +55,12 @@ PORTFOLIO_ALERT_SYMBOL = "__PORTFOLIO__"
 # ALR-07: ilu największych kontrybutorów szoku wymienia push portfela.
 PORTFOLIO_SHOCK_TOP_MOVERS = 3
 
+# ALR-16: drabina eskalacji — najwyżej tyle alertów szoku jednego symbolu dziennie.
+MAX_SHOCK_ALERTS_PER_DAY = 2
+
+# ALR-16: drugi alert dnia w tym samym kierunku dopiero przy ruchu ≥ tylu progów szoku.
+SHOCK_ESCALATION_MULTIPLIER = Decimal("2")
+
 
 class ShockDirection(Enum):
     """Kierunek szoku — spadek albo wzrost ceny."""
@@ -67,6 +75,14 @@ class ShockAlert:
 
     symbol: str
     delta: PriceDelta
+    direction: ShockDirection
+
+
+@dataclass(frozen=True)
+class SentShockLevel:
+    """Alert szoku wysłany dziś (ALR-16): szczebel drabiny i kierunek ruchu."""
+
+    level: int
     direction: ShockDirection
 
 
@@ -190,6 +206,37 @@ def should_emit(
     alertów (odpowiednik `UNIQUE(symbol, alert_date)` w warstwie persystencji).
     """
     return (symbol, alert_date) not in already_sent
+
+
+def should_escalate(
+    asset: Asset,
+    alert: ShockAlert,
+    volatility_threshold: Threshold,
+    sent_today: Sequence[SentShockLevel],
+) -> bool:
+    """Drabina eskalacji (ALR-16): czy szok dostaje kolejny szczebel dnia.
+
+    Pierwszy alert dnia nie wymaga eskalacji. Kolejny wychodzi tylko przy
+    |Δ| ≥ `SHOCK_ESCALATION_MULTIPLIER` × progu szoku w kierunku ostatniego
+    szczebla albo przy odwróceniu kierunku (szok i tak przekracza próg) — i nigdy
+    ponad `MAX_SHOCK_ALERTS_PER_DAY`. Przy krachu od -4% do -12% użytkownik dostaje
+    też drugi, mocniejszy sygnał, a ruch kręcący się wokół pierwszego poziomu nie
+    spamuje kanału. `should_emit` zostaje twardym „jeden dziennie” bez drabiny.
+    """
+    if not sent_today:
+        return True
+    if len(sent_today) >= MAX_SHOCK_ALERTS_PER_DAY:
+        return False
+    last = max(sent_today, key=lambda sent: sent.level)
+    if alert.direction is not last.direction:
+        return True
+    escalation = _shock_threshold(asset, volatility_threshold) * SHOCK_ESCALATION_MULTIPLIER
+    return abs(alert.delta.fraction) >= escalation
+
+
+def next_shock_level(sent_today: Sequence[SentShockLevel]) -> int:
+    """Szczebel, pod którym idzie kolejny alert dnia (ALR-16): 1 dla pierwszego."""
+    return max((sent.level for sent in sent_today), default=0) + 1
 
 
 def detect_portfolio_shock(

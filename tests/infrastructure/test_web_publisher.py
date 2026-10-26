@@ -55,9 +55,7 @@ class TestFileWebPublisher:
         target = tmp_path / "digest.html"
         publisher = FileWebPublisher(output_path=str(target))
         # Symulujemy błąd I/O — publikacja nie może wywalić cyklu.
-        mocker.patch.object(
-            Path, "write_text", side_effect=OSError("disk full")
-        )
+        mocker.patch.object(Path, "write_text", side_effect=OSError("disk full"))
 
         with caplog.at_level(logging.WARNING):
             result = publisher.publish("<p>boom</p>")
@@ -79,9 +77,7 @@ class TestFileWebPublisher:
 
 
 class TestNullWebPublisher:
-    def test_publish_returns_empty_without_writing(
-        self, tmp_path: Path, mocker: Any
-    ) -> None:
+    def test_publish_returns_empty_without_writing(self, tmp_path: Path, mocker: Any) -> None:
         # Gdyby Null próbował cokolwiek zapisać, ten patch by to wychwycił.
         write = mocker.patch.object(Path, "write_text")
         publisher = NullWebPublisher()

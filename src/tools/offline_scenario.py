@@ -146,9 +146,7 @@ def parse_offline_scenario(raw: Mapping[str, Any]) -> OfflineScenario:
         paper_cost_bps=_cost_bps(raw, "paper_cost_bps"),
         crypto_paper_cost_bps=_cost_bps(raw, "crypto_paper_cost_bps"),
         seed_prices=_prices(raw.get("seed_prices"), "seed_prices"),
-        cycles=tuple(
-            _prices(cycle, f"cycles[{index}]") for index, cycle in enumerate(cycles)
-        ),
+        cycles=tuple(_prices(cycle, f"cycles[{index}]") for index, cycle in enumerate(cycles)),
     )
 
 

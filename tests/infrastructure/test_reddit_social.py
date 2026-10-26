@@ -39,9 +39,7 @@ def _ok_response(payload: dict[str, Any]) -> Mock:
 def _error_response(status_code: int) -> Mock:
     response = Mock(spec=requests.Response)
     response.status_code = status_code
-    response.raise_for_status.side_effect = requests.HTTPError(
-        f"{status_code} error"
-    )
+    response.raise_for_status.side_effect = requests.HTTPError(f"{status_code} error")
     return response
 
 
@@ -69,9 +67,7 @@ class TestGetSocialVelocity:
         assert snap.velocity_ratio() == pytest.approx(3.0)
         assert snap.trend() is SocialTrend.SURGING
 
-    def test_avg_sentiment_is_none(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_avg_sentiment_is_none(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         # Search nie daje sentymentu — pole musi być None.
         mocker.patch(
             "requests.Session.get",
@@ -83,9 +79,7 @@ class TestGetSocialVelocity:
         assert snap is not None
         assert snap.avg_sentiment is None
 
-    def test_makes_two_gets_day_and_week(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_makes_two_gets_day_and_week(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             side_effect=[_ok_response(_listing(1)), _ok_response(_listing(7))],
@@ -95,21 +89,13 @@ class TestGetSocialVelocity:
 
         assert mock_get.call_count == 2
         # Okno czasowe (t) i symbol (q) idą jako query params, nie w URL-u.
-        periods = [
-            call.kwargs.get("params", {}).get("t")
-            for call in mock_get.call_args_list
-        ]
-        queries = [
-            call.kwargs.get("params", {}).get("q")
-            for call in mock_get.call_args_list
-        ]
+        periods = [call.kwargs.get("params", {}).get("t") for call in mock_get.call_args_list]
+        queries = [call.kwargs.get("params", {}).get("q") for call in mock_get.call_args_list]
         assert "day" in periods
         assert "week" in periods
         assert all(q == "GME" for q in queries)
 
-    def test_sets_custom_user_agent_header(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_sets_custom_user_agent_header(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         # Reddit blokuje domyślne UA — własny nagłówek jest obowiązkowy.
         mock_get = mocker.patch(
             "requests.Session.get",
@@ -122,9 +108,7 @@ class TestGetSocialVelocity:
             headers = call.kwargs.get("headers", {})
             assert headers.get("User-Agent")
 
-    def test_sets_timeout_on_every_call(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_sets_timeout_on_every_call(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",
             side_effect=[_ok_response(_listing(1)), _ok_response(_listing(7))],
@@ -136,9 +120,7 @@ class TestGetSocialVelocity:
             assert "timeout" in call.kwargs
             assert call.kwargs["timeout"] > 0
 
-    def test_uses_dist_when_present(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_uses_dist_when_present(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         # dist powinno odpowiadać liczbie children — sprawdzamy spójność liczenia.
         mocker.patch(
             "requests.Session.get",
@@ -150,18 +132,12 @@ class TestGetSocialVelocity:
         assert snap is not None
         assert snap.mentions_24h == 42
 
-    def test_returns_none_on_http_error(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
-        mocker.patch(
-            "requests.Session.get", return_value=_error_response(503)
-        )
+    def test_returns_none_on_http_error(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
+        mocker.patch("requests.Session.get", return_value=_error_response(503))
 
         assert adapter.get_social_velocity("GME") is None
 
-    def test_returns_none_on_week_error(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_returns_none_on_week_error(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         # Pierwszy GET ok, drugi pada — brak baseline'u → None.
         mocker.patch(
             "requests.Session.get",
@@ -190,9 +166,7 @@ class TestGetSocialVelocity:
 
         assert adapter.get_social_velocity("GME") is None
 
-    def test_returns_none_on_parse_error(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_returns_none_on_parse_error(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         bad = Mock(spec=requests.Response)
         bad.status_code = 200
         bad.raise_for_status = Mock()
@@ -201,9 +175,7 @@ class TestGetSocialVelocity:
 
         assert adapter.get_social_velocity("GME") is None
 
-    def test_saturated_week_returns_none(
-        self, adapter: RedditSocialAdapter, mocker: Any
-    ) -> None:
+    def test_saturated_week_returns_none(self, adapter: RedditSocialAdapter, mocker: Any) -> None:
         # Tydzień ucięty na `limit` (100) to nie liczba postów, tylko sufit —
         # baseline 100/7 ≈ 14 przy 60 dziś dawałby fałszywe SURGING.
         mocker.patch(
@@ -236,9 +208,7 @@ class TestBlockedByReddit:
     def test_403_stops_requests_for_later_symbols(
         self, adapter: RedditSocialAdapter, mocker: Any
     ) -> None:
-        mock_get = mocker.patch(
-            "requests.Session.get", return_value=_error_response(403)
-        )
+        mock_get = mocker.patch("requests.Session.get", return_value=_error_response(403))
 
         snaps = [adapter.get_social_velocity(s) for s in ("AAPL", "MSFT", "NVDA")]
 

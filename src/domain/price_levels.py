@@ -22,9 +22,7 @@ class LevelDirection(Enum):
     BELOW = "BELOW"
 
 
-def crossed(
-    previous: Decimal, current: Decimal, level: Decimal, direction: LevelDirection
-) -> bool:
+def crossed(previous: Decimal, current: Decimal, level: Decimal, direction: LevelDirection) -> bool:
     """Czy cena przekroczyła `level` w kierunku `direction` między dwoma odczytami.
 
     Poprzedni odczyt musi leżeć po drugiej stronie poziomu, bieżący na nim albo za

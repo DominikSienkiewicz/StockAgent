@@ -76,11 +76,7 @@ def _detect_recurring_theme(insights: Sequence[str]) -> str | None:
         for word in _WORD_RE.findall(insight.lower()):
             # Odrzucamy zbyt krótkie, stopwordy oraz tokeny czysto cyfrowe
             # (np. rok "2024") — szum numeryczny nie jest powracającym motywem.
-            if (
-                len(word) < _MIN_KEYWORD_LEN
-                or word in _STOPWORDS
-                or word.isdigit()
-            ):
+            if len(word) < _MIN_KEYWORD_LEN or word in _STOPWORDS or word.isdigit():
                 continue
             counts[word] += 1
 
@@ -94,9 +90,7 @@ def _detect_recurring_theme(insights: Sequence[str]) -> str | None:
     return word
 
 
-def build_lessons(
-    resolved: Sequence[ResolvedPrediction], limit: int = 8
-) -> LessonsReport:
+def build_lessons(resolved: Sequence[ResolvedPrediction], limit: int = 8) -> LessonsReport:
     """Buduje panel 'lessons learned' z zamkniętych predykcji.
 
     Zachowuje wyłącznie błędy z niepustą diagnozą (insight), w kolejności

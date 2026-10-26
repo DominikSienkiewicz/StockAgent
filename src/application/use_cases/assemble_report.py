@@ -48,7 +48,10 @@ from src.application.report_open_entry import OpenEntryCurve, build_open_entry_c
 from src.application.report_signals import parse_resolved_predictions
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
-from src.application.signal_calibration import timed_directional_samples
+from src.application.signal_calibration import (
+    timed_classed_directional_samples,
+    timed_directional_samples,
+)
 from src.application.track_record_window import (
     TrackRecordReads,
     window_benchmark,
@@ -68,7 +71,9 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.equity_curve import EquityCurve
 from src.domain.isotonic_calibration import (
     ISOTONIC_FIT_WINDOW,
+    ClassIsotonicSelection,
     IsotonicMap,
+    select_class_isotonic_calibrators,
     select_isotonic_calibrator,
 )
 from src.domain.model_scorecard import MODEL_SCORECARD_WINDOW_DAYS
@@ -128,15 +133,16 @@ class ReportFlags:
     receipts_enabled: bool = False
     # ML-28: mapa izotoniczna zamiast kubełków w rankingu, gdy wygra poza próbą.
     isotonic_calibration_enabled: bool = False
+    # ML-54: osobna mapa dla krypto i dla reszty (klasa z `crypto_symbols`), gdy klasa
+    # ma dość próbek; działa tylko z `isotonic_calibration_enabled`.
+    isotonic_class_calibration_enabled: bool = False
     # WIA-59: krzywa kapitału z append-only paper ledgera (migracja 073).
     paper_ledger_curve_enabled: bool = False
     # WIA-54: krzywa „od otwarcia” z ceny wykonalnej (`entry_price`, migracja 072).
     open_entry_curve_enabled: bool = False
 
 
-def portfolio_sectors(
-    results: list[SymbolResult], sector_map: Mapping[str, str]
-) -> dict[str, int]:
+def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
     """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
     Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
@@ -313,25 +319,39 @@ def build_signal_calibration(
 
 def build_signal_isotonic_calibration(
     flags: ReportFlags, repository: RepositoryPort, *, now: datetime
-) -> IsotonicMap | None:
+) -> tuple[IsotonicMap | None, ClassIsotonicSelection | None]:
     """ML-28 — mapa izotoniczna pod ranking sygnałów, gdy wygrała poza próbą.
 
     Działa tylko obok rankingu kalibrowanego (`calibrated_confidence_enabled`) i za
     własną flagą; czyta raz rozliczenia z 60 dni (okno dopasowania i oceny), więc
     flaga off nie robi żadnego nowego odczytu. Reguła wyboru żyje w domenie
     (`select_isotonic_calibrator`). Błąd odczytu → None, ranking zostaje przy
-    kubełkach."""
+    kubełkach.
+
+    ML-54 (`isotonic_class_calibration_enabled`): z tego samego odczytu także
+    decyzje per klasa aktywa (`select_class_isotonic_calibrators`); mapa globalna
+    jest wtedy decyzją globalną tej samej reguły."""
     if not (flags.calibrated_confidence_enabled and flags.isotonic_calibration_enabled):
-        return None
+        return None, None
     history_days = ISOTONIC_FIT_WINDOW[0].days
     try:
         rows = repository.get_resolved_for_calibration(history_days)
     except PortError:
         logger.exception("Isotonic calibration history unavailable — ranking keeps the buckets")
-        return None
-    selection = select_isotonic_calibrator(timed_directional_samples(rows), now=now)
-    logger.info("Isotonic calibration (ML-28): %s", selection.reason)
-    return selection.calibrator
+        return None, None
+    if not flags.isotonic_class_calibration_enabled:
+        selection = select_isotonic_calibrator(timed_directional_samples(rows), now=now)
+        logger.info("Isotonic calibration (ML-28): %s", selection.reason)
+        return selection.calibrator, None
+    classed = select_class_isotonic_calibrators(
+        timed_classed_directional_samples(rows, flags.crypto_symbols), now=now
+    )
+    logger.info("Isotonic calibration (ML-28): %s", classed.global_selection.reason)
+    for calibration_class, selection in classed.class_selections.items():
+        logger.info(
+            "Isotonic calibration %s (ML-54): %s", calibration_class.value, selection.reason
+        )
+    return classed.global_selection.calibrator, classed
 
 
 def build_track_record(
@@ -594,9 +614,7 @@ def fetch_report_context(
     # U5: historia głosów rady per inwestor (panel drill-down w raporcie).
     council_history: list[InvestorHistory] = []
     try:
-        council_history = repository.get_council_vote_history(
-            all_symbols, window_days=30
-        )
+        council_history = repository.get_council_vote_history(all_symbols, window_days=30)
     except Exception:
         logger.exception("Failed to fetch council vote history")
 
@@ -707,9 +725,7 @@ class ReportAssembler:
         equity_curve, calibration_buckets, lessons = build_track_record(
             flags, repository, self._costs, reads=reads
         )
-        track_record_stats = build_track_record_stats(
-            flags, repository, self._costs, reads=reads
-        )
+        track_record_stats = build_track_record_stats(flags, repository, self._costs, reads=reads)
         persona_track_record = assess_personas(persona_track_record, track_record_stats)
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
@@ -720,11 +736,12 @@ class ReportAssembler:
             ]
         # #9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
         signal_calibration_buckets = build_signal_calibration(flags, repository, reads=reads)
-        # ML-28: mapa izotoniczna (flaga) — tylko gdy ranking ma kubełki (WIA-38).
-        signal_isotonic_calibration = (
+        # ML-28: mapa izotoniczna (flaga) — tylko gdy ranking ma kubełki (WIA-38);
+        # ML-54: z tego samego odczytu mapy per klasa aktywa (osobna flaga).
+        signal_isotonic_calibration, signal_isotonic_class_calibration = (
             build_signal_isotonic_calibration(flags, repository, now=started_at)
             if signal_calibration_buckets
-            else None
+            else (None, None)
         )
         # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = classify_cycle_maturity(results)
@@ -756,6 +773,7 @@ class ReportAssembler:
             symbol_track_record=build_symbol_track_record(flags, repository, reads=reads),
             signal_calibration_buckets=signal_calibration_buckets,
             signal_isotonic_calibration=signal_isotonic_calibration,
+            signal_isotonic_class_calibration=signal_isotonic_class_calibration,
             cycle_maturity=maturity,
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,

@@ -84,9 +84,7 @@ def _header(stored: StoredReceipt) -> str:
         if stored.predicted_at is None
         else stored.predicted_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     )
-    outcome = {True: "trafiona", False: "chybiona", None: "nierozliczona"}[
-        stored.is_trend_correct
-    ]
+    outcome = {True: "trafiona", False: "chybiona", None: "nierozliczona"}[stored.is_trend_correct]
     trend = stored.predicted_trend or "?"
     return (
         f"Predykcja {stored.prediction_id} · {stored.symbol} · {moment} · "
@@ -117,6 +115,8 @@ def _receipt_lines(receipt: DecisionReceipt) -> list[str]:
     if receipt.experiment_arms:
         arms = ", ".join(f"{name}={arm}" for name, arm in receipt.experiment_arms.items())
         lines.append(f"{_INDENT}Ramiona eksperymentów: {arms}")
+    if receipt.model_used:
+        lines.append(f"{_INDENT}Model, który odpowiedział: {receipt.model_used}")
     return lines
 
 

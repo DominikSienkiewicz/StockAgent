@@ -72,9 +72,7 @@ def test_the_guard_sees_the_old_evaluate_pattern(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert {"src.config", "src.infrastructure.adapters.supabase_repo"} <= _imported_modules(
-        legacy
-    )
+    assert {"src.config", "src.infrastructure.adapters.supabase_repo"} <= _imported_modules(legacy)
 
 
 # --- TEST-05: czystość domeny i kierunek zależności ---------------------------

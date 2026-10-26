@@ -57,8 +57,8 @@ from src.application.report_styles import EMAIL_STYLESHEET
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_chip_labels
 from src.application.report_track_record import TrackRecordStats
 from src.application.report_user_portfolio import portfolio_change_view
-from src.application.reporting.registry import REPORT_SECTIONS
-from src.application.reporting.section import SectionInput
+from src.application.reporting.registry import COMPACT_REPORT_SECTIONS, REPORT_SECTIONS
+from src.application.reporting.section import ReportSection, SectionInput
 from src.application.run_context import RunContext
 from src.application.source_health import SourceHealth
 from src.application.use_cases.monitor_macro_risk import MacroRiskReport
@@ -73,10 +73,10 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.earnings import EarningsEvent
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import CycleCost
+from src.domain.finops import BudgetBreach, CycleCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.invalidation import Invalidation
-from src.domain.isotonic_calibration import IsotonicMap
+from src.domain.isotonic_calibration import ClassIsotonicSelection, IsotonicMap
 from src.domain.macro_rates import YieldCurveSnapshot
 from src.domain.persona_track_record import PersonaTrackRecord
 from src.domain.polish_labels import trend_forecast_label
@@ -93,6 +93,7 @@ from src.domain.value_objects import (
     ValuationVerdict,
     to_percent,
 )
+from src.domain.watchlist import EffectiveWatchlist
 
 __all__ = [
     "PortfolioMood",
@@ -152,9 +153,7 @@ def _cluster_exposure_per_symbol(
     exposures = portfolio.cluster_exposure(clusters, current_prices)
     by_cluster = {e.cluster: e.weight for e in exposures}
     return {
-        symbol: by_cluster[cluster]
-        for symbol, cluster in clusters.items()
-        if cluster in by_cluster
+        symbol: by_cluster[cluster] for symbol, cluster in clusters.items() if cluster in by_cluster
     }
 
 
@@ -211,14 +210,10 @@ def to_lead_signals(
                 price_delta_pct=PriceDelta(r.delta).percent,
                 council_verdict=r.council_verdict,
                 resolved_label=labels.get(r.symbol),
-                position_weight=(
-                    portfolio_weights.get(r.symbol) if portfolio_weights else None
-                ),
+                position_weight=(portfolio_weights.get(r.symbol) if portfolio_weights else None),
                 crossed_volatility_gate=r.status == "saved",
                 consensus_shift=shifts.get(r.symbol),
-                insider_buy_label=_insider_buy_label(
-                    alpha_signals, r.symbol, insider_lead_window
-                ),
+                insider_buy_label=_insider_buy_label(alpha_signals, r.symbol, insider_lead_window),
                 shock_pct=shocks.get(r.symbol),
                 analyst_revision_label=_analyst_revision_label(alpha_signals, r.symbol),
                 earnings_event=earnings.get(r.symbol),
@@ -271,17 +266,13 @@ def _weight_prices(
     return portfolio.pln_prices(prices, rates).prices
 
 
-def _report_prices(
-    results: list[SymbolResult], context: ReportContext
-) -> dict[str, Decimal]:
+def _report_prices(results: list[SymbolResult], context: ReportContext) -> dict[str, Decimal]:
     """#15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione cenami pozycji
     spoza watchlisty (`held_prices`). Cena z cyklu ma pierwszeństwo."""
     return {**(context.held_prices or {}), **_current_prices_of(results)}
 
 
-def build_cycle_lead(
-    results: list[SymbolResult], context: ReportContext
-) -> list[LeadItem]:
+def build_cycle_lead(results: list[SymbolResult], context: ReportContext) -> list[LeadItem]:
     """#1/PORT-10: lead cyklu — jedno źródło dla treści maila i jego tematu.
 
     Gdy znamy realny portfel, sygnały niosą wagi pozycji, więc ruch i sygnał
@@ -347,6 +338,7 @@ def build_cycle_signals(
         hit_sample=hit_sample,
         calibration_buckets=context.signal_calibration_buckets,
         isotonic_calibration=context.signal_isotonic_calibration,
+        isotonic_class_calibration=context.signal_isotonic_class_calibration,
         portfolio_weights=portfolio.weights(weight_prices) if portfolio is not None else None,
         cluster_exposures=_cluster_exposure_per_symbol(
             portfolio, context.portfolio_clusters, weight_prices
@@ -472,6 +464,9 @@ class ReportContext:
     # ML-28: mapa izotoniczna, która wygrała poza próbą — zastępuje w rankingu
     # shrinkage kubełkowy (None = kubełki albo surowa pewność, jak dotąd).
     signal_isotonic_calibration: IsotonicMap | None = None
+    # ML-54: decyzje mapy per klasa aktywa (krypto vs reszta) — ranking bierze mapę
+    # klasy symbolu zamiast globalnej (None = sama mapa globalna, jak dotąd).
+    signal_isotonic_class_calibration: ClassIsotonicSelection | None = None
     cycle_maturity: CycleMaturity | None = None
     portfolio_sectors: Mapping[str, int] | None = None
     model_scorecard: ModelScorecardView | None = None
@@ -500,6 +495,10 @@ class ReportContext:
     # `user_portfolio` jest ignorowane (nigdy VaR na równych wagach).
     position_risk: PositionRisk | None = None
     cycle_cost: CycleCost | None = None
+    # FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls` — cykl bez
+    # płatnych wywołań, banner limitów na górze maila. None = limit nie wyczerpany
+    # (albo wyłączony, albo odczyt ledgera padł — fail-open), mail jak przed FIN-25.
+    llm_budget_breach: BudgetBreach | None = None
     # WIA-17/22/23/31/32/36: dowód trafności i Brier pod sekcją Track Record.
     track_record_stats: TrackRecordStats | None = None
     # WIA-54: krzywa „od otwarcia” obok krzywej od ceny predykcji (te same transakcje).
@@ -538,6 +537,10 @@ class ReportContext:
     # sama flaga) — kandydat leadu na pozycji z portfela. None = flaga off albo brak
     # portfela.
     earnings_soon: tuple[EarningsEvent, ...] | None = None
+    # MAIL-45: efektywna watchlista cyklu (config.toml minus wyciszenia z bota) —
+    # linia „watchlista: N z config − K wyciszone” w Zapleczu. None = flaga
+    # `symbol_mutes_enabled` off, mail bajt w bajt jak przed MAIL-45.
+    watchlist_mutes: EffectiveWatchlist | None = None
 
 
 def _section_input(
@@ -596,25 +599,32 @@ def build_html_report(
     started_at: datetime,
     duration_seconds: float,
     context: ReportContext | None = None,
+    *,
+    compact: bool = False,
 ) -> tuple[str, str]:
     """Zwraca (html_body, plain_text) — oba reprezentacje raportu.
 
     `context` niesie opcjonalne dane sekcji (patrz `ReportContext`). Brak
     kontekstu = raport z samych wyników cyklu: sekcje bez danych się chowają.
+    `compact` (MAIL-35) = zwarty mail cichego dnia (`COMPACT_REPORT_SECTIONS`).
     """
     context = context or ReportContext()
     data = _section_input(results, started_at, duration_seconds, context)
-    return _email_document(_compact_markup(_render_html(data))), _render_text(data)
+    sections = COMPACT_REPORT_SECTIONS if compact else REPORT_SECTIONS
+    return (
+        _email_document(_compact_markup(_render_html(data, sections))),
+        _render_text(data, sections),
+    )
 
 
-def _render_html(data: SectionInput) -> str:
+def _render_html(data: SectionInput, sections: Sequence[ReportSection]) -> str:
     """ARCH-12: HTML maila — fragmenty sekcji rejestru w jego kolejności."""
-    return "".join(section.render_html(data) for section in REPORT_SECTIONS)
+    return "".join(section.render_html(data) for section in sections)
 
 
-def _render_text(data: SectionInput) -> str:
+def _render_text(data: SectionInput, sections: Sequence[ReportSection]) -> str:
     """ARCH-12: wersja tekstowa — linie sekcji rejestru w tej samej kolejności."""
-    return "\n".join(line for section in REPORT_SECTIONS for line in section.render_text(data))
+    return "\n".join(line for section in sections for line in section.render_text(data))
 
 
 # ---------------------------------------------------------------------------
@@ -715,9 +725,7 @@ def to_symbol_result(
 
     # Q6: odznaki proweniencji — z degraded_reason, wieku fundamentów (TTL) i
     # data_quality_flags. Cała ocena progu żyje w domenie (build_provenance_badges).
-    fundamentals_fetched_at = (
-        fundamentals.fetched_at if fundamentals is not None else None
-    )
+    fundamentals_fetched_at = fundamentals.fetched_at if fundamentals is not None else None
     provenance_badges = build_provenance_badges(
         degraded_reason=sentiment.get("degraded_reason"),
         fundamentals_fetched_at=fundamentals_fetched_at,
@@ -821,8 +829,7 @@ def _clean_reflection(raw_ctx: Any) -> str | None:
 def _extract_top_news(news_items: list[dict[str, Any]], top_n: int = 2) -> list[TopNewsItem]:
     """Top N artykułów po relevance_score (z bonusem dla high-sentiment)."""
     valid = [
-        item for item in news_items
-        if item.get("relevance_score") is not None and item.get("title")
+        item for item in news_items if item.get("relevance_score") is not None and item.get("title")
     ]
     sorted_news = sorted(valid, key=lambda x: float(x["relevance_score"] or 0), reverse=True)
     return [

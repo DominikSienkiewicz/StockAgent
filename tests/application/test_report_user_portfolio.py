@@ -75,9 +75,7 @@ class TestStaleBadge:
         # as_of 10 dni temu > próg 7 dni → STALE → badge (P/L może być fałszywy).
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=10)
 
-        html = render_user_portfolio_html(
-            portfolio, {"AAPL": Decimal("110")}, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, {"AAPL": Decimal("110")}, now=_NOW)
 
         assert "STALE" in html
         assert "nieaktualn" in html.lower()
@@ -85,27 +83,21 @@ class TestStaleBadge:
     def test_stale_portfolio_shows_badge_in_text(self) -> None:
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=10)
 
-        text = render_user_portfolio_text(
-            portfolio, {"AAPL": Decimal("110")}, now=_NOW
-        )
+        text = render_user_portfolio_text(portfolio, {"AAPL": Decimal("110")}, now=_NOW)
 
         assert "STALE" in text
 
     def test_fresh_portfolio_has_no_badge_html(self) -> None:
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=0)
 
-        html = render_user_portfolio_html(
-            portfolio, {"AAPL": Decimal("110")}, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, {"AAPL": Decimal("110")}, now=_NOW)
 
         assert "STALE" not in html
 
     def test_fresh_portfolio_has_no_badge_text(self) -> None:
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=0)
 
-        text = render_user_portfolio_text(
-            portfolio, {"AAPL": Decimal("110")}, now=_NOW
-        )
+        text = render_user_portfolio_text(portfolio, {"AAPL": Decimal("110")}, now=_NOW)
 
         assert "STALE" not in text
 
@@ -115,9 +107,7 @@ class TestNegativePnl:
         # Cena spadła 100 → 80: strata −200 USD na 10 szt. NIE ukrywamy jej.
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=0)
 
-        html = render_user_portfolio_html(
-            portfolio, {"AAPL": Decimal("80")}, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, {"AAPL": Decimal("80")}, now=_NOW)
 
         assert "AAPL" in html
         assert "#dc2626" in html  # kolor straty
@@ -126,9 +116,7 @@ class TestNegativePnl:
     def test_loss_is_rendered_not_hidden_text(self) -> None:
         portfolio = _portfolio((_pos("AAPL", "10", "100"),), as_of_days_ago=0)
 
-        text = render_user_portfolio_text(
-            portfolio, {"AAPL": Decimal("80")}, now=_NOW
-        )
+        text = render_user_portfolio_text(portfolio, {"AAPL": Decimal("80")}, now=_NOW)
 
         assert "AAPL" in text
         assert "-$200,00" in text
@@ -190,12 +178,8 @@ class TestClusterWarning:
         }
         clusters = {"NVDA": "SEMI", "AMD": "SEMI", "TSM": "SEMI"}
 
-        html = render_user_portfolio_html(
-            portfolio, prices, clusters=clusters, now=_NOW
-        )
-        text = render_user_portfolio_text(
-            portfolio, prices, clusters=clusters, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, prices, clusters=clusters, now=_NOW)
+        text = render_user_portfolio_text(portfolio, prices, clusters=clusters, now=_NOW)
 
         assert "to jeden sektor «SEMI»" in html
         assert "to jeden sektor «SEMI»" in text
@@ -210,9 +194,7 @@ class TestClusterWarning:
         }
         clusters = {"NVDA": "A", "AMD": "B", "TSM": "C"}
 
-        html = render_user_portfolio_html(
-            portfolio, prices, clusters=clusters, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, prices, clusters=clusters, now=_NOW)
 
         assert "to jeden sektor" not in html
 
@@ -223,13 +205,9 @@ class TestClusterWarning:
 
 class TestEscaping:
     def test_symbol_is_escaped_in_html(self) -> None:
-        portfolio = _portfolio(
-            (_pos("<b>X</b>", "10", "100"),), as_of_days_ago=0
-        )
+        portfolio = _portfolio((_pos("<b>X</b>", "10", "100"),), as_of_days_ago=0)
 
-        html = render_user_portfolio_html(
-            portfolio, {"<b>X</b>": Decimal("110")}, now=_NOW
-        )
+        html = render_user_portfolio_html(portfolio, {"<b>X</b>": Decimal("110")}, now=_NOW)
 
         assert "<b>X</b>" not in html
         assert "&lt;b&gt;X&lt;/b&gt;" in html
@@ -324,11 +302,17 @@ class TestPortfolioChange:
 
     def test_change_in_pln_when_the_rate_is_known(self) -> None:
         html = render_user_portfolio_html(
-            self._PORTFOLIO, self._CURRENT, now=_NOW, change=self._change(),
+            self._PORTFOLIO,
+            self._CURRENT,
+            now=_NOW,
+            change=self._change(),
             usd_pln=Decimal("4.00"),
         )
         text = render_user_portfolio_text(
-            self._PORTFOLIO, self._CURRENT, now=_NOW, change=self._change(),
+            self._PORTFOLIO,
+            self._CURRENT,
+            now=_NOW,
+            change=self._change(),
             usd_pln=Decimal("4.00"),
         )
 
@@ -337,7 +321,10 @@ class TestPortfolioChange:
 
     def test_after_a_pause_the_section_says_since_when(self) -> None:
         html = render_user_portfolio_html(
-            self._PORTFOLIO, self._CURRENT, now=_NOW, change=self._change(),
+            self._PORTFOLIO,
+            self._CURRENT,
+            now=_NOW,
+            change=self._change(),
             change_label="od 19.09.2026",
         )
 
@@ -383,8 +370,9 @@ class TestPortfolioChange:
 _BOUGHT = date(2025, 3, 3)
 
 
-def _lot(symbol: str, qty: str, price: str, currency: str = "USD",
-         day: date | None = _BOUGHT) -> Position:
+def _lot(
+    symbol: str, qty: str, price: str, currency: str = "USD", day: date | None = _BOUGHT
+) -> Position:
     return Position(
         symbol=symbol,
         quantity=Decimal(qty),
@@ -435,8 +423,7 @@ class TestPlnPnlColumns:
         assert "+440,00\u00a0zł" not in text
 
     def test_missing_nbp_rate_of_the_purchase_day_has_its_own_note(self) -> None:
-        portfolio = _portfolio((_lot("AAPL", "10", "100", day=date(2024, 1, 2)),),
-                               as_of_days_ago=0)
+        portfolio = _portfolio((_lot("AAPL", "10", "100", day=date(2024, 1, 2)),), as_of_days_ago=0)
 
         text = render_user_portfolio_text(
             portfolio, {"AAPL": Decimal("110")}, now=_NOW, pln_rates=_RATES
@@ -496,8 +483,11 @@ class TestPlnPnlColumns:
         portfolio = _portfolio((_lot("AAPL", "10", "100"),), as_of_days_ago=0)
 
         html = render_user_portfolio_html(
-            portfolio, {"AAPL": Decimal("100")}, now=_NOW,
-            usd_pln=Decimal("3.00"), pln_rates=_RATES,
+            portfolio,
+            {"AAPL": Decimal("100")},
+            now=_NOW,
+            usd_pln=Decimal("3.00"),
+            pln_rates=_RATES,
         )
 
         assert "USD/PLN 3,00" not in html
@@ -519,9 +509,7 @@ class TestChangeInPln:
         change = self._change()
 
         box = render_portfolio_change_box_html(change, usd_pln=Decimal("4.00"), currency="PLN")
-        line = render_portfolio_change_text_line(
-            change, usd_pln=Decimal("4.00"), currency="PLN"
-        )
+        line = render_portfolio_change_text_line(change, usd_pln=Decimal("4.00"), currency="PLN")
 
         assert "+400,00 zł" in box
         assert "1 600,00" not in box
@@ -531,8 +519,12 @@ class TestChangeInPln:
         portfolio = _portfolio((_lot("NVDA", "10", "100"),), as_of_days_ago=0)
 
         text = render_user_portfolio_text(
-            portfolio, {"NVDA": Decimal("110")}, now=_NOW, pln_rates=_RATES,
-            change=self._change(), change_currency="PLN",
+            portfolio,
+            {"NVDA": Decimal("110")},
+            now=_NOW,
+            pln_rates=_RATES,
+            change=self._change(),
+            change_currency="PLN",
         )
 
         assert (

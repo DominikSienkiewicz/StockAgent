@@ -59,9 +59,7 @@ class TestInverseAndSafeHavenAlerts:
             MacroRiskInstrumentType.SAFE_HAVEN,
         ],
     )
-    def test_small_move_is_normal(
-        self, instrument: MacroRiskInstrumentType
-    ) -> None:
+    def test_small_move_is_normal(self, instrument: MacroRiskInstrumentType) -> None:
         sig = _signal(instrument, "100", "100.5")  # +0.5%
         assert sig.evaluate_alert() is MacroAlertLevel.NORMAL
 
@@ -73,9 +71,7 @@ class TestInverseAndSafeHavenAlerts:
             MacroRiskInstrumentType.SAFE_HAVEN,
         ],
     )
-    def test_moderate_rise_is_elevated(
-        self, instrument: MacroRiskInstrumentType
-    ) -> None:
+    def test_moderate_rise_is_elevated(self, instrument: MacroRiskInstrumentType) -> None:
         sig = _signal(instrument, "100", "102")  # +2%
         assert sig.evaluate_alert() is MacroAlertLevel.ELEVATED
 
@@ -86,9 +82,7 @@ class TestInverseAndSafeHavenAlerts:
             MacroRiskInstrumentType.VOLATILITY,
         ],
     )
-    def test_large_rise_is_critical(
-        self, instrument: MacroRiskInstrumentType
-    ) -> None:
+    def test_large_rise_is_critical(self, instrument: MacroRiskInstrumentType) -> None:
         sig = _signal(instrument, "100", "104")  # +4%
         assert sig.evaluate_alert() is MacroAlertLevel.CRITICAL
 

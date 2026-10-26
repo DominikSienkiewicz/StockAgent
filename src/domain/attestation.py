@@ -81,9 +81,7 @@ def _json_default(value: Any) -> str:
     raise TypeError(f"Typ nieserializowalny w attestation payload: {type(value).__name__}")
 
 
-def canonicalize(
-    payload: Mapping[str, Any], *, schema_version: int = SCHEMA_VERSION_V1
-) -> str:
+def canonicalize(payload: Mapping[str, Any], *, schema_version: int = SCHEMA_VERSION_V1) -> str:
     """Deterministyczna, kanoniczna serializacja payloadu do JSON.
 
     Reguła (ZAMROŻONA — patrz docstring modułu):
@@ -150,9 +148,7 @@ def verify(
     z JSONL/GitHuba może być zapisany wielkimi literami). Używamy
     `hmac.compare_digest`, by uniknąć wycieku informacji przez czas porównania.
     """
-    return verify_canonical(
-        canonicalize(payload, schema_version=schema_version), salt, commitment
-    )
+    return verify_canonical(canonicalize(payload, schema_version=schema_version), salt, commitment)
 
 
 def verify_canonical(canonical: str, salt: str, commitment: str) -> bool:
@@ -388,6 +384,26 @@ def verify_inclusion(
             computed = _node_hash(computed, node)
         fn, sn = fn >> 1, sn >> 1
     return sn == 0 and hmac.compare_digest(computed.hex(), root.lower())
+
+
+# WIA-73: artefakt wpisu `hashedrekord` w logu przejrzystości (Sigstore Rekor) to 32 bajty
+# rootu cyklu, nie jego tekst hex: wpis wiąże dokładnie root z linii ledgera, a weryfikator
+# liczy ten sam SHA-256. ZAMROŻONE jak kanonizacja — zmiana reguły odcina weryfikację
+# opublikowanych wpisów.
+_ROOT_BYTES = 32
+
+
+def root_artifact(root: str) -> bytes:
+    """32 bajty rootu cyklu — artefakt podpisywany i logowany w Rekorze."""
+    artifact = _hex_bytes(root)
+    if len(artifact) != _ROOT_BYTES:
+        raise ValueError(f"Root cyklu ma {len(artifact)} bajtów zamiast {_ROOT_BYTES}")
+    return artifact
+
+
+def root_artifact_sha256(root: str) -> str:
+    """SHA-256 (hex) artefaktu rootu — pole `spec.data.hash.value` wpisu `hashedrekord`."""
+    return hashlib.sha256(root_artifact(root)).hexdigest()
 
 
 def cycle_leaves(commitments: Iterable[str]) -> tuple[str, ...]:

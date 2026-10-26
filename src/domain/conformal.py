@@ -117,9 +117,7 @@ def split_conformal_interval(
     return point - q, point + q
 
 
-def empirical_return_interval(
-    returns: Sequence[float], alpha: float
-) -> tuple[float, float] | None:
+def empirical_return_interval(returns: Sequence[float], alpha: float) -> tuple[float, float] | None:
     """Cold-start (predyktor 0): kwantyle skończonej próby zwrotów, po α/2 na ogon.
 
     Dolny = `floor((n+1)·α/2)`-ty, górny = `ceil((n+1)(1−α/2))`-ty najmniejszy
@@ -207,9 +205,7 @@ def move_interval(
         point = recent[t]
         center = 0.0 if cold_start else point.predicted_return
         low, high = _clamped_interval(recent[:t], center, alpha_t, cold_start=cold_start)
-        alpha_t = aci_step(
-            alpha_t, low <= point.realized_return <= high, alpha=alpha, gamma=gamma
-        )
+        alpha_t = aci_step(alpha_t, low <= point.realized_return <= high, alpha=alpha, gamma=gamma)
     center = 0.0 if cold_start else predicted_return
     low, high = _clamped_interval(recent, center, alpha_t, cold_start=cold_start)
     return MoveInterval(

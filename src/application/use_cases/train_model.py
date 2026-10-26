@@ -205,14 +205,10 @@ class TrainModelUseCase:
         porównuje zwroty cykli gated i non-gated. Za mało wierszy → `SKIPPED`
         z liczbą próbek (pusta baza mówi to wprost)."""
         n_snapshots, labeled, series = self._labeled_snapshots(symbols)
-        free_rows = [
-            (free_model_vector(item.snapshot.features), item) for item in labeled
-        ]
+        free_rows = [(free_model_vector(item.snapshot.features), item) for item in labeled]
         llm_rows = _llm_rows(labeled)
         result = SnapshotModelsResult(
-            free_model=self._evaluate_snapshot_rows(
-                free_rows, series, "the free-feature model"
-            ),
+            free_model=self._evaluate_snapshot_rows(free_rows, series, "the free-feature model"),
             llm_model=self._evaluate_snapshot_rows(
                 llm_rows, series, "the LLM-feature model (gated cycles)"
             ),
@@ -231,9 +227,7 @@ class TrainModelUseCase:
                     logger.exception("Failed to persist the %s scorecard", symbol)
         return result
 
-    def run_direction_variant(
-        self, symbols: Sequence[str], *, dead_band: float
-    ) -> DirectionReport:
+    def run_direction_variant(self, symbols: Sequence[str], *, dead_band: float) -> DirectionReport:
         """ML-30 — wariant binarny P(zwrot > +`dead_band`) na próbce modelu wspólnego
         (surowe zwroty, także przy flagze ML-11), z tym samym purgem foldów. Wagi
         championa się nie zmieniają; poniżej minimum wierszy poza martwą strefą —
@@ -415,11 +409,7 @@ class TrainModelUseCase:
         in_sigma = self._sigma_target if sigma_units is None else sigma_units
         if self._snapshot_source:
             return self._pooled_snapshot_set(symbols, sigma_units=in_sigma)
-        rows = [
-            row
-            for symbol in dict.fromkeys(symbols)
-            for row in self._feature_rows(symbol)
-        ]
+        rows = [row for symbol in dict.fromkeys(symbols) for row in self._feature_rows(symbol)]
 
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
             return self._pooled_skipped("Not enough samples for the pooled model", len(rows))
@@ -427,16 +417,12 @@ class TrainModelUseCase:
         df = _valid_rows(rows)
 
         if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return self._pooled_skipped(
-                "Not enough valid samples for the pooled model", len(df)
-            )
+            return self._pooled_skipped("Not enough valid samples for the pooled model", len(df))
 
         overlap = _label_overlap(df)
         _log_label_overlap(overlap)
         stamps = pd.to_datetime(df["timestamp"], utc=True)
-        df = df.assign(_global_time=stamps).sort_values(
-            ["_global_time", "symbol"], kind="stable"
-        )
+        df = df.assign(_global_time=stamps).sort_values(["_global_time", "symbol"], kind="stable")
         target = df[TARGET_COLUMN]
         if in_sigma:
             sigmas = self._row_sigmas(df["symbol"], df["_global_time"])
@@ -503,7 +489,6 @@ class TrainModelUseCase:
             raise RuntimeError("Training from price snapshots needs a TrainingDataPort (DI)")
         return self._training_data
 
-
     def _pooled_snapshot_set(
         self, symbols: Sequence[str], *, sigma_units: bool
     ) -> TrainingSet | TrainingReport:
@@ -514,9 +499,7 @@ class TrainModelUseCase:
         in_units = self._in_target_units(_llm_rows(labeled), series, sigma_units=sigma_units)
         if len(in_units) < MIN_SAMPLES_FOR_TRAINING:
             return _skipped(
-                self._snapshot_reason(
-                    "the pooled model (gated cycles)", sigma_units=sigma_units
-                ),
+                self._snapshot_reason("the pooled model (gated cycles)", sigma_units=sigma_units),
                 len(in_units),
                 feature_set_version=SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
             )
@@ -534,8 +517,7 @@ class TrainModelUseCase:
         nie może cicho zatrzymać jedynego zapisu wag — ostrzeżenie z liczbą próbek."""
         if self._feature_set_version is not None:
             logger.warning(
-                "Pooled model skipped: feature set version %d leaves %s samples "
-                "(minimum %d)",
+                "Pooled model skipped: feature set version %d leaves %s samples (minimum %d)",
                 self._feature_set_version,
                 n_samples,
                 MIN_SAMPLES_FOR_TRAINING,

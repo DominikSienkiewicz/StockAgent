@@ -179,9 +179,7 @@ def test_fully_gated_cycle_has_a_zero_bound() -> None:
     assert estimate_cycle_cost(bound.calls).total_usd == 0.0
 
 
-@pytest.mark.parametrize(
-    "field", ["n_gated", "n_av_symbols", "personas", "tool_rounds"]
-)
+@pytest.mark.parametrize("field", ["n_gated", "n_av_symbols", "personas", "tool_rounds"])
 def test_upper_bound_rejects_negative_inputs(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         _bound(**cast(dict[str, Any], {field: -1}))
@@ -193,9 +191,7 @@ def test_upper_bound_rejects_negative_inputs(field: str) -> None:
 def test_av_budget_flags_worst_case_above_capacity() -> None:
     from src.domain.finops import AV_DAILY_REQUESTS_PER_KEY, av_daily_budget
 
-    over = av_daily_budget(
-        n_av_symbols=43, requests_per_symbol=1, cycles_per_day=1, n_keys=1
-    )
+    over = av_daily_budget(n_av_symbols=43, requests_per_symbol=1, cycles_per_day=1, n_keys=1)
 
     assert AV_DAILY_REQUESTS_PER_KEY == 25
     assert over.ok is False
@@ -264,6 +260,49 @@ def test_paid_budget_rejects_negative_spend() -> None:
 
     with pytest.raises(ValueError, match="spent_calls"):
         paid_budget_allows(-1, 10)
+
+
+class TestShadowCallAllowed:
+    """EXP-26: wywołanie wariantu w cieniu liczy się do sufitu cyklu (idzie tylko
+    w luzie pod `cap` liczonym ze wszystkich wywołań LLM), ale nie zabiera
+    przydziału produkcji — `PAID_LLM_SOURCES` go nie zawiera."""
+
+    def test_shadow_source_is_outside_the_production_ceiling(self) -> None:
+        from src.domain.finops import PAID_LLM_SOURCES, SHADOW_LLM_SOURCE
+
+        assert SHADOW_LLM_SOURCE not in PAID_LLM_SOURCES
+
+    def test_allowed_while_every_llm_call_of_the_cycle_stays_within_the_cap(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        calls = {"llm": 4, "council_llm": 4, "shadow_llm": 1, "sentiment": 9}
+
+        assert shadow_call_allowed(calls, cap=10, max_shadow_calls=3) is True
+        assert shadow_call_allowed({**calls, "llm": 5}, cap=10, max_shadow_calls=3) is False
+
+    def test_never_overshoots_the_cap_unlike_the_soft_production_ceiling(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({"llm": 12}, cap=10, max_shadow_calls=3) is False
+
+    def test_stops_at_the_configured_number_of_shadow_calls(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({"shadow_llm": 2}, cap=None, max_shadow_calls=3) is True
+        assert shadow_call_allowed({"shadow_llm": 3}, cap=None, max_shadow_calls=3) is False
+
+    def test_hard_cap_wins_over_a_larger_configured_number(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+        from src.domain.shadow_prompt import SHADOW_PROMPT_MAX_PER_CYCLE
+
+        spent = {"shadow_llm": SHADOW_PROMPT_MAX_PER_CYCLE}
+
+        assert shadow_call_allowed(spent, cap=None, max_shadow_calls=50) is False
+
+    def test_zero_shadow_calls_configured_allows_none(self) -> None:
+        from src.domain.finops import shadow_call_allowed
+
+        assert shadow_call_allowed({}, cap=None, max_shadow_calls=0) is False
 
 
 def test_paid_llm_calls_count_the_prediction_and_the_council_only() -> None:
@@ -454,9 +493,7 @@ def test_cycle_cost_takes_token_costs_and_falls_back_per_source() -> None:
 
     calls = {"llm": 2, "sentiment": 2, "council_llm": 8}
 
-    cost = estimate_cycle_cost(
-        calls, token_costs={"llm": 0.012}, priced_as_of=date(2026, 10, 20)
-    )
+    cost = estimate_cycle_cost(calls, token_costs={"llm": 0.012}, priced_as_of=date(2026, 10, 20))
 
     lines = {line.source: line for line in cost.lines}
     assert lines["llm"].from_tokens is True
@@ -515,8 +552,13 @@ def test_capped_bound_without_a_ceiling_is_the_plain_bound() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     capped = capped_cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
-        cap=None, concurrency=4,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=None,
+        concurrency=4,
     )
     plain = cycle_call_upper_bound(
         n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0
@@ -532,8 +574,13 @@ def test_ceiling_bounds_council_requests_by_cap_and_concurrency() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=42, n_av_symbols=42, personas=7, debate=False, tool_rounds=0,
-        cap=100, concurrency=4,
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=100,
+        concurrency=4,
     )
 
     assert bound.calls["council_llm"] == 131
@@ -553,8 +600,13 @@ def test_ceiling_cuts_analysed_symbols_but_not_their_diagnoses() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=10, n_av_symbols=10, personas=0, debate=False, tool_rounds=0,
-        cap=3, concurrency=1,
+        n_gated=10,
+        n_av_symbols=10,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
+        cap=3,
+        concurrency=1,
     )
 
     assert bound.calls["llm"] == 3 * 2 + 7
@@ -569,8 +621,13 @@ def test_ceiling_never_raises_the_plain_bound() -> None:
     from src.domain.finops import capped_cycle_call_upper_bound
 
     bound = capped_cycle_call_upper_bound(
-        n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3,
-        cap=1000, concurrency=4,
+        n_gated=2,
+        n_av_symbols=1,
+        personas=7,
+        debate=True,
+        tool_rounds=3,
+        cap=1000,
+        concurrency=4,
     )
     plain = cycle_call_upper_bound(
         n_gated=2, n_av_symbols=1, personas=7, debate=True, tool_rounds=3
@@ -586,8 +643,13 @@ def test_capped_bound_rejects_an_empty_ceiling_or_pool(cap: int, concurrency: in
 
     with pytest.raises(ValueError, match="must be >= 1"):
         capped_cycle_call_upper_bound(
-            n_gated=1, n_av_symbols=1, personas=7, debate=False, tool_rounds=0,
-            cap=cap, concurrency=concurrency,
+            n_gated=1,
+            n_av_symbols=1,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            cap=cap,
+            concurrency=concurrency,
         )
 
 
@@ -638,3 +700,206 @@ def test_weekly_budget_rejects_invalid_inputs(
 
     with pytest.raises(ValueError, match=field):
         weekly_cost_budget(bound, cycles_per_day=cycles_per_day, budget_usd=budget_usd)
+
+
+# --- WIA-11: eskalacje frontiera (FIN-21) i wariant w cieniu (EXP-26) w granicy ----
+
+
+def test_bound_without_escalations_and_shadow_is_the_bound_of_today() -> None:
+    explicit = cycle_call_upper_bound(
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=True,
+        tool_rounds=3,
+        max_escalations=0,
+        max_shadow_calls=0,
+    )
+    plain = _bound(n_gated=42, n_av_symbols=42, debate=True, tool_rounds=3)
+
+    assert dict(explicit.calls) == dict(plain.calls)
+    assert set(explicit.calls) == set(UNIT_COST_USD)
+
+
+def test_frontier_escalations_add_llm_calls_up_to_the_cascade_ceiling() -> None:
+    # FIN-21: eskalacja to drugi request `llm` po niepewnej odpowiedzi taniego modelu,
+    # najwyżej `routing_max_escalations` razy na cykl.
+    bound = cycle_call_upper_bound(
+        n_gated=10,
+        n_av_symbols=10,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        max_escalations=5,
+    )
+
+    assert bound.calls["llm"] == 10 * 2 + 5
+    assert bound.calls["council_llm"] == 10 * 8
+
+
+def test_escalations_never_outnumber_the_answers_that_can_escalate() -> None:
+    # Bez rady eskalować może tylko `analyze` predykcji — jedno na symbol za bramką;
+    # diagnoza pomyłki (`analyze_mistake`) zawsze idzie do taniego modelu.
+    bound = cycle_call_upper_bound(
+        n_gated=2,
+        n_av_symbols=2,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
+        max_escalations=5,
+    )
+
+    assert bound.calls["llm"] == 2 * 2 + 2
+    assert _escalated_llm(n_gated=0, max_escalations=5) == 0
+
+
+def _escalated_llm(*, n_gated: int, max_escalations: int) -> int:
+    return cycle_call_upper_bound(
+        n_gated=n_gated,
+        n_av_symbols=n_gated,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        max_escalations=max_escalations,
+    ).calls["llm"]
+
+
+def test_shadow_calls_are_a_separate_source_capped_by_the_hard_limit() -> None:
+    from src.domain.finops import SHADOW_LLM_SOURCE
+    from src.domain.shadow_prompt import SHADOW_PROMPT_MAX_PER_CYCLE
+
+    def shadow(n_gated: int, max_shadow_calls: int) -> int:
+        return cycle_call_upper_bound(
+            n_gated=n_gated,
+            n_av_symbols=n_gated,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            max_shadow_calls=max_shadow_calls,
+        ).calls.get(SHADOW_LLM_SOURCE, 0)
+
+    assert shadow(n_gated=10, max_shadow_calls=3) == 3
+    # Jedno wywołanie wariantu na symbol za bramką z podpróbki.
+    assert shadow(n_gated=2, max_shadow_calls=3) == 2
+    assert shadow(n_gated=10, max_shadow_calls=50) == SHADOW_PROMPT_MAX_PER_CYCLE
+    assert shadow(n_gated=0, max_shadow_calls=3) == 0
+
+
+def test_shadow_calls_do_not_change_the_production_sources() -> None:
+    with_shadow = cycle_call_upper_bound(
+        n_gated=10,
+        n_av_symbols=10,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        max_shadow_calls=3,
+    )
+    plain = _bound(n_gated=10, n_av_symbols=10)
+
+    assert {k: v for k, v in with_shadow.calls.items() if k in UNIT_COST_USD} == dict(plain.calls)
+
+
+def test_ceiling_bounds_shadow_calls_by_its_slack() -> None:
+    # EXP-26: cień idzie tylko, gdy wszystkie wywołania LLM cyklu z nim mieszczą się
+    # w suficie, więc przy suficie 2 nie ma ich więcej niż 2.
+    from src.domain.finops import SHADOW_LLM_SOURCE, capped_cycle_call_upper_bound
+
+    bound = capped_cycle_call_upper_bound(
+        n_gated=10,
+        n_av_symbols=10,
+        personas=0,
+        debate=False,
+        tool_rounds=0,
+        cap=2,
+        concurrency=1,
+        max_shadow_calls=3,
+    )
+
+    assert bound.calls[SHADOW_LLM_SOURCE] == 2
+
+
+def test_ceiling_keeps_the_escalations_of_the_admitted_symbols() -> None:
+    from src.domain.finops import capped_cycle_call_upper_bound
+
+    bound = capped_cycle_call_upper_bound(
+        n_gated=42,
+        n_av_symbols=42,
+        personas=7,
+        debate=False,
+        tool_rounds=0,
+        cap=100,
+        concurrency=4,
+        max_escalations=5,
+    )
+
+    assert bound.calls["llm"] == 84 + 5
+
+
+@pytest.mark.parametrize("field", ["max_escalations", "max_shadow_calls"])
+def test_bound_rejects_negative_escalations_or_shadow_calls(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        cycle_call_upper_bound(
+            n_gated=1,
+            n_av_symbols=1,
+            personas=7,
+            debate=False,
+            tool_rounds=0,
+            **{field: -1},
+        )
+
+
+def test_shadow_call_is_priced_like_a_prediction_call() -> None:
+    # EXP-26: wariant promptu albo modelu głównego LLM — ta sama stała co predykcja,
+    # żeby granica i sekcja kosztu nie liczyły go jako źródła spoza cennika.
+    from src.domain.finops import SHADOW_LLM_SOURCE
+
+    cost = estimate_cycle_cost({SHADOW_LLM_SOURCE: 3})
+
+    assert cost.unknown_sources == ()
+    assert cost.total_usd == pytest.approx(3 * UNIT_COST_USD["llm"])
+
+
+# ---------------------------------------------------------------------------
+# FIN-25: dzienny i miesięczny limit USD z ledgera `llm_calls`
+# ---------------------------------------------------------------------------
+
+
+def test_budget_exceeded_at_cap() -> None:
+    """Limit jest wyczerpany od chwili, gdy wydane dorówna limitowi — następny
+    cykl przebiłby go o swój koszt. Brak limitu nigdy nie zamyka cyklu."""
+    from src.domain.finops import budget_exceeded
+
+    assert budget_exceeded(5.01, 5.0) is True
+    assert budget_exceeded(5.0, 5.0) is True
+    assert budget_exceeded(4.99, 5.0) is False
+    assert budget_exceeded(1000.0, None) is False
+
+
+def test_budget_exceeded_rejects_negative_spend() -> None:
+    from src.domain.finops import budget_exceeded
+
+    with pytest.raises(ValueError, match="spent_usd"):
+        budget_exceeded(-0.01, 5.0)
+
+
+def test_budget_windows_start_at_utc_midnight_of_the_day_and_month() -> None:
+    """Okna limitu liczą się w UTC (jak reset AV i `created_at` ledgera), nie
+    w strefie maila: 00:30 w Warszawie 1 listopada to jeszcze 31 października UTC."""
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from src.domain.finops import BudgetWindow, budget_window_start
+
+    warsaw = timezone(timedelta(hours=1))
+    now = datetime(2026, 11, 1, 0, 30, tzinfo=warsaw)
+
+    assert budget_window_start(BudgetWindow.DAY, now) == datetime(2026, 10, 31, tzinfo=UTC)
+    assert budget_window_start(BudgetWindow.MONTH, now) == datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def test_budget_window_rejects_a_naive_clock() -> None:
+    from datetime import datetime
+
+    from src.domain.finops import BudgetWindow, budget_window_start
+
+    with pytest.raises(ValueError, match="timezone"):
+        budget_window_start(BudgetWindow.DAY, datetime(2026, 10, 25, 12, 0))

@@ -90,9 +90,7 @@ def build_public_status(
     return PublicStatus(
         generated_at=now,
         history_days=history_days,
-        fast_state=job_state(
-            fast_loop, None if last_fast is None else last_fast.started_at, now
-        ),
+        fast_state=job_state(fast_loop, None if last_fast is None else last_fast.started_at, now),
         last_runs=tuple(latest[loop] for loop in _ordered_loops(latest)),
         last_digest_at=max(delivered, default=None),
         paid_calls_7d=paid_7d,
@@ -204,10 +202,7 @@ def _render_costs(status: PublicStatus) -> str:
             "Cykle bez płatnych wywołań (30 dni, bramka zmienności nie wpuściła ruchu): "
             f"{status.free_cycles_30d} z {status.cycles_30d} ({share}%)."
         )
-    return (
-        "<section class='block'><h2>Koszt</h2>"
-        f"{_paragraph(calls)}{_paragraph(free)}</section>"
-    )
+    return f"<section class='block'><h2>Koszt</h2>{_paragraph(calls)}{_paragraph(free)}</section>"
 
 
 def render_status_badge(status: PublicStatus) -> dict[str, Any]:

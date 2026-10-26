@@ -135,6 +135,7 @@ class TestRateLimiter:
         with pytest.raises(ValueError):
             RateLimiter(0)
 
+
 class _ScriptedAdapter(HTTPAdapter):
     """Atrapa transportu: kolejne statusy z listy, bez sieci."""
 
@@ -154,8 +155,7 @@ class _ScriptedAdapter(HTTPAdapter):
         response._content = b"{}"
         if self._retries:
             history = tuple(
-                RequestHistory("GET", request.url, None, 429, None)
-                for _ in range(self._retries)
+                RequestHistory("GET", request.url, None, 429, None) for _ in range(self._retries)
             )
             response.raw = SimpleNamespace(retries=Retry(total=3, history=history))
         return response

@@ -29,7 +29,7 @@ def test_a_flag_that_is_off_is_never_reported() -> None:
 
 
 def test_a_flag_without_a_migration_is_never_reported() -> None:
-    assert flags_missing_migration({"debate_mode_enabled": True}, schema_version=0) == frozenset()
+    assert flags_missing_migration({"model_routing_enabled": True}, schema_version=0) == frozenset()
 
 
 def test_only_the_flags_beyond_the_schema_are_reported() -> None:
@@ -37,7 +37,7 @@ def test_only_the_flags_beyond_the_schema_are_reported() -> None:
         "receipts_enabled": True,  # 020
         "shock_alerts_enabled": True,  # 021
         "model_scorecard_enabled": True,  # 019
-        "debate_mode_enabled": True,
+        "model_routing_enabled": True,
     }
 
     assert flags_missing_migration(enabled, schema_version=20) == frozenset(

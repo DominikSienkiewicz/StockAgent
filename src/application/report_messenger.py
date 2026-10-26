@@ -120,17 +120,13 @@ def _lead_lines(lead_items: Sequence[LeadItem]) -> list[str]:
 def _ranked_entry(rank: int, signal: TradeSignal) -> str:
     """„1. 📈 NVDA 72%” — pewność skalibrowana, gdy jest historia (#9)."""
     confidence = (
-        signal.confidence
-        if signal.calibrated_confidence is None
-        else signal.calibrated_confidence
+        signal.confidence if signal.calibrated_confidence is None else signal.calibrated_confidence
     )
     arrow = _DIRECTION_ARROWS.get(signal.direction, _TREND_NEUTRAL)
     return f"{rank}. {arrow} {_shorten(signal.symbol)} {pct(confidence, decimals=0)}"
 
 
-def _signals_line(
-    results: list[SymbolResult], ranked_signals: Sequence[TradeSignal] = ()
-) -> str:
+def _signals_line(results: list[SymbolResult], ranked_signals: Sequence[TradeSignal] = ()) -> str:
     """Linia sygnałów: czołówka rankingu (MAIL-20) albo — bez rankingu — strzałka
     + ticker w kolejności cyklu, z ucięciem i podsumowaniem reszty."""
     saved = [r for r in results if r.status == "saved"]

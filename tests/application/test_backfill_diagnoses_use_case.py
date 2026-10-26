@@ -93,8 +93,10 @@ def test_update_replaces_only_the_placeholder_it_read() -> None:
 
 def test_llm_error_leaves_the_marker_and_goes_on() -> None:
     repo, llm = _ports([_deferred(1), _deferred(2)])
-    llm.analyze_mistake.side_effect = [RuntimeError("LLM down"), '{"category": "NOISE", '
-                                       '"insight": "Szum."}']
+    llm.analyze_mistake.side_effect = [
+        RuntimeError("LLM down"),
+        '{"category": "NOISE", "insight": "Szum."}',
+    ]
 
     result = BackfillDiagnosesUseCase(repo, llm, max_paid_calls=5).run()
 
@@ -127,8 +129,13 @@ def test_prompt_is_built_from_the_persisted_inputs_and_receipt() -> None:
         "schema_version": 1,
         "effective_threshold": "0.03",
         "precedents": [
-            {"id": "3f2a1b9c-aaaa", "similarity": 0.91, "predicted_trend": "BULLISH",
-             "is_trend_correct": False, "summary": "Analog: Fed podnosi stopy"},
+            {
+                "id": "3f2a1b9c-aaaa",
+                "similarity": 0.91,
+                "predicted_trend": "BULLISH",
+                "is_trend_correct": False,
+                "summary": "Analog: Fed podnosi stopy",
+            },
         ],
     }
     repo, llm = _ports([_deferred(4, receipt=receipt)])

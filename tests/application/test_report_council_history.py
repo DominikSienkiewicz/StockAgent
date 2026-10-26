@@ -41,16 +41,12 @@ class TestEmptyHistory:
 
 class TestHtmlRendering:
     def test_renders_section_header(self) -> None:
-        html = render_council_history_html(
-            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
-        )
+        html = render_council_history_html([_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])])
         assert "NVDA" in html
         assert "Soros" in html
 
     def test_renders_vote_sequence_in_order(self) -> None:
-        html = render_council_history_html(
-            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
-        )
+        html = render_council_history_html([_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])])
         # Sekwencja głosów (od najnowszego) widoczna w renderze.
         seq_pos = html.index("SPRZEDAJ")
         assert "SPRZEDAJ" in html
@@ -60,9 +56,7 @@ class TestHtmlRendering:
 
     def test_renders_buy_sell_hold_tally(self) -> None:
         # 2x SELL, 1x HOLD, 0x BUY.
-        html = render_council_history_html(
-            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
-        )
+        html = render_council_history_html([_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])])
         # Tally musi pokazać liczby dla każdej rekomendacji.
         assert "2" in html  # SELL count
         assert "1" in html  # HOLD count
@@ -84,16 +78,12 @@ class TestHtmlRendering:
         assert "Wood" in html
 
     def test_escapes_malicious_investor_name(self) -> None:
-        html = render_council_history_html(
-            [_history("<script>alert(1)</script>", "NVDA", ["BUY"])]
-        )
+        html = render_council_history_html([_history("<script>alert(1)</script>", "NVDA", ["BUY"])])
         assert "<script>alert(1)</script>" not in html
         assert "&lt;script&gt;" in html
 
     def test_escapes_malicious_symbol(self) -> None:
-        html = render_council_history_html(
-            [_history("Soros", "<img src=x onerror=1>", ["BUY"])]
-        )
+        html = render_council_history_html([_history("Soros", "<img src=x onerror=1>", ["BUY"])])
         assert "<img src=x onerror=1>" not in html
         assert "&lt;img" in html
 
@@ -130,9 +120,7 @@ class TestPolishLabels:
     „bearish” po polsku; BUY/SELL/HOLD zostają w bazie i w logach."""
 
     def test_html_sequence_is_in_polish(self) -> None:
-        html = render_council_history_html(
-            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
-        )
+        html = render_council_history_html([_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])])
 
         assert "SPRZEDAJ" in html
         assert "TRZYMAJ" in html
@@ -167,18 +155,14 @@ class TestPolishLabels:
 
 class TestPlainTextRendering:
     def test_text_lists_investor_and_sequence(self) -> None:
-        text = render_council_history_text(
-            [_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])]
-        )
+        text = render_council_history_text([_history("Soros", "NVDA", ["SELL", "SELL", "HOLD"])])
         assert "Soros" in text
         assert "NVDA" in text
         assert "SPRZEDAJ" in text
         assert "TRZYMAJ" in text
 
     def test_text_shows_window_days(self) -> None:
-        text = render_council_history_text(
-            [_history("Soros", "NVDA", ["SELL"], window_days=30)]
-        )
+        text = render_council_history_text([_history("Soros", "NVDA", ["SELL"], window_days=30)])
         assert "30" in text
 
     def test_text_skips_empty_history(self) -> None:

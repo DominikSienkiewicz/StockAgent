@@ -20,7 +20,11 @@ from src.domain.calibration_curve import (
     calibrated_confidence,
     find_bucket,
 )
-from src.domain.isotonic_calibration import IsotonicMap
+from src.domain.isotonic_calibration import (
+    CalibrationClass,
+    ClassIsotonicSelection,
+    IsotonicMap,
+)
 from src.domain.market_calendar import (
     TradingSession,
     holiday_name,
@@ -31,6 +35,7 @@ from src.domain.market_calendar import (
 )
 from src.domain.mistake_taxonomy import parse_mistake_category
 from src.domain.sizing import PositionAction, SizeBand, position_action, suggest_band
+from src.domain.value_objects import AssetType
 
 DIVERGENCE_PRICE_THRESHOLD = Decimal("0.02")
 DIVERGENCE_SENTIMENT_THRESHOLD = 0.2
@@ -54,6 +59,7 @@ def build_trade_signals(
     drawdown: float | None = None,
     hedge_effective: bool | None = None,
     isotonic_calibration: IsotonicMap | None = None,
+    isotonic_class_calibration: ClassIsotonicSelection | None = None,
 ) -> list[TradeSignal]:
     """Top sygnały transakcyjne — posortowane po sile sygnału.
 
@@ -84,6 +90,9 @@ def build_trade_signals(
     kubełkach shrinkage kubełkowy — monotonicznie; bez kubełków (WIA-38: pewność
     nie odróżnia trafień) nie jest używana.
 
+    ML-54: `isotonic_class_calibration` (decyzje per klasa aktywa) wybiera mapę
+    według klasy symbolu (`asset_class` z grafu) i zastępuje wtedy mapę globalną.
+
     PORT-08: gdy znamy portfel (`portfolio_weights` nie None), sygnał niesie
     kierunek w kontekście pozycji — spadek na trzymanym symbolu to ZREDUKUJ,
     poza portfelem UNIKAJ, wzrost na nasyconej pozycji TRZYMAJ. Ranking bez zmian."""
@@ -93,36 +102,61 @@ def build_trade_signals(
             continue
         if r.confidence_score is None or r.expected_change is None:
             continue
-        calibrated = _calibrated(r.confidence_score, calibration_buckets, isotonic_calibration)
+        isotonic = _isotonic_for(r, isotonic_calibration, isotonic_class_calibration)
+        calibrated = _calibrated(r.confidence_score, calibration_buckets, isotonic)
         bucket_count = _calibration_bucket_count(r.confidence_score, calibration_buckets)
         effective = r.confidence_score if calibrated is None else calibrated
         strength = effective if r.ml_cold_start else effective * float(abs(r.expected_change)) * 100
-        signals.append(TradeSignal(
-            symbol=r.symbol,
-            direction=_trend_to_direction(r.trend),
-            confidence=r.confidence_score,
-            expected_change=r.expected_change,
-            strength=strength,
-            current_price=r.current_price,
-            target_price=r.target_price,
-            size_band=_size_band_for(
-                r,
-                hit_rate,
-                portfolio_weights,
-                cluster_exposures,
-                hit_sample,
-                portfolio_var=portfolio_var,
-                drawdown=drawdown,
-                hedge_effective=hedge_effective,
-            ),
-            calibrated_confidence=calibrated,
-            ml_cold_start=r.ml_cold_start,
-            calibration_bucket_count=bucket_count,
-            position_action=_position_action_for(r, portfolio_weights, cluster_exposures),
-            position_weight=portfolio_weights.get(r.symbol) if portfolio_weights else None,
-        ))
+        signals.append(
+            TradeSignal(
+                symbol=r.symbol,
+                direction=_trend_to_direction(r.trend),
+                confidence=r.confidence_score,
+                expected_change=r.expected_change,
+                strength=strength,
+                current_price=r.current_price,
+                target_price=r.target_price,
+                size_band=_size_band_for(
+                    r,
+                    hit_rate,
+                    portfolio_weights,
+                    cluster_exposures,
+                    hit_sample,
+                    portfolio_var=portfolio_var,
+                    drawdown=drawdown,
+                    hedge_effective=hedge_effective,
+                ),
+                calibrated_confidence=calibrated,
+                ml_cold_start=r.ml_cold_start,
+                calibration_bucket_count=bucket_count,
+                position_action=_position_action_for(r, portfolio_weights, cluster_exposures),
+                position_weight=portfolio_weights.get(r.symbol) if portfolio_weights else None,
+            )
+        )
     signals.sort(key=lambda s: (not s.ml_cold_start, s.strength), reverse=True)
     return signals[:top_n]
+
+
+def _isotonic_for(
+    r: SymbolResult,
+    isotonic: IsotonicMap | None,
+    class_selection: ClassIsotonicSelection | None,
+) -> IsotonicMap | None:
+    """ML-54: mapa klasy aktywa symbolu, gdy ranking ma decyzje per klasa; inaczej
+    mapa globalna (ML-28)."""
+    if class_selection is None:
+        return isotonic
+    return class_selection.calibrator_for(_calibration_class_of(r))
+
+
+def _calibration_class_of(r: SymbolResult) -> CalibrationClass | None:
+    """Klasa mapy z `asset_class` wyniku — Asset z grafu sklasyfikowany przez
+    `run_cycle.classify_asset`; brak klasy → None (mapa globalna)."""
+    if r.asset_class is None:
+        return None
+    if r.asset_class == AssetType.CRYPTO.value:
+        return CalibrationClass.CRYPTO
+    return CalibrationClass.NON_CRYPTO
 
 
 def _calibrated(
@@ -254,7 +288,9 @@ def _av_llm_conflict_signal(r: SymbolResult) -> RiskSignal | None:
     if r.av_llm_agreement is None or not is_av_llm_conflict(r.av_llm_agreement):
         return None
     return RiskSignal(
-        symbol=r.symbol, type="AV_LLM_CONFLICT", severity="high",
+        symbol=r.symbol,
+        type="AV_LLM_CONFLICT",
+        severity="high",
         description=(
             f"LLM nie zgadza się z AV (zgoda={number(r.av_llm_agreement, decimals=2)})"
             " -> rozbieżne odczyty sentymentu"
@@ -267,11 +303,10 @@ def _low_signal_signal(r: SymbolResult) -> RiskSignal | None:
     if not is_low_signal(r.news_volume):
         return None
     return RiskSignal(
-        symbol=r.symbol, type="LOW_SIGNAL", severity="medium",
-        description=(
-            f"tylko {r.news_volume} relevantnych newsów — decyzja"
-            " na słabych danych"
-        ),
+        symbol=r.symbol,
+        type="LOW_SIGNAL",
+        severity="medium",
+        description=(f"tylko {r.news_volume} relevantnych newsów — decyzja na słabych danych"),
     )
 
 
@@ -302,19 +337,21 @@ def parse_resolved_predictions(
         trend_correct = row.get("is_trend_correct")
         if trend_correct is None:
             continue
-        out.append(ResolvedPrediction(
-            symbol=str(row.get("symbol", "?")),
-            predicted_trend=str(row.get("predicted_trend", "?")),
-            is_correct=bool(trend_correct),
-            reasoning=_clean_text(row.get("reasoning_text")),
-            insight=_clean_text(row.get("correction_insights")),
-            price_at_prediction=_to_decimal(row.get("price_at_prediction")),
-            actual_price=_to_decimal(row.get("actual_price_after_12h")),
-            predicted_at=_to_datetime(row.get("timestamp")),
-            receipt=read_decision_receipt(row.get("decision_receipts")),
-            correction_category=parse_mistake_category(row.get("correction_category")),
-            entry_price=_to_decimal(row.get("entry_price")),
-        ))
+        out.append(
+            ResolvedPrediction(
+                symbol=str(row.get("symbol", "?")),
+                predicted_trend=str(row.get("predicted_trend", "?")),
+                is_correct=bool(trend_correct),
+                reasoning=_clean_text(row.get("reasoning_text")),
+                insight=_clean_text(row.get("correction_insights")),
+                price_at_prediction=_to_decimal(row.get("price_at_prediction")),
+                actual_price=_to_decimal(row.get("actual_price_after_12h")),
+                predicted_at=_to_datetime(row.get("timestamp")),
+                receipt=read_decision_receipt(row.get("decision_receipts")),
+                correction_category=parse_mistake_category(row.get("correction_category")),
+                entry_price=_to_decimal(row.get("entry_price")),
+            )
+        )
     return out
 
 
