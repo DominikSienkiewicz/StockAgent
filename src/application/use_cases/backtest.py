@@ -9,7 +9,7 @@ from src.application.ml_features import (
     rows_in_label_time_order,
 )
 from src.application.ports import MLPredictionPort, RepositoryPort
-from src.domain.backtest import BacktestSummary, summarize_folds
+from src.domain.backtest import BacktestSummary, summarize_folds, walk_forward_folds
 
 # Minimalna liczba poprawnych próbek, by walk-forward backtest miał sens.
 # Poniżej tego progu foldy out-of-sample są zbyt małe, by werdykt był
@@ -20,11 +20,12 @@ MIN_BACKTEST_SAMPLES = 50
 class BacktestUseCase:
     """Offline walk-forward backtest lokalnego modelu (harness diagnostyczny).
 
-    Reużywa logikę foldów z `MLPredictionPort.walk_forward_report` (finding #23) —
-    NIE re-implementuje splitów. Czysto ewaluacyjny: czyta feature store, podaje
-    portowi ML wiersze cech i target jak `train` (ML-55: bez DataFrame w tej
-    warstwie), a wynik agreguje w domenowym `summarize_folds`. Nigdy nie rzuca na
-    pustych/krótkich danych — degraduje do pustego `BacktestSummary`.
+    Foldy projektuje domenowe `walk_forward_folds` (ARCH-27) — te same, na których
+    bramkuje `train()` (finding #23); port ML tylko na nich trenuje i mierzy. Czysto
+    ewaluacyjny: czyta feature store, podaje portowi ML wiersze cech i target jak
+    `train` (ML-55: bez DataFrame w tej warstwie), a wynik agreguje w domenowym
+    `summarize_folds`. Nigdy nie rzuca na pustych/krótkich danych — degraduje do
+    pustego `BacktestSummary`.
     """
 
     def __init__(
@@ -67,7 +68,13 @@ class BacktestUseCase:
         # Kolejność kluczy = kontrakt `ML_FEATURE_COLUMNS`, ta sama co w `train`.
         features = [{name: float(row[name]) for name in ML_FEATURE_COLUMNS} for row in ordered]
         target = [float(row[TARGET_COLUMN]) for row in ordered]
-        folds = self._ml_port.walk_forward_report(features, target, timestamps=stamps)
+        # ARCH-27: foldy (granice i purge) projektuje domena; port ML tylko trenuje.
+        folds = self._ml_port.walk_forward_report(
+            features,
+            target,
+            timestamps=stamps,
+            folds=walk_forward_folds(len(target), stamps),
+        )
         return summarize_folds(folds, cost_bps=self._cost_bps)
 
     def _feature_rows(self, symbol: str) -> list[dict[str, Any]]:

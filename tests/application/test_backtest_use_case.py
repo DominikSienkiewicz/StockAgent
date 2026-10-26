@@ -12,7 +12,7 @@ from src.application.ml_features import (
 )
 from src.application.ports import MLPredictionPort, RepositoryPort
 from src.application.use_cases.backtest import MIN_BACKTEST_SAMPLES, BacktestUseCase
-from src.domain.backtest import BacktestSummary
+from src.domain.backtest import BacktestSummary, walk_forward_folds
 
 EXPECTED_ML_FEATURES = [
     "price_delta",
@@ -210,6 +210,36 @@ class TestLabelHorizonPurge:
         use_case.run("AAPL")
 
         assert ml_port.walk_forward_report.call_args.kwargs.get("timestamps") is None
+
+
+class TestFoldsFromTheDomain:
+    """ARCH-27: use case projektuje foldy domenowym `walk_forward_folds` (z purgem po
+    znacznikach czasu), a port ML tylko na nich trenuje."""
+
+    def test_stamped_rows_get_purged_domain_folds(
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
+        repository_port.get_feature_store_data.return_value = _stamped_rows(60)[::-1]
+        ml_port.walk_forward_report.return_value = [
+            {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
+        ]
+
+        use_case.run("AAPL")
+
+        kwargs = ml_port.walk_forward_report.call_args.kwargs
+        assert kwargs.get("folds") == walk_forward_folds(60, kwargs["timestamps"])
+
+    def test_rows_without_timestamps_get_prefix_folds(
+        self, use_case: BacktestUseCase, repository_port: Mock, ml_port: Mock
+    ) -> None:
+        repository_port.get_feature_store_data.return_value = _feature_store_rows(60)
+        ml_port.walk_forward_report.return_value = [
+            {"candidate_rmse": 0.10, "baseline_rmse": 0.20, "hit_rate": 0.60}
+        ]
+
+        use_case.run("AAPL")
+
+        assert ml_port.walk_forward_report.call_args.kwargs.get("folds") == walk_forward_folds(60)
 
 
 class TestTradingCosts:
