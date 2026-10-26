@@ -29,7 +29,7 @@ persona_vote_outcomes_enabled = false
 # stałej prognozy persony) zamiast po samym hit-rate'cie — przepewna persona spada.
 # Tylko kolejność i opis w mailu. UWAGA: włącz DOPIERO po migracji 065 (inaczej
 # ranking wraca do hit-rate'u z WARNING-iem).
-persona_brier_ranking_enabled = false
+persona_brier_ranking_enabled = true
 # WIA-45: redundancja rady z zapisanych głosów (kappa Cohena między personami,
 # efektywna liczba niezależnych głosów). Recap tygodniowy dopisuje linię „7 person
 # ≈ 2,1 niezależnego głosu”, a mail dzienny nie nadaje „SILNY KONSENSUS”, gdy rada
@@ -75,7 +75,7 @@ contagion_enabled = false
 calibration_judge_enabled = false
 # Ocena kalibracji to reguła Briera 1 − (c − o)² z wersją v2 (WIA-37). Włącz DOPIERO
 # po migracji 044 (PGRST204). Off: reguła liniowa v1.
-calibration_score_version_enabled = false
+calibration_score_version_enabled = true
 # NIEZ-25: Slow Loop pyta Models API (bez tokenów), czy skonfigurowane modele żyją.
 model_probe_enabled = true
 
@@ -140,17 +140,17 @@ model_scorecard_enabled = true
 model_scorecard_baselines_enabled = true
 # ML-24: wiersze karty niosą `run_id` przebiegu Slow Loopa (re-run tego samego
 # dnia nie skleja się z cronem). UWAGA: włącz DOPIERO po migracji 049 (PGRST204).
-model_scorecard_run_id_enabled = false
+model_scorecard_run_id_enabled = true
 # ML-21: karta zapisuje rozkład cech treningu (biny kwantylowe + PSI ostatnich 30 dni)
 # i ostrzega przy PSI > 0.25. UWAGA: włącz DOPIERO po migracji 052 (PGRST204).
-model_scorecard_feature_stats_enabled = false
+model_scorecard_feature_stats_enabled = true
 # CI-13: karta zapisuje sha256 pliku wag z przebiegu (ten sam plik idzie do Release
 # model-latest). UWAGA: włącz DOPIERO po migracji 060 (inaczej PGRST204).
-model_scorecard_weights_sha256_enabled = false
+model_scorecard_weights_sha256_enabled = true
 # ML-22: karta zapisuje proweniencję treningu (odcisk zbioru, zakres dat, liczności per
 # symbol, parametry z ziarnem, wersja XGBoost, wersja zestawu cech, SHA kodu).
 # UWAGA: włącz DOPIERO po migracji 064 (inaczej PGRST204).
-model_scorecard_provenance_enabled = false
+model_scorecard_provenance_enabled = true
 # R-8: sekcja „🔄 Zmiany nastawienia" — flip rady BUY→SELL, skok sentymentu,
 # spadek konsensusu vs poprzedni cykl. Odczyt z Supabase, zero płatnych. Włączone.
 cycle_diff_enabled = true
@@ -204,7 +204,7 @@ ml_direction_classifier_enabled = false
 # do shadow_predictions; wynik cyklu, prompt i mail bez zmian, zero płatnych wywołań.
 # Slow Loop raportuje werdykt promocji w summary; podmianę wag robi właściciel.
 # UWAGA: włącz DOPIERO po migracji 075 (inaczej zapis cieni pada z WARNING-iem).
-shadow_predictions_enabled = false
+shadow_predictions_enabled = true
 # ML-33: challengerzy (najwyżej 2): name, path do wag z Release model-latest i kind =
 # "return" (regresor zwrotu) albo "direction" (klasyfikator ML-30 — jego wagi powstają
 # przy ml_direction_classifier_enabled). Brak pliku wag = challenger pominięty.
@@ -274,7 +274,7 @@ portfolio_shock_threshold = 0.03
 # (akcje 8% przy bramce 2%, krypto 12%) albo odwróci się ponad próg. Najwyżej dwa alerty
 # symbolu dziennie; szczebel w `shock_alerts.level`. Zero płatnych wywołań.
 # UWAGA: włącz DOPIERO po migracji 081 (wcześniej watch i tak wyłączy flagę na przebieg).
-shock_escalation_enabled = false
+shock_escalation_enabled = true
 # ALR-09: cisza nocna pushy watcha (czas `display_timezone`) — w oknie 22:00–07:00
 # szok dociera bez dźwięku zamiast budzić. Alerty CRITICAL ciszy nie znają. Włączone.
 quiet_hours_enabled = true
@@ -434,19 +434,19 @@ cycle_runs_enabled = true
 # NIEZ-14: głosy rady upsertem po (prediction_id, investor_name, round) zamiast insertu —
 # re-run w tej samej godzinie nie dubluje głosów. Klucz z rundą jest od ML-40.
 # UWAGA: włącz DOPIERO po migracji 082.
-council_votes_upsert_enabled = false
+council_votes_upsert_enabled = true
 # WIA-57: kategoria przyczyny błędu z diagnozy (MACRO, EARNINGS, …) w kolumnie
 # `correction_category` i histogram „3 z 5 błędów: makro” w panelu lessons.
 # UWAGA: włącz DOPIERO po migracji 046.
-correction_category_enabled = false
+correction_category_enabled = true
 # DAT-14: kolumna `prediction_logs.stale_quote` — predykcja na notowaniu sprzed ostatniej
 # sesji NYSE i rozliczenie na notowaniu sprzed sesji po predykcji (weekend, święto)
 # wypadają z trafności. UWAGA: włącz DOPIERO po migracji 055.
-stale_quote_enabled = false
+stale_quote_enabled = true
 # DAT-21: kapitalizacja (`MarketCapitalization` z tej samej odpowiedzi OVERVIEW, zero
 # nowych requestów AV) w `fundamentals_cache.market_cap` — próg znaczącego zakupu
 # insidera rośnie z wielkością spółki. UWAGA: włącz DOPIERO po migracji 056.
-fundamentals_market_cap_enabled = false
+fundamentals_market_cap_enabled = true
 # DAT-21: znaczący zakup insidera otwiera maila (lead i temat) tylko przez tyle dni
 # od daty filingu Form 4 — inaczej jeden filing wracałby w każdym cyklu przez całe
 # 90-dniowe okno insider flow. Sekcja alfy pokazuje zakup dalej. Bez migracji.
@@ -456,20 +456,20 @@ insider_lead_max_age_days = 3
 # następnej sesji) z datą sesji i źródłem; mail pokazuje obie trafności. Rozliczeniem
 # zostaje /quote. Krypto bez sesji — bez tej ceny. Zero nowych requestów.
 # UWAGA: włącz DOPIERO po migracji 059.
-session_close_settlement_enabled = false
+session_close_settlement_enabled = true
 # WIA-54: obok ceny /quote rozliczenie zapisuje cenę wykonalną — otwarcie pierwszej
 # sesji NYSE po predykcji z tego samego notowania (pole `o`), a mail dostaje drugą
 # krzywą kapitału „od otwarcia” (bez luki na otwarciu, której przed sesją nikt nie
 # kupi). Zaległe rozliczenie, święto i krypto — bez tej ceny. Zero nowych requestów.
 # UWAGA: włącz DOPIERO po migracji 072.
-executable_entry_enabled = false
+executable_entry_enabled = true
 # WIA-59: append-only paper ledger — pozycja papierowa otwierana przy zapisie predykcji
 # i zamykana raz przy rozliczeniu, wiersze spięte łańcuchem sha256 (prev_hash → row_hash).
 # Krzywa kapitału w mailu czyta ledger zamiast przeliczać prediction_logs, a głowa
 # łańcucha trafia raz dziennie do `paper_ledger_heads_path` obok atestacji (gdy
 # `attestation_enabled`). Zero płatnych wywołań.
 # UWAGA: włącz DOPIERO po migracji 073.
-paper_ledger_enabled = false
+paper_ledger_enabled = true
 # DAT-23: przed otwarciem `pc` z /quote to cena poprzedniego snapshotu, więc stosunek
 # bliski 1/2, 1/3, 1/4, 1/5, 1/10, 2 albo 3 (±2%) to split, nie ruch. Bramka liczy wtedy
 # ruch od skorygowanej referencji, reflect rozlicza w jednostkach predykcji, a zdarzenie
@@ -605,7 +605,7 @@ subscriptions_enabled = false
 # Supabase Storage `digests` i link „Otwórz w przeglądarce” (podpisany URL, TTL 7 dni)
 # w mailu właściciela i w pushu. UWAGA: włącz DOPIERO po migracji 061 i sprawdzeniu,
 # że bucket `digests` istnieje i jest prywatny (Dashboard → Storage).
-digest_archive_enabled = false
+digest_archive_enabled = true
 # MAIL-35: polityka cichego dnia (decyzja 2026-10-23). W dzień bez leadu, rozliczeń,
 # szoków z watcha, symboli za bramką i błędów idzie zwarty mail: największy ruch, próg
 # bramki, stan portfela i pełna stopka źródeł danych. "always" = zawsze pełny mail.

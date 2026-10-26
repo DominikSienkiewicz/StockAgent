@@ -119,7 +119,7 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `regime_hysteresis_enabled` | `false` | `true` | `033` | — | 0 | deployed |
 | `contagion_enabled` | `false` | `false` | — | — | 0 (longer prompt, sequential symbols) | built, not deployed |
 | `calibration_judge_enabled` | `false` | `false` | `077` | — | 0 (Slow Loop): an arithmetic calibration score per settled prediction, stored in one bulk write through the `save_calibration_scores` RPC; the LLM judge was removed (WIA-65) | built, not deployed |
-| `calibration_score_version_enabled` | `false` | `false` | `044` | — | 0 | built, not deployed |
+| `calibration_score_version_enabled` | `false` | `true` | `044` | — | 0 | deployed |
 | `portfolio_var_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
 | `stress_test_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
 | `hedge_effectiveness_enabled` | `false` | `false` | — | — | 0 | built, not deployed |
@@ -131,7 +131,7 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `isotonic_class_calibration_enabled` | `false` | `false` | — | — | 0 (the same read as `isotonic_calibration_enabled`) | built, not deployed |
 | `model_scorecard_enabled` | `false` | `true` | `019` | — | 0 | deployed |
 | `model_scorecard_baselines_enabled` | `false` | `true` | `028` | — | 0 | deployed |
-| `model_scorecard_run_id_enabled` | `false` | `false` | `049` | — | 0 | built, not deployed |
+| `model_scorecard_run_id_enabled` | `false` | `true` | `049` | — | 0 | deployed |
 | `cycle_diff_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `receipts_enabled` | `false` | `true` | `020` | — | 0 | deployed |
 | `feature_set_version_enabled` | `false` | `true` | `027` | — | 0 | deployed |
@@ -168,7 +168,7 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `nyse_closure_skip_enabled` | `false` | `true` | — | — | 0; fewer on a closed NYSE day | deployed |
 | `cost_ledger_enabled` | `false` | `true` | `040` | — | 0 | deployed |
 | `cycle_runs_enabled` | `false` | `true` | `041` | — | 0 | deployed |
-| `council_votes_upsert_enabled` | `false` | `false` | `082` | — | 0 | built, not deployed |
+| `council_votes_upsert_enabled` | `false` | `true` | `082` | — | 0 | deployed |
 | `reference_signal_enabled` | `false` | `true` | `042` | — | 0 (free quote, Slow Loop) | deployed |
 | `two_phase_cycle_enabled` | `false` | `false` | — | — | 0 extra; the ceiling cuts the smallest moves | built, not deployed |
 | `db_writes_enabled` | `false` | — (environment only; the writing workflows set it) | — | — | 0 | deployed |
@@ -180,15 +180,15 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `realtime_alerts_enabled` | `false` | `false` | — | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SLACK_WEBHOOK_URL` | 0 | built, not deployed |
 | `quiet_hours_enabled` | `false` | `true` | — | — | 0 | deployed |
 | `subscriptions_enabled` | `false` | `false` | `014` | `RESEND_API_KEY` | 0 | built, not deployed |
-| `digest_archive_enabled` | `false` | `false` | `061` | — | 0 (Supabase Storage free tier) | built, not deployed |
+| `digest_archive_enabled` | `false` | `true` | `061` | — | 0 (Supabase Storage free tier) | deployed |
 | `telegram_bot_enabled` | `false` | `false` | `079` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | 0 (free Bot API, free database reads) | built, not deployed |
 | `symbol_mutes_enabled` | `false` | `false` | `080` | — | 0; fewer paid calls while a symbol is muted | built, not deployed |
 | `persona_vote_outcomes_enabled` | `false` | `false` | `045` | — | 0 (one free RPC read per asset class) | built, not deployed |
-| `persona_brier_ranking_enabled` | `false` | `false` | `065` | — | 0 (one free RPC read) | built, not deployed |
+| `persona_brier_ranking_enabled` | `false` | `true` | `065` | — | 0 (one free RPC read) | deployed |
 | `council_redundancy_enabled` | `false` | `false` | — | — | 0 (one free read of `council_votes` per cycle) | built, not deployed |
 | `portfolio_shock_enabled` | `false` | `false` | — | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SLACK_WEBHOOK_URL` | 0 (inside the free Shock Watch) | built, not deployed |
-| `shock_escalation_enabled` | `false` | `false` | `081` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SLACK_WEBHOOK_URL` | 0 (inside the free Shock Watch) | built, not deployed |
-| `correction_category_enabled` | `false` | `false` | `046` | — | 0 (the same paid diagnosis answers in JSON) | built, not deployed |
+| `shock_escalation_enabled` | `false` | `true` | `081` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SLACK_WEBHOOK_URL` | 0 (inside the free Shock Watch) | deployed |
+| `correction_category_enabled` | `false` | `true` | `046` | — | 0 (the same paid diagnosis answers in JSON) | deployed |
 | `diagnosis_backfill_enabled` | `false` | `false` | — | — | up to `diagnosis_backfill_max_calls` LLM calls a run (Slow Loop budget) | built, not deployed |
 | `batch_diagnosis_enabled` | `false` | `false` | — | — | none in the Fast Loop (`reflect` stops paying per miss); 1 LLM call a week in the Slow Loop budget | built, not deployed |
 | `diagnosis_judge_enabled` | `false` | `false` | `078` | — | 0 in the Fast Loop; up to 10 LLM calls a week in the Slow Loop budget | built, not deployed |
@@ -196,21 +196,21 @@ Every on/off switch of `Settings` in one table (DOC-19); what each one does and 
 | `trend_probabilities_enabled` | `false` | `false` | `051` | — | 0 (one more schema field in the same prompt) | built, not deployed |
 | `invalidation_level_enabled` | `false` | `false` | `074` | — | 0 (one more schema field in the same prompt, ~30 output tokens) | built, not deployed |
 | `prompt_delta_rounding_enabled` | `false` | `false` | — | — | 0 (a few prompt tokens fewer) | built, not deployed |
-| `model_scorecard_feature_stats_enabled` | `false` | `false` | `052` | — | 0 | built, not deployed |
-| `model_scorecard_weights_sha256_enabled` | `false` | `false` | `060` | — | 0 | built, not deployed |
-| `model_scorecard_provenance_enabled` | `false` | `false` | `064` | — | 0 | built, not deployed |
-| `stale_quote_enabled` | `false` | `false` | `055` | — | 0 (the time `t` of the same `/quote` request) | built, not deployed |
-| `fundamentals_market_cap_enabled` | `false` | `false` | `056` | — | 0 (parsed from the `OVERVIEW` response the Slow Loop already fetches) | built, not deployed |
-| `session_close_settlement_enabled` | `false` | `false` | `059` | — | 0 (`c` / `pc` of the same `/quote` request) | built, not deployed |
-| `executable_entry_enabled` | `false` | `false` | `072` | — | 0 (`o` of the same `/quote` request) | built, not deployed |
-| `paper_ledger_enabled` | `false` | `false` | `073` | — | 0 | built, not deployed |
+| `model_scorecard_feature_stats_enabled` | `false` | `true` | `052` | — | 0 | deployed |
+| `model_scorecard_weights_sha256_enabled` | `false` | `true` | `060` | — | 0 | deployed |
+| `model_scorecard_provenance_enabled` | `false` | `true` | `064` | — | 0 | deployed |
+| `stale_quote_enabled` | `false` | `true` | `055` | — | 0 (the time `t` of the same `/quote` request) | deployed |
+| `fundamentals_market_cap_enabled` | `false` | `true` | `056` | — | 0 (parsed from the `OVERVIEW` response the Slow Loop already fetches) | deployed |
+| `session_close_settlement_enabled` | `false` | `true` | `059` | — | 0 (`c` / `pc` of the same `/quote` request) | deployed |
+| `executable_entry_enabled` | `false` | `true` | `072` | — | 0 (`o` of the same `/quote` request) | deployed |
+| `paper_ledger_enabled` | `false` | `true` | `073` | — | 0 | deployed |
 | `price_level_alerts_enabled` | `false` | `false` | `057` | — | 0 (inside the free Shock Watch) | built, not deployed |
 | `market_features_enabled` | `false` | `true` | `031` | — | 0 (free price snapshots) | deployed |
 | `snapshot_training_enabled` | `false` | `false` | `031` | — | 0 (free Slow Loop reads) | built, not deployed |
 | `ml_sigma_target_enabled` | `false` | `false` | — | — | 0 (one free price-history read per gated symbol) | built, not deployed |
 | `ml_settled_purge_enabled` | `false` | `false` | `050` | — | 0 | built, not deployed |
 | `ml_direction_classifier_enabled` | `false` | `false` | — | — | 0 (local CPU in the weekly Slow Loop) | built, not deployed |
-| `shadow_predictions_enabled` | `false` | `false` | `075` | — | 0 (local CPU; one write per saved prediction) | built, not deployed |
+| `shadow_predictions_enabled` | `false` | `true` | `075` | — | 0 (local CPU; one write per saved prediction) | deployed |
 | `shadow_prompt_variant_enabled` | `false` | `false` | `083` | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (the variant's provider) | +1 LLM call per symbol of the fixed sample above the gate, at most `max_calls_per_cycle` (≤ 5) per cycle and only within the slack of `max_paid_llm_calls_per_cycle` | built, not deployed |
 | `macro_series_enabled` | `false` | `false` | — | `FRED_API_KEY` | 0 (FRED, free) | built, not deployed |
 | `model_probe_enabled` | `false` | `true` | — | — | 0 (Models API, no tokens; weekly Slow Loop) | deployed |

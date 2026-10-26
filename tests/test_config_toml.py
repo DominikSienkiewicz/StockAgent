@@ -468,28 +468,28 @@ def test_real_config_toml_ships_the_cycle_runs_history_on_after_migration() -> N
     assert data["cycle_runs_enabled"] is True
 
 
-def test_real_config_toml_ships_the_scorecard_run_id_off_until_migration() -> None:
-    """ML-24: kolumna `model_scorecards.run_id` dopiero po migracji 049 (ręczny DB Migrate)."""
+def test_real_config_toml_ships_the_scorecard_run_id_on_after_migration() -> None:
+    """ML-24: kolumna `model_scorecards.run_id` (migracja 049) jest na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["model_scorecard_run_id_enabled"] is False
+    assert data["model_scorecard_run_id_enabled"] is True
 
 
-def test_real_config_toml_ships_the_scorecard_feature_stats_off_until_migration() -> None:
-    """ML-21: kolumna `model_scorecards.feature_stats` dopiero po migracji 052."""
+def test_real_config_toml_ships_the_scorecard_feature_stats_on_after_migration() -> None:
+    """ML-21: migracja 052 (`model_scorecards.feature_stats`) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["model_scorecard_feature_stats_enabled"] is False
+    assert data["model_scorecard_feature_stats_enabled"] is True
 
 
-def test_real_config_toml_ships_the_scorecard_weights_sha256_off_until_migration() -> None:
-    """CI-13: kolumna `model_scorecards.weights_sha256` dopiero po migracji 060."""
+def test_real_config_toml_ships_the_scorecard_weights_sha256_on_after_migration() -> None:
+    """CI-13: migracja 060 (`model_scorecards.weights_sha256`) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["model_scorecard_weights_sha256_enabled"] is False
+    assert data["model_scorecard_weights_sha256_enabled"] is True
 
 
-def test_real_config_toml_ships_the_scorecard_provenance_off_until_migration() -> None:
-    """ML-22: kolumny proweniencji treningu w `model_scorecards` dopiero po migracji 064."""
+def test_real_config_toml_ships_the_scorecard_provenance_on_after_migration() -> None:
+    """ML-22: migracja 064 (proweniencja treningu w karcie) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["model_scorecard_provenance_enabled"] is False
+    assert data["model_scorecard_provenance_enabled"] is True
 
 
 def test_real_config_toml_ships_the_settled_purge_off() -> None:
@@ -504,12 +504,12 @@ def test_real_config_toml_ships_the_direction_classifier_off() -> None:
     assert data["ml_direction_classifier_enabled"] is False
 
 
-def test_real_config_toml_ships_the_shadow_predictions_off_until_migration() -> None:
-    # ML-33: nowa tabela `shadow_predictions` (migracja 075) — zapis off do DB Migrate;
+def test_real_config_toml_ships_the_shadow_predictions_on_after_migration() -> None:
+    # ML-33: tabela `shadow_predictions` (migracja 075) jest na produkcji od 2026-10-26;
     # pierwszym challengerem jest klasyfikator kierunku ML-30 z jego pliku wag.
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
 
-    assert data["shadow_predictions_enabled"] is False
+    assert data["shadow_predictions_enabled"] is True
     assert data["ml_challengers"] == [
         {
             "name": "direction",
@@ -615,10 +615,10 @@ def test_real_config_toml_ships_the_earnings_cache_off_until_migration() -> None
     assert data["earnings_cache_enabled"] is False
 
 
-def test_real_config_toml_ships_the_council_votes_upsert_off_until_migration() -> None:
-    """NIEZ-14: upsert głosów wymaga indeksu UNIQUE z migracji 054 (ręczny DB Migrate)."""
+def test_real_config_toml_ships_the_council_votes_upsert_on_after_migration() -> None:
+    """NIEZ-14: klucz UNIQUE głosów z rundą (migracje 054 i 082) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["council_votes_upsert_enabled"] is False
+    assert data["council_votes_upsert_enabled"] is True
 
 
 def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() -> None:
@@ -627,10 +627,10 @@ def test_real_config_toml_ships_the_persona_vote_outcomes_off_until_migration() 
     assert data["persona_vote_outcomes_enabled"] is False
 
 
-def test_real_config_toml_ships_the_persona_brier_ranking_off_until_migration() -> None:
-    """WIA-44: RPC `persona_scoring_stats` powstaje dopiero w migracji 065 (DB Migrate)."""
+def test_real_config_toml_ships_the_persona_brier_ranking_on_after_migration() -> None:
+    """WIA-44: RPC `persona_scoring_stats` (migracja 065) jest na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["persona_brier_ranking_enabled"] is False
+    assert data["persona_brier_ranking_enabled"] is True
 
 
 def test_real_config_toml_ships_the_council_redundancy_off() -> None:
@@ -639,10 +639,10 @@ def test_real_config_toml_ships_the_council_redundancy_off() -> None:
     assert data["council_redundancy_enabled"] is False
 
 
-def test_real_config_toml_ships_the_correction_category_off_until_migration() -> None:
-    """WIA-57: kolumna `correction_category` powstaje dopiero w migracji 046 (DB Migrate)."""
+def test_real_config_toml_ships_the_correction_category_on_after_migration() -> None:
+    """WIA-57: kolumna `correction_category` (migracja 046) jest na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["correction_category_enabled"] is False
+    assert data["correction_category_enabled"] is True
 
 
 def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> None:
@@ -652,16 +652,16 @@ def test_real_config_toml_ships_the_diagnosis_backfill_off_with_its_cap() -> Non
     assert data["diagnosis_backfill_max_calls"] == 5
 
 
-def test_real_config_toml_ships_the_stale_quote_flag_off_until_migration() -> None:
-    """DAT-14: kolumna `prediction_logs.stale_quote` powstaje w migracji 055."""
+def test_real_config_toml_ships_the_stale_quote_flag_on_after_migration() -> None:
+    """DAT-14: migracja 055 (`prediction_logs.stale_quote`) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["stale_quote_enabled"] is False
+    assert data["stale_quote_enabled"] is True
 
 
-def test_real_config_toml_ships_the_market_cap_write_off_until_migration() -> None:
-    """DAT-21: kolumna `fundamentals_cache.market_cap` powstaje w migracji 056."""
+def test_real_config_toml_ships_the_market_cap_write_on_after_migration() -> None:
+    """DAT-21: migracja 056 (`fundamentals_cache.market_cap`) na produkcji od 2026-10-26."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert data["fundamentals_market_cap_enabled"] is False
+    assert data["fundamentals_market_cap_enabled"] is True
 
 
 def test_real_config_toml_ships_the_price_level_alerts_off_until_migration() -> None:

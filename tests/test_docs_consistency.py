@@ -131,9 +131,9 @@ def test_how_it_works_quotes_the_anthropic_max_tokens() -> None:
 FLAG_TABLE_HEADING = "## Flag reference"
 DEPLOYED = "deployed"
 NOT_DEPLOYED = "built, not deployed"
-# Produkcja ma migracje do 025; 026+ czekają na ręczny DB Migrate
-# (docs/resume-checklist.md, krok 3). Po migracji podnieś próg i statusy.
-PRODUCTION_MIGRATED_THROUGH = 42
+# Produkcja ma migracje do 085 (DB Migrate 2026-10-26); nowsze czekają na ręczny
+# DB Migrate (docs/resume-checklist.md, krok 3). Po migracji podnieś próg i statusy.
+PRODUCTION_MIGRATED_THROUGH = 85
 
 
 def _config_doc() -> str:
