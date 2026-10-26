@@ -40,7 +40,7 @@ jobs:
           - module: var
             tests: tests/domain/test_risk_properties.py tests/domain/test_var.py
           - module: finops
-            tests: tests/domain/test_finops.py
+            tests: tests/domain/test_finops.py tests/domain/test_weekly_recap.py
 
     steps:
       - name: 📥 Checkout repository
