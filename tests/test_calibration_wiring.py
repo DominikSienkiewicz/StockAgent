@@ -40,7 +40,7 @@ class TestCalibrationJudgeScoreVersion:
 
     @staticmethod
     def _trainer(mocker: MagicMock) -> MagicMock:
-        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
         mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}
@@ -78,7 +78,7 @@ class TestCalibrationWithoutLlm:
     def test_calibration_step_makes_no_llm_call(
         self, settings: Settings, mocker: MagicMock
     ) -> None:
-        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
         mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
         fake_uc = MagicMock()
         fake_uc.run.return_value = {"status": "trained_successfully"}

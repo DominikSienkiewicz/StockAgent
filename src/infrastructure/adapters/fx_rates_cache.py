@@ -21,10 +21,9 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
-from supabase import create_client
-
 from src.application.ports import FxRatePort
 from src.domain.fx import FxRate
+from src.infrastructure.adapters._supabase import build_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ class SupabaseCachedFxRates(FxRatePort):
         table_name: str = DEFAULT_FX_RATES_TABLE,
         write_through: bool = True,
     ) -> None:
-        self._client = create_client(url, key)
+        self._client = build_supabase_client(url, key)
         self._delegate = delegate
         self._today = today
         self._table = table_name

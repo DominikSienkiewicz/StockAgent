@@ -38,7 +38,7 @@ def _set_chain_response(
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch("src.infrastructure.adapters.subscriber_repo.create_client")
+    create = mocker.patch("src.infrastructure.adapters.subscriber_repo.build_supabase_client")
     client = MagicMock()
     create.return_value = client
     return client

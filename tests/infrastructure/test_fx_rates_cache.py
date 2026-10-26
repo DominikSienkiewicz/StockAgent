@@ -26,7 +26,7 @@ FRIDAY_RATE = FxRate(
 
 @pytest.fixture
 def client(mocker: Any) -> MagicMock:
-    create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+    create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.build_supabase_client")
     return cast(MagicMock, create.return_value)
 
 

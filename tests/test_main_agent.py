@@ -815,7 +815,7 @@ class TestProductionConfigWiring:
     (G05), a nie powód do pominięcia testu."""
 
     _SDK_CLIENTS = (
-        "src.infrastructure.adapters.supabase_repo.create_client",
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client",
         "src.infrastructure.llm.openai_client.OpenAI",
         "src.infrastructure.llm.openai_embeddings.OpenAI",
         "src.infrastructure.llm.tool_calling_openai.OpenAI",
@@ -4640,7 +4640,7 @@ class TestPortfolioFxWiring:
     ) -> None:
         from src.infrastructure.adapters.nbp_client import NbpFxRateClient
 
-        create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+        create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.build_supabase_client")
 
         port = main_agent.build_fx_port(settings)
 
@@ -4652,7 +4652,7 @@ class TestPortfolioFxWiring:
     ) -> None:
         from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
 
-        mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+        mocker.patch("src.infrastructure.adapters.fx_rates_cache.build_supabase_client")
         settings = settings.model_copy(update={"fx_rates_cache_enabled": True})
 
         assert isinstance(main_agent.build_fx_port(settings), SupabaseCachedFxRates)
@@ -5140,7 +5140,9 @@ def test_build_repository_blocks_writes_when_db_writes_disabled(
     # przebieg nadpisywał snapshot i predykcję z tej samej godziny w produkcji.
     from src.domain.value_objects import Money
 
-    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    client = mocker.patch(
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client"
+    ).return_value
     # Jawnie, choć to default (`TestDbWritesFlag`): test nie zależy od env powłoki.
     settings = settings.model_copy(update={"db_writes_enabled": False})
 
@@ -5285,7 +5287,9 @@ def test_build_repository_writes_when_db_writes_enabled(settings: Settings, mock
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
-    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    client = mocker.patch(
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client"
+    ).return_value
     settings = settings.model_copy(update={"db_writes_enabled": True})
 
     repository = main_agent.build_repository(settings)

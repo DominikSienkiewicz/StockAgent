@@ -184,7 +184,7 @@ def _root_rest_client(url: str, key: str) -> Client:
 
 
 def make_repository(stack: PostgrestStack, role: str = "service_role") -> SupabaseRepository:
-    with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+    with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
         return SupabaseRepository(url=stack.base_url, key=jwt_for(role))
 
 
@@ -543,7 +543,7 @@ class TestShadowStaleQuote:
     ) -> None:
         from src.domain.promotion import ShadowForecast
 
-        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+        with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
             repository = SupabaseRepository(
                 url=postgrest_stack.base_url,
                 key=jwt_for("service_role"),
@@ -610,7 +610,7 @@ class TestCouncilVoteRounds:
     def test_rounds_upsert_side_by_side_and_reads_take_round_one(
         self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
     ) -> None:
-        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+        with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
             rounds = SupabaseRepository(
                 url=postgrest_stack.base_url,
                 key=jwt_for("service_role"),

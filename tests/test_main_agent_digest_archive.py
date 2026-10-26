@@ -109,7 +109,9 @@ class TestBuildDigestArchive:
             SupabaseStorageDigestArchive,
         )
 
-        create = mocker.patch("src.infrastructure.adapters.supabase_storage_archive.create_client")
+        create = mocker.patch(
+            "src.infrastructure.adapters.supabase_storage_archive.build_supabase_client"
+        )
 
         archive = main_agent.build_digest_archive(settings)
 

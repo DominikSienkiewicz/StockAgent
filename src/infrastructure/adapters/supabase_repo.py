@@ -12,7 +12,7 @@ from typing import Any, NamedTuple, cast
 
 import httpx
 from postgrest.exceptions import APIError
-from supabase import create_client
+from supabase import Client
 
 from src.application.errors import MalformedPayload, NotFound, PortError, ProviderUnavailable
 from src.application.ports import (
@@ -95,6 +95,10 @@ from src.domain.value_objects import (
     AssetType,
     Fundamentals,
     Money,
+)
+from src.infrastructure.adapters._supabase import (
+    FEATURE_STORE_REFRESH_TIMEOUT_S,
+    build_supabase_client,
 )
 from src.infrastructure.error_translation import as_port_error
 
@@ -797,7 +801,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         council_vote_rounds_enabled: bool = False,
         council_vote_rounds_from_schema: bool = False,
     ) -> None:
-        self._client = create_client(url, key)
+        self._client = build_supabase_client(url, key)
+        # NIEZ-35: REFRESH widoku cech trwa dłużej niż 15 s zwykłego zapytania — osobny
+        # klient z dłuższym limitem, budowany dopiero przy pierwszym odświeżeniu.
+        self._connect_refresh_client: Callable[[], Client] = lambda: build_supabase_client(
+            url, key, timeout_s=FEATURE_STORE_REFRESH_TIMEOUT_S
+        )
+        self._refresh_client: Client | None = None
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
         # z probes = 1. Bez flagi RPC sprzed ML-23 — analogi w prompcie jak dziś.
         self._rag_function, self._rag_migration = (
@@ -1060,12 +1070,15 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         snapshocie). Wywoływane przez Slow Loop przed treningiem.
 
         Retry z exponential backoff — transient błąd sieci/Supabase
-        (gateway 5xx) nie powinien wywalać całego Slow Loop.
+        (gateway 5xx) nie powinien wywalać całego Slow Loop. Klient z dłuższym
+        limitem PostgREST (`FEATURE_STORE_REFRESH_TIMEOUT_S`, NIEZ-35).
         """
+        if self._refresh_client is None:
+            self._refresh_client = self._connect_refresh_client()
         last_exc: Exception | None = None
         for attempt in range(1, _REFRESH_MAX_ATTEMPTS + 1):
             try:
-                self._client.rpc("refresh_ml_feature_store").execute()
+                self._refresh_client.rpc("refresh_ml_feature_store").execute()
                 return
             except Exception as exc:
                 last_exc = exc

@@ -4137,7 +4137,9 @@ def _full_analysis_record() -> dict[str, object]:
 
     client = MagicMock()
     client.table.return_value.upsert.return_value.execute.return_value.data = [{"id": "x"}]
-    with patch("src.infrastructure.adapters.supabase_repo.create_client", return_value=client):
+    with patch(
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client", return_value=client
+    ):
         SupabaseRepository(url="https://test.supabase.co", key="key").save_prediction(record)
     serialized: dict[str, object] = client.table.return_value.upsert.call_args.args[0]
     return serialized

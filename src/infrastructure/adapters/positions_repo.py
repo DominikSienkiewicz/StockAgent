@@ -33,10 +33,9 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
-from supabase import create_client
-
 from src.application.ports import PortfolioPositionsPort, PositionsImportPort
 from src.domain.portfolio import DEFAULT_POSITION_CURRENCY, Position, is_iso_currency
+from src.infrastructure.adapters._supabase import build_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +144,7 @@ class SupabasePositionsAdapter(PortfolioPositionsPort, PositionsImportPort):
         key: str,
         table_name: str = DEFAULT_POSITIONS_TABLE,
     ) -> None:
-        self._client = create_client(url, key)
+        self._client = build_supabase_client(url, key)
         self._table = table_name
 
     def _query_rows(self) -> list[dict[str, Any]]:

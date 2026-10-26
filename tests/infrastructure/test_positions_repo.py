@@ -63,7 +63,7 @@ def _row(
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch("src.infrastructure.adapters.positions_repo.create_client")
+    create = mocker.patch("src.infrastructure.adapters.positions_repo.build_supabase_client")
     client = MagicMock()
     create.return_value = client
     return client
@@ -248,7 +248,7 @@ class TestNullPositionsAdapter:
 
     def test_does_no_io(self, mocker: Any) -> None:
         # Zero I/O: Null adapter nie może tknąć klienta Supabase.
-        create = mocker.patch("src.infrastructure.adapters.positions_repo.create_client")
+        create = mocker.patch("src.infrastructure.adapters.positions_repo.build_supabase_client")
 
         adapter = NullPositionsAdapter()
         adapter.get_positions()

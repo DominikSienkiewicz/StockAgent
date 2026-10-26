@@ -43,7 +43,7 @@ def _open_finnhub_circuit_skipping(*symbols: str) -> None:
 
 
 def test_open_circuit_reaches_the_quota_banner(settings: Settings, mocker: Any) -> None:
-    mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
     use_case = MagicMock()
 

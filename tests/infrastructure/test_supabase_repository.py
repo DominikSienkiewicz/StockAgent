@@ -41,7 +41,7 @@ def _set_chain_response(
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    create = mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     client = MagicMock()
     create.return_value = client
     return client
@@ -795,6 +795,96 @@ class TestGetFeatureStoreData:
 # ---------------------------------------------------------------------------
 # refresh_feature_store — retry z exponential backoff
 # ---------------------------------------------------------------------------
+
+
+def _connect_supabase_repository(url: str, key: str) -> object:
+    return SupabaseRepository(url=url, key=key)
+
+
+def _connect_subscriber_repository(url: str, key: str) -> object:
+    from src.infrastructure.adapters.subscriber_repo import SupabaseSubscriberRepository
+
+    return SupabaseSubscriberRepository(url=url, key=key)
+
+
+def _connect_positions_adapter(url: str, key: str) -> object:
+    from src.infrastructure.adapters.positions_repo import SupabasePositionsAdapter
+
+    return SupabasePositionsAdapter(url=url, key=key)
+
+
+def _connect_fx_rates_cache(url: str, key: str) -> object:
+    from src.application.ports import FxRatePort
+    from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
+
+    return SupabaseCachedFxRates(
+        url, key, MagicMock(spec=FxRatePort), today=lambda: date(2026, 10, 26)
+    )
+
+
+def _connect_digest_archive(url: str, key: str) -> object:
+    from src.infrastructure.adapters.supabase_storage_archive import (
+        SupabaseStorageDigestArchive,
+    )
+
+    return SupabaseStorageDigestArchive.connect(url, key)
+
+
+def _connect_bot_store(url: str, key: str) -> object:
+    from src.infrastructure.adapters.bot_store import SupabaseBotStore
+
+    return SupabaseBotStore.connect(url, key)
+
+
+class TestClientFactory:
+    """NIEZ-35: każdy adapter bazy buduje klienta wspólną fabryką `_supabase` z limitem
+    15 s zapytań PostgREST zamiast domyślnych 120 s; tylko REFRESH widoku cech
+    (`refresh_ml_feature_store`) idzie osobnym klientem z dłuższym limitem."""
+
+    @pytest.mark.parametrize(
+        "connect",
+        [
+            _connect_supabase_repository,
+            _connect_subscriber_repository,
+            _connect_positions_adapter,
+            _connect_fx_rates_cache,
+            _connect_digest_archive,
+            _connect_bot_store,
+        ],
+    )
+    def test_client_built_with_15s_postgrest_timeout(
+        self, mocker: Any, connect: Callable[[str, str], object]
+    ) -> None:
+        create = mocker.patch("src.infrastructure.adapters._supabase.create_client")
+
+        connect("https://test.supabase.co", "sb_secret_test")
+
+        create.assert_called_once()
+        assert create.call_args.args == ("https://test.supabase.co", "sb_secret_test")
+        assert create.call_args.kwargs["options"].postgrest_client_timeout == 15
+
+    def test_real_client_hands_the_timeout_to_postgrest(self) -> None:
+        # Bez sieci: klient PostgREST powstaje leniwie i niesie limit w sesji httpx.
+        from src.infrastructure.adapters._supabase import build_supabase_client
+
+        client = build_supabase_client("https://test.supabase.co", "sb_secret_test")
+
+        assert client.postgrest.session.timeout == httpx.Timeout(15)
+
+    def test_feature_store_refresh_uses_a_client_with_a_longer_timeout(self, mocker: Any) -> None:
+        reads, refresh = MagicMock(), MagicMock()
+        create = mocker.patch(
+            "src.infrastructure.adapters._supabase.create_client", side_effect=[reads, refresh]
+        )
+        repo = SupabaseRepository(url="https://test.supabase.co", key="sb_secret_test")
+
+        repo.refresh_feature_store()
+        repo.refresh_feature_store()
+
+        timeouts = [call.kwargs["options"].postgrest_client_timeout for call in create.mock_calls]
+        assert timeouts == [15, 120]
+        assert refresh.rpc.call_args_list == [mocker.call("refresh_ml_feature_store")] * 2
+        reads.rpc.assert_not_called()
 
 
 class TestRefreshFeatureStoreRetry:
