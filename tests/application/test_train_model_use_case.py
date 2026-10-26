@@ -1168,3 +1168,73 @@ def test_direction_variant_below_the_pooled_minimum_skips(
     ml_port.train_direction_classifier.assert_not_called()
     assert result.outcome is TrainingOutcome.SKIPPED
     assert result.n_samples == 10
+
+
+# -- ML-58: próbka modelu wspólnego bez DataFrame, ta sama co z pandas --------------
+
+_HOUR_ZERO = datetime(2026, 9, 1, tzinfo=UTC)
+
+
+def _view_row(
+    symbol: str, timestamp: str, target: float | None, **overrides: object
+) -> dict[str, Any]:
+    """Wiersz widoku z kompletem cech; `overrides` psuje albo dokłada pola."""
+    row: dict[str, Any] = {name: 0.25 for name in EXPECTED_ML_FEATURES}
+    row.update(symbol=symbol, timestamp=timestamp, target_return=target)
+    row.update(overrides)
+    return row
+
+
+def _rows_with_gaps_out_of_order() -> dict[str, list[dict[str, Any]]]:
+    """Cztery wiersze kompletne w pierwszych godzinach doby (remis o 03:00 między
+    symbolami, strefa +02:00, cecha całkowita, `settled_at` brak / None / NaN),
+    trzy niekompletne (NaN cechy, None targetu, brak klucza cechy) i 50 wierszy AAPL
+    po 100 h — wszystko w kolejności odwrotnej do czasu."""
+    without_signal = _view_row("BTC", "2026-09-01T02:00:00+00:00", 0.2)
+    del without_signal["llm_trend_signal"]
+    aapl = [
+        *_stamped_rows("AAPL", MIN_SAMPLES_FOR_TRAINING, start_hour=100, step_hours=1)[::-1],
+        _view_row("AAPL", "2026-09-01T03:00:00+00:00", 0.3, settled_at="2026-09-02T03:00:00+00:00"),
+        _view_row("AAPL", "2026-09-01T01:00:00+00:00", 0.1, price_delta=float("nan")),
+        _view_row("AAPL", "2026-09-01T02:00:00+02:00", 0.0, settled_at="2026-09-01T04:00:00+00:00"),
+    ]
+    btc = [
+        _view_row("BTC", "2026-09-01T03:00:00+00:00", -0.3, settled_at="2026-09-01T05:00:00+00:00"),
+        without_signal,
+        _view_row(
+            "BTC", "2026-09-01T01:00:00+00:00", 0.1, news_volume_24h=7, settled_at=float("nan")
+        ),
+        _view_row("BTC", "2026-09-01T00:30:00+00:00", None),
+    ]
+    return {"AAPL": aapl, "BTC": btc}
+
+
+def test_pooled_training_set_keeps_complete_rows_in_global_time_order(
+    repository_port: Mock, ml_port: Mock
+) -> None:
+    # ML-58: próbka z pomocników bez pandas (`complete_model_rows`,
+    # `rows_in_label_time_order`) jest tą samą próbką, którą składał DataFrame.
+    repository_port.get_feature_store_data.side_effect = _rows_by_symbol(
+        _rows_with_gaps_out_of_order()
+    )
+    use_case = TrainModelUseCase(ml_port=ml_port, db_port=repository_port, settled_purge=True)
+
+    training_set = use_case.pooled_training_set(["AAPL", "BTC"])
+
+    assert isinstance(training_set, TrainingSet)
+    hours = [0, 1, 3, 3, *range(100, 100 + MIN_SAMPLES_FOR_TRAINING)]
+    assert training_set.timestamps == [_HOUR_ZERO + timedelta(hours=hour) for hour in hours]
+    assert training_set.target == [0.0, 0.1, 0.3, -0.3, *(float(hour) for hour in hours[4:])]
+    assert all(list(row) == EXPECTED_ML_FEATURES for row in training_set.features)
+    assert training_set.features[1]["news_volume_24h"] == 7.0
+    assert all(isinstance(value, float) for row in training_set.features for value in row.values())
+    assert training_set.label_ends == [
+        _HOUR_ZERO + timedelta(hours=12),
+        _HOUR_ZERO + timedelta(hours=13),
+        _HOUR_ZERO + timedelta(hours=27),
+        _HOUR_ZERO + timedelta(hours=15),
+        *(_HOUR_ZERO + timedelta(hours=hour + 12) for hour in hours[4:]),
+    ]
+    assert list(training_set.dataset.n_per_symbol or {}) == ["AAPL", "BTC"]
+    assert training_set.dataset.n_per_symbol == {"AAPL": MIN_SAMPLES_FOR_TRAINING + 2, "BTC": 2}
+    assert training_set.dataset.label_overlap == LabelOverlap(measured=2, overlapping=1)
