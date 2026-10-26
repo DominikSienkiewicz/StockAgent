@@ -12,6 +12,9 @@
 #
 # Read-only: woła tylko `gh secret list` / `gh variable list`. Niczego nie ustawia.
 #
+# Rotacja (BEZ-24): sekret nieaktualizowany na repo dłużej niż 180 dni dostaje ostrzeżenie
+# (polityka i procedura w SECURITY.md). Ostrzeżenie nie zmienia kodu wyjścia.
+#
 # Auth: jeśli plik env (domyślnie <repo>/.env) definiuje GH_TOKEN, skrypt używa go do
 # każdego wywołania gh — działa więc niezależnie od auth gh w Twojej powłoce i nadpisuje
 # zbyt wąski GH_TOKEN/GITHUB_TOKEN wyeksportowany globalnie. Pusty/brak → fallback do `gh auth login`.
@@ -27,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -R|--repo) REPO="${2:-}"; shift 2 ;;
     -f|--file) ENV_FILE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -184,11 +187,46 @@ EOF
   GLOBAL_MISSING=$((GLOBAL_MISSING + missing))
 }
 
+# Data ostatniej rotacji = `updatedAt` sekretu na repo. Granica jako RRRRMMDD z epoki, bo
+# `date -d` (GNU) i `date -r` (BSD/macOS) przyjmują epokę inaczej.
+ROTATION_MAX_AGE_DAYS=180
+rotation_cutoff() {
+  local epoch=$(( $(date -u +%s) - ROTATION_MAX_AGE_DAYS * 86400 ))
+  date -u -d "@$epoch" +%Y%m%d 2>/dev/null || date -u -r "$epoch" +%Y%m%d
+}
+
+check_rotation() {
+  local cutoff listing name updated day stale=0
+  cutoff="$(rotation_cutoff)"
+  echo "${BOLD}Rotation${RESET} ${DIM}(policy: SECURITY.md, rotate at least every ${ROTATION_MAX_AGE_DAYS} days)${RESET}"
+  if ! listing="$(gh secret list "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" --json name,updatedAt \
+      --jq '.[] | [.name, .updatedAt] | @tsv' 2>/dev/null)"; then
+    echo "  ${YELLOW}could not read the update dates — rotation check skipped${RESET}"
+    echo
+    return 0
+  fi
+  while IFS=$'\t' read -r name updated; do
+    [[ -z "$name" ]] && continue
+    day="${updated:0:10}"
+    day="${day//-/}"
+    [[ "$day" =~ ^[0-9]{8}$ ]] || continue
+    if (( day < cutoff )); then
+      echo "  ${YELLOW}!${RESET} ${name} ${DIM}(updated ${updated:0:10}, older than ${ROTATION_MAX_AGE_DAYS} days — rotate it)${RESET}"
+      stale=$((stale + 1))
+    fi
+  done <<EOF
+$listing
+EOF
+  [[ "$stale" -eq 0 ]] && echo "  ${DIM}— every secret updated within ${ROTATION_MAX_AGE_DAYS} days —${RESET}"
+  echo
+}
+
 echo "${BOLD}StockAgent — GitHub Actions secrets/variables${RESET}"
 echo "Repo: ${REPO_LABEL}"
 echo
 check_kind "Secrets"   secret
 check_kind "Variables" variable
+check_rotation
 
 TOTAL_REQUIRED="$(printf '%s\n' "$REQ_ALL" | grep -c .)"
 if [[ "$GLOBAL_MISSING" -gt 0 ]]; then

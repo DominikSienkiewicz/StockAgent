@@ -9,7 +9,11 @@ Wiersz bez źródła to sekret, którego już nikt nie używa: znika z tabeli ra
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -103,3 +107,68 @@ def test_key_shape_pattern_catches_the_env_example_placeholders() -> None:
     )
 
     assert [value for value in placeholders if not _KEY_SHAPES.search(value)] == []
+
+
+# BEZ-24: datą ostatniej rotacji jest `updatedAt` sekretu na GitHubie, więc
+# `scripts/gh-secrets-check.sh` ostrzega o każdym starszym niż 180 dni. Atrapa `gh` na
+# PATH odpowiada listą sekretów z datami (TSV, jak `--jq ... | @tsv`); skrypt czyta
+# workflowy prawdziwego repo, a pusty plik env odcina go od lokalnego `.env`.
+SECRETS_CHECK = ROOT / "scripts" / "gh-secrets-check.sh"
+ROTATION_MAX_AGE_DAYS = 180
+_FAKE_GH = """#!/usr/bin/env bash
+case "$1 $2" in
+  "secret list") cat "$FAKE_GH_SECRETS" ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _run_secrets_check(tmp_path: Path, updated: dict[str, datetime]) -> str:
+    bash = shutil.which("bash")
+    assert bash is not None, "brak bash w PATH"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_gh = bin_dir / "gh"
+    fake_gh.write_text(_FAKE_GH, encoding="utf-8")
+    fake_gh.chmod(0o755)
+    listing = tmp_path / "secrets.tsv"
+    listing.write_text(
+        "".join(f"{name}\t{when:%Y-%m-%dT%H:%M:%SZ}\n" for name, when in updated.items()),
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "empty.env"
+    env_file.write_text("", encoding="utf-8")
+    environment = {
+        key: value for key, value in os.environ.items() if key not in ("GH_TOKEN", "GITHUB_TOKEN")
+    }
+    environment |= {
+        "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+        "FAKE_GH_SECRETS": str(listing),
+    }
+
+    result = subprocess.run(
+        [bash, str(SECRETS_CHECK), "-R", "owner/repo", "-f", str(env_file)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode in (0, 1), result.stderr
+    return result.stdout
+
+
+def test_secrets_check_warns_about_secrets_older_than_180_days(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    output = _run_secrets_check(
+        tmp_path,
+        {
+            "OPENAI_API_KEY": now - timedelta(days=ROTATION_MAX_AGE_DAYS + 20),
+            "SUPABASE_KEY": now - timedelta(days=10),
+        },
+    )
+    stale = [line for line in output.splitlines() if "older than 180 days" in line]
+
+    assert any("OPENAI_API_KEY" in line for line in stale), output
+    assert not any("SUPABASE_KEY" in line for line in stale), output

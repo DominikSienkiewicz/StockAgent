@@ -120,6 +120,9 @@ face it.
 5. **Redaction works on known shapes.** Logs and the email are redacted for the configured
    secret values and for recognisable key shapes; a secret shorter than 8 characters, or one
    that is not configured and has no known shape, would print in clear in a public log.
+6. **Rotation is manual.** Nothing rotates a key on its own; the
+   [inventory](#secrets-inventory-and-rotation) and the 180-day warning of
+   `scripts/gh-secrets-check.sh` make an overdue key visible, not rotated.
 
 ## Secrets model
 
@@ -181,4 +184,6 @@ windows.
 5. Run `scripts/gh-secrets-check.sh` to confirm every secret a workflow reads is set; after
    a leak, check the provider's usage for the exposed window as well.
 
-The date of the last rotation is the secret's last update on GitHub (`gh secret list`).
+The date of the last rotation is the secret's last update on GitHub, and
+`scripts/gh-secrets-check.sh` lists every repository secret not updated for more than 180
+days under **Rotation**; the warning does not change its exit code.
