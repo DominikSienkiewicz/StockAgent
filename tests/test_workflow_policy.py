@@ -719,3 +719,37 @@ def test_secret_check_flags_a_migration_url_left_only_on_the_repo(tmp_path: Path
     assert result.returncode == 1, result.stdout + result.stderr
     assert "SUPABASE_DB_URL" in result.stdout
     assert "production-db" in result.stdout
+
+
+# BEZ-21: Dependabot podbija wersje, ale nic nie mówiło, że lock niesie znaną podatność.
+# osv-scanner skanuje uv.lock przy pushu na main, który zmienia lock (merge.sh i push, PR-ów
+# nie ma), oraz co tydzień (nowe advisory na niezmienionym locku). Binarka jest przypięta
+# wersją i sumą SHA-256, a wynik trafia do podsumowania joba także przy znaleziskach.
+AUDIT_WORKFLOW = "dependency_audit.yml"
+
+
+def _audit_runs() -> list[str]:
+    spec = _workflow_specs()[AUDIT_WORKFLOW]
+    return [
+        str(step.get("run", "")) for job in _jobs(spec).values() for step in job.get("steps", [])
+    ]
+
+
+def test_dependency_audit_runs_on_lockfile_pushes_to_main_and_weekly() -> None:
+    assert AUDIT_WORKFLOW in _workflow_specs(), f"brak .github/workflows/{AUDIT_WORKFLOW}"
+    triggers = _triggers(_workflow_specs()[AUDIT_WORKFLOW])
+
+    assert set(triggers) == {"push", "schedule", "workflow_dispatch"}, triggers
+    assert triggers["push"] == {"branches": ["main"], "paths": ["uv.lock"]}
+    (entry,) = triggers["schedule"]
+    _minute, _hour, day, month, weekday = str(entry["cron"]).split()
+    assert (day, month) == ("*", "*") and weekday.isdigit(), f"nie co tydzień: {entry['cron']}"
+
+
+def test_dependency_audit_scans_the_lockfile_with_a_verified_binary() -> None:
+    assert AUDIT_WORKFLOW in _workflow_specs(), f"brak .github/workflows/{AUDIT_WORKFLOW}"
+    runs = "\n".join(_audit_runs())
+
+    assert re.search(r"osv-scanner\S*\s+scan\s+source\s+--lockfile\s+uv\.lock\b", runs), runs
+    assert "sha256sum --check --strict" in runs, "binarka osv-scanner bez sprawdzenia sumy"
+    assert '>> "$GITHUB_STEP_SUMMARY"' in runs, "wynik skanu poza podsumowaniem joba"

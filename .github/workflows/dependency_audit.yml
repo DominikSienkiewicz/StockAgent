@@ -1,0 +1,63 @@
+name: 🛡️ Dependency audit (osv-scanner)
+
+on:
+  # BEZ-21: skan znanych podatności w uv.lock (~110 pakietów, także dev). Dependabot podbija
+  # wersje, ale nie mówi, że lock niesie podatną. Właściciel scala przez merge.sh i push na
+  # main (PR-ów nie ma), więc skan rusza przy pushu na main, który zmienia lock…
+  push:
+    branches: [main]
+    paths: [uv.lock]
+  # …i co tydzień, bo nowe advisory pojawiają się także dla niezmienionego locka.
+  # Poniedziałek 06:23 UTC = 08:23 CEST / 07:23 CET.
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit
+  cancel-in-progress: false
+
+jobs:
+  osv-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🛡️ Install osv-scanner
+        # Binarka z wydania google/osv-scanner, przypięta wersją i sumą SHA-256 (ta sama co
+        # w osv-scanner_SHA256SUMS wydania i w digeście assetu na GitHubie). Inna zawartość
+        # = czerwony krok, nigdy skan cudzą binarką. Podbicie: obie wartości naraz.
+        env:
+          OSV_SCANNER_VERSION: "2.6.0"
+          OSV_SCANNER_SHA256: "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+
+      - name: 🔍 Scan uv.lock
+        # Exit 0 = brak znanych podatności, 1 = są (job czerwony), inny = błąd skanera.
+        # Tabela trafia do podsumowania joba w każdym z tych przypadków.
+        run: |
+          status=0
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile uv.lock --format markdown \
+            --output-file osv-report.md || status=$?
+          {
+            echo "## 🛡️ osv-scanner: uv.lock"
+            echo
+            if [ -s osv-report.md ]; then
+              cat osv-report.md
+            else
+              echo "No report (osv-scanner exit ${status})."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
