@@ -129,6 +129,7 @@ MIGRATION_FILES = [
     "082_council_vote_rounds.sql",
     "083_shadow_prediction_trend.sql",
     "084_function_search_path.sql",
+    "085_function_search_path_rest.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -4936,6 +4937,108 @@ class TestMigration084PinsRemainingSearchPaths:
             (pinned,) = cur.fetchone()
 
         assert pinned == len(REMAINING_FUNCTIONS)
+
+
+PINNED_BY_085 = (
+    "match_news_embeddings_exact(vector,integer,text)",
+    "persona_scoring_stats(integer,text[])",
+    "paper_trades_chain_head()",
+    "paper_trades_close_only()",
+    "paper_trades_append_only()",
+)
+
+
+def _search_path_pins(cur: psycopg2.extensions.cursor, functions: Sequence[str]) -> int:
+    cur.execute(
+        "SELECT count(*) FROM pg_proc WHERE oid = ANY(%s::regprocedure[]) "
+        "AND EXISTS (SELECT 1 FROM unnest(proconfig) AS item WHERE item LIKE 'search_path=%%')",
+        (list(functions),),
+    )
+    (pinned,) = cur.fetchone()
+    return int(pinned)
+
+
+@pytest.mark.containers
+class TestMigration085PinsSearchPaths:
+    """BEZ-33: dokładne wyszukiwanie RAG (063), ranking person (065) i funkcje triggerów
+    ledgera (073) mają stały search_path jak 070 i 084, dalej z prawami wołającego —
+    także wołane z sesji, której ścieżka nie ma `public`."""
+
+    @pytest.mark.parametrize("function", PINNED_BY_085)
+    def test_function_pins_its_search_path_and_stays_an_invoker(
+        self, supabase_like_conn: psycopg2.extensions.connection, function: str
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure",
+                (function,),
+            )
+            security_definer, config = cur.fetchone()
+
+        assert any(item.startswith("search_path=") and "public" in item for item in config or []), (
+            config
+        )
+        assert security_definer is False
+
+    def test_exact_search_keeps_its_planner_settings(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        # ALTER ... SET dokłada ścieżkę obok `enable_*` z 063 — skan dalej jest dokładny.
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (PINNED_BY_085[0],)
+            )
+            (config,) = cur.fetchone()
+
+        assert {"enable_seqscan=on", "enable_indexscan=off", "enable_bitmapscan=off"} <= set(config)
+
+    def test_functions_work_from_a_session_without_public_in_its_path(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SET LOCAL search_path = pg_catalog")
+            cur.execute(
+                "SELECT count(*) FROM public.match_news_embeddings_exact("
+                "array_fill(0.1, ARRAY[1536])::public.vector, 3, NULL)"
+            )
+            (neighbours,) = cur.fetchone()
+            cur.execute("SELECT count(*) FROM public.persona_scoring_stats(90, ARRAY['BTC'])")
+            (personas,) = cur.fetchone()
+            cur.execute(
+                "INSERT INTO public.prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('B085', now(), 100.0) RETURNING id"
+            )
+            (prediction_id,) = cur.fetchone()
+            cur.execute(
+                "INSERT INTO public.paper_trades (prediction_id, symbol, side, entry_price, "
+                "entry_ts, weight, cost_bps, prev_hash, row_hash) VALUES "
+                "(%s, 'B085', 'long', 100.0, now(), 1, 10, %s, %s) RETURNING seq",
+                (prediction_id, _GENESIS, "a" * 64),
+            )
+            (seq,) = cur.fetchone()
+            cur.execute(
+                "UPDATE public.paper_trades SET exit_price = 101.0, exit_ts = now(), "
+                "pnl = 0.01, exit_reason = 'settled' WHERE seq = %s RETURNING exit_reason",
+                (seq,),
+            )
+            (exit_reason,) = cur.fetchone()
+            cur.execute("SAVEPOINT before_delete")
+            with pytest.raises(psycopg2.errors.RaiseException, match="append-only"):
+                cur.execute("DELETE FROM public.paper_trades WHERE seq = %s", (seq,))
+            cur.execute("ROLLBACK TO SAVEPOINT before_delete")
+
+        assert neighbours == 0
+        assert personas == 0
+        assert exit_reason == "settled"
+
+    def test_085_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "085_function_search_path_rest.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            pinned = _search_path_pins(cur, PINNED_BY_085)
+
+        assert pinned == len(PINNED_BY_085)
 
 
 @pytest.mark.containers
