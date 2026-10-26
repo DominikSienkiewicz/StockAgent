@@ -1788,6 +1788,46 @@ class TestMessengerDigestSplit:
 
         assert isinstance(main_agent.build_push_notifier(settings), NullNotifier)
 
+    def test_build_push_notifier_warns_when_digest_on_and_no_channels(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """NIEZ-34: włączony skrót push bez żadnego kanału milczał — WARNING mówi,
+        których sekretów brakuje, jak `build_notifier` przy mailu."""
+        import logging
+
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        settings.messenger_digest_enabled = True
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            notifier = main_agent.build_push_notifier(settings)
+
+        assert isinstance(notifier, NullNotifier)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "messenger_digest_enabled" in warnings[0]
+        assert "TELEGRAM_CHAT_ID" in warnings[0]
+        assert "SLACK_WEBHOOK_URL" in warnings[0]
+        assert "TELEGRAM_BOT_TOKEN" not in warnings[0]
+
+    def test_build_push_notifier_is_silent_when_digest_off(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        settings.messenger_digest_enabled = False
+        settings.telegram_bot_token = None
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            main_agent.build_push_notifier(settings)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
     def test_push_digest_is_sent_once_and_stays_under_the_limit(self) -> None:
         from src.application.report_messenger import MAX_DIGEST_CHARS
 

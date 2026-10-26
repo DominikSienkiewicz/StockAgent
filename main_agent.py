@@ -617,13 +617,33 @@ def build_legacy_push_notifier(
     return CompositeNotifier(channels)
 
 
+def _missing_push_secrets(settings: Settings) -> list[str]:
+    """NIEZ-34: nazwy nieustawionych sekretów kanałów push (Telegram, Slack)."""
+    secrets = {
+        "TELEGRAM_BOT_TOKEN": settings.telegram_bot_token,
+        "TELEGRAM_CHAT_ID": settings.telegram_chat_id,
+        "SLACK_WEBHOOK_URL": settings.slack_webhook_url,
+    }
+    return [name for name, value in secrets.items() if not value]
+
+
 def build_push_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort:
     """#5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
-    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje)."""
+    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje).
+
+    NIEZ-34: włączony `messenger_digest_enabled` bez żadnego kanału loguje WARNING
+    z brakującymi sekretami, jak `build_notifier` przy mailu — inaczej skrót milczy."""
     channels = build_push_channels(settings, quota_monitor=quota_monitor)
     if not channels:
+        if settings.messenger_digest_enabled:
+            logger.warning(
+                "Skrót push WŁĄCZONY (messenger_digest_enabled=true), ale brak kanału — "
+                "brakuje sekretów: %s — ustaw je jako GitHub repo Secrets (nie Variables) "
+                "/ w .env.",
+                ", ".join(_missing_push_secrets(settings)),
+            )
         return NullNotifier()
     if len(channels) == 1:
         return channels[0]
