@@ -4,7 +4,6 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 from openai import (
@@ -18,9 +17,11 @@ from openai import (
 from src.application.errors import LLMTruncatedError, MalformedPayload
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
-from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.quota import QuotaSeverity
 from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
+from src.infrastructure.llm._quota import QuotaEmitter
+from src.infrastructure.llm._retry import RetryPolicy, call_with_retry
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 
 DEFAULT_MODEL = "gpt-4o"
@@ -57,8 +58,6 @@ DEFAULT_TIMEOUT = 30.0
 # nagłówek `retry-after` → wtedy honorujemy go).
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 2.0
-# Sufit pojedynczego czekania (retry-after albo backoff) — job ma 15 minut limitu.
-MAX_RETRY_WAIT_S = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +244,8 @@ class OpenAIAdapter(LLMPort):
             report_usage(self._usage_sink, openai_chat_usage(response, self._model))
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
-        """Retry'uje 429, 5xx i błędy połączenia. Honoruje retry-after.
+        """Retry'uje 429, 5xx i błędy połączenia. Honoruje retry-after — wspólna pętla
+        `call_with_retry` (ARCH-29).
 
         Sygnalizacja kwot:
         - sukces po >=1 retry → WARNING (na granicy TPM)
@@ -253,97 +253,80 @@ class OpenAIAdapter(LLMPort):
 
         ARCH-33: błąd wychodzi przetłumaczony na taksonomię portów (`sdk_error_kind`),
         wciąż jako typ SDK z `status_code` — failover i dotychczasowe handlery bez zmian.
+        Nieprzejściowy status (zły prompt, klucz, model) wychodzi od razu, bez ponowień.
         """
-        attempt = 0
-        while True:
-            try:
-                result = fn()
-                if attempt > 0:
-                    # Sukces po retry — daliśmy radę, ale jesteśmy na granicy.
-                    self._emit_quota_alert(
-                        severity=QuotaSeverity.WARNING,
-                        message=(
-                            f"OpenAI {self._model}: limit TPM trafiony {attempt}× "
-                            "w jednym wywołaniu (ponowienie się udało)."
-                        ),
-                        action=(
-                            "Rada działa już na modelu mini — podnieś "
-                            "COUNCIL_VOLATILITY_THRESHOLD, przejdź na gpt-5-nano "
-                            "albo podnieś tier konta OpenAI."
-                        ),
-                        log_message=(
-                            f"OpenAI {self._model} hit TPM limit "
-                            f"{attempt}× during a single call (retry succeeded)."
-                        ),
-                    )
-                return result
-            except (RateLimitError, InternalServerError, APIConnectionError) as exc:
-                reason = "429" if isinstance(exc, RateLimitError) else type(exc).__name__
-                if attempt >= self._max_retries:
-                    self._emit_quota_alert(
-                        severity=QuotaSeverity.CRITICAL,
-                        message=(
-                            f"OpenAI {self._model} zwrócił {reason} po "
-                            f"{self._max_retries} ponowieniach — wywołanie nie "
-                            "powiodło się."
-                        ),
-                        action=(
-                            "Podnieś tier konta OpenAI albo skieruj radę doradczą "
-                            "na model z wyższym limitem TPM przez COUNCIL_LLM_MODEL."
-                        ),
-                        log_message=(
-                            f"OpenAI {self._model} returned {reason} after "
-                            f"{self._max_retries} retries — call failed."
-                        ),
-                    )
-                    raise as_port_error(exc, sdk_error_kind(exc)) from None
-                wait = self._compute_wait(exc, attempt)
-                logger.warning(
-                    "OpenAI %s (attempt %d/%d) — sleeping %.1fs",
-                    reason,
-                    attempt + 1,
-                    self._max_retries,
-                    wait,
-                )
-                time.sleep(wait)
-                attempt += 1
-            except APIStatusError as exc:
-                # Nieprzejściowy status (zły prompt, klucz, model) — bez ponowień.
-                raise as_port_error(exc, sdk_error_kind(exc)) from None
-
-    def _compute_wait(self, exc: Exception, attempt: int) -> float:
-        # Najpierw spróbuj `retry-after` z odpowiedzi serwera — to jego
-        # rekomendacja, nie nasze zgadywanie.
-        response = getattr(exc, "response", None)
-        if response is not None:
-            headers = getattr(response, "headers", {}) or {}
-            raw = headers.get("retry-after")
-            if isinstance(raw, str):
-                try:
-                    return min(float(raw), MAX_RETRY_WAIT_S)
-                except ValueError:
-                    pass
-        # Fallback: backoff wykładniczy 2s, 4s, 8s.
-        return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
-
-    def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str, log_message: str
-    ) -> None:
-        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
-        # zostaje angielską diagnozą w logach.
-        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
-        logger.log(level, "%s", log_message)
-        if self._quota_monitor is None:
-            return
-        self._quota_monitor.record(
-            QuotaAlert(
-                source=f"OpenAI ({self._model})",
-                severity=severity,
-                message=message,
-                action=action,
-                occurred_at=datetime.now(UTC),
-            )
+        policy = RetryPolicy(
+            retryable=(APIStatusError, APIConnectionError),
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            logger=logger,
+            label="OpenAI",
+            is_transient=_is_transient,
+            reason=_reason,
+            translate=_as_port_error,
         )
+        return call_with_retry(
+            fn,
+            policy,
+            sleep=time.sleep,
+            on_recovered=self._report_recovered,
+            on_exhausted=self._report_exhausted,
+        )
+
+    def _report_recovered(self, attempts: int) -> None:
+        # Sukces po retry — daliśmy radę, ale jesteśmy na granicy.
+        self._quota().emit(
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"OpenAI {self._model}: limit TPM trafiony {attempts}× "
+                "w jednym wywołaniu (ponowienie się udało)."
+            ),
+            action=(
+                "Rada działa już na modelu mini — podnieś "
+                "COUNCIL_VOLATILITY_THRESHOLD, przejdź na gpt-5-nano "
+                "albo podnieś tier konta OpenAI."
+            ),
+            log_message=(
+                f"OpenAI {self._model} hit TPM limit "
+                f"{attempts}× during a single call (retry succeeded)."
+            ),
+        )
+
+    def _report_exhausted(self, exc: Exception) -> None:
+        reason = _reason(exc)
+        self._quota().emit(
+            severity=QuotaSeverity.CRITICAL,
+            message=(
+                f"OpenAI {self._model} zwrócił {reason} po "
+                f"{self._max_retries} ponowieniach — wywołanie nie "
+                "powiodło się."
+            ),
+            action=(
+                "Podnieś tier konta OpenAI albo skieruj radę doradczą "
+                "na model z wyższym limitem TPM przez COUNCIL_LLM_MODEL."
+            ),
+            log_message=(
+                f"OpenAI {self._model} returned {reason} after "
+                f"{self._max_retries} retries — call failed."
+            ),
+        )
+
+    def _quota(self) -> QuotaEmitter:
+        return QuotaEmitter(f"OpenAI ({self._model})", self._quota_monitor, logger)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """429 (TPM), 5xx i błędy połączenia — po klasie wyjątku SDK."""
+    return isinstance(exc, RateLimitError | InternalServerError | APIConnectionError)
+
+
+def _reason(exc: Exception) -> str:
+    return "429" if isinstance(exc, RateLimitError) else type(exc).__name__
+
+
+def _as_port_error(exc: Exception) -> Exception:
+    """ARCH-33: błąd SDK w taksonomii portów, wciąż typu SDK."""
+    return as_port_error(exc, sdk_error_kind(exc))
 
 
 def _completion_tokens(response: Any) -> int | None:
