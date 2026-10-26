@@ -261,9 +261,9 @@ class OpenAIAdapter(LLMPort):
             backoff_base=self._backoff_base,
             logger=logger,
             label="OpenAI",
-            is_transient=_is_transient,
-            reason=_reason,
-            translate=_as_port_error,
+            is_transient=is_transient_error,
+            reason=transient_reason,
+            translate=to_port_error,
         )
         return call_with_retry(
             fn,
@@ -293,7 +293,7 @@ class OpenAIAdapter(LLMPort):
         )
 
     def _report_exhausted(self, exc: Exception) -> None:
-        reason = _reason(exc)
+        reason = transient_reason(exc)
         self._quota().emit(
             severity=QuotaSeverity.CRITICAL,
             message=(
@@ -315,16 +315,16 @@ class OpenAIAdapter(LLMPort):
         return QuotaEmitter(f"OpenAI ({self._model})", self._quota_monitor, logger)
 
 
-def _is_transient(exc: Exception) -> bool:
+def is_transient_error(exc: Exception) -> bool:
     """429 (TPM), 5xx i błędy połączenia — po klasie wyjątku SDK."""
     return isinstance(exc, RateLimitError | InternalServerError | APIConnectionError)
 
 
-def _reason(exc: Exception) -> str:
+def transient_reason(exc: Exception) -> str:
     return "429" if isinstance(exc, RateLimitError) else type(exc).__name__
 
 
-def _as_port_error(exc: Exception) -> Exception:
+def to_port_error(exc: Exception) -> Exception:
     """ARCH-33: błąd SDK w taksonomii portów, wciąż typu SDK."""
     return as_port_error(exc, sdk_error_kind(exc))
 

@@ -195,8 +195,8 @@ class AnthropicAdapter(LLMPort):
             backoff_base=self._backoff_base,
             logger=logger,
             label="Anthropic transient error",
-            is_transient=_is_transient,
-            translate=_as_port_error,
+            is_transient=is_transient_error,
+            translate=to_port_error,
         )
         return call_with_retry(
             fn,
@@ -335,7 +335,7 @@ class AnthropicAdapter(LLMPort):
         return self._call(prompt).text.strip()
 
 
-def _is_transient(exc: Exception) -> bool:
+def is_transient_error(exc: Exception) -> bool:
     """429 i 5xx (w tym 529 Overloaded) oraz błędy połączenia są transient.
 
     Błędy klienta (4xx poza 429 — np. 400 zły prompt, 401 zły klucz) nie
@@ -346,7 +346,7 @@ def _is_transient(exc: Exception) -> bool:
     return status == 429 or (isinstance(status, int) and status >= 500)
 
 
-def _as_port_error(exc: Exception) -> Exception:
+def to_port_error(exc: Exception) -> Exception:
     """ARCH-33: błąd SDK w taksonomii portów, wciąż typu SDK."""
     return as_port_error(exc, sdk_error_kind(exc))
 
