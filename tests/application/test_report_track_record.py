@@ -16,6 +16,7 @@ from src.application.report_track_record import (
 from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks
 from src.domain.calibration_curve import CalibrationBucket, probability_scores
 from src.domain.equity_curve import EquityCurve, EquityPoint, PaperTrade, SharpeEvidence
+from src.domain.reference_signal import ReferenceTally
 from src.domain.track_record import (
     HitRateEvidence,
     ScoredCall,
@@ -523,3 +524,39 @@ class TestSharpeEvidence:
 
     def test_without_evidence_the_summary_is_unchanged(self) -> None:
         assert "PSR" not in render_track_record_html(_curve(), None, None, TrackRecordStats())
+
+
+class TestReferenceRule:
+    """WIA-82: darmowa reguła referencyjna jako baseline w prywatnym Track Record —
+    trafność z n i przedziałem Wilsona, wyłącznie agregat."""
+
+    def test_track_record_shows_reference_rule_without_symbols(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=2))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert (
+            "Reguła referencyjna (0 zł, momentum tygodniowe): trafność 60% "
+            "(95% CI 31–83%, n=10) · wygasło bez oceny: 2"
+        ) in html
+        assert "reference-v1" not in html
+
+    def test_no_expired_calls_no_expired_note(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=0))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert "trafność 60% (95% CI 31–83%, n=10)" in html
+        assert "wygasło bez oceny: 0" not in html
+
+    def test_without_settlements_there_is_no_row(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=0, misses=0, expired=3))
+
+        assert "Reguła referencyjna" not in render_track_record_html(_curve(), None, None, stats)
+
+    def test_compact_day_leaves_the_row_out(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=2))
+
+        html = render_track_record_html(_curve(), None, None, stats, compact=True)
+
+        assert "Reguła referencyjna" not in html

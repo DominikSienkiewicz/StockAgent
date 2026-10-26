@@ -5239,6 +5239,14 @@ def test_report_flags_carry_the_recipe_version_flag(settings: Settings, enabled:
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_reference_signal_flag(settings: Settings, enabled: bool) -> None:
+    # WIA-82: wiersz reguły referencyjnej czyta tabelę z migracji 042 tylko za jej flagą.
+    settings.reference_signal_enabled = enabled
+
+    assert main_agent._report_flags(settings).reference_signal_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_receipts_flag_reaches_the_repository_and_the_report(
     settings: Settings, mocker: Any, enabled: bool
 ) -> None:

@@ -36,6 +36,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.paper_ledger import LedgerTrade
 from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
+from src.domain.reference_signal import ReferenceOutcome, ReferenceTally
 
 STARTED_AT = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
 _SETTLED = {
@@ -856,3 +857,44 @@ class TestSharpeEvidenceOfTheCurve:
         assert stats is not None and stats.sharpe is not None
         assert stats.sharpe.psr is not None
         assert stats.sharpe.dsr is None
+
+
+def _reference_flags(*, reference_signal_enabled: bool = True) -> ReportFlags:
+    return ReportFlags(
+        track_record_days=30,
+        reflection_min_age_hours=12,
+        equity_curve_enabled=True,
+        reference_signal_enabled=reference_signal_enabled,
+    )
+
+
+class TestReferenceRuleTally:
+    """WIA-82: agregat rozliczeń reguły referencyjnej w oknie Track Recordu."""
+
+    def test_tally_of_the_window_reaches_the_track_record(self) -> None:
+        repo = _repo()
+        repo.get_reference_outcomes.return_value = [ReferenceOutcome.HIT] * 6 + [
+            ReferenceOutcome.MISS
+        ] * 4
+
+        stats = _assemble(repo, _reference_flags()).track_record_stats
+
+        repo.get_reference_outcomes.assert_called_once_with(30)
+        assert stats is not None
+        assert stats.reference == ReferenceTally(hits=6, misses=4, expired=0)
+
+    def test_reference_read_needs_its_flag(self) -> None:
+        repo = _repo()
+
+        stats = _assemble(repo, _reference_flags(reference_signal_enabled=False)).track_record_stats
+
+        repo.get_reference_outcomes.assert_not_called()
+        assert stats is not None and stats.reference is None
+
+    def test_failed_read_hides_the_row(self) -> None:
+        repo = _repo()
+        repo.get_reference_outcomes.side_effect = ProviderUnavailable("supabase down")
+
+        stats = _assemble(repo, _reference_flags()).track_record_stats
+
+        assert stats is not None and stats.reference is None

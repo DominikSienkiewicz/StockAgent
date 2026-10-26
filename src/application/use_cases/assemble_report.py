@@ -98,6 +98,7 @@ from src.domain.persona_track_record import (
     sort_personas,
 )
 from src.domain.quota import QuotaAlert
+from src.domain.reference_signal import ReferenceTally, tally_outcomes
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
@@ -157,6 +158,8 @@ class ReportFlags:
     cost_ledger_enabled: bool = False
     # WIA-68: n_trials Deflated Sharpe z liczby wersji przepisu (kolumna z migracji 030).
     recipe_version_enabled: bool = False
+    # WIA-82: wiersz reguły referencyjnej (0 zł) w Track Record — tabela z migracji 042.
+    reference_signal_enabled: bool = False
 
 
 def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
@@ -482,6 +485,19 @@ def _recipe_trials(repository: RepositoryPort) -> int | None:
         return None
 
 
+def build_reference_tally(flags: ReportFlags, repository: RepositoryPort) -> ReferenceTally | None:
+    """WIA-82: rozliczenia reguły referencyjnej z okna Track Recordu — agregat bez
+    symboli. Bez flagi `reference_signal_enabled` nic nie czyta; błąd odczytu chowa
+    wiersz, cykl leci dalej."""
+    if not (flags.equity_curve_enabled and flags.reference_signal_enabled):
+        return None
+    try:
+        return tally_outcomes(repository.get_reference_outcomes(flags.track_record_days))
+    except PortError:
+        logger.warning("Reference outcomes unavailable — Track Record without the baseline row")
+        return None
+
+
 def build_track_record_stats(
     flags: ReportFlags,
     repository: RepositoryPort,
@@ -557,6 +573,7 @@ def build_track_record_stats(
         sideways_scores=sideways_scores,
         accuracy_drop=accuracy_drop,
         sharpe=sharpe,
+        reference=build_reference_tally(flags, repository),
     )
 
 

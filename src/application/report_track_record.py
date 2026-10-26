@@ -44,6 +44,7 @@ from src.application.report_evidence import (
     portfolio_assumptions,
     probability_label,
     uncertainty_note,
+    wilson_label,
 )
 from src.application.report_formatting import PALETTE, number, pct, pct_range, plural_pl
 from src.application.report_lessons import LessonsReport
@@ -59,6 +60,7 @@ from src.domain.conformal import IntervalCoverage
 from src.domain.equity_curve import MIN_SHARPE_SAMPLE, EquityCurve, SharpeEvidence
 from src.domain.mistake_taxonomy import MISTAKE_CATEGORY_LABELS_PL, MistakeCategory
 from src.domain.number_format import DecimalMark
+from src.domain.reference_signal import ReferenceTally
 from src.domain.track_record import HitRateEvidence
 
 # Maksymalna liczba słupków sparklini krzywej kapitału (ostatnie N transakcji) —
@@ -106,6 +108,8 @@ class TrackRecordStats:
       `scores` i krzywa kalibracji są wtedy wyłącznie kierunkowe.
     - `accuracy_drop` — data istotnego spadku trafności (NIEZ-20); None = brak alarmu.
     - `sharpe` — PSR i DSR krzywej kapitału (WIA-68); None = bez linii PSR/DSR.
+    - `reference` — rozliczenia darmowej reguły referencyjnej w oknie (WIA-82),
+      sam agregat bez symboli; None = bez wiersza baseline'u.
     """
 
     hit_rate: HitRateEvidence | None = None
@@ -118,6 +122,8 @@ class TrackRecordStats:
     accuracy_drop: AccuracyDrop | None = None
     # WIA-68: PSR i DSR krzywej; None = linii PSR/DSR nie ma.
     sharpe: SharpeEvidence | None = None
+    # WIA-82: baseline 0 zł — agregat rozliczeń reguły referencyjnej; None = bez wiersza.
+    reference: ReferenceTally | None = None
 
 
 def render_track_record_html(
@@ -251,6 +257,7 @@ def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
         + assumptions
         + _render_benchmark_html(stats.benchmark)
         + _render_evidence_html(stats.hit_rate)
+        + _render_reference_html(stats.reference)
         + _render_accuracy_drop_html(stats.accuracy_drop)
         + _render_sparkline_html(curve, basket)
     )
@@ -294,6 +301,21 @@ def _render_evidence_html(evidence: HitRateEvidence | None) -> str:
     if note:
         parts.append(note)
     return f"<p style='{_NOTE_STYLE}'>{_html.escape(' · '.join(parts))}</p>"
+
+
+def _render_reference_html(tally: ReferenceTally | None) -> str:
+    """WIA-82 — baseline, który płatny LLM musi pobić: trafność darmowej reguły
+    momentum (`reference-v1`) z przedziałem Wilsona i n; bez rozliczeń — nic.
+    Wyłącznie agregat, bez symboli (scorecard publiczny czeka na zgodę dostawców)."""
+    if tally is None or tally.rate is None:
+        return ""
+    line = (
+        f"Reguła referencyjna (0 zł, momentum tygodniowe): trafność "
+        f"{pct(tally.rate, decimals=0)} ({wilson_label(tally.hits, tally.n)})"
+    )
+    if tally.expired:
+        line += f" · wygasło bez oceny: {tally.expired}"
+    return f"<p style='{_NOTE_STYLE}'>{_html.escape(line)}</p>"
 
 
 def _render_accuracy_drop_html(drop: AccuracyDrop | None) -> str:

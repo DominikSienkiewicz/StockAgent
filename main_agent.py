@@ -2474,6 +2474,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         open_entry_curve_enabled=settings.executable_entry_enabled,
         cost_ledger_enabled=settings.cost_ledger_enabled,
         recipe_version_enabled=settings.recipe_version_enabled,
+        reference_signal_enabled=settings.reference_signal_enabled,
     )
 
 
