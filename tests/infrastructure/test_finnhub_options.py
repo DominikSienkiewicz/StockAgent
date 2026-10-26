@@ -72,7 +72,7 @@ class TestGetOptionsFlow:
         # Średnia z {0.40, 0.60} = 0.50.
         assert snapshot.implied_vol == pytest.approx(0.50)
 
-    def test_passes_symbol_and_token_as_query_params(
+    def test_passes_symbol_as_query_param_and_token_in_header(
         self, adapter: FinnhubOptionsAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
@@ -88,7 +88,9 @@ class TestGetOptionsFlow:
         adapter.get_options_flow("TSLA")
 
         call = mock_get.call_args
-        assert call.kwargs["params"] == {"symbol": "TSLA", "token": "test-token-123"}
+        # BEZ-15: token w nagłówku X-Finnhub-Token, nie w URL-u.
+        assert call.kwargs["params"] == {"symbol": "TSLA"}
+        assert call.kwargs["headers"] == {"X-Finnhub-Token": "test-token-123"}
 
     def test_sets_request_timeout(self, adapter: FinnhubOptionsAdapter, mocker: Any) -> None:
         mock_get = mocker.patch(

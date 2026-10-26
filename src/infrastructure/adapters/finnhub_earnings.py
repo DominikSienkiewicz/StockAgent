@@ -1,6 +1,6 @@
 """Adapter Finnhub /calendar/earnings — kalendarz wyników całej watchlisty (DAT-20).
 
-    GET /calendar/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD&token={k}
+    GET /calendar/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD (token w nagłówku, BEZ-15)
     → {"earningsCalendar": [{"symbol": "AAPL", "date": "2026-10-29",
                              "hour": "amc", "epsEstimate": 1.5, ...}, ...]}
 
@@ -30,7 +30,10 @@ from src.application.errors import PortError
 from src.application.ports import EarningsCalendarPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.earnings import EarningsEvent, EarningsTiming
-from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
+from src.infrastructure.adapters._finnhub_common import (
+    FinnhubStatusWatcher,
+    finnhub_auth_headers,
+)
 from src.infrastructure.adapters._http import (
     RateLimiter,
     build_session,
@@ -120,8 +123,8 @@ class FinnhubEarningsCalendarAdapter(EarningsCalendarPort):
                 params={
                     "from": today.isoformat(),
                     "to": (today + timedelta(days=self._horizon_days)).isoformat(),
-                    "token": self._api_key,
                 },
+                headers=finnhub_auth_headers(self._api_key),
                 timeout=self._timeout,
             )
             self._status.observe(_ENDPOINT, _WATCHLIST, response.status_code)

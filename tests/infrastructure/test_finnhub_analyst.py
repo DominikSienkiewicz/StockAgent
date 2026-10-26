@@ -192,7 +192,9 @@ class TestGetConsensus:
 
         first = mock_get.call_args_list[0]
         assert first.kwargs["params"]["symbol"] == "AAPL"
-        assert first.kwargs["params"]["token"] == "test-token-123"
+        # BEZ-15: token w nagłówku X-Finnhub-Token, nie w URL-u.
+        assert "token" not in first.kwargs["params"]
+        assert first.kwargs["headers"] == {"X-Finnhub-Token": "test-token-123"}
         assert first.kwargs["timeout"] > 0
         url = first.args[0] if first.args else first.kwargs.get("url", "")
         assert "/stock/recommendation" in url

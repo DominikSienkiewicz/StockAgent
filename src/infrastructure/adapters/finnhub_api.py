@@ -13,6 +13,7 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money, Quote
+from src.infrastructure.adapters._finnhub_common import finnhub_auth_headers
 from src.infrastructure.adapters._http import (
     RateLimiter,
     build_session,
@@ -37,7 +38,7 @@ class FinnhubSymbolNotFound(NotFound, ValueError):
 class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
     """Adapter dla Finnhub Quote API.
 
-    Endpoint: GET /quote?symbol={symbol}&token={api_key}
+    Endpoint: GET /quote?symbol={symbol}, token w nagłówku X-Finnhub-Token (BEZ-15)
     Response: {"c": current_price, "d": change, "dp": percent_change,
     "pc": previous_close, "t": quote_unix_time, ...}
     """
@@ -112,7 +113,8 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
             response = safe_get(
                 self._session,
                 f"{self._base_url}/quote",
-                params={"symbol": symbol, "token": self._api_key},
+                params={"symbol": symbol},
+                headers=finnhub_auth_headers(self._api_key),
                 timeout=self._timeout,
             )
         except requests.RequestException as exc:

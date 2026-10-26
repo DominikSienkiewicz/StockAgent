@@ -1,11 +1,11 @@
 """Adapter Finnhub — konsensus analityków i cel cenowy (sell-side, tło).
 
 Dwa darmowe-/premium-owe endpointy Finnhub:
-    GET /stock/recommendation?symbol={s}&token={k}
+    GET /stock/recommendation?symbol={s}
         → lista miesięcznych snapshotów rozkładu rekomendacji; bierzemy
           najświeższy po polu "period", a poprzedni (DAT-13) jako `previous`
           do rewizji m/m — z tej samej odpowiedzi, bez nowego requestu.
-    GET /stock/price-target?symbol={s}&token={k}
+    GET /stock/price-target?symbol={s}
         → {"targetMedian": .., "targetMean": ..}; bywa płatny (403) — wtedy
           po prostu zostawiamy price_target = None, konsensus i tak zwracamy.
 
@@ -13,6 +13,8 @@ Dwa darmowe-/premium-owe endpointy Finnhub:
 non-200 na rekomendacji — kończy się zwróceniem None. ARCH-33: łapiemy wyłącznie
 przetłumaczone błędy dostawcy (`PortError`), więc błąd programisty nie udaje braku
 konsensusu. Cienki I/O; cała logika oceny (rating/upside) siedzi w domenie.
+
+Klucz API jedzie nagłówkiem X-Finnhub-Token, nie w URL-u (BEZ-15).
 
 DAT-12: każdy request bierze token ze wspólnego limitera Finnhub procesu, a 429
 (jeden CRITICAL QuotaAlert na endpoint na cykl) i 401/403 (jeden WARNING) przestały
@@ -30,7 +32,10 @@ from src.application.errors import PortError
 from src.application.ports import AnalystConsensusPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.analyst_consensus import AnalystConsensus
-from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
+from src.infrastructure.adapters._finnhub_common import (
+    FinnhubStatusWatcher,
+    finnhub_auth_headers,
+)
 from src.infrastructure.adapters._http import (
     RateLimiter,
     build_session,
@@ -121,7 +126,8 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         response = translated_get(
             self._session,
             f"{self._base_url}/{endpoint}",
-            params={"symbol": symbol, "token": self._api_key},
+            params={"symbol": symbol},
+            headers=finnhub_auth_headers(self._api_key),
             timeout=self._timeout,
         )
         self._status.observe(endpoint, symbol, response.status_code)
