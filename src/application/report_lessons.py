@@ -98,26 +98,26 @@ def build_lessons(resolved: Sequence[ResolvedPrediction], limit: int = 8) -> Les
     się błędy PRZED przycięciem do `limit`. `recurring_theme` to najczęstszy
     nietrywialny keyword w diagnozach (lub None), a `category_counts` (WIA-57)
     — histogram kategorii przyczyn tych samych błędów."""
-    mistakes = [p for p in resolved if _is_mistake_with_insight(p)]
+    # Para (predykcja, diagnoza): filtr zawęża `insight` do `str` dla mypy.
+    mistakes = [
+        (p, p.insight) for p in resolved if p.insight is not None and _is_mistake_with_insight(p)
+    ]
 
     items = tuple(
         LessonItem(
             symbol=p.symbol,
             predicted_trend=p.predicted_trend,
-            # insight nie jest None po filtrze _is_mistake_with_insight.
-            insight=p.insight,  # type: ignore[arg-type]
+            insight=insight,
             actual_change_ratio=p.actual_change_ratio,
         )
-        for p in mistakes[:limit]
+        for p, insight in mistakes[:limit]
     )
 
-    recurring_theme = _detect_recurring_theme(
-        [p.insight for p in mistakes if p.insight is not None]
-    )
+    recurring_theme = _detect_recurring_theme([insight for _, insight in mistakes])
 
     return LessonsReport(
         items=items,
         total_mistakes=len(mistakes),
         recurring_theme=recurring_theme,
-        category_counts=count_categories(p.correction_category for p in mistakes),
+        category_counts=count_categories(p.correction_category for p, _ in mistakes),
     )

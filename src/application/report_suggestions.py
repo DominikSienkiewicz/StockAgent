@@ -78,12 +78,9 @@ def build_sector_suggestions(
         if not candidates:
             continue
 
-        drivers_sorted = sorted(
-            (m for m in members if m.delta is not None),
-            key=lambda m: abs(m.delta),  # type: ignore[arg-type]
-            reverse=True,
-        )
-        drivers = [(m.symbol, m.delta) for m in drivers_sorted[:MAX_DRIVERS] if m.delta is not None]
+        # Pary (symbol, Δ) z filtrem None: sortowanie po |Δ| bez `type: ignore`.
+        moves = [(m.symbol, m.delta) for m in members if m.delta is not None]
+        drivers = sorted(moves, key=lambda move: abs(move[1]), reverse=True)[:MAX_DRIVERS]
         suggestions.append((max_move, SectorSuggestion(sector, drivers, candidates)))
 
     # Ranking: najmocniejszy ruch pierwszy, remis → alfabetycznie wg sektora.
