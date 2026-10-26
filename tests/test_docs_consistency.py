@@ -339,3 +339,89 @@ def test_claude_md_delegates_to_agents_md() -> None:
     )
     duplicated = _level_two_headings(claude) & _level_two_headings(agents)
     assert duplicated == set(), f"CLAUDE.md powtarza sekcje AGENTS.md: {sorted(duplicated)}"
+
+
+# DOC-53: gołe „#N” w komentarzach src/ prowadziło do gitignorowanego backlogu albo do niczego,
+# a trzy serie numerów nachodziły na siebie (`#6` to bramka earnings z roadmapy lipcowej,
+# tool-use z czerwcowych ulepszeń rady i snapshot ceny z pierwszego audytu). Pozycja roadmapy
+# to R-N z docs/decisions.md, znalezisko audytu z 2026-10-15 nosi swój identyfikator G-N, a
+# odwołanie spoza obu spisów opisujemy słowami. Strażnik czyta komentarze i docstringi; inne
+# napisy (kolory HTML, szablony maila) nie są odwołaniami.
+BARE_HASH_NUMBER = re.compile(r"(?<![\w&])#\d+\b")
+# Trafienia, które nie są odwołaniami: (plik, trafienie) → powód.
+NOT_A_REFERENCE = {
+    ("src/application/report_footer.py", "#77"): "przykładowy numer przebiegu GHA w stopce",
+}
+
+
+def _docstring_starts(source: str) -> set[tuple[int, int]]:
+    import ast
+
+    starts: set[tuple[int, int]] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            first = node.body[0] if node.body else None
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                starts.add((first.value.lineno, first.value.col_offset))
+    return starts
+
+
+def _comment_and_docstring_lines(path: Path) -> list[tuple[int, str]]:
+    import io
+    import tokenize
+
+    source = path.read_text(encoding="utf-8")
+    docstrings = _docstring_starts(source)
+    lines: list[tuple[int, str]] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            lines.append((token.start[0], token.string.lstrip("#")))
+        elif token.type == tokenize.STRING and token.start in docstrings:
+            lines.extend(
+                (token.start[0] + offset, line)
+                for offset, line in enumerate(token.string.splitlines())
+            )
+    return lines
+
+
+def _bare_hash_numbers(path: Path, root: Path) -> list[str]:
+    relative = path.relative_to(root).as_posix()
+    return [
+        f"{relative}:{number} {found}"
+        for number, text in _comment_and_docstring_lines(path)
+        for found in BARE_HASH_NUMBER.findall(text)
+        if (relative, found) not in NOT_A_REFERENCE
+    ]
+
+
+def test_no_bare_hash_reference_in_src_comments() -> None:
+    bare = [
+        hit
+        for path in sorted((ROOT / "src").rglob("*.py"))
+        for hit in _bare_hash_numbers(path, ROOT)
+    ]
+
+    assert bare == [], f"gołe „#N” w komentarzach src/ zamiast R-N, G-N albo opisu: {bare}"
+
+
+def test_bare_hash_guard_reads_comments_and_docstrings_but_not_strings(tmp_path: Path) -> None:
+    module = tmp_path / "module.py"
+    module.write_text(
+        '"""Moduł (#3)."""\n'
+        "# #14: komentarz\n"
+        'COLOUR = "#374151"  # R-14, encja &#8212; i hash #3f2a1b9c\n'
+        "def f() -> str:\n"
+        '    """Funkcja\n\n    z odwołaniem #8 w drugiej linii."""\n'
+        '    return "#9"\n',
+        encoding="utf-8",
+    )
+
+    assert _bare_hash_numbers(module, tmp_path) == [
+        "module.py:1 #3",
+        "module.py:2 #14",
+        "module.py:7 #8",
+    ]
