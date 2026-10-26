@@ -271,6 +271,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
+- Nowy sekret (w workflowie albo w `.env.example`) = wiersz w tabeli „Secrets inventory and
+  rotation” w `SECURITY.md` (rola, konto, rotacja, bez wartości i prefiksu klucza);
+  pilnuje tego `tests/test_secrets_inventory.py` (BEZ-24).
 
 ## Konfiguracja: `config.toml` vs `.env` (DOC-30)
 

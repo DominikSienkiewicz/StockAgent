@@ -134,3 +134,51 @@ face it.
   redacted message, every entry point's log handler redacts each record (traceback
   included), and the comma-separated Alpha Vantage keys are masked one by one in the job
   log. [Secret redaction](docs/running-locally.md#secret-redaction) describes each step.
+
+## Secrets inventory and rotation
+
+Every secret a workflow reads and every key of [`.env.example`](.env.example) has a row here,
+without its value; [`tests/test_secrets_inventory.py`](tests/test_secrets_inventory.py) fails
+when one is missing, when a row names a secret nothing reads any more, or when this page
+carries the shape of a key. What each workflow runs and when is in the
+[workflow table](docs/running-locally.md#github-actions).
+
+| Secret | Read by | Role and scope | Account | How to rotate |
+|---|---|---|---|---|
+| `OPENAI_API_KEY` | Fast Loop, Slow Loop | Embeddings, the advisory council and the fallback main analysis; paid | OpenAI platform, project key | Create a key, sync, delete the old key |
+| `ANTHROPIC_API_KEY` | Fast Loop, Slow Loop | The main analysis; paid | Anthropic Console | Create a key, sync, delete the old key |
+| `FINNHUB_API_KEY` | Fast Loop, Shock Watch | Stock quotes, analyst consensus, earnings calendar; personal-use plan | Finnhub dashboard | Regenerate the key in the dashboard, sync |
+| `ALPHA_VANTAGE_API_KEYS` | Fast Loop, Slow Loop | News, sentiment, fundamentals and earnings; a comma-separated list, each key with its own daily quota, masked one by one in the job log | Alpha Vantage, one free key per address | Request a new key, replace it in the list, sync |
+| `FRED_API_KEY` | Fast Loop | Yield curve and macro series; read-only, free | FRED account (Federal Reserve Bank of St. Louis) | Request a key in the account, sync, delete the old key |
+| `SUPABASE_URL` | Fast Loop, Slow Loop, Shock Watch, Deadman, Public Scorecard, Telegram bot | Address of the project's API; not a credential on its own | Supabase project | Changes only with a new project |
+| `SUPABASE_KEY` | Fast Loop, Slow Loop, Shock Watch, Deadman, Public Scorecard, Telegram bot | Secret key: reads and writes every table past Row Level Security | Supabase project, API keys | Create a new secret key, sync, then delete the old key in the dashboard |
+| `SUPABASE_DB_URL` | DB Migrate (manual) | Connection string of the `postgres` role through the session pooler: changes the schema; the application never reads it | Supabase project, database password | Reset the database password, rebuild the connection string, sync |
+| `RESEND_API_KEY` | every workflow except CI and the Integration smoke | Sends the report, the alerts and the failure mails | Resend | Create a key, sync, revoke the old key |
+| `DIGEST_TO_EMAIL` | every workflow except CI and the Integration smoke | The recipient address; personal data, not a credential | — | Update when the address changes |
+| `TELEGRAM_BOT_TOKEN` | Fast Loop, Slow Loop, Shock Watch, Telegram bot | Sends pushes and reads the owner's commands as the bot | Telegram, BotFather | Revoke the token in BotFather (a new one is issued at once), sync |
+| `TELEGRAM_CHAT_ID` | Fast Loop, Slow Loop, Shock Watch, Telegram bot | The only chat the bot pushes to and answers; not a credential | Telegram | Update when the chat changes |
+| `SLACK_WEBHOOK_URL` | Fast Loop, Slow Loop, Shock Watch | Posts to one Slack channel; the whole URL is the secret | Slack app with an incoming webhook | Regenerate the webhook, sync |
+| `HEARTBEAT_URL` | Fast Loop, Slow Loop, Shock Watch | Pings the external heartbeat check; the check's id in the path is the secret | External heartbeat service | Create a new check, sync, delete the old check |
+| `BACKUP_AGE_RECIPIENT` | Slow Loop | Public key that encrypts the weekly evidence backup; its private half never enters the repository or GitHub | `age` key pair held by the owner | Generate a new pair, sync the public key, keep the old private key to read older backups |
+| `SONAR_TOKEN` | CI (`sonarcloud` job) | Uploads the analysis and coverage; optional, the job is skipped without it | SonarCloud, My Account, Security | Revoke the token, generate a new one, sync |
+| `SMOKE_OPENAI_API_KEY`, `SMOKE_ANTHROPIC_API_KEY`, `SMOKE_FINNHUB_API_KEY`, `SMOKE_ALPHA_VANTAGE_API_KEY`, `SMOKE_FRED_API_KEY`, `SMOKE_RESEND_API_KEY`, `SMOKE_DIGEST_TO_EMAIL` | Integration smoke (manual and weekly shape check) | Separate keys for the live-API tests, so a smoke run spends no production quota; optional, a missing key skips its test | The same providers, separate keys | As the production key of the same provider |
+| `GH_TOKEN` | no workflow: only the local `scripts/gh-secrets-*.sh` | Optional fine-grained token with read and write access to this repository's secrets; empty means the `gh auth login` session | GitHub, fine-grained personal access token | Set an expiry when creating it; delete it when done |
+
+**Policy.** Rotate every key at least once every 180 days, and at once when it may have
+leaked: printed in a log, an email, an alert or a screenshot. Keys have leaked this way
+before (incident G23: keys from the query string reached the public job logs), and since
+then every error text and log line is redacted. A key that changes in place at the provider
+breaks the scheduled runs until the new value is synced, so rotate outside the schedule
+windows.
+
+**Procedure.**
+
+1. Create the new value in the account named in the table.
+2. Put it into your local `.env`.
+3. Push it to the repository secrets with `scripts/gh-secrets-sync.sh` (it shows a masked
+   plan first and passes values to `gh` over stdin).
+4. Revoke the old value at the provider.
+5. Run `scripts/gh-secrets-check.sh` to confirm every secret a workflow reads is set; after
+   a leak, check the provider's usage for the exposed window as well.
+
+The date of the last rotation is the secret's last update on GitHub (`gh secret list`).
