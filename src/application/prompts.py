@@ -169,22 +169,22 @@ Jeśli popełniłeś błąd w przeszłości, nie powielaj go.
         if include_memory
         else "2. Przeanalizuj korelację między <current_market_data> a <alpha_vantage_signal>."
     )
-    # #7: reżim rynku (RISK-OFF zacieśnia progi, persony defensywne).
+    # R-25: reżim rynku (RISK-OFF zacieśnia progi, persony defensywne).
     regime_block = (
         f"\n<market_regime>\nReżim rynku: {regime_context}. Uwzględnij go w "
         f"ocenie ryzyka.\n</market_regime>\n"
         if regime_context
         else ""
     )
-    # #5: werdykty skorelowanych holdingów z TEGO cyklu (contagion).
+    # R-23: werdykty skorelowanych holdingów z TEGO cyklu (contagion).
     peer_block = (
         f"\n<peer_signals>\nSkorelowane spółki w tym cyklu: {peer_context}. "
         f"Czy obecny układ jest spójny z klastrem?\n</peer_signals>\n"
         if peer_context
         else ""
     )
-    # #14: composite smart-money z 5 źródeł alfa. Pusty przy score 0.0 (wszystkie
-    # flagi off) → prompt identyczny jak przed #14. Rozbicie wkładów jest w
+    # R-14: composite smart-money z 5 źródeł alfa. Pusty przy score 0.0 (wszystkie
+    # flagi off) → prompt identyczny jak przed R-14. Rozbicie wkładów jest w
     # bloku celowo: LLM ma wiedzieć, KTÓRE źródło pcha score, nie tylko sumę.
     alpha_block = (
         f"\n<alpha_fusion>\n{alpha_fusion_context}\n</alpha_fusion>\n"

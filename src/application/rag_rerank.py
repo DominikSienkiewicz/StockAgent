@@ -1,4 +1,4 @@
-"""Outcome-aware rerank analogów RAG (#9).
+"""Outcome-aware rerank analogów RAG (R-27).
 
 `find_similar_predictions` zwraca historyczne sytuacje wg podobieństwa wektora
 newsów (`similarity`) wraz z ich rzeczywistym wynikiem (`is_trend_correct`).

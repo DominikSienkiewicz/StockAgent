@@ -1,4 +1,4 @@
-"""#6 — fabryka read-only tooli badawczych dla pętli tool-use LLM.
+"""R-24 — fabryka read-only tooli badawczych dla pętli tool-use LLM.
 
 Tool-use LLM może na żądanie dociągnąć kontekst (fundamenty spółki, polskie
 makro) zanim wyda werdykt. Tu definiujemy SAME narzędzia jako listę `Tool`
