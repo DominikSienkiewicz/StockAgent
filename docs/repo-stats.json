@@ -4,5 +4,5 @@
   "domain_stdlib_only": true,
   "migrations": 80,
   "ports": 44,
-  "test_functions": 7286
+  "test_functions": 7288
 }
