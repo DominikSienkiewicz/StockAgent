@@ -193,7 +193,7 @@ def _section_text(data: SectionInput) -> list[str]:
     return text_block(text, spaced=True)
 
 
-# #4: powitanie pierwszego cyklu („Dzień 1”) zamiast ściany „Pominięte”.
+# R-4: powitanie pierwszego cyklu („Dzień 1”) zamiast ściany „Pominięte”.
 ONBOARDING_SECTION = ReportSection(
     key="onboarding",
     render_html=_section_html,

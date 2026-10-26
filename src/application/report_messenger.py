@@ -118,7 +118,7 @@ def _lead_lines(lead_items: Sequence[LeadItem]) -> list[str]:
 
 
 def _ranked_entry(rank: int, signal: TradeSignal) -> str:
-    """„1. 📈 NVDA 72%” — pewność skalibrowana, gdy jest historia (#9)."""
+    """„1. 📈 NVDA 72%” — pewność skalibrowana, gdy jest historia (R-9)."""
     confidence = (
         signal.confidence if signal.calibrated_confidence is None else signal.calibrated_confidence
     )

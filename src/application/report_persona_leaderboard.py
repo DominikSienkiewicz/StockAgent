@@ -1,4 +1,4 @@
-"""Render sekcji "Rada — ranking wiarygodności" w raporcie e-mail (#3).
+"""Render sekcji "Rada — ranking wiarygodności" w raporcie e-mail (R-3).
 
 Persona leaderboard: sekcja historii głosów pokazuje, KTO jak głosował — ta
 pokazuje, KTO MIAŁ RACJĘ. "Buffett — 68% trafności (22 głosy)" zamienia radę
@@ -154,7 +154,7 @@ def _section_html(data: SectionInput) -> str:
     return render_persona_leaderboard_html(data.context.persona_track_record or [])
 
 
-# #3: „kto z rady miał rację” — ranking z progiem min_votes przychodzi z domeny.
+# R-3: „kto z rady miał rację” — ranking z progiem min_votes przychodzi z domeny.
 PERSONA_LEADERBOARD_SECTION = ReportSection(
     key="persona_leaderboard",
     render_html=_section_html,

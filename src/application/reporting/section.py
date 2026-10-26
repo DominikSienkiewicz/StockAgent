@@ -46,7 +46,7 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "portfolio_fx",
         "macro_risk_report",
         "user_portfolio_in_text",
-        # Lead (#1): też temat maila i push.
+        # Lead (R-1): też temat maila i push.
         "quota_alerts",
         "consensus_shifts",
         "alpha_signals",
@@ -54,7 +54,7 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "regime",
         # DAT-20: wyniki spółek z portfela dziś i jutro.
         "earnings_soon",
-        # Ranking sygnałów (MAIL-20) i sizing (Q7, PORT-04/08, #9).
+        # Ranking sygnałów (MAIL-20) i sizing (Q7, PORT-04/08, R-9).
         "accuracy_stats",
         "signal_calibration_buckets",
         "signal_isotonic_calibration",
@@ -101,13 +101,13 @@ class SectionInput:
     started_local: str
     # PORT-05: `ReportContext.sector_map` albo pusta mapa.
     sector_map: Mapping[str, str]
-    # #1: lead cyklu — jedno źródło treści maila, preheadera i tematu.
+    # R-1: lead cyklu — jedno źródło treści maila, preheadera i tematu.
     lead_items: list[LeadItem]
     # `ReportContext.resolved_predictions` albo pusta lista i okno ich rozliczeń
     # (WIA-19) — sekcja zamkniętych predykcji i pierwszy ekran.
     resolved: list[ResolvedPrediction]
     resolved_window: str
-    # #15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione `held_prices`.
+    # R-15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione `held_prices`.
     current_prices: Mapping[str, Decimal]
     # PORT-11: kursy NBP do „P/L zł”, wag i zmiany portfela; USD/PLN z Risk Watch.
     pln_rates: PlnRates | None

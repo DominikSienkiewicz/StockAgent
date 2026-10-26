@@ -778,7 +778,7 @@ def _change_kwargs(change: PortfolioChangeView | None) -> dict[str, Any]:
 
 
 def _section_html(data: SectionInput) -> str:
-    """#15: sekcja realnego portfela. Kursy przychodzą jako wartości (PORT-11:
+    """R-15: sekcja realnego portfela. Kursy przychodzą jako wartości (PORT-11:
     `pln_rates`, inaczej USD/PLN z `MacroRiskReport`), nie z portu. Brak
     portfela → "" (sekcja sama się chowa). PORT-06: linia zmiany od ostatniego
     maila, gdy da się ją policzyć."""
@@ -814,7 +814,7 @@ def _section_text(data: SectionInput) -> list[str]:
     return text_block(text, spaced=True)
 
 
-# #15: 💼 realny portfel (wagi, P/L, sektor, PLN) — zaraz za pierwszym ekranem.
+# R-15: 💼 realny portfel (wagi, P/L, sektor, PLN) — zaraz za pierwszym ekranem.
 USER_PORTFOLIO_SECTION = ReportSection(
     key="user_portfolio", render_html=_section_html, render_text=_section_text
 )

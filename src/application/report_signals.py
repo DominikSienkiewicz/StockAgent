@@ -74,11 +74,11 @@ def build_trade_signals(
     portfela, wspólne dla cyklu) idą wprost do `suggest_band` i mogą bandę
     wyłącznie zwęzić. None → banda jak przed PORT-04.
 
-    #9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
+    R-9: gdy podano `calibration_buckets`, `strength` liczymy na pewności
     SKALIBROWANEJ historycznym hit-rate'em jej kubełka (shrinkage przy małej
     próbce). Kalibracja przestawia więc RANKING sygnałów, nie tylko etykietę:
     przepewny kubełek spada, uczciwy rośnie. Brak kubełków → funkcja domenowa
-    zwraca surowe `raw` → zachowanie identyczne jak przed #9. Render-only, zero
+    zwraca surowe `raw` → zachowanie identyczne jak przed R-9. Render-only, zero
     persystencji: kolumna `confidence_calibration` z migracji 016 ma INNĄ
     semantykę (post-hoc score sędziego LLM) i nie wolno jej nadpisać.
 
@@ -164,7 +164,7 @@ def _calibrated(
     buckets: Sequence[CalibrationBucket] | None,
     isotonic: IsotonicMap | None,
 ) -> float | None:
-    """#9 / ML-28: skalibrowana pewność do rankingu — mapa izotoniczna, gdy jest,
+    """R-9 / ML-28: skalibrowana pewność do rankingu — mapa izotoniczna, gdy jest,
     inaczej shrinkage kubełka; bez kubełków None (surowa pewność)."""
     if not buckets:
         return None
@@ -213,7 +213,7 @@ def _size_band_for(
 ) -> SizeBand | None:
     """Wylicza bandę pozycji z werdyktu rady symbolu; None gdy brak werdyktu.
 
-    #15 faza 2: gdy znamy realne wagi portfela, banda uwzględnia istniejącą
+    R-15 faza 2: gdy znamy realne wagi portfela, banda uwzględnia istniejącą
     ekspozycję (symbolu i jego klastra korelacji) i może się wyłącznie zwęzić.
     Brak wag → zachowanie sprzed fazy 2.
     """

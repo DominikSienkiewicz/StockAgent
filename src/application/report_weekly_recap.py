@@ -1,4 +1,4 @@
-"""Render sekcji „Tydzień StockAgenta" (#17) — HTML i plain-text.
+"""Render sekcji „Tydzień StockAgenta" (R-17) — HTML i plain-text.
 
 Niedzielna retrospektywa jako mail-opowieść: strzał tygodnia, wtopa tygodnia
 z lekcją, wybronieni dysydenci rady, Brier z BSS (WIA-36) i delta ECE

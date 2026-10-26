@@ -143,7 +143,7 @@ def _cluster_exposure_per_symbol(
     clusters: Mapping[str, str] | None,
     current_prices: Mapping[str, Decimal],
 ) -> dict[str, Decimal] | None:
-    """#15 faza 2 — mapa symbol → udział JEGO klastra korelacji w kapitale.
+    """R-15 faza 2 — mapa symbol → udział JEGO klastra korelacji w kapitale.
 
     Trzy pozycje w jednym klastrze to jedna pozycja przebrana za trzy, więc
     sizing musi widzieć sumę klastra, nie tylko wagę symbolu.
@@ -168,7 +168,7 @@ def to_lead_signals(
     shock_alerts: Sequence[StoredShockAlert] | None = None,
     earnings_soon: Sequence[EarningsEvent] | None = None,
 ) -> list[LeadSignal]:
-    """Mapuje DTO raportu na domenowe `LeadSignal` (#1).
+    """Mapuje DTO raportu na domenowe `LeadSignal` (R-1).
 
     Granica architektury: `src/domain/digest_lead.py` bierze wyłącznie typy
     domenowe i prymitywy, więc `resolved_label` powstaje TU jako gotowy string.
@@ -178,7 +178,7 @@ def to_lead_signals(
     pozycji. Status "saved" znaczy, że ruch przeszedł bramkę volatility (graf
     poszedł do analizy) — tylko taki ruch pozycji może być leadem.
 
-    MAIL-19: `consensus_shifts` (#8, z `ReportContext`) dają sygnałom zmianę
+    MAIL-19: `consensus_shifts` (R-8, z `ReportContext`) dają sygnałom zmianę
     nastawienia rady — odwrócenie (FLIP) ma w leadzie własny tier.
     DAT-21: `alpha_signals` daje znaczący zakup insidera (próg z kapitalizacji)
     jako gotowy tekst — ten sam co linia w sekcji alfy. `insider_lead_window`
@@ -268,13 +268,13 @@ def _weight_prices(
 
 
 def _report_prices(results: list[SymbolResult], context: ReportContext) -> dict[str, Decimal]:
-    """#15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione cenami pozycji
+    """R-15/PORT-07: ceny raportu — z wyników cyklu, uzupełnione cenami pozycji
     spoza watchlisty (`held_prices`). Cena z cyklu ma pierwszeństwo."""
     return {**(context.held_prices or {}), **_current_prices_of(results)}
 
 
 def build_cycle_lead(results: list[SymbolResult], context: ReportContext) -> list[LeadItem]:
-    """#1/PORT-10: lead cyklu — jedno źródło dla treści maila i jego tematu.
+    """R-1/PORT-10: lead cyklu — jedno źródło dla treści maila i jego tematu.
 
     Gdy znamy realny portfel, sygnały niosą wagi pozycji, więc ruch i sygnał
     na Twojej pozycji wyprzedzają ruch spółki, której nie masz.
@@ -313,9 +313,9 @@ def build_cycle_signals(
     """Ranking sygnałów cyklu — jedno źródło dla 🎯 sekcji maila i pushu (MAIL-20).
 
     Q7: hit-rate cyklu (z `accuracy_stats`) napędza pasmo wielkości pozycji.
-    #9: kubełki kalibracji (flaga `calibrated_confidence_enabled`) liczą ranking
+    R-9: kubełki kalibracji (flaga `calibrated_confidence_enabled`) liczą ranking
     na pewności skorygowanej historią; None → surowa pewność.
-    #15 faza 2 / PORT-04 / PORT-08: gdy znamy realny portfel, sizing widzi
+    R-15 faza 2 / PORT-04 / PORT-08: gdy znamy realny portfel, sizing widzi
     istniejącą ekspozycję (symbolu i klastra) i ryzyko portfela, a sygnał niesie
     kierunek w kontekście pozycji. Bez portfela — jak przed tymi wpisami.
     """
@@ -397,7 +397,7 @@ def _partition_by_status(
 
 
 def _current_prices_of(results: list[SymbolResult]) -> dict[str, Decimal]:
-    """#15: ceny bieżące biorą się z wyników TEGO cyklu — renderer nie dostaje
+    """R-15: ceny bieżące biorą się z wyników TEGO cyklu — renderer nie dostaje
     żadnego portu. Symbol bez ceny (błąd źródła) po prostu nie wchodzi."""
     return {r.symbol: r.current_price for r in results if r.current_price is not None}
 
@@ -564,7 +564,7 @@ def _section_input(
     saved, ignored, errors = _partition_by_status(results)
     current_prices = _report_prices(results, context)
     pln_rates = _pln_rates_of(context)
-    # #1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
+    # R-1: ranking leadu robi domena; TU jest jedyne miejsce, gdzie DTO warstwy
     # application (SymbolResult / ResolvedPrediction) są mapowane na typy
     # domenowe — `src/domain/digest_lead.py` ich nie importuje.
     lead_items = build_cycle_lead(results, context)
@@ -640,7 +640,7 @@ def _render_text(data: SectionInput, sections: Sequence[ReportSection]) -> str:
 
 
 def _skip_reason_of(status: str, raw: dict[str, Any]) -> SkipReason | None:
-    """#4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
+    """R-4: cold-start jest widoczny w stanie końcowym jako previous_price == 0
     (graf nie miał punktu odniesienia). Symbol odcięty bramką volatility ma
     poprzednią cenę — to zupełnie inna historia niż pierwszy dzień deploymentu.
     Status inny niż "ignored" nie niesie powodu pominięcia."""

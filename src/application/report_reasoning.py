@@ -314,7 +314,7 @@ _NEWS_BLOCK_TEMPLATE = _env.from_string(
 def _render_news_block_html(top_news: list[TopNewsItem]) -> str:
     """Renderuje blok 'Top newsy' przez autoescapowany Jinja env.
 
-    Migracja przyrostowa f-string → Jinja (finding #35): escapowanie tytułów
+    Migracja przyrostowa f-string → Jinja (audyt z czerwca 2026): escapowanie tytułów
     i źródeł newsów jest tu domyślne, nie opt-in. Output równoważny dawnemu
     f-stringowi (te same style inline, kolejność i format relevance/sentyment)."""
     items = [
@@ -457,7 +457,7 @@ def render_reasoning_block_html(
         move_line += f'<div class="rm">{_html(chip)}</div>'
     move_line += _market_context_html(r)
     # Blok 'Top newsy' — zmigrowany na autoescapowany Jinja env
-    # (finding #35). Escapowanie title/source jest tu domyślne.
+    # (audyt z czerwca 2026). Escapowanie title/source jest tu domyślne.
     news_block = _render_news_block_html(r.top_news)
     rec_block = _model_signal_reason_html(r)
     council_block = (
