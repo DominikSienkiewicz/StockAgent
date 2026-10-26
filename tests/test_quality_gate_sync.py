@@ -18,8 +18,11 @@ zastępuje treścią pliku (DOC-29: `CLAUDE.md` = `@AGENTS.md` + dodatki Claude'
 
 from __future__ import annotations
 
+import ast
+import io
 import re
 import shlex
+import tokenize
 import tomllib
 from pathlib import Path, PurePosixPath
 
@@ -349,3 +352,86 @@ def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
     ]
 
     assert any(str(requirement).startswith("pytest-cov") for requirement in dev)
+
+
+# CI-15: ucieczki z typów w kodzie produkcyjnym są dziś wąskie, ale nic nie pilnowało, żeby
+# takie zostały. Goły `# type: ignore` (bez kodu błędu) odrzuca mypy (`ignore-without-code`),
+# a liczba ignore z kodem i `cast(Any, …)` w src/ i main_*.py tylko maleje. Stan na eb11938
+# (2026-10-26): 5 ignore i 1 cast. Gdy zmiana usuwa ucieczkę, obniż zapadkę w tym samym commicie.
+TYPE_IGNORE_BASELINE = 5
+CAST_ANY_BASELINE = 1
+_TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore(?P<codes>\[[^\]]*\])?")
+
+
+def _production_sources() -> dict[str, str]:
+    paths = sorted([*(ROOT / "src").rglob("*.py"), *ROOT.glob("main_*.py")])
+    return {path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8") for path in paths}
+
+
+def count_type_ignores(source: str) -> tuple[int, int]:
+    """(ignore z kodem, gołe ignore) — tylko w komentarzach, nie w napisach."""
+    coded = bare = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        for match in _TYPE_IGNORE.finditer(token.string):
+            if match.group("codes"):
+                coded += 1
+            else:
+                bare += 1
+    return coded, bare
+
+
+def _named(node: ast.expr, name: str) -> bool:
+    return (isinstance(node, ast.Name) and node.id == name) or (
+        isinstance(node, ast.Attribute) and node.attr == name
+    )
+
+
+def count_cast_any(source: str) -> int:
+    return sum(
+        1
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and _named(node.func, "cast")
+        and node.args
+        and _named(node.args[0], "Any")
+    )
+
+
+def test_type_escape_counters_read_comments_and_calls() -> None:
+    source = (
+        "from typing import Any, cast\nimport typing\n"
+        "a = f()  # type: ignore[arg-type]\n"
+        "b = g()  # type: ignore\n"
+        'c = "# type: ignore"\n'
+        "d = cast(Any, x)\n"
+        "e = typing.cast(typing.Any, x)\n"
+        "f = cast(int, x)\n"
+    )
+
+    assert count_type_ignores(source) == (1, 1)
+    assert count_cast_any(source) == 2
+
+
+def test_type_escapes_have_codes_and_do_not_grow() -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    enabled = config["tool"]["mypy"].get("enable_error_code", [])
+    sources = _production_sources()
+    ignores = {name: count_type_ignores(text) for name, text in sources.items()}
+    coded = sum(count for count, _ in ignores.values())
+    bare = [name for name, (_, count) in ignores.items() if count]
+    casts = sum(count_cast_any(text) for text in sources.values())
+
+    assert "ignore-without-code" in enabled, (
+        "[tool.mypy] bez enable_error_code = ['ignore-without-code'] przepuszcza goły "
+        "`# type: ignore`, który ucisza każdy błąd w linii"
+    )
+    assert bare == [], f"goły `# type: ignore` bez kodu błędu w {bare}"
+    assert coded <= TYPE_IGNORE_BASELINE, (
+        f"{coded} `# type: ignore[...]` w src/ i main_*.py > zapadka {TYPE_IGNORE_BASELINE} "
+        "— popraw typy zamiast uciszać mypy"
+    )
+    assert casts <= CAST_ANY_BASELINE, (
+        f"{casts} `cast(Any, ...)` w src/ i main_*.py > zapadka {CAST_ANY_BASELINE}"
+    )

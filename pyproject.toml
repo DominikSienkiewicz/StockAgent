@@ -136,6 +136,9 @@ known-third-party = ["supabase"]
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
+# CI-15: goły `# type: ignore` (bez kodu błędu) ucisza każdy błąd w linii — mypy go odrzuca;
+# liczbę ignore z kodem i `cast(Any, …)` pilnuje zapadka w tests/test_quality_gate_sync.py.
+enable_error_code = ["ignore-without-code"]
 strict = true
 plugins = ["pydantic.mypy"]
 # Gołe `uv run mypy` = bramka CI. Cały `tests/` jest pod strict (TEST-13, ratchet po
