@@ -349,3 +349,5 @@ direction get the sign of the return over IVV right).
 This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 
 The code is MIT-licensed; the market data it fetches is not. Every provider's terms, and what of its data reaches the email, are in [how-it-works.md](docs/how-it-works.md#data-sources-and-terms).
+
+The investor personas of the advisory council ([`data/council_personas/`](data/council_personas/)) are the author's own short descriptions of publicly known investing styles, not quotations. The names are used descriptively: the people named are not affiliated with this project and do not endorse it, and the public outputs show an archetype of the style instead of a name.
