@@ -12,6 +12,10 @@ case robi trzy rzeczy warstwy application:
 3. dokłada JEDNĄ narracyjną syntezę LLM tygodniowo. Awaria LLM → recap
    deterministyczny i tak wychodzi (narracja pusta).
 
+FIN-26: z `cost_since` use case liczy też rachunek tygodnia (`WeeklyCostSummary`
+z `cycle_runs` i ledgera `llm_calls`) — bez LLM i PRZED progiem próbki, więc wynik
+niesie go także przy `skipped_*` i mail z samym kosztem może wyjść.
+
 FinOps: dokładnie jedno płatne wywołanie tygodniowo (`LLMPort.analyze`) — nie per
 symbol, nie per predykcja. Teksty pochodzące pośrednio z newsów
 (`correction_insights`, uzasadnienia rady) przechodzą przez `fence_untrusted`,
@@ -28,6 +32,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.application._prompt_safety import fence_untrusted
+from src.application.errors import PortError
 from src.application.ports import LLMPort, RepositoryPort
 from src.application.report_weekly_recap import best_title, hero_verdict, worst_title
 from src.domain.council import InvestorOpinion, Recommendation, parse_recommendation
@@ -40,8 +45,10 @@ from src.domain.prediction import Prediction, TrendDirection, is_substantive_ins
 from src.domain.value_objects import AssetType
 from src.domain.weekly_recap import (
     ClosedPrediction,
+    WeeklyCostSummary,
     WeeklyRecap,
     build_weekly_recap,
+    summarize_weekly_cost,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +218,9 @@ def _council_redundancy(closed: Sequence[ClosedPrediction]) -> CouncilRedundancy
     return assess_council_redundancy(votes, trends)
 
 
+# FIN-26: pętla, której przebiegi liczą się do kosztu tygodnia (`cycle_runs.loop`).
+FAST_LOOP = "fast"
+
 # FIN-30: płatne wywołania LLM jednego przebiegu (narracja) — wkład recapu
 # do tygodniowego budżetu Slow Loopa.
 PAID_LLM_CALLS_PER_RUN = 1
@@ -225,9 +235,13 @@ class WeeklyRecapUseCase:
         llm_port: LLMPort,
         crypto_symbols: Collection[str] = (),
         council_redundancy_enabled: bool = False,
+        cost_since: datetime | None = None,
     ) -> None:
         self._repo = repository_port
         self._llm = llm_port
+        # FIN-26: początek okna kosztu tygodnia; None = bez sekcji kosztu (DI daje
+        # okno tylko, gdy `llm_calls` i `cycle_runs` są pisane).
+        self._cost_since = cost_since
         # WIA-45: linia „N person ≈ M niezależnego głosu” w recapie; off = recap bez niej.
         self._council_redundancy_enabled = council_redundancy_enabled
         # Symbole krypto (DI z `settings.crypto_symbols`) wyznaczają pasmo FLAT.
@@ -244,11 +258,12 @@ class WeeklyRecapUseCase:
             if cp is not None
         ]
 
+        cost = self._weekly_cost(settled_predictions=len(closed))
         recap = build_weekly_recap(closed)
         if recap is None:
-            # Twarda reguła domenowa: poniżej progu recap nie powstaje, mail nie
-            # wychodzi i — kluczowe dla FinOps — LLM NIE jest wołany.
-            return {"status": "skipped_below_threshold", "n_closed": len(closed)}
+            # Twarda reguła domenowa: poniżej progu recap nie powstaje i — kluczowe
+            # dla FinOps — LLM NIE jest wołany. Rachunek tygodnia (FIN-26) idzie dalej.
+            return {"status": "skipped_below_threshold", "n_closed": len(closed), "cost": cost}
         if self._council_redundancy_enabled:
             recap = dataclasses.replace(recap, redundancy=_council_redundancy(closed))
 
@@ -265,4 +280,22 @@ class WeeklyRecapUseCase:
             "sample_size": recap.sample_size,
             "narrative": narrative,
             "recap": recap,
+            "cost": cost,
         }
+
+    def _weekly_cost(self, *, settled_predictions: int) -> WeeklyCostSummary | None:
+        """FIN-26: przebiegi Fast Loopa i wiersze ledgera od `cost_since`. Odczyt,
+        który padł, zdejmuje tylko sekcję kosztu — recap idzie jak dotąd."""
+        if self._cost_since is None:
+            return None
+        try:
+            runs = self._repo.get_cycle_runs_since(self._cost_since)
+            ledger = self._repo.get_llm_costs_since(self._cost_since)
+        except PortError as exc:
+            logger.warning("Weekly cost: cycle_runs or llm_calls read failed (%s) — skipped", exc)
+            return None
+        return summarize_weekly_cost(
+            [sum(run.paid_calls.values()) for run in runs if run.loop == FAST_LOOP],
+            ledger,
+            settled_predictions=settled_predictions,
+        )

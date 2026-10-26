@@ -20,7 +20,7 @@ That is six accounts with the committed configuration and five at the least (`ll
 1. **First run: no signals.** A new deployment has no previous price, so every symbol is a cold start and the email opens with `👋 Dzień 1 — buduję punkt odniesienia` under its own welcome subject ([the report email](report-email.md)).
 2. **Second run: the first signals**, only for symbols that moved at least `volatility_threshold` (|Δ| ≥ 2%, crypto 5%) since the first run. A quiet day still has none, and costs nothing.
 3. **The cycle after a prediction: its settlement.** A prediction is scored by the next cycle once it is at least `reflection_min_age_hours` (6 h) old, and then appears under `📊 Zamknięte predykcje`.
-4. **The first Sunday recap** (`📅 Tydzień StockAgenta`) needs at least 5 predictions closed in the week (`MIN_CLOSED_PREDICTIONS_FOR_RECAP` in `src/domain/weekly_recap.py`); with fewer, no recap email goes out.
+4. **The first Sunday recap** (`📅 Tydzień StockAgenta`) needs at least 5 predictions closed in the week (`MIN_CLOSED_PREDICTIONS_FOR_RECAP` in `src/domain/weekly_recap.py`); with fewer, no recap email goes out. With `cost_ledger_enabled` and `cycle_runs_enabled` that week still gets the `💸 Koszt tygodnia StockAgenta` email with the cost of the week (FIN-26).
 5. **The XGBoost leg** stays on the no-change baseline, labelled cold-start, until the Slow Loop has at least 50 settled predictions and a candidate passes the walk-forward gate ([how it works](how-it-works.md), step 10).
 
 ## Tech stack

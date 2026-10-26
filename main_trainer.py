@@ -49,6 +49,8 @@ from src.application.report_ops import (
 )
 from src.application.report_snapshot_training import render_snapshot_models_markdown
 from src.application.report_weekly_recap import (
+    render_weekly_cost_html,
+    render_weekly_cost_text,
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
@@ -929,14 +931,20 @@ def _send_weekly_recap(
     """#17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
     WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo
     (FIN-30: w tygodniowym budżecie Slow Loopa).
-    Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i mail
-    NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu.
+    Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i recap
+    NIE wychodzi — przy chudym tygodniu recap robiłby dramat z szumu. FIN-26: z
+    `cost_ledger_enabled` i `cycle_runs_enabled` mail niesie „💸 Koszt tygodnia”,
+    a przy pominiętym recapie wychodzi sam rachunek tygodnia (bez LLM).
     """
+    now = datetime.now(UTC)
     # WIA-19: za flagą tydzień liczy się po chwili rozliczenia (migracja 029) —
     # piątkowa predykcja, w niedzielę jeszcze otwarta, trafia do kolejnego recapu.
-    since = (
-        datetime.now(UTC) - timedelta(days=WEEKLY_RECAP_DAYS)
-        if settings.settled_at_windows_enabled
+    since = now - timedelta(days=WEEKLY_RECAP_DAYS) if settings.settled_at_windows_enabled else None
+    # FIN-26: rachunek tygodnia czyta `llm_calls` (040) i `cycle_runs` (041) —
+    # tylko gdy obie tabele są pisane.
+    cost_since = (
+        now - timedelta(days=WEEKLY_RECAP_DAYS)
+        if settings.cost_ledger_enabled and settings.cycle_runs_enabled
         else None
     )
     try:
@@ -945,14 +953,22 @@ def _send_weekly_recap(
             llm_port=llm_port,
             crypto_symbols=settings.crypto_symbols,
             council_redundancy_enabled=settings.council_redundancy_enabled,
+            cost_since=cost_since,
         ).run(days=WEEKLY_RECAP_DAYS, since=since)
+        cost = recap_result.get("cost")
         if recap_result["status"] == "recap_ready":
             recap = recap_result["recap"]
             narrative = recap_result["narrative"]
             build_notifier(settings, quota_monitor=quota_monitor).send_report(
                 subject="📅 Tydzień StockAgenta",
-                html_body=render_weekly_recap_html(recap, narrative),
-                plain_text=render_weekly_recap_text(recap, narrative),
+                html_body=render_weekly_recap_html(recap, narrative, cost=cost),
+                plain_text=render_weekly_recap_text(recap, narrative, cost=cost),
+            )
+        elif cost is not None:
+            build_notifier(settings, quota_monitor=quota_monitor).send_report(
+                subject="💸 Koszt tygodnia StockAgenta",
+                html_body=render_weekly_cost_html(cost),
+                plain_text=render_weekly_cost_text(cost),
             )
         logger.info("Weekly recap — %s", recap_result.get("status"))
     except Exception:

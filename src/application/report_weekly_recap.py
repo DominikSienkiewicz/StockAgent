@@ -7,6 +7,10 @@ z lekcją, wybronieni dysydenci rady, Brier z BSS (WIA-36) i delta ECE
 
 Sekcja samosupresująca: `recap is None` (poniżej progu / brak danych) →
 `render_*` zwraca "". Zero płatnych wywołań, zero I/O.
+
+FIN-26: „💸 Koszt tygodnia” (`render_weekly_cost_*`) idzie w mailu recapu przed
+zastrzeżeniem, a przy recapie pominiętym jako osobny mail — rachunek nie czeka
+na narrację LLM.
 """
 
 from __future__ import annotations
@@ -15,12 +19,18 @@ import html as _html
 from decimal import Decimal
 
 from src.application.report_evidence import probability_label
-from src.application.report_formatting import INVESTMENT_DISCLAIMER, PALETTE, number, pct
+from src.application.report_formatting import (
+    INVESTMENT_DISCLAIMER,
+    PALETTE,
+    number,
+    pct,
+    plural_pl,
+)
 from src.domain.council import InvestorOpinion
 from src.domain.council_redundancy import CouncilRedundancy
 from src.domain.number_format import format_number_pl
 from src.domain.polish_labels import council_recommendation_label
-from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
+from src.domain.weekly_recap import RecapHighlight, WeeklyCostSummary, WeeklyRecap
 
 _COLOR_GOOD = PALETTE.positive
 _COLOR_POOR = PALETTE.negative
@@ -178,7 +188,90 @@ def _worst_hero_html(recap: WeeklyRecap) -> str:
     return _hero_html(worst_title(recap), "💥", recap.worst, _COLOR_POOR)
 
 
-def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> str:
+_COST_HEADING = "💸 Koszt tygodnia"
+_COST_DISCLAIMER = (
+    "Kwoty to tokeny z ledgera llm_calls wycenione cennikiem katalogowym — szacunek, "
+    "nie faktura; abonamenty (Alpha Vantage, newsy) są poza sumą."
+)
+
+
+def _fmt_usd(amount: float) -> str:
+    """„$0,1230” — jak sekcja kosztu cyklu: kwoty tygodnia bywają ułamkiem centa."""
+    return f"${number(amount, decimals=4)}"
+
+
+def _cycles_line(cost: WeeklyCostSummary) -> str:
+    """„Fast Loop: 5 cykli · 17 płatnych wywołań · w pełni zatrzymane (…): 3 z 5 (60%)”."""
+    if cost.gated_ratio is None:
+        return "Fast Loop: brak przebiegów w tym tygodniu."
+    cycles = f"{cost.cycles} {plural_pl(cost.cycles, 'cykl', 'cykle', 'cykli')}"
+    calls = plural_pl(cost.paid_calls, "płatne wywołanie", "płatne wywołania", "płatnych wywołań")
+    return (
+        f"Fast Loop: {cycles} · {cost.paid_calls} {calls} · w pełni zatrzymane "
+        f"(0 płatnych wywołań): {cost.gated_cycles} z {cost.cycles} "
+        f"({pct(cost.gated_ratio, decimals=0)})."
+    )
+
+
+def _top_symbols_line(cost: WeeklyCostSummary) -> str:
+    if not cost.top_symbols:
+        return ""
+    ranked = " · ".join(f"{item.symbol} {_fmt_usd(item.cost_usd)}" for item in cost.top_symbols)
+    return f"Najdroższe symbole: {ranked}."
+
+
+def _unit_cost_line(cost: WeeklyCostSummary) -> str:
+    per_settled = cost.cost_per_settled_usd
+    if per_settled is None:
+        return "Koszt na rozliczoną predykcję: — (brak rozliczeń w tym tygodniu)."
+    settled = plural_pl(cost.settled_predictions, "rozliczona", "rozliczone", "rozliczonych")
+    return (
+        f"Koszt na rozliczoną predykcję: {_fmt_usd(per_settled)} "
+        f"({cost.settled_predictions} {settled})."
+    )
+
+
+def _cost_lines(cost: WeeklyCostSummary) -> list[str]:
+    """Wiersze sekcji wspólne dla HTML i tekstu (bez zastrzeżenia)."""
+    lines = [
+        f"Koszt LLM z ledgera: {_fmt_usd(cost.total_usd)} (7 dni, Fast i Slow Loop).",
+        _cycles_line(cost),
+        _top_symbols_line(cost),
+        _unit_cost_line(cost),
+    ]
+    return [line for line in lines if line]
+
+
+def render_weekly_cost_html(cost: WeeklyCostSummary | None) -> str:
+    """FIN-26: sekcja HTML kosztu tygodnia albo "" bez danych (None)."""
+    if cost is None:
+        return ""
+    rows = "".join(
+        f"<div style='font-size: 13px; color: #374151; margin-bottom: 4px;'>"
+        f"{_html.escape(line)}</div>"
+        for line in _cost_lines(cost)
+    )
+    return (
+        f"<h2 style='font-size: 16px; margin: 24px 0 8px 0;'>{_COST_HEADING}</h2>"
+        f"{rows}"
+        f"<div style='font-size: 11px; color: {_COLOR_MUTED}; margin-top: 6px; "
+        f"font-style: italic;'>{_html.escape(_COST_DISCLAIMER)}</div>"
+    )
+
+
+def render_weekly_cost_text(cost: WeeklyCostSummary | None) -> str:
+    """FIN-26: sekcja plain-text kosztu tygodnia albo "" bez danych (None)."""
+    if cost is None:
+        return ""
+    lines = ["KOSZT TYGODNIA", "-" * 64]
+    lines.extend(f"  {line}" for line in _cost_lines(cost))
+    lines.append(f"  Uwaga: {_COST_DISCLAIMER}")
+    return "\n".join(lines)
+
+
+def render_weekly_recap_html(
+    recap: WeeklyRecap | None, narrative: str = "", *, cost: WeeklyCostSummary | None = None
+) -> str:
     """Renderuje sekcję HTML retrospektywy lub "" gdy `recap is None`."""
     if recap is None:
         return ""
@@ -204,8 +297,10 @@ def render_weekly_recap_html(recap: WeeklyRecap | None, narrative: str = "") -> 
         + _redundancy_html(recap)
         + "<div style='font-size: 12px; color: #6b7280; margin-top: 8px;'>"
         f"📐 Kalibracja: {_html.escape(_ece_delta_label(recap))}</div>"
+        # FIN-26: rachunek tygodnia przed zastrzeżeniem zamykającym mail.
+        + render_weekly_cost_html(cost)
         # MAIL-08: recap to osobny mail, więc zamyka go własne zastrzeżenie.
-         + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
+        + "<div style='font-size: 11px; color: #6b7280; margin-top: 16px; "
         "padding-top: 8px; border-top: 1px solid #e5e7eb;'>"
         f"{_html.escape(INVESTMENT_DISCLAIMER)}</div>"
     )
@@ -223,7 +318,9 @@ def _hero_text(title: str, highlight: RecapHighlight) -> list[str]:
     return lines
 
 
-def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> str:
+def render_weekly_recap_text(
+    recap: WeeklyRecap | None, narrative: str = "", *, cost: WeeklyCostSummary | None = None
+) -> str:
     """Renderuje sekcję plain-text retrospektywy lub "" gdy `recap is None`."""
     if recap is None:
         return ""
@@ -244,5 +341,8 @@ def render_weekly_recap_text(recap: WeeklyRecap | None, narrative: str = "") -> 
     if redundancy:
         lines.append(f"  Rada: {redundancy}")
     lines.append(f"  Kalibracja: {_ece_delta_label(recap)}")
+    cost_text = render_weekly_cost_text(cost)
+    if cost_text:
+        lines.extend(["", cost_text])
     lines.extend(["-" * 64, INVESTMENT_DISCLAIMER])
     return "\n".join(lines)
