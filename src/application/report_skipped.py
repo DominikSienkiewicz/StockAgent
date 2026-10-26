@@ -8,7 +8,8 @@
 - `ignored` (Zaplecze) — poniżej progu zmienności, bez dwóch grup powyżej; osobną
   grupą (MAIL-60) są symbole w pierwszym cyklu: brak punktu odniesienia to nie
   ruch poniżej progu.
-- `errors` (Zaplecze) — symbole, które padły w cyklu.
+- `errors` (Zaplecze) — symbole, które padły w cyklu: kategoria błędu z taksonomii
+  portów i dostawca (MAIL-32); surowy wyjątek zostaje w logu runu.
 
 Etykiety statusu (`rebaseline_label`, `BUDGET_CUT_*`) bierze też sekcja 🪙 Krypto.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.application.errors import ErrorCategory
 from src.application.report_formatting import (
     PALETTE,
     direction_pct,
@@ -349,6 +351,39 @@ _ERROR_ROW_STYLE = (
 )
 
 
+# MAIL-32: co się stało i czy minie samo — dla czytelnika, nie dla dewelopera.
+_ERROR_LINES_PL: dict[ErrorCategory, tuple[str, str]] = {
+    ErrorCategory.PROVIDER_UNAVAILABLE: (
+        "źródło danych nie odpowiedziało",
+        "zwykle przejściowe, następny cykl spróbuje ponownie",
+    ),
+    ErrorCategory.QUOTA_EXHAUSTED: (
+        "wyczerpany limit zapytań u dostawcy",
+        "minie po odnowieniu limitu",
+    ),
+    ErrorCategory.MALFORMED_PAYLOAD: (
+        "nieoczekiwana odpowiedź źródła",
+        "jeśli się powtarza, dostawca zmienił format",
+    ),
+    ErrorCategory.NOT_FOUND: ("dostawca nie zna symbolu", "sprawdź ticker w config.toml"),
+    ErrorCategory.PORT_ERROR: (
+        "dostawca odrzucił zapytanie",
+        "sprawdź klucz API i konfigurację",
+    ),
+    ErrorCategory.UNKNOWN: ("nieoczekiwany błąd agenta", "szczegóły w logu runu"),
+}
+
+
+def error_line(r: SymbolResult) -> str:
+    """MAIL-32: „źródło danych nie odpowiedziało (Finnhub) — zwykle przejściowe, …”.
+
+    Kategoria z taksonomii portów, dostawca, gdy znany; wynik bez kategorii to
+    nieoczekiwany błąd. `error_message` (surowy wyjątek) nigdy nie trafia do maila."""
+    what, hint = _ERROR_LINES_PL[r.error_category or ErrorCategory.UNKNOWN]
+    provider = f" ({r.error_provider})" if r.error_provider else ""
+    return f"{what}{provider} — {hint}"
+
+
 def _render_errors_html(errors: list[SymbolResult]) -> str:
     """⚠️ Symbole, które padły w cyklu. Pusty string, gdy brak błędów."""
     if not errors:
@@ -357,7 +392,7 @@ def _render_errors_html(errors: list[SymbolResult]) -> str:
     for r in errors:
         parts.append(f"""
               <div style="{_ERROR_ROW_STYLE}">
-                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(r.error_message)}
+                <strong>{_html(_company_label(r.symbol))}</strong>: {_html(error_line(r))}
               </div>
             """)
     return "".join(parts)
@@ -368,7 +403,7 @@ def _render_errors_text(errors: list[SymbolResult]) -> list[str]:
     if not errors:
         return []
     lines = ["BŁĘDY", "-" * 64]
-    lines.extend(f"  {_company_label(r.symbol)}: {r.error_message}" for r in errors)
+    lines.extend(f"  {_company_label(r.symbol)}: {error_line(r)}" for r in errors)
     lines.append("")
     return lines
 

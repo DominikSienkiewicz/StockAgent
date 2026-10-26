@@ -8,6 +8,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from src.application import report_builder, report_risk_signals, report_trade_signals
+from src.application.errors import ErrorCategory
 from src.application.report_builder import (
     PortfolioMood,
     ReportContext,
@@ -267,7 +268,9 @@ class TestBuildHtmlReport:
     def test_html_shows_errors_section_when_present(self) -> None:
         html, _ = build_html_report([_error_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
         assert "Błędy" in html
-        assert "429" in html
+        # MAIL-32: kategoria zamiast surowego wyjątku — „429” zostaje w logu.
+        assert "nieoczekiwany błąd agenta" in html
+        assert "429" not in html
 
     def test_plain_text_includes_all_sections(self) -> None:
         results = [_saved_result(), _ignored_result(), _error_result()]
@@ -1184,7 +1187,9 @@ class TestHtmlEscapingRegression:
             error_message=_XSS_SCRIPT,
         )
         html, _ = build_html_report([r], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
-        _assert_escaped(html, _XSS_SCRIPT, _XSS_SCRIPT_MARKER)
+        # MAIL-32: komunikat wyjątku nie trafia do maila w żadnej postaci.
+        assert _XSS_SCRIPT not in html
+        assert _XSS_SCRIPT_MARKER not in html
 
     def test_resolved_prediction_reasoning_and_insight_escaped(self) -> None:
         resolved = [
@@ -4858,3 +4863,72 @@ class TestHeldEarningsLead:
         html, _ = build_html_report([self._quiet_msft()], self._STARTED, 1.0, context)
 
         assert "wyniki jutro" not in html
+
+
+class TestFriendlyErrors:
+    """MAIL-32: sekcja ⚠️ Błędy podaje kategorię z taksonomii portów i dostawcę;
+    surowy wyjątek zostaje w logu runu."""
+
+    _RAW = "HTTPSConnectionPool(host='finnhub.io', port=443): Read timed out."
+
+    def _render(self, result: SymbolResult) -> tuple[str, str]:
+        return build_html_report([result], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
+
+    def test_error_row_shows_category_and_provider_not_the_exception(self) -> None:
+        result = SymbolResult(
+            symbol="NVDA",
+            status="error",
+            error_message=self._RAW,
+            error_category=ErrorCategory.PROVIDER_UNAVAILABLE,
+            error_provider="Finnhub",
+        )
+
+        html, text = self._render(result)
+
+        line = (
+            "źródło danych nie odpowiedziało (Finnhub) — zwykle przejściowe, "
+            "następny cykl spróbuje ponownie"
+        )
+        assert line in html
+        assert f"{company_label('NVDA')}: {line}" in text
+        assert "HTTPSConnectionPool" not in html
+        assert "HTTPSConnectionPool" not in text
+
+    @pytest.mark.parametrize(
+        ("category", "line"),
+        [
+            (
+                ErrorCategory.QUOTA_EXHAUSTED,
+                "wyczerpany limit zapytań u dostawcy — minie po odnowieniu limitu",
+            ),
+            (
+                ErrorCategory.MALFORMED_PAYLOAD,
+                "nieoczekiwana odpowiedź źródła — jeśli się powtarza, dostawca zmienił format",
+            ),
+            (ErrorCategory.NOT_FOUND, "dostawca nie zna symbolu — sprawdź ticker w config.toml"),
+            (
+                ErrorCategory.PORT_ERROR,
+                "dostawca odrzucił zapytanie — sprawdź klucz API i konfigurację",
+            ),
+            (ErrorCategory.UNKNOWN, "nieoczekiwany błąd agenta — szczegóły w logu runu"),
+        ],
+        ids=["quota", "malformed", "not_found", "port", "unknown"],
+    )
+    def test_every_category_has_a_reader_line(self, category: ErrorCategory, line: str) -> None:
+        result = SymbolResult(
+            symbol="AAPL", status="error", error_message=self._RAW, error_category=category
+        )
+
+        html, text = self._render(result)
+
+        assert line in html
+        assert line in text
+
+    def test_result_without_category_reads_as_an_unexpected_error(self) -> None:
+        result = SymbolResult(symbol="AAPL", status="error", error_message="boom")
+
+        html, text = self._render(result)
+
+        assert "nieoczekiwany błąd agenta — szczegóły w logu runu" in html
+        assert "boom" not in html
+        assert "boom" not in text
