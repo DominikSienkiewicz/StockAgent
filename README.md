@@ -236,6 +236,7 @@ sample at 1280 × 640.
 | [Reference signal protocol](docs/reference-protocol-v1.md) | The frozen rule of the free weekly benchmark the paid LLM has to beat (`reference-v1`) |
 | [Decision log](docs/decisions.md) | The roadmap items `R-N` that the code and `config.toml` refer to, and the decisions behind the architecture, each with its commit and the test that holds it, plus the rationale behind each feature flag |
 | [Engineering log](docs/engineering-log.md) | Incident, rule, guard: what went wrong, the rule it taught and the test that fails when the rule is broken again |
+| [Security](SECURITY.md) | How to report a vulnerability, the threat model from untrusted news through the LLM to the email, the known gaps left open, and how the secrets are kept |
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) →
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /
