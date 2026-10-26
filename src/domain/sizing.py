@@ -185,10 +185,18 @@ def _apply_risk(
 
     Jak `_apply_exposure` — wyłącznie w dół. Brak danych (`None`) to brak
     informacji, nie zielone światło: nie zmienia bandy.
+
+    PORT-24: wartość niefinitna (NaN, ±inf) to zepsuty odczyt ryzyka, nie brak
+    danych — `NaN >= próg` daje False, więc bez tej reguły przechodziła jak niskie
+    ryzyko. Obsunięcie liczymy wtedy jako głębokie, a VaR jako ponad progiem.
     """
-    if drawdown is not None and drawdown >= DEEP_DRAWDOWN_THRESHOLD:
+    if drawdown is not None and (
+        not math.isfinite(drawdown) or drawdown >= DEEP_DRAWDOWN_THRESHOLD
+    ):
         return "starter"
-    if portfolio_var is not None and portfolio_var >= VAR_TIGHTEN_THRESHOLD:
+    if portfolio_var is not None and (
+        not math.isfinite(portfolio_var) or portfolio_var >= VAR_TIGHTEN_THRESHOLD
+    ):
         tier = _DOWNGRADE[tier]
     if hedge_effective is False:
         tier = _DOWNGRADE[tier]
