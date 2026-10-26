@@ -7893,3 +7893,11 @@ class TestPublicStatusPage:
         main_agent.status_page_use_case(settings, repository, clock=lambda: now).publish()
 
         assert expected in publisher.publish.call_args.args[0]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_cost_ledger_flag(settings: Settings, enabled: bool) -> None:
+    # FIN-23: koszt miesiąca w sekcji kosztu czyta ledger tylko, gdy ledger jest pisany.
+    settings.cost_ledger_enabled = enabled
+
+    assert main_agent._report_flags(settings).cost_ledger_enabled is enabled

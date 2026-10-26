@@ -2472,6 +2472,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         receipts_enabled=settings.receipts_enabled,
         paper_ledger_curve_enabled=settings.paper_ledger_enabled,
         open_entry_curve_enabled=settings.executable_entry_enabled,
+        cost_ledger_enabled=settings.cost_ledger_enabled,
     )
 
 

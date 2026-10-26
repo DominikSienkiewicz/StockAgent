@@ -742,3 +742,43 @@ def test_gate_tally_of_the_whole_cycle_reaches_the_context() -> None:
     )
 
     assert context.cycle_gate == CycleGateTally(gated=1, symbols=2)
+
+
+class TestMonthToDateCost:
+    """FIN-23: koszt miesiąca z ledgera `llm_calls` — tylko z `cost_ledger_enabled`,
+    bo bez flagi ledger nie przybywa (a bez migracji 040 tabeli nie ma)."""
+
+    @staticmethod
+    def _flags(enabled: bool) -> ReportFlags:
+        return ReportFlags(
+            track_record_days=30, reflection_min_age_hours=12, cost_ledger_enabled=enabled
+        )
+
+    def test_ledger_spend_since_the_month_start_reaches_the_context(self) -> None:
+        repo = _repo()
+        repo.get_llm_cost_since.return_value = 3.40
+
+        context = _assemble(repo, self._flags(True))
+
+        repo.get_llm_cost_since.assert_called_once_with(datetime(2026, 10, 1, tzinfo=UTC))
+        assert context.month_cost is not None
+        assert context.month_cost.spent_usd == 3.40
+        assert context.month_cost.days_elapsed == 18
+
+    def test_flag_off_reads_nothing(self) -> None:
+        repo = _repo()
+
+        context = _assemble(repo, self._flags(False))
+
+        repo.get_llm_cost_since.assert_not_called()
+        assert context.month_cost is None
+
+    def test_failed_ledger_read_hides_the_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        repo = _repo()
+        repo.get_llm_cost_since.side_effect = ProviderUnavailable("ledger down")
+
+        with caplog.at_level("WARNING"):
+            context = _assemble(repo, self._flags(True))
+
+        assert context.month_cost is None
+        assert "ledger" in caplog.text

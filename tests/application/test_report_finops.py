@@ -19,7 +19,14 @@ from src.application.report_finops import (
 )
 from src.application.report_models import SymbolResult
 from src.domain.cycle_maturity import SkipReason
-from src.domain.finops import BudgetBreach, BudgetWindow, CycleCost, estimate_cycle_cost
+from src.domain.finops import (
+    BudgetBreach,
+    BudgetWindow,
+    CycleCost,
+    MonthToDateCost,
+    estimate_cycle_cost,
+    month_to_date_cost,
+)
 
 
 def test_none_suppresses_section_html() -> None:
@@ -304,3 +311,45 @@ def test_section_counts_the_whole_cycle_not_the_subscriber_watchlist() -> None:
 
     assert "Zatrzymane bramką volatility: 2 z 2 symboli" in html
     assert "Zatrzymane bramką volatility: 2 z 2 symboli" in text
+
+
+# --- FIN-23: koszt miesiąca narastająco i prognoza -------------------------------
+
+
+def _october() -> MonthToDateCost:
+    return month_to_date_cost(3.40, datetime(2026, 10, 10, 12, 0, tzinfo=UTC))
+
+
+def test_month_to_date_line_shows_usd_pln_and_the_projection() -> None:
+    cost = estimate_cycle_cost({"llm": 3})
+
+    html = render_finops_html(cost, month_cost=_october(), usd_pln=Decimal("3.6500"))
+    text = render_finops_text(cost, month_cost=_october(), usd_pln=Decimal("3.6500"))
+
+    for rendered in (html, text):
+        assert "Październik narastająco: $3,40 (≈ 12,41 zł)" in rendered
+        assert "prognoza na cały miesiąc ~$10,54 (≈ 38,47 zł)" in rendered
+        assert "szacunek liniowy z 10 z 31 dni" in rendered
+
+
+def test_month_to_date_line_without_the_nbp_rate_is_usd_only() -> None:
+    text = render_finops_text(estimate_cycle_cost({}), month_cost=_october(), usd_pln=None)
+
+    assert "Październik narastająco: $3,40 ·" in text
+    assert "zł" not in text
+
+
+def test_no_month_cost_no_line() -> None:
+    cost = estimate_cycle_cost({"llm": 3})
+
+    assert render_finops_html(cost, month_cost=None) == render_finops_html(cost)
+    assert "narastająco" not in render_finops_text(cost)
+
+
+def test_section_reads_the_month_cost_and_the_risk_watch_rate() -> None:
+    context = ReportContext(cycle_cost=estimate_cycle_cost({}), month_cost=_october())
+
+    html, text = build_html_report([], datetime(2026, 10, 10, 12, 0, tzinfo=UTC), 1.0, context)
+
+    assert "Październik narastająco: $3,40" in html
+    assert "Październik narastająco: $3,40" in text

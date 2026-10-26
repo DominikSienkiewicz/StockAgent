@@ -74,7 +74,7 @@ from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.digest_lead import LeadItem, LeadSignal, build_lead
 from src.domain.earnings import EarningsEvent
 from src.domain.equity_curve import EquityCurve
-from src.domain.finops import BudgetBreach, CycleCost
+from src.domain.finops import BudgetBreach, CycleCost, MonthToDateCost
 from src.domain.insider_flow import InsiderLeadWindow
 from src.domain.invalidation import Invalidation
 from src.domain.isotonic_calibration import ClassIsotonicSelection, IsotonicMap
@@ -499,6 +499,9 @@ class ReportContext:
     # FIN-19: symbole CAŁEGO cyklu zatrzymane bramką volatility (przed filtrem
     # subskrybenta, jak koszt obok). None = sekcja kosztu bez tej linii.
     cycle_gate: CycleGateTally | None = None
+    # FIN-23: koszt miesiąca UTC z ledgera `llm_calls` i prognoza liniowa. None =
+    # `cost_ledger_enabled` off albo odczyt padł — sekcja kosztu bez linii miesiąca.
+    month_cost: MonthToDateCost | None = None
     # FIN-25: wyczerpany limit USD doby albo miesiąca z ledgera `llm_calls` — cykl bez
     # płatnych wywołań, banner limitów na górze maila. None = limit nie wyczerpany
     # (albo wyłączony, albo odczyt ledgera padł — fail-open), mail jak przed FIN-25.

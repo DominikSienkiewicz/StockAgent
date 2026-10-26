@@ -70,6 +70,12 @@ from src.domain.council_redundancy import CouncilRedundancy, assess_council_redu
 from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
 from src.domain.equity_curve import EquityCurve
+from src.domain.finops import (
+    BudgetWindow,
+    MonthToDateCost,
+    budget_window_start,
+    month_to_date_cost,
+)
 from src.domain.isotonic_calibration import (
     ISOTONIC_FIT_WINDOW,
     ClassIsotonicSelection,
@@ -141,6 +147,9 @@ class ReportFlags:
     paper_ledger_curve_enabled: bool = False
     # WIA-54: krzywa „od otwarcia” z ceny wykonalnej (`entry_price`, migracja 072).
     open_entry_curve_enabled: bool = False
+    # FIN-23: koszt miesiąca w sekcji kosztu z ledgera `llm_calls` (migracja 040) —
+    # czytany tylko, gdy ledger jest pisany.
+    cost_ledger_enabled: bool = False
 
 
 def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
@@ -542,6 +551,27 @@ def shocks_since_last_mail(
         return None
 
 
+def month_cost(
+    flags: ReportFlags, repository: RepositoryPort, now: datetime
+) -> MonthToDateCost | None:
+    """FIN-23: wydatek miesiąca UTC z ledgera `llm_calls` i jego prognoza liniowa.
+
+    None bez `cost_ledger_enabled` (ledger nie przybywa) i gdy odczyt padł — sekcja
+    kosztu zostaje wtedy bez linii miesiąca, a mail idzie dalej."""
+    if not flags.cost_ledger_enabled:
+        return None
+    try:
+        spent = repository.get_llm_cost_since(budget_window_start(BudgetWindow.MONTH, now))
+    except PortError as exc:
+        logger.warning(
+            "Month-to-date cost: llm_calls ledger read failed (%s) — cost section "
+            "without the month line",
+            exc,
+        )
+        return None
+    return month_to_date_cost(spent, now)
+
+
 def persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
     """Zapis alertów kwot, każdy osobno — błąd jednego nie gubi pozostałych."""
     for alert in alerts:
@@ -778,6 +808,7 @@ class ReportAssembler:
             cycle_maturity=maturity,
             # FIN-19: licznik bramki z wyników CAŁEGO cyklu, jak koszt w sekcji.
             cycle_gate=cycle_gate_tally(results),
+            month_cost=month_cost(flags, repository, started_at),
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,

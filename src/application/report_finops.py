@@ -21,6 +21,10 @@ symboli — za nie 0 płatnych wywołań”) — najmocniejszy dowód tezy FinOp
 `cycle_gate_tally` ze wszystkich wyników cyklu, bo kwota obok też jest kosztem
 całego cyklu, a nie watchlisty subskrybenta.
 
+FIN-23: linia miesiąca — wydatek miesiąca UTC narastająco z ledgera `llm_calls` i
+prognoza liniowa do końca miesiąca, w USD i (z kursem NBP z Risk Watch) w PLN.
+To też szacunek: ledger wycenia tokeny cennikiem katalogowym i nie zna abonamentów.
+
 Uczciwość jest wymogiem, nie ozdobą: kwoty to SZACUNEK rzędu wielkości (patrz
 `UNIT_COST_USD` w domenie), nie faktura — więc przy każdej kwocie stoi słowo
 "szacunkowy", a na końcu sekcji jawne zastrzeżenie.
@@ -36,13 +40,15 @@ import html as _html
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from src.application.report_formatting import PALETTE, number, plural_pl
 from src.application.report_models import SymbolResult
 from src.application.report_quota_banner import USD_LIMIT_NAME
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.cycle_maturity import SkipReason
-from src.domain.finops import BudgetBreach, CycleCost, SourceCost
+from src.domain.finops import BudgetBreach, CycleCost, MonthToDateCost, SourceCost
+from src.domain.number_format import format_money_pl
 
 _HEADING = "💸 Koszt cyklu"
 
@@ -82,6 +88,22 @@ _SOURCE_LABELS: dict[str, str] = {
     "shadow_llm": "Wariant promptu w cieniu (LLM)",
 }
 
+# FIN-23: nazwa miesiąca w linii kosztu miesiąca (mianownik).
+_MONTHS_PL = (
+    "styczeń",
+    "luty",
+    "marzec",
+    "kwiecień",
+    "maj",
+    "czerwiec",
+    "lipiec",
+    "sierpień",
+    "wrzesień",
+    "październik",
+    "listopad",
+    "grudzień",
+)
+
 _COLOR_MUTED = "#6b7280"
 _COLOR_TEXT = "#374151"
 _COLOR_FREE = PALETTE.positive
@@ -112,6 +134,25 @@ def _gated_line(gated: int, symbols: int | None) -> str:
     else:
         count = f"{gated} z {symbols} {plural_pl(symbols, 'symbolu', 'symboli', 'symboli')}"
     return f"Zatrzymane bramką volatility: {count} — za nie 0 płatnych wywołań."
+
+
+def _usd_with_pln(amount: float, usd_pln: Decimal | None) -> str:
+    """„$3,40 (≈ 12,41 zł)”, a bez kursu NBP sama kwota w USD."""
+    usd = Decimal(str(amount))
+    if usd_pln is None:
+        return format_money_pl(usd, "USD")
+    return f"{format_money_pl(usd, 'USD')} (≈ {format_money_pl(usd * usd_pln, 'PLN')})"
+
+
+def _month_line(month: MonthToDateCost, usd_pln: Decimal | None) -> str:
+    """FIN-23: „Październik narastająco: $3,40 (≈ 12,41 zł) · prognoza na cały
+    miesiąc ~$10,54 (≈ 38,47 zł) — szacunek liniowy z 10 z 31 dni, ledger llm_calls.”"""
+    name = _MONTHS_PL[month.month_start.month - 1].capitalize()
+    return (
+        f"{name} narastająco: {_usd_with_pln(month.spent_usd, usd_pln)} · prognoza na "
+        f"cały miesiąc ~{_usd_with_pln(month.projected_usd, usd_pln)} — szacunek liniowy "
+        f"z {month.days_elapsed} z {month.days_in_month} dni, ledger llm_calls."
+    )
 
 
 def _source_label(source: str) -> str:
@@ -204,13 +245,16 @@ def render_finops_html(
     budget_breach: BudgetBreach | None = None,
     gated_symbols: int = 0,
     cycle_symbols: int | None = None,
+    month_cost: MonthToDateCost | None = None,
+    usd_pln: Decimal | None = None,
 ) -> str:
     """Renderuje sekcję HTML kosztu cyklu lub "" gdy brak licznika (None).
 
     Cykl darmowy (0 wywołań) renderuje się JAWNIE — nie chowamy go. Z
     `budget_breach` (FIN-36) zero wywołań przypisuje limitowi USD, nie bramce.
     `gated_symbols` > 0 (FIN-19) dokłada linię symboli zatrzymanych bramką
-    volatility, z `cycle_symbols` jako „z N symboli”.
+    volatility, z `cycle_symbols` jako „z N symboli”. `month_cost` (FIN-23)
+    dokłada koszt miesiąca narastająco i prognozę, z `usd_pln` także w złotych.
     """
     if cost is None:
         return ""
@@ -252,6 +296,11 @@ def render_finops_html(
             f"<div style='font-size: 12px; color: {_COLOR_TEXT}; "
             f"margin-top: 4px;'>🛡️ {_html.escape(gated_line)}</div>"
         )
+    if month_cost is not None:
+        rows.append(
+            f"<div style='font-size: 12px; color: {_COLOR_TEXT}; "
+            f"margin-top: 4px;'>📅 {_html.escape(_month_line(month_cost, usd_pln))}</div>"
+        )
 
     if cost.unknown_sources:
         joined = ", ".join(_html.escape(src) for src in cost.unknown_sources)
@@ -282,6 +331,8 @@ def render_finops_text(
     budget_breach: BudgetBreach | None = None,
     gated_symbols: int = 0,
     cycle_symbols: int | None = None,
+    month_cost: MonthToDateCost | None = None,
+    usd_pln: Decimal | None = None,
 ) -> str:
     """Renderuje sekcję plain-text kosztu cyklu lub "" gdy brak licznika (None)."""
     if cost is None:
@@ -313,6 +364,8 @@ def render_finops_text(
     gated_line = _gated_line(gated_symbols, cycle_symbols)
     if gated_line:
         lines.append(f"  {gated_line}")
+    if month_cost is not None:
+        lines.append(f"  {_month_line(month_cost, usd_pln)}")
 
     if cost.unknown_sources:
         joined = ", ".join(cost.unknown_sources)
@@ -336,6 +389,8 @@ def _section_html(data: SectionInput) -> str:
         budget_breach=data.context.llm_budget_breach,
         gated_symbols=gated,
         cycle_symbols=symbols,
+        month_cost=data.context.month_cost,
+        usd_pln=data.usd_pln,
     )
 
 
@@ -347,6 +402,8 @@ def _section_text(data: SectionInput) -> list[str]:
             budget_breach=data.context.llm_budget_breach,
             gated_symbols=gated,
             cycle_symbols=symbols,
+            month_cost=data.context.month_cost,
+            usd_pln=data.usd_pln,
         )
     )
 
@@ -357,5 +414,5 @@ FINOPS_SECTION = ReportSection(
     key="finops",
     render_html=_section_html,
     render_text=_section_text,
-    context_fields=frozenset({"cycle_cost", "cycle_gate"}),
+    context_fields=frozenset({"cycle_cost", "cycle_gate", "month_cost"}),
 )
