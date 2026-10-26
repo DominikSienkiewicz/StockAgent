@@ -2,6 +2,8 @@
 
 What the Supabase database holds, which job reads and writes each relation, which key the
 app needs, how long data is kept, and how Row Level Security is rolled out.
+What leaves the system for the LLM and embedding providers, and the guard that keeps
+positions and e-mail addresses out of every prompt, is in [Data flows to LLM providers](data-flows.md).
 
 > **Status.** Row Level Security arrives with migration
 > [`038_enable_rls.sql`](../supabase/migrations/038_enable_rls.sql). Production gets it only
