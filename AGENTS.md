@@ -299,6 +299,9 @@ są zwolnione.
   nowa funkcja = `REVOKE EXECUTE ... FROM PUBLIC` i `GRANT EXECUTE ... TO service_role`
   w bloku `DO` z guardem `pg_roles`. Test emulacji ról w `test_migrations.py` pada,
   gdy któregoś brakuje; szczegóły w `docs/data-and-access.md`.
+- Funkcja w `public` ma stały `search_path = public, extensions, pg_catalog` (070, 084, 085);
+  migracja z `CREATE OR REPLACE` istniejącej funkcji powtarza `SET search_path`, bo zastąpienie
+  go kasuje (082 zgubiła go przy `persona_vote_outcomes`).
 - Flaga zależna od migracji ma wpis w `FLAG_REQUIRED_MIGRATION`
   (`src/domain/feature_requirements.py`); Fast Loop, Slow Loop i watch wyłączają na czas
   przebiegu flagi, których migracji baza jeszcze nie ma (`schema_version()`, migracja 071).
