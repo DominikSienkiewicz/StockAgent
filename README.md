@@ -7,6 +7,7 @@ curated financial news sentiment, cross-checks the LLM's reading against Alpha V
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate.
 
+[![CI](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
 ![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
