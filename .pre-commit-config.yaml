@@ -8,6 +8,12 @@
 #
 # Ręczne uruchomienie wszystkich hooków na całym repo:
 #   pre-commit run --all-files
+#
+# CI-27: lokalne lustro bramki CI. Hooki ruff cytują DOKŁADNIE komendy joba `quality`
+# (ci.yml), więc lint i format padają przed commitem, a nie dopiero w CI; zgodność pilnuje
+# tests/test_quality_gate_sync.py. mypy i pytest zostają w CI i w `uv run …` z CLAUDE.md:
+# w hooku są za wolne. Zdalne repo hooków przypięte pełnym SHA commitu tagu
+# (`pre-commit autoupdate --freeze`), jak akcje w workflowach.
 
 repos:
   - repo: local
@@ -21,3 +27,39 @@ repos:
         language: system
         files: ^data/council_personas/.*\.(json|toml)$
         pass_filenames: false
+
+      - id: ruff-check
+        name: ruff check (same command as CI)
+        entry: uv run --frozen ruff check .
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+      - id: ruff-format-check
+        name: ruff format --check (same command as CI)
+        entry: uv run --frozen ruff format --check .
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+      # CI synchronizuje z `--locked`, więc zmiana zależności bez `uv lock` pada tam (CI-11);
+      # tu pada przed commitem.
+      - id: uv-lock-check
+        name: uv lock --check
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
+  # Sekrety w staged zmianach (klucz API w diffie trafiłby do publicznej historii).
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # Składnia config.toml, pyproject.toml, workflowów i dependabot.yml.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: check-toml
+      - id: check-yaml

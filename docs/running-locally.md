@@ -63,6 +63,13 @@ git clone <repo-url> StockAgent && cd StockAgent
 # 1. Sync deps (creates .venv and installs the locked packages, Anthropic SDK included)
 uv sync
 
+# 1a. Pre-commit hooks — the CI linters before every commit (CI-27): ruff check and
+#     ruff format --check (the exact commands of the CI job), uv lock --check, gitleaks on
+#     the staged diff, check-toml, check-yaml and the persona validator; mypy and pytest
+#     stay in CI and in the gate commands (too slow for a hook)
+uv tool install pre-commit
+pre-commit install
+
 # 2. Configuration
 cp .env.example .env
 # fill in the keys (see the ".env keys" block below)

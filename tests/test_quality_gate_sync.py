@@ -25,6 +25,7 @@ import shlex
 import tokenize
 import tomllib
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 import yaml
@@ -435,3 +436,42 @@ def test_type_escapes_have_codes_and_do_not_grow() -> None:
     assert casts <= CAST_ANY_BASELINE, (
         f"{casts} `cast(Any, ...)` w src/ i main_*.py > zapadka {CAST_ANY_BASELINE}"
     )
+
+
+# CI-27: jedyny hook pre-commit walidował persony; lint, format, lock i sekrety sprawdzało
+# dopiero CI. Hooki lokalne cytują komendy ruff z joba `quality` (te same tokeny), lock
+# sprawdza `uv lock --check`, sekrety gitleaks na staged, a składnię TOML/YAML hooki
+# pre-commit-hooks. Zdalne repo hooków przypięte pełnym SHA (`# frozen: vX.Y.Z`).
+# mypy zostaje w CI: w hooku jest za wolny.
+PRECOMMIT_CONFIG = ROOT / ".pre-commit-config.yaml"
+PRECOMMIT_REMOTE_HOOKS = frozenset({"gitleaks", "check-toml", "check-yaml"})
+
+
+def _precommit_repos() -> list[dict[str, Any]]:
+    config: dict[str, Any] = yaml.safe_load(PRECOMMIT_CONFIG.read_text(encoding="utf-8"))
+    repos: list[dict[str, Any]] = config["repos"]
+    return repos
+
+
+def _precommit_hooks(local: bool) -> list[dict[str, Any]]:
+    return [
+        hook
+        for repo in _precommit_repos()
+        if (repo["repo"] == "local") is local
+        for hook in repo["hooks"]
+    ]
+
+
+def test_precommit_mirrors_ci_linters() -> None:
+    local_entries = [str(hook.get("entry", "")) for hook in _precommit_hooks(local=True)]
+    ruff_hooks = {" ".join(_from_tool(entry, "ruff")) for entry in local_entries} - {""}
+    remote_ids = {str(hook["id"]) for hook in _precommit_hooks(local=False)}
+    remote_revs = [str(repo["rev"]) for repo in _precommit_repos() if repo["repo"] != "local"]
+
+    assert ruff_hooks == _ci_tool_commands("ruff"), (
+        f"pre-commit uruchamia {sorted(ruff_hooks)}, a CI {sorted(_ci_tool_commands('ruff'))}"
+    )
+    assert any(entry.split() == ["uv", "lock", "--check"] for entry in local_entries)
+    assert "uv run python -m src.tools.validate_personas" in local_entries
+    assert remote_ids >= PRECOMMIT_REMOTE_HOOKS, sorted(PRECOMMIT_REMOTE_HOOKS - remote_ids)
+    assert all(re.fullmatch(r"[0-9a-f]{40}", rev) for rev in remote_revs), remote_revs
