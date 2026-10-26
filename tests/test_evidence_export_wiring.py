@@ -168,3 +168,28 @@ def test_backup_directory_is_git_ignored() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
     assert "/data/backup/" in ignored
+
+
+class _RecordingSource(EvidenceSourcePort):
+    def __init__(self) -> None:
+        self.requested: dict[str, tuple[str, ...]] = {}
+
+    def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
+        self.requested[table] = tuple(columns)
+        return []
+
+
+@pytest.mark.parametrize("stale_quote_enabled", [True, False])
+def test_export_reads_stale_quote_only_with_the_flag(
+    settings: Settings, mocker: Any, tmp_path: Path, stale_quote_enabled: bool
+) -> None:
+    # NIEZ-50: przed migracją 055 kolumny nie ma — eksport bierze ją za flagą DAT-14.
+    settings.backup_age_recipient = RECIPIENT
+    settings.stale_quote_enabled = stale_quote_enabled
+    source = _RecordingSource()
+    mocker.patch("main_trainer.SupabaseRepository", return_value=source)
+    mocker.patch("main_trainer.AgeEncryptedArchive")
+
+    main_trainer._run_evidence_export(settings, now=NOW, out_dir=tmp_path)
+
+    assert ("stale_quote" in source.requested["prediction_logs"]) is stale_quote_enabled

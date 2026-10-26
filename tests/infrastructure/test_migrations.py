@@ -129,6 +129,7 @@ MIGRATION_FILES = [
     "082_council_vote_rounds.sql",
     "083_shadow_prediction_trend.sql",
     "084_function_search_path.sql",
+    "085_function_search_path_rest.sql",
 ]
 
 PGVECTOR_IMAGE = "pgvector/pgvector:pg16"
@@ -420,7 +421,7 @@ class TestMigrations:
     def test_persona_accuracy_stats_rpc_returns_hit_rate_and_vote_count(
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
-        """RPC leaderboardu person (#3, migracja 018) zwraca surowy hit-rate
+        """RPC leaderboardu person (R-3, migracja 018) zwraca surowy hit-rate
         ORAZ liczbę rozliczonych głosów.
 
         Regresja kontraktu: `persona_accuracy_weights` (015) niesie tylko
@@ -635,7 +636,7 @@ class TestMigrations:
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Upsert ON CONFLICT (symbol, timestamp_hour): same-hour re-run
-        aktualizuje istniejący wiersz zamiast duplikować (regresja #7)."""
+        aktualizuje istniejący wiersz zamiast duplikować (regresja z audytu z czerwca 2026)."""
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM prediction_logs WHERE symbol = 'UPSERT_PL'")
             cur.execute(
@@ -662,7 +663,7 @@ class TestMigrations:
         assert row[0] == 1
         assert float(row[1]) == pytest.approx(250.0)
 
-    # -- Migracja 019: model_scorecards (karta kondycji modelu, #12) ----------
+    # -- Migracja 019: model_scorecards (karta kondycji modelu, R-12) ---------
 
     def test_model_scorecards_has_symbol_column(
         self, pg_conn: psycopg2.extensions.connection
@@ -674,7 +675,7 @@ class TestMigrations:
         cols = _columns(pg_conn, "model_scorecards")
         assert "symbol" in cols, "Brak kolumny symbol w model_scorecards (migracja 019)"
 
-    # -- Migracja 020: decision_receipts (kwity decyzyjne, #13) ---------------
+    # -- Migracja 020: decision_receipts (kwity decyzyjne, R-13) --------------
 
     def test_decision_receipts_column_is_nullable(
         self, pg_conn: psycopg2.extensions.connection
@@ -694,7 +695,7 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, #11) -----------
+    # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, R-11) ----------
 
     def test_shock_alerts_dedups_per_symbol_per_day(
         self, pg_conn: psycopg2.extensions.connection
@@ -720,7 +721,7 @@ class TestMigrations:
                     ("SHOCK_DUP", "2026-06-05", -9.0, "DOWN"),
                 )
 
-    # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, #14) ----------
+    # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, R-14) ---------
 
     def test_ml_feature_store_exposes_alpha_fusion_score(
         self, pg_conn: psycopg2.extensions.connection
@@ -763,14 +764,14 @@ class TestMigrations:
         assert result is not None, "Wiersz nie pojawił się w widoku po REFRESH"
         assert result[0] == 0.0, f"alpha_fusion_score = {result[0]!r}, oczekiwano 0.0 (COALESCE)"
 
-    # -- Migracja 023: positions (realny portfel użytkownika, #15) ------------
+    # -- Migracja 023: positions (realny portfel użytkownika, R-15) -----------
 
     def test_positions_table_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "positions")
         required = {"id", "symbol", "quantity", "avg_cost", "as_of", "created_at"}
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
-    # -- Migracja 024: attestation (commit-reveal track record, #16) ----------
+    # -- Migracja 024: attestation (commit-reveal track record, R-16) ---------
 
     def test_attestation_columns_are_nullable(
         self, pg_conn: psycopg2.extensions.connection
@@ -790,12 +791,12 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    # -- Migracja 025: implied_edge (edge vs rynek opcji, #18) ----------------
+    # -- Migracja 025: implied_edge (edge vs rynek opcji, R-18) ---------------
 
     def test_revealed_at_column_supports_the_reveal_sweep(
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
-        """#16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
+        """R-16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
         symboli usuniętych z configu nigdy nie zostałyby odsłonięte. Dla sceptyka
         wygląda to jak ukrywanie nietrafień."""
         cols = _columns(pg_conn, "prediction_logs")
@@ -4938,6 +4939,108 @@ class TestMigration084PinsRemainingSearchPaths:
         assert pinned == len(REMAINING_FUNCTIONS)
 
 
+PINNED_BY_085 = (
+    "match_news_embeddings_exact(vector,integer,text)",
+    "persona_scoring_stats(integer,text[])",
+    "paper_trades_chain_head()",
+    "paper_trades_close_only()",
+    "paper_trades_append_only()",
+)
+
+
+def _search_path_pins(cur: psycopg2.extensions.cursor, functions: Sequence[str]) -> int:
+    cur.execute(
+        "SELECT count(*) FROM pg_proc WHERE oid = ANY(%s::regprocedure[]) "
+        "AND EXISTS (SELECT 1 FROM unnest(proconfig) AS item WHERE item LIKE 'search_path=%%')",
+        (list(functions),),
+    )
+    (pinned,) = cur.fetchone()
+    return int(pinned)
+
+
+@pytest.mark.containers
+class TestMigration085PinsSearchPaths:
+    """BEZ-33: dokładne wyszukiwanie RAG (063), ranking person (065) i funkcje triggerów
+    ledgera (073) mają stały search_path jak 070 i 084, dalej z prawami wołającego —
+    także wołane z sesji, której ścieżka nie ma `public`."""
+
+    @pytest.mark.parametrize("function", PINNED_BY_085)
+    def test_function_pins_its_search_path_and_stays_an_invoker(
+        self, supabase_like_conn: psycopg2.extensions.connection, function: str
+    ) -> None:
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT prosecdef, proconfig FROM pg_proc WHERE oid = %s::regprocedure",
+                (function,),
+            )
+            security_definer, config = cur.fetchone()
+
+        assert any(item.startswith("search_path=") and "public" in item for item in config or []), (
+            config
+        )
+        assert security_definer is False
+
+    def test_exact_search_keeps_its_planner_settings(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        # ALTER ... SET dokłada ścieżkę obok `enable_*` z 063 — skan dalej jest dokładny.
+        with supabase_like_conn.cursor() as cur:
+            cur.execute(
+                "SELECT proconfig FROM pg_proc WHERE oid = %s::regprocedure", (PINNED_BY_085[0],)
+            )
+            (config,) = cur.fetchone()
+
+        assert {"enable_seqscan=on", "enable_indexscan=off", "enable_bitmapscan=off"} <= set(config)
+
+    def test_functions_work_from_a_session_without_public_in_its_path(
+        self, supabase_like_conn: psycopg2.extensions.connection
+    ) -> None:
+        with _rolled_back(supabase_like_conn) as cur:
+            cur.execute("SET LOCAL search_path = pg_catalog")
+            cur.execute(
+                "SELECT count(*) FROM public.match_news_embeddings_exact("
+                "array_fill(0.1, ARRAY[1536])::public.vector, 3, NULL)"
+            )
+            (neighbours,) = cur.fetchone()
+            cur.execute("SELECT count(*) FROM public.persona_scoring_stats(90, ARRAY['BTC'])")
+            (personas,) = cur.fetchone()
+            cur.execute(
+                "INSERT INTO public.prediction_logs (symbol, timestamp, price_at_prediction) "
+                "VALUES ('B085', now(), 100.0) RETURNING id"
+            )
+            (prediction_id,) = cur.fetchone()
+            cur.execute(
+                "INSERT INTO public.paper_trades (prediction_id, symbol, side, entry_price, "
+                "entry_ts, weight, cost_bps, prev_hash, row_hash) VALUES "
+                "(%s, 'B085', 'long', 100.0, now(), 1, 10, %s, %s) RETURNING seq",
+                (prediction_id, _GENESIS, "a" * 64),
+            )
+            (seq,) = cur.fetchone()
+            cur.execute(
+                "UPDATE public.paper_trades SET exit_price = 101.0, exit_ts = now(), "
+                "pnl = 0.01, exit_reason = 'settled' WHERE seq = %s RETURNING exit_reason",
+                (seq,),
+            )
+            (exit_reason,) = cur.fetchone()
+            cur.execute("SAVEPOINT before_delete")
+            with pytest.raises(psycopg2.errors.RaiseException, match="append-only"):
+                cur.execute("DELETE FROM public.paper_trades WHERE seq = %s", (seq,))
+            cur.execute("ROLLBACK TO SAVEPOINT before_delete")
+
+        assert neighbours == 0
+        assert personas == 0
+        assert exit_reason == "settled"
+
+    def test_085_is_idempotent(self, migrated_pg_conn: psycopg2.extensions.connection) -> None:
+        migration = (MIGRATIONS_DIR / "085_function_search_path_rest.sql").read_text()
+        with migrated_pg_conn.cursor() as cur:
+            cur.execute(migration)
+            cur.execute(migration)
+            pinned = _search_path_pins(cur, PINNED_BY_085)
+
+        assert pinned == len(PINNED_BY_085)
+
+
 @pytest.mark.containers
 class TestMigratedPgConn:
     """TEST-08: `migrated_pg_conn` ma komplet schematu niezależnie od kolejności
@@ -5323,6 +5426,7 @@ _PUBLISHED_REVEAL_SALTS = {
     "00000000-0000-4000-8000-000000000002": "sol-ujawniona-2",
 }
 _OPEN_PREDICTION_ID = "00000000-0000-4000-8000-000000000003"
+_STALE_PREDICTION_ID = "00000000-0000-4000-8000-000000000004"
 
 
 def _restore_runbook() -> tuple[list[str], str]:
@@ -5400,7 +5504,7 @@ class _FixtureEvidenceSource(EvidenceSourcePort):
         ]
 
 
-def _evidence_export() -> dict[str, bytes]:
+def _evidence_export(*extra_predictions: dict[str, Any]) -> dict[str, bytes]:
     first, second = _PUBLISHED_REVEAL_SALTS
     tables: dict[str, list[dict[str, Any]]] = {
         "prediction_logs": [
@@ -5417,6 +5521,7 @@ def _evidence_export() -> dict[str, bytes]:
                 salt="sol-nieujawniona",
                 settled_price=None,
             ),
+            *extra_predictions,
         ],
         "council_votes": [
             {
@@ -5564,3 +5669,31 @@ class TestEvidenceRestoreDrill:
         # trafi w duplikat klucza.
         for table, (max_id, next_id) in next_ids.items():
             assert next_id > max_id, f"{table}: sekwencja id za odtworzonymi wierszami"
+
+    def test_restored_stale_quote_settlement_stays_out_of_the_feature_store(
+        self, restore_drill_conn: psycopg2.extensions.connection
+    ) -> None:
+        # NIEZ-50: znacznik DAT-14 wraca z kopii, więc filtr 058 dalej trzyma
+        # rozliczenie ze stęchłego notowania poza zbiorem treningowym.
+        stale = _committed_row(
+            _STALE_PREDICTION_ID,
+            symbol="MSFT",
+            hours_ago=30,
+            salt="sol-stechla",
+            settled_price=186.0,
+        )
+        export = _evidence_export({**stale, "stale_quote": True})
+        order, post_load_sql = _restore_runbook()
+
+        with restore_drill_conn.cursor() as cur:
+            for table in order:
+                _copy_csv(cur, table, export[f"{table}.csv"])
+            cur.execute(post_load_sql)
+            cur.execute("SELECT id::text, stale_quote FROM prediction_logs")
+            marks = dict(cur.fetchall())
+            cur.execute("SELECT id::text FROM ml_feature_store")
+            training_ids = {row[0] for row in cur.fetchall()}
+
+        assert marks[_STALE_PREDICTION_ID] is True
+        assert {marks[prediction_id] for prediction_id in _PUBLISHED_REVEAL_SALTS} == {None}
+        assert training_ids == set(_PUBLISHED_REVEAL_SALTS)

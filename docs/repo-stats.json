@@ -2,7 +2,7 @@
   "adapter_modules": 54,
   "domain_modules": 92,
   "domain_stdlib_only": true,
-  "migrations": 80,
+  "migrations": 81,
   "ports": 44,
-  "test_functions": 7288
+  "test_functions": 7301
 }

@@ -1,7 +1,7 @@
 """Offline walk-forward backtest harness (T3 — Walk-Forward Backtest Harness).
 
 Replayuje materializowany widok `ml_feature_store` przez foldy expanding-window
-(reużywa logiki walk-forward z `XGBoostAdapter.walk_forward_report`, finding #23)
+(reużywa logiki walk-forward z `XGBoostAdapter.walk_forward_report`, audyt z czerwca 2026)
 i raportuje metryki out-of-sample per symbol — RMSE kandydata vs baseline „zwrot=0"
 oraz trafność kierunku. Czysta EWALUACJA: nie persystuje modelu, nie zmienia
 żadnego stanu. Zero płatnych portów (czyta tylko zebrane cechy).

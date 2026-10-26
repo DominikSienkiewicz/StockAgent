@@ -194,7 +194,7 @@ def _html_of(results: list[SymbolResult]) -> str:
 def test_council_outside_the_top_signals_collapses_to_one_line() -> None:
     html = _html_of([_ranked(i) for i in range(12)])
 
-    # #10 w rankingu ma pełną tabelę person, #11 tylko jedną linię rady.
+    # Dziesiąty sygnał rankingu ma pełną tabelę person, jedenasty tylko jedną linię rady.
     assert "czynnik-R09" in html
     assert "czynnik-R10" not in html
     assert "🟢 2 KUP · 🔴 0 SPRZEDAJ · 🟡 0 TRZYMAJ — „Podsumowanie rady R10.”" in html

@@ -26,10 +26,10 @@ R-1 to R-18 are the July 2026 roadmap; the commits that shipped them are titled 
 roadmap's (`#5` meant both cross-symbol contagion and the messenger digest), so they got new
 ones here. A bare `#N` in an older code comment is one of three series: a roadmap item
 (R-1 to R-18), a June upgrade (R-19 to R-27), or a numbered finding of the first audit
-(`finding #N`, June 2026), which has no entry here. Comments and docstrings in `src/` no
-longer carry a bare `#N` (DOC-53): each roadmap item became its R-N, and a first-audit finding
-is described in words; [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py)
-keeps it that way.
+(`finding #N`, June 2026), which has no entry here. Comments and docstrings in `src/` (DOC-53),
+the `main_*.py` entry points and `tests/` (DOC-55) no longer carry a bare `#N`: each roadmap
+item became its R-N, and a first-audit finding is described in words;
+[`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) keeps it that way.
 
 | ID | Item | Commit | Flag |
 |---|---|---|---|

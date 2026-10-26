@@ -1,4 +1,4 @@
-"""Testy sekcji "Rada — ranking wiarygodności" w raporcie e-mail (#3)."""
+"""Testy sekcji "Rada — ranking wiarygodności" w raporcie e-mail (R-3)."""
 
 from __future__ import annotations
 

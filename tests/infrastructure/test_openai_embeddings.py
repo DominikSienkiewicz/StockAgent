@@ -188,7 +188,7 @@ class TestRetryAndQuota:
 
 
 class TestContentHashCache:
-    """#29 — Cross-cycle cache: ten sam wolnozmienny news_summary (cadence 12h)
+    """Audyt z czerwca 2026 — cross-cycle cache: ten sam wolnozmienny news_summary (cadence 12h)
     nie może być re-embedowany od zera w każdym cyklu. Cache po sha256
     znormalizowanego tekstu eliminuje czysty re-burn płatnego calla."""
 

@@ -134,7 +134,7 @@ class TestRenderVarAndStress:
 
 class TestWatchlistWording:
     """MAIL-31: VaR i stress-test liczą się z równych wag całej watchlisty, a nie
-    z pozycji właściciela — mail nie nazywa ich „portfelem”, bo od #15 „💼 Twój
+    z pozycji właściciela — mail nie nazywa ich „portfelem”, bo od R-15 „💼 Twój
     portfel” to realne pieniądze."""
 
     _REPORT = PortfolioRiskReport(

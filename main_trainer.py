@@ -313,7 +313,7 @@ def _persist_model_scorecard(
     result: Mapping[str, Any],
     run_id: str | None = None,
 ) -> None:
-    """#12: karta kondycji modelu. Zapis best-effort (wzorzec
+    """R-12: karta kondycji modelu. Zapis best-effort (wzorzec
     `save_quota_alert`) — brak migracji 019 nie może wywalić treningu."""
     try:
         repository.save_model_scorecard(symbol, result, run_id=run_id)
@@ -840,7 +840,10 @@ def _run_evidence_export(
         return
     try:
         receipt = ExportEvidenceUseCase(
-            _supabase_repository(settings), AgeEncryptedArchive(recipient, out_dir)
+            _supabase_repository(settings),
+            AgeEncryptedArchive(recipient, out_dir),
+            # NIEZ-50: znacznik `stale_quote` (migracja 055) w kopii tylko z flagą DAT-14.
+            stale_quote_enabled=settings.stale_quote_enabled,
         ).run(now=now or datetime.now(UTC))
     except Exception:
         logger.exception("Evidence export failed — pomijam")
@@ -856,7 +859,7 @@ def _run_evidence_export(
 def _run_calibration_scores(
     repository: RepositoryPort, *, brier_score_enabled: bool = False
 ) -> None:
-    """#4: arytmetyczna ocena kalibracji pewności (Slow Loop), jednym zapisem
+    """R-22: arytmetyczna ocena kalibracji pewności (Slow Loop), jednym zapisem
     zbiorczym (migracja 077). WIA-65: bez sędziego LLM — zero płatnych wywołań.
     WIA-37: `brier_score_enabled` = reguła Briera v2 (bez flagi liniowa v1)."""
     try:
@@ -931,7 +934,7 @@ def _send_weekly_recap(
     quota_monitor: QuotaMonitor,
     llm_port: LLMPort,
 ) -> None:
-    """#17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
+    """R-17: niedzielna retrospektywa. Slow Loop chodzi co tydzień i dotąd NIE
     WYSYŁAŁ użytkownikowi nic. Koszt: dokładnie jedno wywołanie LLM tygodniowo
     (FIN-30: w tygodniowym budżecie Slow Loopa).
     Poniżej progu 5 zamkniętych predykcji use case zwraca `skipped_*` i recap

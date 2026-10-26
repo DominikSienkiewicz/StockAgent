@@ -114,7 +114,8 @@ MIGRATION_PROBES="017 column prediction_logs regime
 081 column shock_alerts level
 082 column council_votes round
 083 column shadow_predictions predicted_trend
-084 opaque refresh_ml_feature_store rls"
+084 opaque refresh_ml_feature_store rls
+085 opaque match_news_embeddings_exact rls"
 
 # Zakres z listy sond, żeby nagłówek nie zestarzał się z kolejną migracją.
 PROBE_RANGE="$(awk 'NR == 1 {first = $1} {last = $1} END {print first "–" last}' <<<"$MIGRATION_PROBES")"

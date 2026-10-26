@@ -107,7 +107,7 @@ class TestSavePriceSnapshot:
     def test_upsert_uses_symbol_timestamp_hour_conflict_key(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """Idempotency (#7): re-run GHA / nakładający się workflow_dispatch /
+        """Idempotency (audyt z czerwca 2026): re-run GHA / nakładający się workflow_dispatch /
         retry LangGraph nie może duplikować snapshotu. Upsert na konflikt
         (symbol, timestamp_hour) aktualizuje istniejący logiczny wiersz zamiast
         wstawiać duplikat (duplikaty podwójnie liczyłyby się w widoku
@@ -286,7 +286,7 @@ class TestSavePrediction:
     def test_upsert_uses_symbol_timestamp_hour_conflict_key(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """Idempotency (#7): same-hour re-run aktualizuje istniejący wiersz
+        """Idempotency (audyt z czerwca 2026): same-hour re-run aktualizuje istniejący wiersz
         zamiast duplikować. Bez on_conflict duplikaty podwójnie liczyłyby się
         w get_accuracy_stats i w widoku ml_feature_store."""
         _set_chain_response(mock_client, ["table", "upsert"], [{"id": "uuid-1", "symbol": "AAPL"}])
@@ -542,7 +542,7 @@ class TestGetUnverifiedPrediction:
     def test_orders_oldest_first_to_drain_backlog(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """#19: self-reflection musi opróżniać backlog — bierzemy NAJSTARSZĄ
+        """Audyt z czerwca 2026: self-reflection musi opróżniać backlog — bierzemy NAJSTARSZĄ
         nierozliczoną predykcję (timestamp ASC), nie najnowszą. Przy DESC
         starsze nierozliczone predykcje nigdy nie stałyby się znów "najnowsze"
         i utknęłyby na zawsze (brak actual_price_after_12h → nie wchodzą do
@@ -1239,7 +1239,7 @@ class TestGetPersonaAccuracy:
 
 
 class TestGetPersonaTrackRecord:
-    """#3 — RPC `persona_accuracy_stats` (migracja 018) niesie hit-rate ORAZ
+    """R-3 — RPC `persona_accuracy_stats` (migracja 018) niesie hit-rate ORAZ
     liczbę rozliczonych głosów; RPC z migracji 015 zwracało samą wagę."""
 
     def test_maps_rpc_rows_to_hit_rate_and_vote_count(
@@ -2301,7 +2301,7 @@ class TestGetRecentlyResolvedSelectsPostMortemColumns:
     def test_aggregates_all_rows_across_pages(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """#8: get_recently_resolved_predictions też paginuje — bez tego raport
+        """get_recently_resolved_predictions też paginuje — bez tego raport
         pokazywałby max 1000 zamkniętych predykcji."""
         full_page = [{"symbol": "AAPL"} for _ in range(1000)]
         short_page = [{"symbol": "VOO"}]
@@ -2319,7 +2319,7 @@ class TestGetRecentlyResolvedSelectsPostMortemColumns:
 
 def _set_paginated_response(range_builder: MagicMock, pages: list[list[dict[str, Any]]]) -> None:
     """Konfiguruje terminalny `.range(...).execute()` tak, by kolejne wywołania
-    zwracały kolejne strony (#8: paginacja wokół PostgREST cap ~1000).
+    zwracały kolejne strony (paginacja wokół PostgREST cap ~1000).
 
     `range_builder` to obiekt, na którym wołane jest `.range(offset, end)`
     (np. `chain...order.return_value`). Każde wejście listy `pages` to jedna
@@ -2364,7 +2364,7 @@ class TestGetAccuracyStats:
     def test_adds_deterministic_order_by_timestamp(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """#8: bez .order() obcięty podzbiór (~1000) był niedeterministyczny."""
+        """Bez .order() obcięty podzbiór (~1000) był niedeterministyczny."""
         chain = mock_client.table.return_value
         order_builder = (
             chain.select.return_value.gte.return_value.not_.is_.return_value.order.return_value
@@ -2380,7 +2380,7 @@ class TestGetAccuracyStats:
     def test_mean_accuracy_computed_over_all_pages(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """#8: cap ~1000 biasował hit-rate. mean_accuracy musi obejmować pełen
+        """Cap ~1000 biasował hit-rate. mean_accuracy musi obejmować pełen
         zbiór z wszystkich stron paginacji, nie tylko pierwsze 1000 wierszy."""
         # Strona 1: 1000 wierszy, wszystkie True. Strona 2: 1000 wierszy False.
         page1 = [{"is_trend_correct": True} for _ in range(1000)]
@@ -2532,7 +2532,7 @@ class TestGetResolvedPredictionsForEval:
     def test_aggregates_all_rows_across_pages(
         self, repo: SupabaseRepository, mock_client: MagicMock
     ) -> None:
-        """#8: hosted Supabase cap ~1000 wierszy bez błędu. Read musi paginować
+        """Hosted Supabase cap ~1000 wierszy bez błędu. Read musi paginować
         po .range(...) aż do krótkiej strony, inaczej trafność jest obcinana."""
         full_page = [{"timestamp": f"2026-06-01T00:{i:02d}:00+00:00"} for i in range(1000)]
         short_page = [{"timestamp": "2026-06-02T00:00:00+00:00"}]
@@ -2580,7 +2580,7 @@ class TestFindSimilarPredictions:
 
 
 class TestModelScorecards:
-    """#12 — scorecard walk-forward per symbol (migracja 019)."""
+    """R-12 — scorecard walk-forward per symbol (migracja 019)."""
 
     def test_save_writes_symbol_and_gate_metrics(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -2629,7 +2629,7 @@ class TestModelScorecards:
 
 
 class TestGetPreviousVerdict:
-    """#8 — poprzedni werdykt rady (JSONB z migracji 005) do detektora flipów.
+    """R-8 — poprzedni werdykt rady (JSONB z migracji 005) do detektora flipów.
     Adapter jest SUROWY: graceful degradation robi caller (styl repo)."""
 
     @staticmethod
@@ -2731,7 +2731,7 @@ class TestGetPreviousVerdict:
 
 
 class TestShockAlerts:
-    """#11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
+    """R-11 — dedup alertów szoku (migracja 021, UNIQUE(symbol, alert_date))."""
 
     def test_save_writes_symbol_date_and_direction(
         self, repo: SupabaseRepository, mock_client: MagicMock
@@ -2850,7 +2850,7 @@ class TestShockAlerts:
 
 
 class TestGetResolvedPredictionsDetailed:
-    """#17 — recap tygodniowy potrzebuje pól, których `get_resolved_predictions`
+    """R-17 — recap tygodniowy potrzebuje pól, których `get_resolved_predictions`
     NIE zwraca: id, predicted_target_price, confidence_score, council_verdict."""
 
     def test_selects_the_fields_the_weekly_recap_needs(

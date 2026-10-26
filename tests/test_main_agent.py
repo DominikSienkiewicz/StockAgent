@@ -356,7 +356,7 @@ class TestMainAgent:
         mocker: Any,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """#34: log 'Fast Loop done — failures=d/d' MUSI dzielić przez liczbę
+        """Audyt z czerwca 2026: log 'Fast Loop done — failures=d/d' MUSI dzielić przez liczbę
         FAKTYCZNIE przetworzonych symboli (eligible = symbols + crypto −
         unsupported), nie przez len(settings.symbols). Inaczej przy obecności
         krypto / unsupported mianownik jest zły (failures mogą nawet przekroczyć
@@ -1215,7 +1215,7 @@ class TestAnalyzeSymbolsParallel:
 
 
 class TestFetchReportContextPersonaTrackRecord:
-    """#3 — orkiestrator dociąga track record person i przepuszcza go przez
+    """R-3 — orkiestrator dociąga track record person i przepuszcza go przez
     domenowy `rank_personas` (próg min_votes) zanim trafi do raportu."""
 
     @staticmethod
@@ -1261,7 +1261,7 @@ class TestFetchReportContextPersonaTrackRecord:
 
 
 class TestResolveRegimeYieldCurveVote:
-    """#7 — inwersja krzywej wchodzi do RegimeDetector jako GŁOS w liczniku
+    """R-7 — inwersja krzywej wchodzi do RegimeDetector jako GŁOS w liczniku
     ELEVATED, nie jako weto i nie przez `_compute_overall_alert`."""
 
     @staticmethod
@@ -1441,7 +1441,7 @@ class TestMacroSeriesWiring:
 
 
 class TestProcessOneSymbolEarningsGate:
-    """#6 — mnożnik earnings dociera do grafu, a płatny port AV jest wołany
+    """R-6 — mnożnik earnings dociera do grafu, a płatny port AV jest wołany
     dokładnie RAZ na symbol (prefetch + wstrzyknięcie do enrich)."""
 
     @staticmethod
@@ -1473,7 +1473,7 @@ class TestProcessOneSymbolEarningsGate:
 
     def test_gate_disabled_never_touches_the_earnings_port(self) -> None:
         # Wsteczna kompatybilność: z wyłączonym kalendarzem ścieżka jest
-        # bit-w-bit taka jak przed #6 — zero prefetchu, `enrich(symbol)` gołe.
+        # bit-w-bit taka jak przed R-6 — zero prefetchu, `enrich(symbol)` gołe.
         alpha = self._alpha(EarningsEvent("AAPL", days_until=1))
         use_case = self._use_case()
 
@@ -1530,7 +1530,7 @@ class TestProcessOneSymbolEarningsGate:
 
 
 class TestBuildSignalCalibration:
-    """#9 — kubełki pod ranking sygnałów są niezależne od flagi sekcji
+    """R-9 — kubełki pod ranking sygnałów są niezależne od flagi sekcji
     Track Record i degradują gracefully."""
 
     @staticmethod
@@ -1575,7 +1575,7 @@ class TestBuildSignalCalibration:
 
 
 class TestDynamicSubject:
-    """#1 — temat maila niesie najmocniejszy sygnał dnia zamiast suchych
+    """R-1 — temat maila niesie najmocniejszy sygnał dnia zamiast suchych
     liczników. Liczony nad PEŁNYMI danymi cyklu, bo subject jest wspólny
     dla wszystkich subskrybentów (sekcje są re-slicowane, temat nie)."""
 
@@ -1767,7 +1767,7 @@ class TestCriticalQuotaSubjectPrefix:
 
 
 class TestMessengerDigestSplit:
-    """#5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
+    """R-5 — push (Telegram/Slack) dostaje 5-linijkowy skrót, nie pełny raport.
 
     Realny failure mode: pełny plain-text przekracza limit 4096 znaków Telegrama,
     API zwraca 400 i push ginie po cichu. Dodatkowo gałąź U2 (fan-out per
@@ -1963,7 +1963,7 @@ class TestMessengerDigestSplit:
 
 
 class TestCycleMaturityWiring:
-    """#4 — klasyfikacja dojrzałości cyklu z policzonych przyczyn pominięcia."""
+    """R-4 — klasyfikacja dojrzałości cyklu z policzonych przyczyn pominięcia."""
 
     @staticmethod
     def _r(symbol: str, status: str, reason: SkipReason | None = None) -> SymbolResult:
@@ -2004,7 +2004,7 @@ class TestCycleMaturityWiring:
 
 
 class TestOnboardingSubject:
-    """#4 — pierwszy cykl ma powitalny temat zamiast '0 predykcji, 0 błędów'."""
+    """R-4 — pierwszy cykl ma powitalny temat zamiast '0 predykcji, 0 błędów'."""
 
     def test_first_run_gets_a_welcome_subject(self) -> None:
         subject = main_agent._build_subject(
@@ -2064,7 +2064,7 @@ class TestModelScorecardWindow:
 
 
 class TestConsensusShiftWiring:
-    """#8 — flipy rady. Graceful w callerze, tłumienie stęchłych porównań."""
+    """R-8 — flipy rady. Graceful w callerze, tłumienie stęchłych porównań."""
 
     @staticmethod
     def _verdict(rec: str, consensus: float = 0.8) -> CouncilVerdict:
@@ -2143,7 +2143,7 @@ class TestConsensusShiftWiring:
 
 
 class TestAlphaEnrichmentRunsBeforeTheGraph:
-    """#14 — korekta fundamentalna: enrichment działał PO grafie, więc LLM
+    """R-14 — korekta fundamentalna: enrichment działał PO grafie, więc LLM
     i cechy XGBoost nigdy nie widziały sygnałów alfa. Musi biec PRZED."""
 
     @staticmethod
@@ -2224,7 +2224,7 @@ class TestAlphaEnrichmentRunsBeforeTheGraph:
 
 
 def test_alpha_fusion_flag_off_leaves_the_graph_untouched() -> None:
-    """#14 — z flagą off graf dostaje `alpha_fusion=None`, więc prompt LLM
+    """R-14 — z flagą off graf dostaje `alpha_fusion=None`, więc prompt LLM
     i cechy ML są identyczne jak przed wprowadzeniem fuzji."""
     alpha = MagicMock()
     alpha.fetch_earnings.return_value = None
@@ -2292,7 +2292,7 @@ class TestModelScorecardCoverage:
 
 
 class TestPublicScorecard:
-    """#10 — publiczny scorecard. DRUGA instancja publishera (nie ta od
+    """R-10 — publiczny scorecard. DRUGA instancja publishera (nie ta od
     prywatnego digestu!) i metryki liczone niezależnie od flag track-recordu."""
 
     @staticmethod

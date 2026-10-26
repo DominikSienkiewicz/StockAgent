@@ -98,7 +98,7 @@ class TestTrain:
     def test_metric_keys_are_candidate_scoped_and_self_describing(
         self, adapter: XGBoostAdapter
     ) -> None:
-        # Finding #22: shipowany model jest refitowany na WSZYSTKICH danych i nie
+        # Audyt z czerwca 2026: shipowany model jest refitowany na WSZYSTKICH danych i nie
         # jest re-walidowany, więc raportowane RMSE/hit-rate dotyczą KANDYDATA na
         # holdoucie — nazwy kluczy muszą to mówić wprost, plus `metric_note`.
         features, target = _synthetic_dataset()
@@ -156,7 +156,7 @@ class TestTrain:
 
 
 class TestWalkForwardValidation:
-    """Finding #23: ewaluacja walk-forward (expanding window) zamiast jednego,
+    """Audyt z czerwca 2026: ewaluacja walk-forward (expanding window) zamiast jednego,
     hałaśliwego splitu 20%. Decyzja o shipowaniu zależy od ŚREDNIEJ z foldów +
     raport niesie per-feature drift stats i `n_folds`."""
 

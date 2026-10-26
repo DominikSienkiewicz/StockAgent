@@ -1,4 +1,4 @@
-"""Testy renderu sekcji „Tydzień StockAgenta" (#17) — HTML i plain-text.
+"""Testy renderu sekcji „Tydzień StockAgenta" (R-17) — HTML i plain-text.
 
 Zamrażają: samosupresję (recap None → ""), obecność czterech sekcji (strzał,
 wtopa z lekcją, wybronieni dysydenci, delta ECE), escaping HTML i polską treść.

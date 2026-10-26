@@ -1,7 +1,7 @@
 """AlphaVantageClient — thundering herd na leniwym _cached_feed.
 
 Przy starcie puli kilka wątków widzi `_cached_feed is None` i każdy rusza pełny
-fetch feedu (cold-start ~47 s z run #42). AV free tier ma brutalny dzienny limit
+fetch feedu (cold-start ~47 s z przebiegu nr 42). AV free tier ma brutalny dzienny limit
 (25 req/dobę) — duplikacja fetchu może wyczerpać klucze. Lock → jeden fetch.
 """
 

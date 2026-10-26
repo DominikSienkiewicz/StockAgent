@@ -1,4 +1,4 @@
-"""#16 — sweep revealów commit-reveal jako use case (ARCH-02).
+"""R-16 — sweep revealów commit-reveal jako use case (ARCH-02).
 
 Przypadki przeniesione bez zmiany asercji z `tests/test_main_entrypoints.py`
 (`TestAttestationRevealSweep`): sweep ujawnia WSZYSTKIE zapadłe commitmenty.

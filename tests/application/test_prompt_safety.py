@@ -2,7 +2,7 @@
 """Testy dla _prompt_safety.fence_untrusted — sanityzacja i ogrodzenie
 nieufnych danych (nagłówki newsów) przed wstrzyknięciem do promptu LLM.
 
-Kontekst (finding #9): nagłówki z Alpha Vantage trafiają wprost do prompta,
+Kontekst (audyt z czerwca 2026): nagłówki z Alpha Vantage trafiają wprost do prompta,
 więc spreparowany nagłówek typu prompt-injection może próbować przejąć
 sterowanie nad output_schema. Helper musi: czyścić znaki kontrolne i tokeny
 sterujące, przycinać długość i zamykać całość w jawnym, oznaczonym fence'u
@@ -211,7 +211,7 @@ class TestReadability:
 
 
 class TestPredictionPromptNewsInjection:
-    """Finding #9 dla głównego prompta predykcji: news_summary (złączone
+    """Ta sama reguła z audytu z czerwca 2026 dla głównego prompta predykcji: news_summary (złączone
     nagłówki z Alpha Vantage) musi trafić do fence'a DATA-ONLY, a output_schema
     pozostać zakotwiczony PO nim.
     """

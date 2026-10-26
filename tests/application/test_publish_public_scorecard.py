@@ -1,4 +1,4 @@
-"""#10 — publikacja publicznego scorecardu jako use case (ARCH-02).
+"""R-10 — publikacja publicznego scorecardu jako use case (ARCH-02).
 
 Use case zna tylko porty (repozytorium i publisher strony); konfigurację okna
 i protokół ewaluacji dostaje w `PublicScorecardOptions` od composition root.

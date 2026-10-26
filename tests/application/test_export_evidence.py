@@ -126,3 +126,36 @@ def test_run_hands_the_files_to_the_encrypting_archive() -> None:
 def test_archive_name_is_the_iso_week() -> None:
     assert archive_name(datetime(2027, 1, 1, tzinfo=UTC)) == "evidence-2026-W53"
     assert archive_name(datetime(2026, 1, 5, tzinfo=UTC)) == "evidence-2026-W02"
+
+
+def _prediction_header(files: dict[str, bytes]) -> list[str]:
+    return files["prediction_logs.csv"].decode("utf-8").split("\n", 1)[0].split(",")
+
+
+def test_prediction_logs_export_keeps_stale_quote() -> None:
+    # NIEZ-50: bez znacznika odtworzona baza wpuściłaby rozliczenia ze stęchłego
+    # notowania z powrotem do `ml_feature_store` (filtr 058 przepuszcza NULL).
+    source = _FakeSource()
+
+    files = ExportEvidenceUseCase(source, Mock(spec=EvidenceArchivePort)).build(now=NOW)
+
+    assert EVIDENCE_COLUMNS["prediction_logs"][-1] == "stale_quote"
+    assert "stale_quote" in source.requested["prediction_logs"]
+    assert "stale_quote" in _prediction_header(files)
+
+
+def test_without_the_stale_quote_flag_the_export_leaves_the_column_out() -> None:
+    # NIEZ-50: kolumna istnieje od migracji 055 i bez `stale_quote_enabled` nikt jej
+    # nie zapisuje — eksport czyta ją za tą samą flagą co odczyty trafności (ML-57).
+    source = _FakeSource()
+
+    files = ExportEvidenceUseCase(
+        source, Mock(spec=EvidenceArchivePort), stale_quote_enabled=False
+    ).build(now=NOW)
+
+    expected = [column for column in EVIDENCE_COLUMNS["prediction_logs"] if column != "stale_quote"]
+    assert list(source.requested["prediction_logs"]) == expected
+    assert _prediction_header(files) == expected
+    manifest = json.loads(files[MANIFEST_NAME])
+    assert manifest["tables"]["prediction_logs"]["columns"] == expected
+    assert source.requested["council_votes"] == EVIDENCE_COLUMNS["council_votes"]

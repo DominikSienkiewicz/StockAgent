@@ -1,4 +1,4 @@
-"""Testy fabryki read-only tooli badawczych (#6).
+"""Testy fabryki read-only tooli badawczych (R-24).
 
 `build_research_tools` produkuje listę `Tool` dla pętli tool-use LLM:
 - `get_fundamentals` — woła `FundamentalsPort.get_fundamentals(symbol)`,

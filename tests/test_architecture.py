@@ -212,3 +212,21 @@ def test_layer_globs_see_the_layers() -> None:
     assert "asset.py" in _layer_modules(DOMAIN_DIR)
     assert "ports.py" in _layer_modules(APPLICATION_DIR)
     assert set(_layer_modules(DOMAIN_DIR)) >= DOMAIN_ANY_ALLOWED
+
+
+USE_CASES_DIR = APPLICATION_DIR / "use_cases"
+
+
+@pytest.mark.parametrize("module", _layer_modules(USE_CASES_DIR))
+def test_use_cases_do_not_import_pandas(module: str) -> None:
+    # ML-58: use case'y idą na wierszach (`ml_features`); DataFrame składa adapter modelu.
+    imported = _absolute_and_relative_imports((USE_CASES_DIR / module).read_text(encoding="utf-8"))
+
+    assert not {name for name in imported if name.split(".", 1)[0] == "pandas"}, (
+        f"src/application/use_cases/{module} importuje pandas — wiersze widoku obsługują "
+        "pomocniki `src/application/ml_features.py`"
+    )
+
+
+def test_use_cases_glob_sees_the_use_cases() -> None:
+    assert {"train_model.py", "backtest.py"} <= set(_layer_modules(USE_CASES_DIR))

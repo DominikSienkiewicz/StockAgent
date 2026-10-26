@@ -1,4 +1,4 @@
-"""Testy adapterów pozycji portfela (#15 — tabela `positions`, migracja 023).
+"""Testy adapterów pozycji portfela (R-15 — tabela `positions`, migracja 023).
 
 `SupabasePositionsAdapter` czyta tabelę `positions` (kolumny: symbol, quantity,
 avg_cost, as_of, currency, purchase_date) i mapuje wiersze na domenowe `Position`.

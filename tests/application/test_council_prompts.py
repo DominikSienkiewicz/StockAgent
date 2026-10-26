@@ -132,7 +132,7 @@ class TestInvestorPromptCacheFriendlyLayout:
 
 
 class TestInvestorPromptNewsInjection:
-    """Finding #9: nagłówki z Alpha Vantage to dane nieufne. Spreparowany
+    """Audyt z czerwca 2026: nagłówki z Alpha Vantage to dane nieufne. Spreparowany
     nagłówek prompt-injection musi zostać oczyszczony i zamknięty w fence'u
     DATA-ONLY, a nie leżeć surowo obok output_schema.
     """
@@ -193,7 +193,7 @@ class TestInvestorPromptNewsInjection:
 
 
 class TestInvestorRevisionPrompt:
-    """Feature #1 (debate mode): pojedyncza runda rewizji. Persona widzi
+    """R-19 (debate mode): pojedyncza runda rewizji. Persona widzi
     stanowiska peerów z rundy 1 i ma raz zrewidować swoją rekomendację.
     Newsy nadal ogrodzone fence'em DATA-ONLY jak w investor_prompt."""
 

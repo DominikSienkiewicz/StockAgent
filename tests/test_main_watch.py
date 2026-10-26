@@ -1,4 +1,4 @@
-"""Testy entry pointa `main_watch.py` — darmowy watch szoku poza cyklem (#11).
+"""Testy entry pointa `main_watch.py` — darmowy watch szoku poza cyklem (R-11).
 
 Kontrakt FinOps jest tu absolutny: watch NIE WOŁA żadnego płatnego portu
 (LLM / Alpha Vantage / embeddingi). Kontrakt poprawnościowy jest równie ostry:

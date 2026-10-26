@@ -404,7 +404,7 @@ class TestCouncilVolatilityThreshold:
 
 
 class TestCryptoCouncilVolatilityThreshold:
-    """#38: bramka rady (council_node) wybiera próg per asset_type przez
+    """Audyt z czerwca 2026: bramka rady (council_node) wybiera próg per asset_type przez
     _pick_threshold. Dla CRYPTO MUSI użyć `crypto_council_threshold`, nie
     `council_threshold` akcji — main_agent wiąże osobny próg dla krypto, bo ma
     ono inną natywną zmienność. Bez tego pokrycia regresja (krypto spada do

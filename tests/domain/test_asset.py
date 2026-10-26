@@ -33,7 +33,7 @@ class TestPriceDelta:
         assert delta.fraction == Decimal("0")
 
     def test_percent_property_is_fraction_times_100(self) -> None:
-        # Finding #33: `percent` to wygodny przelicznik fraction*100. Ułamek
+        # Audyt z czerwca 2026: `percent` to wygodny przelicznik fraction*100. Ułamek
         # 0.10 → 10.0 procenta. To naprawia 100x pułapkę nazewnictwa.
         delta = PriceDelta.calculate(Money(Decimal("100.0")), Money(Decimal("110.0")))
         assert delta.percent == Decimal("10.0")
@@ -68,7 +68,7 @@ class TestAssetEvaluateVolatility:
         assert asset.evaluate_volatility(delta, Threshold(Decimal("0.02"))) is True
 
     def test_gates_on_fraction_not_percent(self) -> None:
-        # Finding #33: bramka volatility porównuje UŁAMEK (0.05) z progiem
+        # Audyt z czerwca 2026: bramka volatility porównuje UŁAMEK (0.05) z progiem
         # (0.02), nie procent (5.0). Gdyby porównywała percent, próg 0.02
         # zawsze przepuszczałby ruch — co byłoby 100x błędem.
         asset = Asset(symbol="AAPL")

@@ -1,4 +1,4 @@
-"""Testy CascadingLLMAdapter — confidence-gated model routing (Feature #2).
+"""Testy CascadingLLMAdapter — confidence-gated model routing (R-20).
 
 Reguła: analizę domyślnie robi tani LLM; eskalujemy do frontier dopiero,
 gdy wynik taniego jest mało pewny (`confidence_score < routing_floor`) i

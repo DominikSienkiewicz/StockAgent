@@ -257,7 +257,13 @@ def _run_evaluate(args: argparse.Namespace) -> int:
         experiment = _find_experiment(settings.experiment_definitions(), args.experiment)
         if experiment is None:
             return 1
-    repo = SupabaseRepository(url=settings.supabase_url, key=settings.supabase_key)
+    # WIA-83: bez rozliczeń ze stęchłego notowania, jak Fast i Slow Loop; kolumna
+    # `stale_quote` (migracja 055) za flagą.
+    repo = SupabaseRepository(
+        url=settings.supabase_url,
+        key=settings.supabase_key,
+        stale_quote_enabled=settings.stale_quote_enabled,
+    )
     reads, fields = evaluation_reads(
         by_recipe=args.by_recipe,
         by_universe=args.by_universe,

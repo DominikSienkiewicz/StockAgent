@@ -1,4 +1,4 @@
-"""Testy use case'u niedzielnej retrospektywy „Tydzień StockAgenta" (#17).
+"""Testy use case'u niedzielnej retrospektywy „Tydzień StockAgenta" (R-17).
 
 Zamrażają wiążące wymagania FinOps/UX:
 - poniżej progu N>=5 recap NIE POWSTAJE, mail NIE WYCHODZI, LLM NIE jest wołany,

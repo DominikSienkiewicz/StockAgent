@@ -141,7 +141,7 @@ class TestSizeBand:
 
 
 class TestSizingKnowsExistingExposure:
-    """#15 faza 2 — `suggest_band` nie znała istniejącej ekspozycji. Sugerowała
+    """R-15 faza 2 — `suggest_band` nie znała istniejącej ekspozycji. Sugerowała
     „pełną bandę 4-5%" komuś, kto ma już 40% kapitału w tym symbolu."""
 
     def test_existing_exposure_can_only_shrink_the_band(self) -> None:

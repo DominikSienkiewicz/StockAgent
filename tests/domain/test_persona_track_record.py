@@ -1,4 +1,4 @@
-"""Testy domeny rankingu wiarygodności person rady (#3).
+"""Testy domeny rankingu wiarygodności person rady (R-3).
 
 Kontrakt zamrożony tu wprost odpowiada "największemu ryzyku" pozycji: szumowy
 ranking przy małej próbce. Stąd dwie twarde asercje: próg `min_votes` żyje

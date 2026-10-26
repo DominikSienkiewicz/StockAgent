@@ -351,6 +351,10 @@ BARE_HASH_NUMBER = re.compile(r"(?<![\w&])#\d+\b")
 # Trafienia, które nie są odwołaniami: (plik, trafienie) → powód.
 NOT_A_REFERENCE = {
     ("src/application/report_footer.py", "#77"): "przykładowy numer przebiegu GHA w stopce",
+    ("tests/application/test_report_a11y.py", "#767676"): "kolor szarości (kontrast AA)",
+    ("tests/test_decision_log.py", "#5"): "przykład dawnej numeracji w opisie strażnika DOC-40",
+    ("tests/test_decision_log.py", "#12"): "przykład dawnej frazy „roadmap #N” w strażniku DOC-40",
+    ("tests/test_docs_consistency.py", "#6"): "przykład kolizji serii w opisie strażnika DOC-53",
 }
 
 
@@ -406,6 +410,17 @@ def test_no_bare_hash_reference_in_src_comments() -> None:
     ]
 
     assert bare == [], f"gołe „#N” w komentarzach src/ zamiast R-N, G-N albo opisu: {bare}"
+
+
+# DOC-55: recenzent czyta entry-pointy i testy równie często jak src/, a w nich zostały te same
+# trzy serie numerów (komentarze testów wołały znaleziska pierwszego audytu „Finding #N”).
+def test_no_bare_hash_reference_in_entrypoints_and_tests() -> None:
+    paths = sorted(ROOT.glob("main_*.py")) + sorted((ROOT / "tests").rglob("*.py"))
+    bare = [hit for path in paths for hit in _bare_hash_numbers(path, ROOT)]
+
+    assert bare == [], (
+        f"gołe „#N” w komentarzach main_*.py i tests/ zamiast R-N, G-N albo opisu: {bare}"
+    )
 
 
 def test_bare_hash_guard_reads_comments_and_docstrings_but_not_strings(tmp_path: Path) -> None:
