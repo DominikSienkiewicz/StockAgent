@@ -22,6 +22,7 @@ from src.application.ports import (
 )
 from src.domain.backtest import (
     BacktestSummary,
+    WalkForwardFold,
     summarize_folds,
     walk_forward_folds,
 )
@@ -130,6 +131,7 @@ class XGBoostAdapter(MLPredictionPort):
         target_unit: TargetUnit = TargetUnit.RETURN,
         dataset: DatasetDescription | None = None,
         label_ends: Sequence[datetime] | None = None,
+        folds: Sequence[WalkForwardFold] | None = None,
     ) -> TrainingReport:
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
@@ -142,7 +144,7 @@ class XGBoostAdapter(MLPredictionPort):
         # hałaśliwym estymatorze z jednego reżimu rynku (finding #23). Sama reguła
         # (margines 2%, min. punktów OOS) żyje w domenie — `summarize_folds`.
         summary = summarize_folds(
-            self._walk_forward_folds_detail(feature_frame, target_series, stamps, ends)
+            self._walk_forward_folds_detail(feature_frame, target_series, stamps, ends, folds=folds)
         )
         # Per-feature drift stats (mean/std, ML-21: biny kwantylowe i PSI ostatnich
         # 30 dni) — obserwowalne niezależnie od werdyktu bramki.
@@ -264,20 +266,28 @@ class XGBoostAdapter(MLPredictionPort):
         target: pd.Series,
         timestamps: list[datetime] | None = None,
         label_ends: list[datetime] | None = None,
+        *,
+        folds: Sequence[WalkForwardFold] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki walk-forward (expanding window) na danych
         time-ordered. Jedno źródło prawdy dla bramki `train()` (przez domenowe
         `summarize_folds`) i `walk_forward_report` (szczegół).
 
         ARCH-27: granice foldów i wiersze treningu (purge ML-26 przy `timestamps`)
-        projektuje domena (`walk_forward_folds`); adapter tylko trenuje i mierzy.
+        projektuje domena (`walk_forward_folds`); adapter tylko trenuje i mierzy —
+        na `folds` od wołającego albo, bez nich, na foldach domeny nad tymi wierszami.
 
         ML-10: baseline'y „dryf średniej" i „sam LLM" biorą skalę WYŁĄCZNIE z
         części treningowej foldu (tej samej, którą widzi kandydat) — żadnego
         podglądu walidacji.
         """
         out: list[dict[str, float]] = []
-        for fold in walk_forward_folds(len(target), timestamps, label_ends):
+        designed = (
+            walk_forward_folds(len(target), timestamps, label_ends)
+            if folds is None
+            else _fitting_folds(folds, len(target))
+        )
+        for fold in designed:
             rows, train_end, valid_end = list(fold.train_rows), fold.train_end, fold.valid_end
             train_x = features.iloc[rows]
             train_y = target.iloc[rows]
@@ -315,17 +325,23 @@ class XGBoostAdapter(MLPredictionPort):
         *,
         timestamps: Sequence[datetime] | None = None,
         label_ends: Sequence[datetime] | None = None,
+        folds: Sequence[WalkForwardFold] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki OOS bez persystencji (offline backtest harness).
 
         Reużywa logikę foldów `train()` (finding #23), łącznie z purgem etykiet
-        przy podanych `timestamps` (i `label_ends`, ML-26). Czysto ewaluacyjna —
-        nie zapisuje modelu i nie zmienia stanu adaptera (`self._model`)."""
+        przy podanych `timestamps` (i `label_ends`, ML-26) albo gotowymi `folds`
+        (ARCH-27). Czysto ewaluacyjna — nie zapisuje modelu i nie zmienia stanu
+        adaptera (`self._model`)."""
         feature_frame = _feature_frame(features)
         target_series = pd.Series(target).reset_index(drop=True)
         stamps = _global_time_order(timestamps, len(target_series))
         return self._walk_forward_folds_detail(
-            feature_frame, target_series, stamps, _label_end_order(label_ends, stamps)
+            feature_frame,
+            target_series,
+            stamps,
+            _label_end_order(label_ends, stamps),
+            folds=folds,
         )
 
     def train_direction_classifier(
@@ -683,6 +699,14 @@ def _sum_log_loss(probability: Any, actual: Any) -> float:
     clipped = np.clip(np.asarray(probability, dtype=float), _LOG_LOSS_EPS, 1 - _LOG_LOSS_EPS)
     hits = np.asarray(actual, dtype=float)
     return float(-(hits * np.log(clipped) + (1 - hits) * np.log(1 - clipped)).sum())
+
+
+def _fitting_folds(folds: Sequence[WalkForwardFold], n_samples: int) -> Sequence[WalkForwardFold]:
+    """ARCH-27: foldy od wołającego, o ile mieszczą się w wierszach — walidacja poza
+    próbką po cichu skróciłaby się do jej końca i fałszowała `n_valid`."""
+    if any(fold.valid_end > n_samples for fold in folds):
+        raise ValueError(f"fold validation must end within the {n_samples} rows")
+    return folds
 
 
 def _label_end_order(

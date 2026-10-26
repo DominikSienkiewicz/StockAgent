@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
 from src.domain.attestation import CommitmentLedger, StoredCommitment
+from src.domain.backtest import WalkForwardFold
 from src.domain.corporate_actions import SplitSuspicion
 from src.domain.corporate_events import CorporateEventSnapshot
 from src.domain.council import (
@@ -1128,6 +1129,7 @@ class MLPredictionPort(ABC):
         target_unit: TargetUnit = TargetUnit.RETURN,
         dataset: DatasetDescription | None = None,
         label_ends: Sequence[datetime] | None = None,
+        folds: Sequence[WalkForwardFold] | None = None,
     ) -> TrainingReport:
         """ARCH-09: `features` to wiersze `{cecha: wartość}` (None = brak), `target`
         wyrównany z nimi — zwykłe sekwencje, bez DataFrame w porcie; ramkę buduje
@@ -1151,7 +1153,12 @@ class MLPredictionPort(ABC):
 
         ML-26: `label_ends` (wyrównane z wierszami, wymagają `timestamps`) to chwile
         końca etykiet — fold trenuje wtedy na `purge_training_indices` z domeny
-        (także fallback single-split); bez nich purge stałego horyzontu 12 h."""
+        (także fallback single-split); bez nich purge stałego horyzontu 12 h.
+
+        ARCH-27: `folds` to foldy zaprojektowane przez wołającego (domenowe
+        `walk_forward_folds`) — adapter tylko na nich trenuje i nie liczy granic ani
+        purgu (`label_ends` wtedy nic nie zmienia). Brak = `walk_forward_folds` nad
+        wierszami, `timestamps` i `label_ends`, czyli to samo co dotąd."""
 
     @abstractmethod
     def train_direction_classifier(
@@ -1183,6 +1190,7 @@ class MLPredictionPort(ABC):
         *,
         timestamps: Sequence[datetime] | None = None,
         label_ends: Sequence[datetime] | None = None,
+        folds: Sequence[WalkForwardFold] | None = None,
     ) -> list[dict[str, float]]:
         """Per-fold metryki out-of-sample (walk-forward, expanding window) BEZ
         persystencji — zasila offline backtest harness (`main_backtest.py`).
@@ -1196,7 +1204,8 @@ class MLPredictionPort(ABC):
         `ic` (korelacja rang Spearmana), `sign_strategy_return` i `turnover`,
         a (EXP-04) `sum_loss_diff` / `sum_loss_diff_sq` względem „zwrot 0” i te
         same sumy z prefiksem `drift_` / `llm_` dla testu sparowanego w domenie.
-        `timestamps` (i `label_ends`) działają jak w `train()`: purge etykiet w foldach.
+        `timestamps` (i `label_ends`) działają jak w `train()`: purge etykiet w foldach,
+        a `folds` (ARCH-27) — gotowe foldy z domeny, jak w `train()`.
         Czysto ewaluacyjna — nie zapisuje modelu, nie zmienia stanu adaptera."""
 
 
