@@ -7,18 +7,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict
 
-import pandas as pd
-
 from src.application.errors import PortError
 from src.application.ml_features import (
     ML_FEATURE_COLUMNS,
-    SETTLED_AT_COLUMN,
     SNAPSHOT_TRAINING_FEATURE_SET_VERSION,
     TARGET_COLUMN,
     TIMESTAMP_COLUMN,
+    Row,
+    complete_model_rows,
     free_model_vector,
-    in_label_time_order,
     llm_model_vector,
+    rows_in_label_time_order,
+    settled_moments,
     usable_for_llm_model,
 )
 from src.application.ports import MLPredictionPort, RepositoryPort, TrainingDataPort
@@ -103,9 +103,11 @@ class TrainModelUseCase:
 
     Pipeline:
     1. Odczyt zmaterializowanego widoku `ml_feature_store` z repozytorium.
-    2. Drop NaN (widok już liczy `price_delta` i `target_return`, z guardem
-       anty-inf po stronie SQL — train_model NIE dubluje tej logiki).
-    3. Separacja X / Y i wywołanie ml_port.train().
+    2. Wiersze z kompletem cech i targetu (`complete_model_rows`; widok już liczy
+       `price_delta` i `target_return`, z guardem anty-inf po stronie SQL —
+       train_model NIE dubluje tej logiki).
+    3. Separacja X / Y i wywołanie ml_port.train() — na wierszach, bez DataFrame
+       (ML-58, te same pomocniki co backtest).
 
     ML-52: `run_snapshot_models` ewaluuje (bez zapisu wag) dwa modele na wektorach
     `feature_snapshots` z etykietą z `price_snapshots` — odczyt przez `TrainingDataPort`.
@@ -158,21 +160,20 @@ class TrainModelUseCase:
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
             return self._skipped(f"Not enough samples for '{symbol}'", len(rows))
 
-        df = _valid_rows(rows)
+        complete = complete_model_rows(rows)
 
-        if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return self._skipped(f"Not enough valid samples for '{symbol}'", len(df))
+        if len(complete) < MIN_SAMPLES_FOR_TRAINING:
+            return self._skipped(f"Not enough valid samples for '{symbol}'", len(complete))
 
-        df, stamps = in_label_time_order(df)
-        moments = None if stamps is None else _moments(stamps)
+        ordered, moments = rows_in_label_time_order(complete)
 
         return self._ml_port.train(
-            _feature_rows_of(df),
-            df[TARGET_COLUMN].tolist(),
+            _feature_vectors(ordered),
+            _targets(ordered),
             persist=False,
             timestamps=moments,
-            dataset=self._describe({symbol: len(df)}, self._feature_set_version),
-            **self._label_ends(self._view_label_ends(df, moments)),
+            dataset=self._describe({symbol: len(ordered)}, self._feature_set_version),
+            **self._label_ends(self._view_label_ends(ordered, moments)),
         )
 
     def run_pooled(
@@ -414,64 +415,70 @@ class TrainModelUseCase:
         if len(rows) < MIN_SAMPLES_FOR_TRAINING:
             return self._pooled_skipped("Not enough samples for the pooled model", len(rows))
 
-        df = _valid_rows(rows)
+        complete = complete_model_rows(rows)
 
-        if len(df) < MIN_SAMPLES_FOR_TRAINING:
-            return self._pooled_skipped("Not enough valid samples for the pooled model", len(df))
+        if len(complete) < MIN_SAMPLES_FOR_TRAINING:
+            return self._pooled_skipped(
+                "Not enough valid samples for the pooled model", len(complete)
+            )
 
-        overlap = _label_overlap(df)
+        # Porządek globalny (czas, symbol): stabilnie po symbolu, potem stabilnie po czasie.
+        ordered, moments = rows_in_label_time_order(sorted(complete, key=_symbol_of))
+        if moments is None:
+            # Model wspólny bez znaczników czasu nie ma porządku globalnego; widok zawsze
+            # ma `timestamp`, a brak kolumny kończył się tym samym wyjątkiem co dotąd.
+            raise KeyError(TIMESTAMP_COLUMN)
+        overlap = _label_overlap(ordered, moments)
         _log_label_overlap(overlap)
-        stamps = pd.to_datetime(df["timestamp"], utc=True)
-        df = df.assign(_global_time=stamps).sort_values(["_global_time", "symbol"], kind="stable")
-        target = df[TARGET_COLUMN]
+        target = _targets(ordered)
         if in_sigma:
-            sigmas = self._row_sigmas(df["symbol"], df["_global_time"])
-            df, target = df[sigmas.notna()], (target / sigmas)[sigmas.notna()]
-            if len(df) < MIN_SAMPLES_FOR_TRAINING:
+            ordered, moments, target = self._in_sigma_units(ordered, moments, target)
+            if len(ordered) < MIN_SAMPLES_FOR_TRAINING:
                 return self._pooled_skipped(
-                    "Not enough samples with a sigma history for the pooled model", len(df)
+                    "Not enough samples with a sigma history for the pooled model", len(ordered)
                 )
 
-        moments = _moments(df["_global_time"])
         return TrainingSet(
-            features=_feature_rows_of(df),
-            target=target.tolist(),
+            features=_feature_vectors(ordered),
+            target=target,
             timestamps=moments,
-            label_ends=self._view_label_ends(df, moments),
+            label_ends=self._view_label_ends(ordered, moments),
             dataset=self._describe(
-                Counter(str(symbol) for symbol in df["symbol"]),
+                Counter(_symbol_of(row) for row in ordered),
                 self._feature_set_version,
                 label_overlap=overlap,
             ),
         )
 
-    def _row_sigmas(self, symbols: pd.Series, stamps: pd.Series) -> pd.Series:
-        """ML-11: σ symbolu wiersza w chwili wiersza (`return_sigma`); brak = NaN."""
+    def _in_sigma_units(
+        self, rows: Sequence[Row], moments: Sequence[datetime], target: Sequence[float]
+    ) -> tuple[list[Row], list[datetime], list[float]]:
+        """ML-11: target = zwrot / σ symbolu wiersza w chwili wiersza (`return_sigma`);
+        wiersz bez σ (za krótka historia) wypada razem ze swoim znacznikiem czasu."""
+        symbols = [_symbol_of(row) for row in rows]
         series = self._require_training_data().get_price_series(
-            list(dict.fromkeys(str(symbol) for symbol in symbols)),
-            since=stamps.min().to_pydatetime() - SIGMA_LOOKBACK,
+            list(dict.fromkeys(symbols)), since=min(moments) - SIGMA_LOOKBACK
         )
-        return pd.Series(
-            [
-                return_sigma(series.get(str(symbol), []), stamp.to_pydatetime())
-                for symbol, stamp in zip(symbols, stamps, strict=True)
-            ],
-            index=symbols.index,
-            dtype=float,
+        kept = [
+            (row, moment, value / sigma)
+            for row, symbol, moment, value in zip(rows, symbols, moments, target, strict=True)
+            if (sigma := return_sigma(series.get(symbol, []), moment)) is not None
+        ]
+        return (
+            [row for row, _, _ in kept],
+            [moment for _, moment, _ in kept],
+            [value for _, _, value in kept],
         )
 
     def _view_label_ends(
-        self, df: pd.DataFrame, moments: list[datetime] | None
+        self, rows: Sequence[Row], moments: list[datetime] | None
     ) -> list[datetime] | None:
         """ML-26: końce etykiet wierszy widoku z `settled_at` (migracja 050) — tylko
         z flagą; bez kolumny albo znaczników czasu zostaje stały horyzont (None)."""
-        if not self._settled_purge or moments is None or SETTLED_AT_COLUMN not in df.columns:
+        if not self._settled_purge or moments is None:
             return None
-        settled = pd.to_datetime(df[SETTLED_AT_COLUMN], utc=True)
-        return label_end_times(
-            moments,
-            [None if pd.isna(value) else value.to_pydatetime() for value in settled],
-        )
+        settled = settled_moments(rows)
+        return None if settled is None else label_end_times(moments, settled)
 
     @staticmethod
     def _label_ends(label_ends: list[datetime] | None) -> _LabelEndsKwargs:
@@ -548,47 +555,32 @@ def _llm_rows(
     ]
 
 
-def _feature_rows_of(df: pd.DataFrame) -> list[dict[str, float | None]]:
-    """ARCH-09: wiersze `ML_FEATURE_COLUMNS` ramki widoku jako sekwencja słowników
-    w kolejności kontraktu — port nie przyjmuje DataFrame."""
-    return [
-        {name: float(value) for name, value in row.items()}
-        for row in df[list(ML_FEATURE_COLUMNS)].to_dict("records")
-    ]
+def _feature_vectors(rows: Sequence[Row]) -> list[dict[str, float | None]]:
+    """ARCH-09: `ML_FEATURE_COLUMNS` wierszy widoku jako słowniki w kolejności
+    kontraktu — port nie przyjmuje DataFrame (ramkę składa adapter modelu)."""
+    return [{name: float(row[name]) for name in ML_FEATURE_COLUMNS} for row in rows]
 
 
-def _moments(stamps: pd.Series) -> list[datetime]:
-    """Znaczniki czasu (UTC) wierszy jako `datetime` — wejście purgu walk-forward."""
-    return [stamp.to_pydatetime() for stamp in stamps]
+def _targets(rows: Sequence[Row]) -> list[float]:
+    """`target_return` wierszy widoku. Wartości przychodzą GOTOWE z widoku
+    (NaN-guarded) — stary recompute (current-prev)/prev dublował logikę widoku
+    i przy prev=0 dawał +inf, który trafiał do XGBoost."""
+    return [float(row[TARGET_COLUMN]) for row in rows]
 
 
-def _valid_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
-    """Wiersze z kompletem cech i targetu.
-
-    price_delta i target_return przychodzą GOTOWE z widoku (NaN-guarded). Nie
-    przeliczamy ich tutaj — stary recompute (current-prev)/prev dublował logikę
-    widoku i przy prev=0 dawał +inf, który przeżywał dropna i trafiał do XGBoost.
-    dropna odsiewa wiersze, dla których widok zwrócił NULL.
-    """
-    required_columns = [*ML_FEATURE_COLUMNS, TARGET_COLUMN]
-    return pd.DataFrame(rows).dropna(subset=required_columns)
+def _symbol_of(row: Row) -> str:
+    return str(row["symbol"])
 
 
-def _label_overlap(df: pd.DataFrame) -> LabelOverlap | None:
+def _label_overlap(rows: Sequence[Row], moments: Sequence[datetime]) -> LabelOverlap | None:
     """ML-25: nakładanie etykiet z `settled_at` (widok po migracji 050).
 
     None = widok bez kolumny (przed migracją) — odczyt `*` jest tolerancyjny."""
-    if not {SETTLED_AT_COLUMN, TIMESTAMP_COLUMN, "symbol"} <= set(df.columns):
+    settled = settled_moments(rows)
+    if settled is None:
         return None
-    stamps = pd.to_datetime(df[TIMESTAMP_COLUMN], utc=True)
-    settled = pd.to_datetime(df[SETTLED_AT_COLUMN], utc=True)
     return count_label_overlaps(
-        (
-            str(symbol),
-            stamp.to_pydatetime(),
-            None if pd.isna(settled_at) else settled_at.to_pydatetime(),
-        )
-        for symbol, stamp, settled_at in zip(df["symbol"], stamps, settled, strict=True)
+        zip((_symbol_of(row) for row in rows), moments, settled, strict=True)
     )
 
 

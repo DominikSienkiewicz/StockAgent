@@ -5,8 +5,6 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-import pandas as pd
-
 from src.domain.cross_section import CROSS_SECTION_FEATURE_NAMES
 from src.domain.macro_series import MACRO_FEATURE_NAMES
 from src.domain.price_features import PRICE_FEATURE_NAMES
@@ -187,19 +185,6 @@ TIMESTAMP_COLUMN = "timestamp"
 SETTLED_AT_COLUMN = "settled_at"
 
 
-def in_label_time_order(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series | None]:
-    """Wiersze rosnąco po czasie i ich znaczniki (UTC) do purgu horyzontu etykiety.
-
-    Bez kolumny `timestamp` wiersze zostają w kolejności wejścia, a znaczników
-    nie ma (`None`) — walk-forward idzie wtedy bez purgu, jak przed decyzją 4.
-    """
-    if TIMESTAMP_COLUMN not in frame.columns:
-        return frame, None
-    stamps = pd.to_datetime(frame[TIMESTAMP_COLUMN], utc=True)
-    ordered = frame.assign(_label_time=stamps).sort_values("_label_time", kind="stable")
-    return ordered, ordered["_label_time"]
-
-
 # Wiersz widoku `ml_feature_store` tak, jak zwraca go `RepositoryPort.get_feature_store_data`.
 Row = Mapping[str, Any]
 
@@ -207,7 +192,8 @@ Row = Mapping[str, Any]
 def rows_in_label_time_order(
     rows: Sequence[Row],
 ) -> tuple[list[Row], list[datetime] | None]:
-    """ML-55: `in_label_time_order` na wierszach widoku, bez DataFrame.
+    """ML-55: wiersze widoku rosnąco po czasie i ich znaczniki (UTC) do purgu
+    horyzontu etykiety, bez DataFrame (backtest i trening, ML-58).
 
     Sortowanie stabilne po `timestamp` (UTC; czas bez strefy to UTC, jak w
     `pd.to_datetime(utc=True)`). Wiersze bez kolumny `timestamp` zostają w kolejności
@@ -218,6 +204,17 @@ def rows_in_label_time_order(
         ((_utc_moment(row[TIMESTAMP_COLUMN]), row) for row in rows), key=lambda pair: pair[0]
     )
     return [row for _, row in stamped], [moment for moment, _ in stamped]
+
+
+def settled_moments(rows: Sequence[Row]) -> list[datetime | None] | None:
+    """ML-58: chwila rozliczenia (`settled_at`, UTC) każdego wiersza widoku; None,
+    gdy widok nie ma kolumny (przed migracją 050). Brak wartości (None, NaN) to None."""
+    if not any(SETTLED_AT_COLUMN in row for row in rows):
+        return None
+    return [
+        None if _is_missing(settled := row.get(SETTLED_AT_COLUMN)) else _utc_moment(settled)
+        for row in rows
+    ]
 
 
 def _utc_moment(raw: object) -> datetime:
