@@ -27,6 +27,8 @@ def test_sample_report_shows_every_status_and_asset_class() -> None:
     for symbol in ("NVDA", "AMD", "VOO", "BTC", "ETH", "MSFT", "XDWD.DE", "ASML"):
         assert symbol in report.html, symbol
         assert symbol in report.text, symbol
-    # Błąd źródła, odznaka degradacji i stopka przykładowego przebiegu.
-    assert "429 Too Many Requests" in report.html
+    # Błąd źródła (MAIL-32: kategoria i dostawca, bez komunikatu wyjątku), odznaka
+    # degradacji i stopka przykładowego przebiegu.
+    assert "wyczerpany limit zapytań u dostawcy (Finnhub)" in report.html
+    assert "429 Too Many Requests" not in report.html
     assert "przebieg #sample" in report.text
