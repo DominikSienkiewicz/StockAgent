@@ -840,7 +840,10 @@ def _run_evidence_export(
         return
     try:
         receipt = ExportEvidenceUseCase(
-            _supabase_repository(settings), AgeEncryptedArchive(recipient, out_dir)
+            _supabase_repository(settings),
+            AgeEncryptedArchive(recipient, out_dir),
+            # NIEZ-50: znacznik `stale_quote` (migracja 055) w kopii tylko z flagą DAT-14.
+            stale_quote_enabled=settings.stale_quote_enabled,
         ).run(now=now or datetime.now(UTC))
     except Exception:
         logger.exception("Evidence export failed — pomijam")

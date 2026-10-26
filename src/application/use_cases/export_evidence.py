@@ -62,6 +62,7 @@ EVIDENCE_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "interval_high",  # 032
         "gate_delta",  # 034
         "experiment_arms",  # 037
+        "stale_quote",  # 055 — tylko ze `stale_quote_enabled` (NIEZ-50)
     ),
     "council_votes": (  # 007
         "id",
@@ -88,6 +89,11 @@ EVIDENCE_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "llm_baseline_rmse",  # 028
     ),
 }
+
+
+# NIEZ-50: znacznik DAT-14 istnieje od migracji 055 i bez flagi nikt go nie zapisuje —
+# eksport czyta go za `stale_quote_enabled`, jak odczyty trafności (ML-57).
+STALE_QUOTE_COLUMN = "stale_quote"
 
 
 def archive_name(now: datetime) -> str:
@@ -127,15 +133,31 @@ def _csv(columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> bytes:
 class ExportEvidenceUseCase:
     """Składa kopię tabel dowodowych i oddaje ją szyfrującemu magazynowi."""
 
-    def __init__(self, source: EvidenceSourcePort, archive: EvidenceArchivePort) -> None:
+    def __init__(
+        self,
+        source: EvidenceSourcePort,
+        archive: EvidenceArchivePort,
+        *,
+        stale_quote_enabled: bool = True,
+    ) -> None:
+        """`stale_quote_enabled` (NIEZ-50) — False zostawia `stale_quote` poza odczytem
+        (baza bez migracji 055). Domyślnie cała lista dozwolonych; Slow Loop podaje flagę
+        z configu."""
         self._source = source
         self._archive = archive
+        self._stale_quote_enabled = stale_quote_enabled
+
+    def _columns(self, columns: tuple[str, ...]) -> tuple[str, ...]:
+        if self._stale_quote_enabled:
+            return columns
+        return tuple(column for column in columns if column != STALE_QUOTE_COLUMN)
 
     def build(self, now: datetime) -> dict[str, bytes]:
         """CSV per tabela (tylko kolumny z `EVIDENCE_COLUMNS`) plus manifest."""
         files: dict[str, bytes] = {}
         tables: dict[str, dict[str, Any]] = {}
-        for table, columns in EVIDENCE_COLUMNS.items():
+        for table, allowed in EVIDENCE_COLUMNS.items():
+            columns = self._columns(allowed)
             rows = self._source.read_rows(table, columns)
             files[f"{table}.csv"] = _csv(columns, rows)
             tables[table] = {"rows": len(rows), "columns": list(columns)}

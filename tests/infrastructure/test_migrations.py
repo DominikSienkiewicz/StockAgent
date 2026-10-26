@@ -5323,6 +5323,7 @@ _PUBLISHED_REVEAL_SALTS = {
     "00000000-0000-4000-8000-000000000002": "sol-ujawniona-2",
 }
 _OPEN_PREDICTION_ID = "00000000-0000-4000-8000-000000000003"
+_STALE_PREDICTION_ID = "00000000-0000-4000-8000-000000000004"
 
 
 def _restore_runbook() -> tuple[list[str], str]:
@@ -5400,7 +5401,7 @@ class _FixtureEvidenceSource(EvidenceSourcePort):
         ]
 
 
-def _evidence_export() -> dict[str, bytes]:
+def _evidence_export(*extra_predictions: dict[str, Any]) -> dict[str, bytes]:
     first, second = _PUBLISHED_REVEAL_SALTS
     tables: dict[str, list[dict[str, Any]]] = {
         "prediction_logs": [
@@ -5417,6 +5418,7 @@ def _evidence_export() -> dict[str, bytes]:
                 salt="sol-nieujawniona",
                 settled_price=None,
             ),
+            *extra_predictions,
         ],
         "council_votes": [
             {
@@ -5564,3 +5566,31 @@ class TestEvidenceRestoreDrill:
         # trafi w duplikat klucza.
         for table, (max_id, next_id) in next_ids.items():
             assert next_id > max_id, f"{table}: sekwencja id za odtworzonymi wierszami"
+
+    def test_restored_stale_quote_settlement_stays_out_of_the_feature_store(
+        self, restore_drill_conn: psycopg2.extensions.connection
+    ) -> None:
+        # NIEZ-50: znacznik DAT-14 wraca z kopii, więc filtr 058 dalej trzyma
+        # rozliczenie ze stęchłego notowania poza zbiorem treningowym.
+        stale = _committed_row(
+            _STALE_PREDICTION_ID,
+            symbol="MSFT",
+            hours_ago=30,
+            salt="sol-stechla",
+            settled_price=186.0,
+        )
+        export = _evidence_export({**stale, "stale_quote": True})
+        order, post_load_sql = _restore_runbook()
+
+        with restore_drill_conn.cursor() as cur:
+            for table in order:
+                _copy_csv(cur, table, export[f"{table}.csv"])
+            cur.execute(post_load_sql)
+            cur.execute("SELECT id::text, stale_quote FROM prediction_logs")
+            marks = dict(cur.fetchall())
+            cur.execute("SELECT id::text FROM ml_feature_store")
+            training_ids = {row[0] for row in cur.fetchall()}
+
+        assert marks[_STALE_PREDICTION_ID] is True
+        assert {marks[prediction_id] for prediction_id in _PUBLISHED_REVEAL_SALTS} == {None}
+        assert training_ids == set(_PUBLISHED_REVEAL_SALTS)
