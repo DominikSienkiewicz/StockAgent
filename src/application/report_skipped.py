@@ -3,7 +3,8 @@
 - `rebaselined` (FIN-14, „Na dziś”) — referencja sprzed pauzy: cykl zapisał
   nową cenę bez analizy, prognozy wracają od następnego cyklu.
 - `budget_exhausted` (FIN-12, Zaplecze) — ruch przeszedł bramkę, ale cykl
-  wyczerpał sufit płatnych wywołań LLM.
+  wyczerpał sufit płatnych wywołań LLM albo (FIN-36) dzienny lub miesięczny
+  limit USD z ledgera był wyczerpany przed cyklem — tytuł i notka mówią który.
 - `ignored` (Zaplecze) — poniżej progu zmienności, bez dwóch grup powyżej; osobną
   grupą (MAIL-60) są symbole w pierwszym cyklu: brak punktu odniesienia to nie
   ruch poniżej progu.
@@ -40,9 +41,11 @@ from src.application.report_formatting import (
     section_h2 as _section_h2,
 )
 from src.application.report_models import SymbolResult
+from src.application.report_quota_banner import USD_LIMIT_NAME
 from src.application.reporting.section import ReportSection, SectionInput
 from src.domain.asset import REFERENCE_MAX_AGE_HOURS, is_near_threshold
 from src.domain.cycle_maturity import SkipReason
+from src.domain.finops import BudgetBreach
 from src.domain.value_objects import Ratio
 
 # ---------------------------------------------------------------------------
@@ -132,13 +135,31 @@ _BUDGET_CUT_NOTE = (
     "LLM, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez zmian — "
     "następny cykl porówna się do niej."
 )
+# FIN-36: ta sama ścieżka grafu, inna przyczyna — limit USD okna z ledgera (FIN-25).
+_USD_LIMIT_CUT_TITLE = "Pominięte — wyczerpany {limit}"
+_USD_LIMIT_CUT_NOTE = (
+    "Ruch przekroczył próg zmienności, ale {limit} z ledgera llm_calls był wyczerpany "
+    "przed cyklem, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez "
+    "zmian — następny cykl porówna się do niej."
+)
 
 
-def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
+def _budget_cut_texts(breach: BudgetBreach | None) -> tuple[str, str]:
+    """(tytuł, notka) grupy odciętych: sufit cyklu (FIN-12) albo limit USD (FIN-36)."""
+    if breach is None:
+        return _BUDGET_CUT_TITLE, _BUDGET_CUT_NOTE
+    limit = USD_LIMIT_NAME[breach.window]
+    return _USD_LIMIT_CUT_TITLE.format(limit=limit), _USD_LIMIT_CUT_NOTE.format(limit=limit)
+
+
+def _render_budget_exhausted_html(
+    ignored: list[SymbolResult], breach: BudgetBreach | None = None
+) -> str:
     """💸 FIN-12: symbole odcięte budżetem cyklu, z ruchem. Pusty string, gdy brak."""
     cut = [r for r in ignored if is_budget_cut(r)]
     if not cut:
         return ""
+    title, note = _budget_cut_texts(breach)
     rows = "".join(
         "<span style='display: inline-block; padding: 2px 8px; margin: 2px; "
         "background: #fefce8; border-radius: 3px; font-size: 12px;'>"
@@ -147,20 +168,23 @@ def _render_budget_exhausted_html(ignored: list[SymbolResult]) -> str:
         for r in cut
     )
     return (
-        _section_h2(f"💸 {_BUDGET_CUT_TITLE}")
+        _section_h2(f"💸 {title}")
         + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
-        + _html(_BUDGET_CUT_NOTE)
+        + _html(note)
         + f"</div><div>{rows}</div>"
     )
 
 
-def _render_budget_exhausted_text(ignored: list[SymbolResult]) -> list[str]:
+def _render_budget_exhausted_text(
+    ignored: list[SymbolResult], breach: BudgetBreach | None = None
+) -> list[str]:
     """Sekcja FIN-12 'Pominięte — wyczerpany budżet cyklu' (plain). Pusta lista, gdy brak."""
     cut = [r for r in ignored if is_budget_cut(r)]
     if not cut:
         return []
+    title, note = _budget_cut_texts(breach)
     cut_str = ", ".join(f"{r.symbol}({_pct(r.delta)})" for r in cut)
-    return [_BUDGET_CUT_TITLE.upper(), "-" * 64, f"  {cut_str}", f"  {_BUDGET_CUT_NOTE}", ""]
+    return [title.upper(), "-" * 64, f"  {cut_str}", f"  {note}", ""]
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +387,11 @@ def _rebaselined_text(data: SectionInput) -> list[str]:
 
 
 def _budget_exhausted_html(data: SectionInput) -> str:
-    return _render_budget_exhausted_html(data.ignored)
+    return _render_budget_exhausted_html(data.ignored, data.context.llm_budget_breach)
 
 
 def _budget_exhausted_text(data: SectionInput) -> list[str]:
-    return _render_budget_exhausted_text(data.ignored)
+    return _render_budget_exhausted_text(data.ignored, data.context.llm_budget_breach)
 
 
 def _ignored_html(data: SectionInput) -> str:

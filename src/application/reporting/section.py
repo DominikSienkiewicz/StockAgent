@@ -73,6 +73,9 @@ SHARED_CONTEXT_FIELDS: frozenset[str] = frozenset(
         "shock_alerts",
         # MAIL-24: link do archiwum — nagłówek HTML i blok tytułowy tekstu.
         "archive_url",
+        # FIN-25/FIN-36: wyczerpany limit USD — banner limitów, sekcja kosztu i notka
+        # budżetu (przyczyna zatrzymania płatnych wywołań).
+        "llm_budget_breach",
     }
 )
 

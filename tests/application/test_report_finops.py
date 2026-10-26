@@ -7,11 +7,17 @@ nie chowamy. `None` (brak licznika) → "".
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from src.application.report_builder import ReportContext, build_html_report
 from src.application.report_finops import (
     render_finops_html,
     render_finops_text,
 )
-from src.domain.finops import CycleCost, estimate_cycle_cost
+from src.application.report_models import SymbolResult
+from src.domain.cycle_maturity import SkipReason
+from src.domain.finops import BudgetBreach, BudgetWindow, CycleCost, estimate_cycle_cost
 
 
 def test_none_suppresses_section_html() -> None:
@@ -168,3 +174,70 @@ def test_shadow_variant_calls_get_their_own_readable_line() -> None:
 
     assert "Wariant promptu w cieniu (LLM): 1 wywołanie z tokenów" in html
     assert "Wariant promptu w cieniu (LLM): 1 wywołanie z tokenów" in text
+
+
+# --- FIN-36: trzy rozłączne przyczyny zatrzymania płatnych wywołań ----------------
+
+
+def _usd_limit_breach() -> BudgetBreach:
+    return BudgetBreach(BudgetWindow.DAY, spent_usd=2.134, cap_usd=2.0)
+
+
+def _budget_cut(symbol: str) -> SymbolResult:
+    return SymbolResult(
+        symbol=symbol,
+        status="ignored",
+        delta=Decimal("-0.035"),
+        current_price=Decimal("140"),
+        skip_reason=SkipReason.BUDGET_EXHAUSTED,
+    )
+
+
+def test_cost_section_names_usd_limit_when_cycle_was_stopped_by_it() -> None:
+    """Cykl zatrzymany dziennym limitem USD z ledgera: sekcja kosztu wskazuje limit,
+    nie bramkę volatility, a notka budżetu nie mówi o limicie „cyklu”."""
+    context = ReportContext(
+        cycle_cost=estimate_cycle_cost({}), llm_budget_breach=_usd_limit_breach()
+    )
+
+    html, text = build_html_report(
+        [_budget_cut("NVDA")], datetime(2026, 10, 20, 5, 30, tzinfo=UTC), 1.0, context
+    )
+
+    for rendered in (html, text):
+        cost_section = rendered.split("Koszt cyklu" if rendered is html else "KOSZT CYKLU")[1]
+        assert "dzienny limit USD" in cost_section
+        assert "bramka volatility" not in cost_section
+        assert "Pominięte — wyczerpany dzienny limit USD" in html
+        assert "budżet cyklu" not in rendered.lower()
+        assert "limit płatnych wywołań" not in rendered
+    assert "POMINIĘTE — WYCZERPANY DZIENNY LIMIT USD" in text
+
+
+def test_cost_section_names_the_monthly_usd_limit() -> None:
+    breach = BudgetBreach(BudgetWindow.MONTH, spent_usd=30.5, cap_usd=30.0)
+
+    html = render_finops_html(estimate_cycle_cost({}), budget_breach=breach)
+    text = render_finops_text(estimate_cycle_cost({}), budget_breach=breach)
+
+    for rendered in (html, text):
+        assert "miesięczny limit USD" in rendered
+        assert "$30,50 z $30,00" in rendered
+        assert "darmow" not in rendered.lower()
+
+
+def test_free_cycle_without_breach_still_credits_the_volatility_gate() -> None:
+    html = render_finops_html(estimate_cycle_cost({}), budget_breach=None)
+
+    assert "bramka volatility odcięła wszystkie symbole" in html
+    assert "limit USD" not in html
+
+
+def test_budget_note_keeps_the_cycle_ceiling_without_a_usd_breach() -> None:
+    html, text = build_html_report(
+        [_budget_cut("NVDA")], datetime(2026, 10, 20, 5, 30, tzinfo=UTC), 1.0
+    )
+
+    assert "Pominięte — wyczerpany budżet cyklu" in html
+    assert "limit płatnych wywołań" in text
+    assert "limit USD" not in html

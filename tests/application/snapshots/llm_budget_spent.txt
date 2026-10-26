@@ -23,13 +23,13 @@ Kontekst i kontrola: ryzyko, skuteczność modelu i rady, nastroje, koszt cyklu,
 
 KOSZT CYKLU
 ----------------------------------------------------------------
-  0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy).
+  0 płatnych wywołań — wyczerpany dzienny limit USD ($2,13 z $2,00, ledger llm_calls) zatrzymał płatne wywołania cyklu.
   Uwaga: Kwoty to szacunek rzędu wielkości na podstawie cennika jednostkowego, nie faktura od dostawcy.
 
-POMINIĘTE — WYCZERPANY BUDŻET CYKLU
+POMINIĘTE — WYCZERPANY DZIENNY LIMIT USD
 ----------------------------------------------------------------
   NVDA(-3,50%)
-  Ruch przekroczył próg zmienności, ale cykl wyczerpał limit płatnych wywołań LLM, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez zmian — następny cykl porówna się do niej.
+  Ruch przekroczył próg zmienności, ale dzienny limit USD z ledgera llm_calls był wyczerpany przed cyklem, więc te symbole nie dostały analizy. Cena odniesienia zostaje bez zmian — następny cykl porówna się do niej.
 
 POMINIĘTE (poniżej progu zmienności)
 ----------------------------------------------------------------

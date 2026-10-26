@@ -12,6 +12,10 @@ Dwie świadome decyzje o samosupresji, celowo RÓŻNE od reszty raportu:
     sekcji: bramka volatility odcięła wszystkie symbole i cykl nie kosztował nic.
     Sekcja renderuje to jawnie, zamiast milczeć.
 
+FIN-36: zero wywołań ma rozłączne przyczyny i każda ma własny tekst. Wyczerpany
+dzienny albo miesięczny limit USD z ledgera (`BudgetBreach`, FIN-25) to nie bramka
+volatility — sekcja nazywa limit, a cykl nie jest „darmowy” z wyboru.
+
 Uczciwość jest wymogiem, nie ozdobą: kwoty to SZACUNEK rzędu wielkości (patrz
 `UNIT_COST_USD` w domenie), nie faktura — więc przy każdej kwocie stoi słowo
 "szacunkowy", a na końcu sekcji jawne zastrzeżenie.
@@ -27,8 +31,9 @@ import html as _html
 from datetime import date
 
 from src.application.report_formatting import PALETTE, number, plural_pl
+from src.application.report_quota_banner import USD_LIMIT_NAME
 from src.application.reporting.section import ReportSection, SectionInput, text_block
-from src.domain.finops import CycleCost, SourceCost
+from src.domain.finops import BudgetBreach, CycleCost, SourceCost
 
 _HEADING = "💸 Koszt cyklu"
 
@@ -50,6 +55,12 @@ _MIXED_NOTE = "część z tokenów, reszta szacunkiem"
 # Komunikat cyklu darmowego — sedno FinOps repo, renderowany jawnie.
 _FREE_CYCLE = "0 płatnych wywołań — bramka volatility odcięła wszystkie symbole (cykl darmowy)."
 
+# FIN-36: zero wywołań, bo limit USD okna był wyczerpany przed cyklem (FIN-25).
+_USD_LIMIT_STOP = (
+    "0 płatnych wywołań — wyczerpany {limit} ({spent} z {cap}, ledger llm_calls) "
+    "zatrzymał płatne wywołania cyklu."
+)
+
 # Czytelne etykiety źródeł. Domena trzyma techniczne klucze, prezentacja —
 # ludzkie nazwy po polsku. Nieznany klucz renderujemy dosłownie (po escape).
 _SOURCE_LABELS: dict[str, str] = {
@@ -65,6 +76,7 @@ _SOURCE_LABELS: dict[str, str] = {
 _COLOR_MUTED = "#6b7280"
 _COLOR_TEXT = "#374151"
 _COLOR_FREE = PALETTE.positive
+_COLOR_STOPPED = PALETTE.caution
 
 
 def _source_label(source: str) -> str:
@@ -75,6 +87,15 @@ def _source_label(source: str) -> str:
 def _fmt_usd(amount: float) -> str:
     """Kwota USD z 4 miejscami po przecinku („$0,0123”) — koszty są rzędu centów."""
     return f"${number(amount, decimals=4)}"
+
+
+def _usd_limit_stop(breach: BudgetBreach) -> str:
+    """FIN-36: zdanie o limicie USD, który zatrzymał płatne wywołania cyklu."""
+    return _USD_LIMIT_STOP.format(
+        limit=USD_LIMIT_NAME[breach.window],
+        spent=f"${number(breach.spent_usd, decimals=2)}",
+        cap=f"${number(breach.cap_usd, decimals=2)}",
+    )
 
 
 def _calls_label(calls: int) -> str:
@@ -142,10 +163,11 @@ def _token_rows_html(cost: CycleCost) -> list[str]:
     return rows
 
 
-def render_finops_html(cost: CycleCost | None) -> str:
+def render_finops_html(cost: CycleCost | None, *, budget_breach: BudgetBreach | None = None) -> str:
     """Renderuje sekcję HTML kosztu cyklu lub "" gdy brak licznika (None).
 
-    Cykl darmowy (0 wywołań) renderuje się JAWNIE — nie chowamy go.
+    Cykl darmowy (0 wywołań) renderuje się JAWNIE — nie chowamy go. Z
+    `budget_breach` (FIN-36) zero wywołań przypisuje limitowi USD, nie bramce.
     """
     if cost is None:
         return ""
@@ -154,6 +176,11 @@ def render_finops_html(cost: CycleCost | None) -> str:
 
     if cost.total_calls > 0 and cost.from_tokens:
         rows.extend(_token_rows_html(cost))
+    elif cost.total_calls == 0 and budget_breach is not None:
+        rows.append(
+            f"<div style='font-size: 13px; color: {_COLOR_STOPPED}; "
+            f"font-weight: 600;'>⏸ {_html.escape(_usd_limit_stop(budget_breach))}</div>"
+        )
     elif cost.total_calls == 0:
         rows.append(
             f"<div style='font-size: 13px; color: {_COLOR_FREE}; "
@@ -199,7 +226,7 @@ def render_finops_html(cost: CycleCost | None) -> str:
     )
 
 
-def render_finops_text(cost: CycleCost | None) -> str:
+def render_finops_text(cost: CycleCost | None, *, budget_breach: BudgetBreach | None = None) -> str:
     """Renderuje sekcję plain-text kosztu cyklu lub "" gdy brak licznika (None)."""
     if cost is None:
         return ""
@@ -212,6 +239,8 @@ def render_finops_text(cost: CycleCost | None) -> str:
         for line in cost.lines:
             calls, amount, marker = _line_parts(line)
             lines.append(f"    {_source_label(line.source)}: {calls} {amount}{marker}")
+    elif cost.total_calls == 0 and budget_breach is not None:
+        lines.append(f"  {_usd_limit_stop(budget_breach)}")
     elif cost.total_calls == 0:
         lines.append(f"  {_FREE_CYCLE}")
     else:
@@ -235,11 +264,13 @@ def render_finops_text(cost: CycleCost | None) -> str:
 
 
 def _section_html(data: SectionInput) -> str:
-    return render_finops_html(data.context.cycle_cost)
+    return render_finops_html(data.context.cycle_cost, budget_breach=data.context.llm_budget_breach)
 
 
 def _section_text(data: SectionInput) -> list[str]:
-    return text_block(render_finops_text(data.context.cycle_cost))
+    return text_block(
+        render_finops_text(data.context.cycle_cost, budget_breach=data.context.llm_budget_breach)
+    )
 
 
 # FinOps: „agent, który raportuje własny rachunek”. Cykl darmowy (0 wywołań)
