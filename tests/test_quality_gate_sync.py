@@ -358,8 +358,9 @@ def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
 # CI-15: ucieczki z typów w kodzie produkcyjnym są dziś wąskie, ale nic nie pilnowało, żeby
 # takie zostały. Goły `# type: ignore` (bez kodu błędu) odrzuca mypy (`ignore-without-code`),
 # a liczba ignore z kodem i `cast(Any, …)` w src/ i main_*.py tylko maleje. Stan na eb11938
-# (2026-10-26): 5 ignore i 1 cast. Gdy zmiana usuwa ucieczkę, obniż zapadkę w tym samym commicie.
-TYPE_IGNORE_BASELINE = 5
+# (2026-10-26): 5 ignore i 1 cast; ARCH-20, ARCH-21, ARCH-22 i ARCH-41 usunęły wszystkie ignore.
+# Gdy zmiana usuwa ucieczkę, obniż zapadkę w tym samym commicie.
+TYPE_IGNORE_BASELINE = 0
 CAST_ANY_BASELINE = 1
 _TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore(?P<codes>\[[^\]]*\])?")
 
