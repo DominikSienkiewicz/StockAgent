@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 from src.application.report_council_history import InvestorHistory
 from src.domain.analyst_consensus import AnalystConsensus
@@ -977,6 +977,102 @@ class RepositoryPort(ABC):
     @abstractmethod
     def get_paper_ledger_head(self) -> LedgerHead | None:
         """Głowa łańcucha (wiersz o największym `seq`); pusty ledger → None."""
+
+
+class PredictionStorePort(Protocol):
+    """ARCH-32: wąski widok `RepositoryPort`, od którego zależy Fast Loop.
+
+    Tylko metody, które woła graf (`AgentGraphDeps.repository_port`) i jego use case
+    (`AnalyzeMarketUseCase` z fazą cech rynkowych); kontrakt każdej opisuje
+    `RepositoryPort`. Sygnatury są identyczne z ABC, więc każde repozytorium spełnia
+    ten port strukturalnie — `tests/application/test_prediction_store_port.py` pilnuje
+    zgodności sygnatur i tego, że zbiór metod to dokładnie wywołania z kodu Fast Loopa."""
+
+    # ----- ceny i historia (bramka, dryf, cechy rynkowe) -----
+    def get_last_price(self, symbol: str) -> Money | None: ...
+
+    def get_last_price_snapshot(self, symbol: str) -> tuple[Money, datetime] | None: ...
+
+    def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]: ...
+
+    def save_price_snapshot(self, symbol: str, price: Money) -> None: ...
+
+    # ----- predykcje i rozliczenie (reflect, save) -----
+    def get_last_prediction_price(
+        self, symbol: str, *, before: datetime | None = None
+    ) -> Money | None: ...
+
+    def get_latest_prediction(self, symbol: str) -> LatestPrediction | None: ...
+
+    def save_prediction(self, prediction: dict[str, Any]) -> str: ...
+
+    def get_unverified_prediction(
+        self, symbol: str, min_age_hours: int = 0, max_age_hours: int | None = None
+    ) -> Prediction | None: ...
+
+    def update_prediction_accuracy(
+        self,
+        prediction_id: str,
+        actual_price: Decimal,
+        accuracy_score: float,
+        is_trend_correct: bool,
+        insight: str,
+        correction_category: MistakeCategory | None = None,
+        *,
+        stale_quote: bool | None = None,
+        session_close: SessionCloseSettlement | None = None,
+        entry_price: Decimal | None = None,
+    ) -> None: ...
+
+    def find_similar_predictions(
+        self,
+        embedding: list[float],
+        limit: int = 3,
+        regime: str | None = None,
+        *,
+        symbol: str | None = None,
+        before: datetime | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    # ----- rada doradcza -----
+    def get_council_votes_for_prediction(self, prediction_id: str) -> list[InvestorOpinion]: ...
+
+    def save_council_votes(
+        self,
+        prediction_id: str,
+        symbol: str,
+        votes: list[InvestorOpinion],
+        *,
+        debate_round: int = FIRST_COUNCIL_ROUND,
+    ) -> None: ...
+
+    # ----- atestacja, cechy, cień, ledger i splity -----
+    def get_current_hour_commitment_salt(self, symbol: str) -> str | None: ...
+
+    def get_current_hour_commitment(self, symbol: str) -> StoredCommitment | None: ...
+
+    def save_feature_snapshot(
+        self,
+        symbol: str,
+        features: Mapping[str, Any],
+        *,
+        gated: bool,
+        feature_set_version: int,
+    ) -> None: ...
+
+    def save_shadow_predictions(
+        self, prediction_id: str, symbol: str, forecasts: Sequence[ShadowForecast]
+    ) -> None: ...
+
+    def save_shadow_trend_prediction(
+        self, prediction_id: str, symbol: str, forecast: ShadowTrendForecast
+    ) -> None: ...
+
+    def append_paper_trade(self, entry: PaperTradeEntry) -> LedgerRow | None: ...
+
+    def close_paper_trade(self, prediction_id: str, close: PaperTradeClose) -> None: ...
+
+    def save_corporate_action(self, action: SplitSuspicion) -> None: ...
 
 
 class ReturnScaleUnavailableError(RuntimeError):

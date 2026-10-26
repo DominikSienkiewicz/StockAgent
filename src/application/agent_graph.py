@@ -37,8 +37,8 @@ from src.application.ports import (
     MLPredictionPort,
     NewsPort,
     OptionsFlowPort,
+    PredictionStorePort,
     QuotePort,
-    RepositoryPort,
     ReturnScaleUnavailableError,
     SentimentPort,
     ShadowModelPort,
@@ -412,7 +412,7 @@ def _format_analog(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
 
 
 def _build_similar_context(
-    repository_port: RepositoryPort,
+    repository_port: PredictionStorePort,
     embedding: list[float],
     symbol: str,
     outcome_weight: float = 0.0,
@@ -726,7 +726,7 @@ _TREND_TO_REC: dict[str, Recommendation] = {
 
 
 def _vindicated_context(
-    repository_port: RepositoryPort,
+    repository_port: PredictionStorePort,
     last: Prediction,
     current_price: Decimal,
     symbol: str,
@@ -857,7 +857,8 @@ class AgentGraphDeps:
     market_port: MarketDataPort
     sentiment_port: SentimentPort
     news_port: NewsPort
-    repository_port: RepositoryPort
+    # ARCH-32: wąski port — tylko metody, które wołają graf i jego use case.
+    repository_port: PredictionStorePort
     ml_port: MLPredictionPort
     llm_port: LLMPort
     threshold: Threshold
