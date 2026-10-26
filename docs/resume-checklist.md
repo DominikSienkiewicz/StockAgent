@@ -39,6 +39,8 @@ Migrations `070`, `071`, `084` and `085` have no flag and belong to the same DB 
 
 Each of these flags is off in `config.toml` only because its column or table did not exist before the migration. The flags of `027`–`042` are on since 2026-10-23; turn on the ones from `044` after step 3 succeeded; [configuration](configuration.md) describes each one.
 
+Status (2026-10-26): step 3 applied `043`–`085`. The flags of that range that are outside `config_hash` and do not wait for 2027-01-29 are on: `calibration_score_version_enabled`, `correction_category_enabled`, `model_scorecard_run_id_enabled`, `model_scorecard_feature_stats_enabled`, `council_votes_upsert_enabled`, `stale_quote_enabled`, `fundamentals_market_cap_enabled`, `session_close_settlement_enabled`, `model_scorecard_weights_sha256_enabled`, `digest_archive_enabled`, `model_scorecard_provenance_enabled`, `persona_brier_ranking_enabled`, `executable_entry_enabled`, `paper_ledger_enabled`, `shadow_predictions_enabled` and `shock_escalation_enabled`. Still off: `telegram_bot_enabled` and `symbol_mutes_enabled` until the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets exist, `price_level_alerts_enabled` until `price_alerts` lists levels, `earnings_cache_enabled` until it goes on with `earnings_calendar_enabled` (step 12), the recipe flags `persona_vote_outcomes_enabled` and `trend_probabilities_enabled`, and every flag the table below defers to 2027-01-29.
+
 | Migration | Flag in `config.toml` | Note |
 |---|---|---|
 | `027` | `feature_set_version_enabled`, `feature_set_filter_enabled` | The filter trains only on rows of the current feature set, so the Slow Loop skips the shared model until enough of them exist. |
