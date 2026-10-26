@@ -15,7 +15,8 @@ from src.application.report_track_record import (
 )
 from src.domain.benchmark import BenchmarkComparison, compare_with_benchmarks
 from src.domain.calibration_curve import CalibrationBucket, probability_scores
-from src.domain.equity_curve import EquityCurve, EquityPoint, PaperTrade
+from src.domain.equity_curve import EquityCurve, EquityPoint, PaperTrade, SharpeEvidence
+from src.domain.reference_signal import ReferenceTally
 from src.domain.track_record import (
     HitRateEvidence,
     ScoredCall,
@@ -483,3 +484,79 @@ def test_compact_track_record_keeps_the_expired_count() -> None:
 
     assert "2 predykcje wygasły bez oceny" in html
     assert "wersja zwarta" in html
+
+
+class TestSharpeEvidence:
+    """WIA-68: PSR i DSR obok wyniku łącznego; poniżej 30 okresów bez liczby."""
+
+    def test_psr_and_dsr_sit_next_to_the_total_return(self) -> None:
+        stats = TrackRecordStats(sharpe=SharpeEvidence(n=40, psr=0.812, dsr=0.437, n_trials=4))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        summary = html.split("</div>")[0]
+        assert "wynik łączny" in summary
+        assert "PSR 81% · DSR 44% (4 warianty przepisu)" in summary
+        assert "Deflated Sharpe" in html
+
+    def test_below_thirty_periods_there_is_no_number(self) -> None:
+        stats = TrackRecordStats(sharpe=SharpeEvidence(n=12, psr=None, dsr=None, n_trials=4))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert "PSR i DSR: od 30 okresów krzywej (jest 12)" in html
+        assert "PSR 0" not in html
+        assert "Deflated Sharpe" not in html
+
+    def test_unknown_trials_show_the_psr_alone(self) -> None:
+        stats = TrackRecordStats(sharpe=SharpeEvidence(n=40, psr=0.812, dsr=None, n_trials=None))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert "PSR 81% · DSR —" in html
+
+    def test_compact_keeps_psr_and_dsr(self) -> None:
+        stats = TrackRecordStats(sharpe=SharpeEvidence(n=40, psr=0.812, dsr=0.437, n_trials=1))
+
+        html = render_track_record_html(_curve(), None, None, stats, compact=True)
+
+        assert "PSR 81% · DSR 44% (1 wariant przepisu)" in html
+
+    def test_without_evidence_the_summary_is_unchanged(self) -> None:
+        assert "PSR" not in render_track_record_html(_curve(), None, None, TrackRecordStats())
+
+
+class TestReferenceRule:
+    """WIA-82: darmowa reguła referencyjna jako baseline w prywatnym Track Record —
+    trafność z n i przedziałem Wilsona, wyłącznie agregat."""
+
+    def test_track_record_shows_reference_rule_without_symbols(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=2))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert (
+            "Reguła referencyjna (0 zł, momentum tygodniowe): trafność 60% "
+            "(95% CI 31–83%, n=10) · wygasło bez oceny: 2"
+        ) in html
+        assert "reference-v1" not in html
+
+    def test_no_expired_calls_no_expired_note(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=0))
+
+        html = render_track_record_html(_curve(), None, None, stats)
+
+        assert "trafność 60% (95% CI 31–83%, n=10)" in html
+        assert "wygasło bez oceny: 0" not in html
+
+    def test_without_settlements_there_is_no_row(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=0, misses=0, expired=3))
+
+        assert "Reguła referencyjna" not in render_track_record_html(_curve(), None, None, stats)
+
+    def test_compact_day_leaves_the_row_out(self) -> None:
+        stats = TrackRecordStats(reference=ReferenceTally(hits=6, misses=4, expired=2))
+
+        html = render_track_record_html(_curve(), None, None, stats, compact=True)
+
+        assert "Reguła referencyjna" not in html

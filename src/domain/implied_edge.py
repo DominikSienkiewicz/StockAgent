@@ -36,7 +36,7 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
-# Godziny kalendarzowe w roku — baza annualizacji sqrt-time (patrz ograniczenie #2).
+# Godziny kalendarzowe w roku — baza annualizacji sqrt-time (ograniczenie 2 w docstringu modułu).
 _HOURS_PER_YEAR = 365.0 * 24.0
 
 # Tolerancja porównań z zerem. Float nie ma dokładnego „== 0" po arytmetyce

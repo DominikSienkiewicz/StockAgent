@@ -184,7 +184,7 @@ def _section_text(data: SectionInput) -> list[str]:
     return text_block(render_consensus_shift_text(data.context.consensus_shifts or []))
 
 
-# #8: flipy rady i skoki sentymentu vs poprzedni cykl — za rozliczeniami.
+# R-8: flipy rady i skoki sentymentu vs poprzedni cykl — za rozliczeniami.
 CONSENSUS_SHIFT_SECTION = ReportSection(
     key="consensus_shift", render_html=_section_html, render_text=_section_text
 )

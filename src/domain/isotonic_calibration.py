@@ -1,6 +1,6 @@
 """Kalibracja izotoniczna pewności (ML-28) z temporalną oceną poza próbą.
 
-`calibrated_confidence` (#9) mapuje pewność na hit-rate jej kubełka ze shrinkage,
+`calibrated_confidence` (R-9) mapuje pewność na hit-rate jej kubełka ze shrinkage,
 więc nie jest monotoniczna (kubełek 0.8 może dostać mniej niż 0.7), a kalibratora
 nigdy nie oceniono poza próbą, na której powstał. Tu:
 
@@ -145,7 +145,7 @@ def select_isotonic_calibrator(
 ) -> IsotonicSelection:
     """Reguła ML-28 na próbkach `(chwila, pewność, trafienie)` predykcji kierunkowych.
 
-    Mapa i kubełki (shrinkage `bucket_min_count`, jak w rankingu #9) powstają na
+    Mapa i kubełki (shrinkage `bucket_min_count`, jak w rankingu R-9) powstają na
     [t−60 d, t−30 d), Brier liczy się na [t−30 d, t). Mapa wchodzi do rankingu tylko,
     gdy jej Brier jest niższy od surowej pewności i od kubełków; inaczej ranking
     zostaje przy kubełkach. Okno z mniej niż `MIN_ISOTONIC_SAMPLES` → bez decyzji."""

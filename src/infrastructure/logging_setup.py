@@ -10,7 +10,7 @@ zostaje czytelny tekst.
 
 ContextVar nie przechodzi sam do wątków puli: worker symbolu ustawia go u siebie
 (`RunFastLoopCycle.process_one` przez `symbol_scope`), a rada person startuje wątki przez
-`contextvars.copy_context()` (`advisory_council._run_round`).
+`contextvars.copy_context()` (`council_service._run_round`).
 """
 
 from __future__ import annotations

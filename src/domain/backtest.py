@@ -194,6 +194,83 @@ def purge_training_indices(
     return tuple(index for index in range(valid_start) if label_end_ts[index] <= cutoff)
 
 
+# ARCH-27: projekt foldów walk-forward (expanding window) — liczba foldów i minimalna
+# próbka, poniżej której CV nie ma sensu (pojedynczy split). Każdy fold dokłada
+# kolejny chronologiczny blok do treningu i waliduje na następnym — mniej hałaśliwy
+# estymator dla niestacjonarnej serii finansowej niż jeden split.
+WALK_FORWARD_FOLDS = 4
+MIN_FOLD_SAMPLES = 50
+# Pojedynczy chronologiczny split: 20% próbki, ale nie mniej niż 10 wierszy walidacji.
+VALIDATION_FRACTION = 0.2
+MIN_VALIDATION_SAMPLES = 10
+
+
+@dataclass(frozen=True)
+class WalkForwardFold:
+    """ARCH-27: fold walk-forward — trenuje na `train_rows` (indeksy wierszy przed
+    `train_end`, po purgu bywają nieciągłe) i waliduje na `[train_end, valid_end)`."""
+
+    train_rows: tuple[int, ...]
+    train_end: int
+    valid_end: int
+
+    def __post_init__(self) -> None:
+        if not 0 < self.train_end < self.valid_end:
+            raise ValueError("fold needs 0 < train_end < valid_end")
+        if not self.train_rows or not all(0 <= row < self.train_end for row in self.train_rows):
+            raise ValueError("fold trains on at least one row before train_end")
+
+
+def expanding_window_bounds(n_samples: int) -> tuple[tuple[int, int], ...]:
+    """ARCH-27: granice `(train_end, valid_end)` foldów expanding-window.
+
+    Wiersze są w kolejności czasu: fold trenuje na `[0, train_end)` i waliduje na
+    `[train_end, valid_end)` — „trenuj na przeszłości, predykuj przyszłość”. Blok
+    walidacji to `n // (WALK_FORWARD_FOLDS + 1)`, ostatni fold bierze resztę. Poniżej
+    `MIN_FOLD_SAMPLES` jeden split 20% (min. `MIN_VALIDATION_SAMPLES`), żeby nie ciąć
+    małej próbki na bezsensownie cienkie foldy; próbka bez miejsca na trening — błąd."""
+    if n_samples < MIN_FOLD_SAMPLES:
+        validation_size = max(MIN_VALIDATION_SAMPLES, int(n_samples * VALIDATION_FRACTION))
+        if validation_size >= n_samples:
+            raise ValueError("Not enough samples to create validation holdout.")
+        return ((n_samples - validation_size, n_samples),)
+    block = n_samples // (WALK_FORWARD_FOLDS + 1)
+    return tuple(
+        (block * fold, block * (fold + 1) if fold < WALK_FORWARD_FOLDS else n_samples)
+        for fold in range(1, WALK_FORWARD_FOLDS + 1)
+    )
+
+
+def walk_forward_folds(
+    n_samples: int,
+    timestamps: Sequence[datetime] | None = None,
+    label_ends: Sequence[datetime] | None = None,
+) -> tuple[WalkForwardFold, ...]:
+    """ARCH-27: foldy walk-forward z wierszami treningu — jedno źródło projektu foldów
+    dla bramki treningu i backtestu.
+
+    Bez `timestamps` trening foldu to prefiks `[0, train_end)`. Z `timestamps`
+    (rosnąco, wyrównane z wierszami) trening to `purge_training_indices` (ML-26):
+    koniec etykiety z `label_ends`, a bez nich stały horyzont `LABEL_HORIZON`. Fold
+    bez wiersza treningu po purgu jest pomijany."""
+    if timestamps is None:
+        if label_ends is not None:
+            raise ValueError("label_ends need row timestamps")
+        return tuple(
+            WalkForwardFold(tuple(range(train_end)), train_end, valid_end)
+            for train_end, valid_end in expanding_window_bounds(n_samples)
+        )
+    ends = label_ends if label_ends is not None else [s + LABEL_HORIZON for s in timestamps]
+    if len(timestamps) != n_samples or len(ends) != n_samples:
+        raise ValueError("timestamps and label_ends must align with the rows")
+    folds: list[WalkForwardFold] = []
+    for train_end, valid_end in expanding_window_bounds(n_samples):
+        rows = purge_training_indices(timestamps, ends, train_end)
+        if rows:
+            folds.append(WalkForwardFold(rows, train_end, valid_end))
+    return tuple(folds)
+
+
 @dataclass(frozen=True)
 class LabelOverlap:
     """ML-25: pomiar nakładania etykiet przed decyzją o purge'u po `settled_at`.

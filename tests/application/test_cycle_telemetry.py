@@ -111,18 +111,6 @@ def test_paid_calls_is_the_live_counter() -> None:
     assert telemetry.paid_calls is live
 
 
-def test_bind_paid_calls_adopts_a_caller_counter_and_keeps_counts() -> None:
-    telemetry = CycleTelemetry()
-    telemetry.record_paid_call("llm")
-    external: Counter[str] = Counter({"news": 2})
-
-    telemetry.bind_paid_calls(external)
-    telemetry.record_paid_call("llm")
-
-    assert telemetry.paid_calls is external
-    assert external == Counter({"llm": 2, "news": 2})
-
-
 def test_concurrent_records_lose_no_increment() -> None:
     # Rada woła persony w wątkach, a symbole mogą iść równolegle
     # (`symbol_concurrency`) — `Counter[k] += 1` bez locka gubi inkrementy.

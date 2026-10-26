@@ -18,7 +18,9 @@ import pytest
 
 from src.application.ports import RepositoryPort
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.prediction import TrendDirection
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
 
@@ -267,6 +269,32 @@ def test_llm_cost_since_sums_priced_calls_saved_in_the_window() -> None:
     assert repo.get_llm_cost_since(START) == pytest.approx(0.75)
 
 
+def test_llm_costs_since_returns_the_rows_saved_in_the_window() -> None:
+    """FIN-26: koszt tygodnia czyta wiersze ledgera (symbol, koszt) od początku okna."""
+    from src.domain.finops import LedgerCost, LLMCallEntry, LLMUsage
+
+    def entry(symbol: str | None, cost: float | None) -> LLMCallEntry:
+        return LLMCallEntry(
+            run_id="local",
+            node="predict",
+            symbol=symbol,
+            usage=LLMUsage(provider="anthropic", model="m", input_tokens=1, output_tokens=1),
+            cost_usd=cost,
+            price_as_of=None,
+        )
+
+    clock = _Clock()
+    repo = _repo(clock)
+    repo.save_llm_calls([entry("NVDA", 0.5)])
+    clock.advance(hours=2)
+    repo.save_llm_calls([entry("AAPL", 0.25), entry(None, None)])
+
+    assert repo.get_llm_costs_since(START + timedelta(hours=1)) == [
+        LedgerCost("AAPL", 0.25),
+        LedgerCost(None, None),
+    ]
+
+
 def test_variant_trend_row_stays_out_of_the_ml_leg_read() -> None:
     # EXP-26: wiersz wariantu LLM dzieli tabelę z nogą ML, ale odczyt ML-33 go pomija.
     from src.domain.prediction import TrendDirection
@@ -358,3 +386,37 @@ def test_revision_votes_sit_next_to_the_first_round_and_reads_stay_on_round_one(
     ]
     assert [h.recommendations for h in history] == [("SELL",)]
     assert [s.recommendation for s in repo.get_council_vote_samples()] == ["SELL"]
+
+
+def test_recipe_versions_are_counted_once_each_without_unstamped_rows() -> None:
+    # WIA-68: n_trials Deflated Sharpe = różne wersje przepisu w historii predykcji.
+    clock = _Clock()
+    repo = _repo(clock)
+    for symbol, recipe in (("NVDA", "r-a"), ("AMD", "r-a"), ("MSFT", "r-b"), ("AAPL", None)):
+        repo.save_prediction(_record(symbol, recipe_version=recipe))
+
+    assert repo.count_recipe_versions() == 2
+
+
+def test_reference_outcomes_of_the_window_without_open_calls() -> None:
+    # WIA-82: rozliczone wywołania z odczytów okna; otwarte i starsze poza agregatem.
+    clock = _Clock()
+    repo = _repo(clock)
+    reads = [
+        ("NVDA", START - timedelta(days=40), ReferenceOutcome.HIT),
+        ("AMD", START - timedelta(days=10), ReferenceOutcome.MISS),
+        ("MSFT", START - timedelta(days=9), ReferenceOutcome.EXPIRED),
+        ("AAPL", START - timedelta(days=2), None),
+    ]
+    for symbol, read_at, _outcome in reads:
+        read = ReferenceRead(symbol=symbol, price=Decimal("100"), read_at=read_at)
+        repo.save_reference_read(
+            read, ReferenceCall(symbol, TrendDirection.BULLISH, Decimal("100"), read_at)
+        )
+    for open_call in repo.get_open_reference_calls():
+        outcome = next(o for sym, _, o in reads if sym == open_call.call.symbol)
+        if outcome is not None:
+            price = None if outcome is ReferenceOutcome.EXPIRED else Decimal("101")
+            repo.settle_reference_call(open_call.id, outcome, price, START)
+
+    assert sorted(o.value for o in repo.get_reference_outcomes(30)) == ["EXPIRED", "MISS"]

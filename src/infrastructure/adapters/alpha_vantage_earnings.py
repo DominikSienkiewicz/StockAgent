@@ -110,7 +110,7 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
             body = self._fetch_csv()
         # Opcjonalne źródło — nigdy nie rzuca w górę; każdy błąd degradujemy do pustego
         # kalendarza. Log niesie symbol, który pierwszy zapytał (pobranie jest jedno).
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("AlphaVantage earnings fetch failed for %s", asking_symbol)
             return {}
         return _parse_reports(body) if body is not None else {}

@@ -1,0 +1,104 @@
+name: 🧬 Mutation testing (manual)
+
+on:
+  # TEST-35: WYŁĄCZNIE ręcznie. Każdy mutant to osobny przebieg testów, więc pomiar trwa
+  # minuty na moduł i nie ma czego szukać na pushu. Progu jeszcze nie ma: właściciel ustali
+  # go po pierwszym pomiarze, więc przeżyte mutanty nie czerwienią joba.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Nowy ręczny pomiar zastępuje poprzedni — nic tu nie płaci ani nie zapisuje.
+concurrency:
+  group: mutation-testing
+  cancel-in-progress: true
+
+jobs:
+  mutate:
+    name: mutmut · ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Testy mutanta = testy tests/domain, które importują dany moduł (pełne tests/domain na
+      # mutanta to godziny). Listę pilnuje tests/test_mutation_workflow.py.
+      matrix:
+        include:
+          - module: asset
+            tests: >-
+              tests/domain/test_asset.py tests/domain/test_asset_drift.py
+              tests/domain/test_asset_valuation.py tests/domain/test_shock.py
+              tests/domain/test_volatility_gate_properties.py
+          - module: regime
+            tests: >-
+              tests/domain/test_digest_lead.py tests/domain/test_macro_rates.py
+              tests/domain/test_regime.py tests/domain/test_regime_change.py
+              tests/domain/test_regime_reason.py
+          - module: sizing
+            tests: tests/domain/test_risk_properties.py tests/domain/test_sizing.py
+          - module: var
+            tests: tests/domain/test_risk_properties.py tests/domain/test_var.py
+          - module: finops
+            tests: tests/domain/test_finops.py tests/domain/test_weekly_recap.py
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🐍 Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: "0.9.22"
+
+      - name: 📦 Sync dependencies (incl. dev — pytest and hypothesis run every mutant)
+        run: uv sync --locked --no-build --no-install-project
+
+      - name: 🧬 Run mutmut
+        # mutmut 2.5.1, nie 3.x: mutmut 3 zakłada układ, w którym `src/` jest katalogiem, a nie
+        # pakietem — odcina prefiks `src.` z nazw mutantów i asercją odrzuca moduł `src.*`,
+        # więc w tym repo (importy `src.domain.…`) żaden mutant by nie zadziałał. 2.x mutuje
+        # plik w miejscu i dla każdego mutanta uruchamia `--runner`. Kod wyjścia to maska
+        # bitów: 1 = błąd krytyczny (czerwony job); 2 przeżyły, 4 timeout, 8 podejrzane to
+        # wynik pomiaru, nie awaria.
+        env:
+          MODULE: ${{ matrix.module }}
+          TESTS: ${{ matrix.tests }}
+        run: |
+          status=0
+          uvx --python 3.12 --from mutmut==2.5.1 mutmut run \
+            --paths-to-mutate "src/domain/${MODULE}.py" \
+            --tests-dir tests/domain \
+            --runner "uv run --frozen --no-build --no-sync python -m pytest -x -q -p no:cacheprovider ${TESTS}" \
+            --no-progress || status=$?
+          if [ $((status & 1)) -ne 0 ]; then
+            echo "::error title=mutmut::błąd krytyczny pomiaru ${MODULE} (exit ${status})"
+            exit 1
+          fi
+          uvx --python 3.12 --from mutmut==2.5.1 mutmut junitxml --untested-policy=skipped \
+            > "mutmut-${MODULE}.xml"
+
+      - name: 📊 Mutation score (job summary)
+        if: ${{ !cancelled() }}
+        env:
+          MODULE: ${{ matrix.module }}
+        run: >-
+          uv run --frozen --no-build --no-sync python main_tools.py junit-summary --mutation
+          "${MODULE}=mutmut-${MODULE}.xml" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Upload the surviving mutants
+        # Raport JUnit niesie diff każdego przeżytego mutanta (`failure`), plik i linię.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutmut-${{ matrix.module }}
+          path: mutmut-${{ matrix.module }}.xml
+          if-no-files-found: ignore
+          retention-days: 30

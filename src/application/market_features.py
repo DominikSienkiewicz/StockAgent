@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from src.application.ports import MarketDataPort, RepositoryPort
+from src.application.ports import MarketDataPort, PredictionStorePort
 from src.domain.cross_section import CrossSectionFeatures, SymbolMove, cross_section_features
 from src.domain.price_features import PriceFeatures, price_features
 from src.domain.value_objects import AssetType, Money
@@ -59,7 +59,7 @@ def _symbol_price_features(
     symbol: str,
     *,
     market_port: MarketDataPort,
-    repository: RepositoryPort,
+    repository: PredictionStorePort,
     as_of: datetime,
 ) -> PriceFeatures | None:
     """Cechy cenowe symbolu albo None, gdy nie ma kursu (symbol bez cech rynkowych).
@@ -110,7 +110,7 @@ def collect_market_features(
     symbols: Sequence[str],
     *,
     market_port: MarketDataPort,
-    repository: RepositoryPort,
+    repository: PredictionStorePort,
     as_of: datetime,
     asset_types: Mapping[str, AssetType],
     gate_thresholds: Mapping[AssetType, float],

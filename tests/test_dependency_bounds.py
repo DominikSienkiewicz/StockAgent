@@ -104,3 +104,26 @@ def test_ci_has_a_manual_lowest_direct_job() -> None:
     assert job.get("if") == "github.event_name == 'workflow_dispatch'"
     runs = [str(step.get("run", "")) for step in job["steps"]]
     assert any('pytest -m "not integration and not containers"' in run for run in runs), runs
+
+
+# CI-28: `requires-python = ">=3.12"` obiecywał działanie na 3.13+, czego nic nie sprawdza
+# (CI, mypy i ruff celują w 3.12, a wheele XGBoost, pandas i LangGraph dla nowego Pythona
+# bywają opóźnione). Deklaracja obejmuje więc tylko minor, który bramka faktycznie testuje;
+# przejście na nowy Python to świadoma zmiana granicy, locka i CI w jednym commicie.
+def _setup_python_versions() -> set[str]:
+    return {
+        str(dict(step.get("with") or {}).get("python-version"))
+        for job in _jobs().values()
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/setup-python@")
+    }
+
+
+def test_requires_python_promises_only_the_tested_minor() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    (tested,) = _setup_python_versions()
+    major, minor = (int(part) for part in tested.split("."))
+
+    assert project["requires-python"] == f">={major}.{minor},<{major}.{minor + 1}", (
+        f"requires-python = {project['requires-python']!r}, a CI testuje tylko Pythona {tested}"
+    )

@@ -957,7 +957,9 @@ class TestLlmFallbackRowsAreSkipped:
     def _rows_from_repo(self, mocker: MockerFixture) -> list[dict[str, Any]]:
         from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
-        create_client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        create_client = mocker.patch(
+            "src.infrastructure.adapters.supabase_repo.build_supabase_client"
+        )
         client = create_client.return_value
         settled = client.table.return_value.select.return_value.gte.return_value.not_.is_
         order = settled.return_value.order.return_value

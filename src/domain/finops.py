@@ -1,6 +1,7 @@
 # src/domain/finops.py
 from __future__ import annotations
 
+import calendar
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -275,6 +276,15 @@ class LLMCallEntry:
     usage: LLMUsage
     cost_usd: float | None
     price_as_of: date | None
+
+
+@dataclass(frozen=True)
+class LedgerCost:
+    """FIN-26: odczyt wiersza ledgera `llm_calls` do kosztu tygodnia — symbol (None
+    dla jobów Slow Loopa) i koszt z tokenów (None = model spoza cennika)."""
+
+    symbol: str | None
+    cost_usd: float | None
 
 
 @dataclass(frozen=True)
@@ -580,6 +590,40 @@ def budget_window_start(window: BudgetWindow, now: datetime) -> datetime:
         raise ValueError("budget window needs a timezone-aware clock")
     day = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return day if window is BudgetWindow.DAY else day.replace(day=1)
+
+
+@dataclass(frozen=True)
+class MonthToDateCost:
+    """FIN-23: koszt miesiąca kalendarzowego UTC narastająco z ledgera `llm_calls`.
+
+    `days_elapsed` liczy dzień bieżący w całości (1. dnia miesiąca = 1), więc
+    prognoza nie wybucha w pierwszych godzinach miesiąca."""
+
+    month_start: date
+    spent_usd: float
+    days_elapsed: int
+    days_in_month: int
+
+    @property
+    def projected_usd(self) -> float:
+        """Prognoza liniowa do końca miesiąca: średnia dzienna × dni miesiąca.
+        Szacunek, nie faktura — tempo pierwszych dni nie musi się utrzymać."""
+        return self.spent_usd / self.days_elapsed * self.days_in_month
+
+
+def month_to_date_cost(spent_usd: float, now: datetime) -> MonthToDateCost:
+    """FIN-23: wydatek od początku miesiąca UTC (to samo okno co limit miesięczny
+    FIN-25, `budget_window_start`) i dni, z których prognoza liczy tempo."""
+    if spent_usd < 0:
+        raise ValueError(f"spent_usd must be non-negative (got {spent_usd})")
+    start = budget_window_start(BudgetWindow.MONTH, now)
+    today = now.astimezone(UTC)
+    return MonthToDateCost(
+        month_start=start.date(),
+        spent_usd=spent_usd,
+        days_elapsed=today.day,
+        days_in_month=calendar.monthrange(today.year, today.month)[1],
+    )
 
 
 # EXP-26: klucz cennika wywołań wariantu promptu albo modelu w cieniu. Poza

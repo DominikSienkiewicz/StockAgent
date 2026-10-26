@@ -26,7 +26,10 @@ R-1 to R-18 are the July 2026 roadmap; the commits that shipped them are titled 
 roadmap's (`#5` meant both cross-symbol contagion and the messenger digest), so they got new
 ones here. A bare `#N` in an older code comment is one of three series: a roadmap item
 (R-1 to R-18), a June upgrade (R-19 to R-27), or a numbered finding of the first audit
-(`finding #N`), which has no entry here.
+(`finding #N`, June 2026), which has no entry here. Comments and docstrings in `src/` no
+longer carry a bare `#N` (DOC-53): each roadmap item became its R-N, and a first-audit finding
+is described in words; [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py)
+keeps it that way.
 
 | ID | Item | Commit | Flag |
 |---|---|---|---|
@@ -330,6 +333,27 @@ job, with no new dependency, while the flag stays off.
 
 **Guards** [`tests/infrastructure/test_rekor_publisher.py`](../tests/infrastructure/test_rekor_publisher.py) `test_posts_hashedrekord_with_sha256_of_root` · [`tests/tools/test_verify_attestation.py`](../tests/tools/test_verify_attestation.py) `test_a_cycle_root_logged_by_another_workflow_fails_the_verdict` · [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py) `test_rekor_flag_needs_oidc_on_every_agent_job`
 
+### D-14 · The Fast Loop sees a narrow store port, and one file holds the agent rules
+
+**Date** 2026-10-26 · **Status** in force · **Commits** `f3eca09`, `56ffd09`, `69a676b`
+
+`AgentGraphDeps` used to take the whole `RepositoryPort`, an ABC with dozens of methods, so the
+graph could reach any table and a fake had to stub all of them. It now depends on
+`PredictionStorePort`, a `Protocol` in `ports.py` with exactly the methods the graph, the market
+features phase and `AnalyzeMarketUseCase` call (ARCH-32, step 1); `SupabaseRepository` and
+`InMemoryRepository` still satisfy it without change. Splitting `RepositoryPort` further was
+rejected on 2026-10-26: one adapter behind several ports would only move the size around. The
+council orchestration `LLMAdvisoryCouncil` holds no I/O, so it moved from the infrastructure to
+`src/application/council_service.py` (ARCH-19). The agent rules lived in two full copies,
+`CLAUDE.md` and `AGENTS.md`, which had already drifted once (G58); `AGENTS.md` is now the single
+source and `CLAUDE.md` imports it with `@AGENTS.md`, keeping only Claude Code additions (DOC-29).
+
+*Costs:* a new graph call means a method on the Protocol as well, and the agent rules depend on
+the harness expanding the `@` import. *Gains:* the graph's reach into the database is a short,
+tested list, and a rule changes in one place.
+
+**Guards** [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_graph_deps_depend_on_exactly_the_methods_the_fast_loop_calls` · [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_prediction_store_mirrors_repository_port_signatures` · [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) `test_claude_md_delegates_to_agents_md`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:
@@ -391,7 +415,7 @@ The FRED yield curve is no longer render-only. When **both** `yield_curve_enable
 
 The earnings calendar works the same way. With `earnings_calendar_enabled = true`, the next quarterly report is fetched **before** the graph runs and its proximity raises the volatility threshold (`IMMINENT` ≤ 2 days → ×1.5, `NEAR` ≤ 7 days → ×1.15, otherwise ×1.0). A 12-hour prediction taken the day before earnings is a coin flip, so the agent tightens the gate instead of burning tokens on analysis the report will invalidate — cutting spend and cleaning up the hit rate at once. The earnings and regime multipliers **compound**, and both are guaranteed `>= 1.0`, so the gate can only ever tighten. One domain rule, `effective_threshold` in [`src/domain/asset.py`](../src/domain/asset.py) (FIN-08), sets the threshold of every gate — the main gate, the paid mistake diagnosis in `reflect_node`, the council gate and the tool-use gate — so in `RISK_OFF` or before earnings the tool-use loop needs a bigger move too (crypto has no separate tool-use threshold and uses `tool_use_volatility_threshold`). The event is fetched once per symbol and injected into the alpha-signals enrichment, so the gate adds no second paid call. With the flag off, no earnings port is touched at all. Since FIN-09 the adapter asks Alpha Vantage `EARNINGS_CALENDAR` **once per run, without a symbol**: the CSV lists every company reporting in the next three months, the first symbol to ask fetches it (under a lock, since symbols run in parallel) and every symbol reads its nearest report date from memory — one request a cycle instead of one per symbol, before the volatility gate. It rotates over every key of `ALPHA_VANTAGE_API_KEYS` on a soft limit (`Note` waits once on the same key, `Information` moves on); when every key is limited, the run has no earnings dates and a `WARNING` quota alert (`Alpha Vantage earnings`) says so. A failed fetch is not retried by the next symbol. The full CSV is a few hundred KB; tickers with a dot are not in it. `earnings_cache_enabled` (FIN-11, **requires migration `053`**) moves it to the Slow Loop: the weekly run refreshes the `earnings_cache` table (one report date per stock symbol, ETFs and crypto skipped) with every key of `ALPHA_VANTAGE_API_KEYS`, rotating on a soft limit, and the Fast Loop reads only that table — zero Alpha Vantage requests for the calendar, so the FIN-32 daily budget counts one request per symbol again. The cache stores the date, not the day count, so the gate counts `days_until` on the cycle's day; an entry is valid for `EARNINGS_CACHE_TTL_HOURS` (144 h, Monday to Friday after the Sunday refresh). A report announced after the refresh is missed until the next one. A symbol without a cached entry gets no earnings multiplier. Outside `config_hash` (owner decision FIN-11: the cache changes where the same report date comes from, not the prediction recipe, so switching it does not cut the track record into segments); ships **off** until the migration.
 
-`finnhub_earnings_calendar_enabled` (DAT-20) adds the Monday section `📅 Ten tydzień` to the email: the watchlist stocks (ETFs and crypto left out) that report from Monday to Sunday, with the day, the timing against the session (`przed sesją` / `po sesji` / `w trakcie sesji`, left out when Finnhub's `hour` is empty) and the EPS estimate. `FinnhubEarningsCalendarAdapter` asks `GET /calendar/earnings?from&to` once per run **without a symbol** — the answer lists every company in the 30-day window and is filtered to the watchlist — through the shared Finnhub limiter; a failed or empty answer just leaves the section out. Monday is the day in `display_timezone`. With the owner's portfolio (`portfolio_positions_enabled`) the same flag adds a lead tier on every day: a position of at least 10% of the portfolio whose company reports today or tomorrow (`MSFT (24% portfela): wyniki jutro po sesji`), right below a move of your position; that needs the calendar daily, so the report asks once a day with a portfolio, and on Monday the section and the lead share the one answer. The flag is presentation only (outside `config_hash`): the earnings gate keeps its Alpha Vantage source or cache. **Turn it on only after the provider terms review (BEZ-28) and a probe of the free plan** — the free tier may cap the date range or drop fields; the probe is one manual request `curl -s "https://finnhub.io/api/v1/calendar/earnings?from=<monday>&to=<monday+30d>&token=$FINNHUB_API_KEY"` checking that rows for several watchlist stocks come back with `date`, `hour` and `epsEstimate`.
+`finnhub_earnings_calendar_enabled` (DAT-20) adds the Monday section `📅 Ten tydzień` to the email: the watchlist stocks (ETFs and crypto left out) that report from Monday to Sunday, with the day, the timing against the session (`przed sesją` / `po sesji` / `w trakcie sesji`, left out when Finnhub's `hour` is empty) and the EPS estimate. `FinnhubEarningsCalendarAdapter` asks `GET /calendar/earnings?from&to` once per run **without a symbol** — the answer lists every company in the 30-day window and is filtered to the watchlist — through the shared Finnhub limiter; a failed or empty answer just leaves the section out. Monday is the day in `display_timezone`. With the owner's portfolio (`portfolio_positions_enabled`) the same flag adds a lead tier on every day: a position of at least 10% of the portfolio whose company reports today or tomorrow (`MSFT (24% portfela): wyniki jutro po sesji`), right below a move of your position; that needs the calendar daily, so the report asks once a day with a portfolio, and on Monday the section and the lead share the one answer. The flag is presentation only (outside `config_hash`): the earnings gate keeps its Alpha Vantage source or cache. **Turn it on only after the provider terms review (BEZ-28) and a probe of the free plan** — the free tier may cap the date range or drop fields; the probe is one manual request `curl -s -H "X-Finnhub-Token: $FINNHUB_API_KEY" "https://finnhub.io/api/v1/calendar/earnings?from=<monday>&to=<monday+30d>"` checking that rows for several watchlist stocks come back with `date`, `hour` and `epsEstimate`.
 
 <a id="flag-calibrated-confidence"></a>
 

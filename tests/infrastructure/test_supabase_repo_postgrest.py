@@ -41,6 +41,7 @@ from testcontainers.postgres import PostgresContainer
 
 from src.application.errors import NotFound, PortError
 from src.domain.council import InvestorOpinion, Recommendation
+from src.domain.finops import LedgerCost
 from src.domain.watchlist import SymbolMute
 from src.infrastructure.adapters import supabase_repo
 from src.infrastructure.adapters.bot_store import SupabaseBotStore
@@ -183,7 +184,7 @@ def _root_rest_client(url: str, key: str) -> Client:
 
 
 def make_repository(stack: PostgrestStack, role: str = "service_role") -> SupabaseRepository:
-    with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+    with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
         return SupabaseRepository(url=stack.base_url, key=jwt_for(role))
 
 
@@ -434,6 +435,84 @@ class TestLlmCostLedger:
 
         assert spent == pytest.approx(in_window * 0.002)
 
+    def test_llm_costs_since_returns_rows_of_the_window_past_the_row_cap(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # FIN-26: wiersze tygodnia (symbol, koszt) z `llm_calls` (040) — także ponad
+        # limit 1000 wierszy PostgREST; wiersz sprzed okna poza wynikiem.
+        since = datetime(2026, 11, 2, tzinfo=UTC)
+        in_window = POSTGREST_MAX_ROWS + 15
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) "
+                "SELECT 't17-fin26', 'NVDA', 'predict', 'anthropic', 'm', 1, 1, 0.001, "
+                "%s::timestamptz + g * interval '1 second' "
+                "FROM generate_series(1, %s) AS g",
+                (since.isoformat(), in_window),
+            )
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) VALUES "
+                "('t17-fin26', NULL, 'recap', 'anthropic', 'm', 1, 1, NULL, %s), "
+                "('t17-fin26', 'AAPL', 'predict', 'anthropic', 'm', 1, 1, 9.0, %s)",
+                (
+                    (since + timedelta(hours=2)).isoformat(),
+                    (since - timedelta(seconds=1)).isoformat(),
+                ),
+            )
+
+        rows = repository.get_llm_costs_since(since)
+
+        assert len(rows) == in_window + 1
+        assert rows.count(LedgerCost("NVDA", 0.001)) == in_window
+        assert LedgerCost(None, None) in rows
+        assert all(row.symbol != "AAPL" for row in rows)
+
+
+class TestRecipeVersionCount:
+    def test_counts_distinct_stamped_recipe_versions(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # WIA-68: n_trials DSR = różne `recipe_version` (030); NULL się nie liczy,
+        # powtórzona wersja liczy się raz. Moduł współdzieli bazę — liczymy przyrost.
+        before = repository.count_recipe_versions()
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction, predicted_trend, "
+                "recipe_version, timestamp) VALUES "
+                "('T17RV1', 10, 'BULLISH', 't17-recipe-a', %s), "
+                "('T17RV2', 10, 'BULLISH', 't17-recipe-a', %s), "
+                "('T17RV3', 10, 'BEARISH', 't17-recipe-b', %s), "
+                "('T17RV4', 10, 'BEARISH', NULL, %s)",
+                (_hours_ago(4), _hours_ago(3), _hours_ago(2), _hours_ago(1)),
+            )
+
+        assert repository.count_recipe_versions() == before + 2
+
+
+class TestReferenceOutcomes:
+    def test_reads_settled_outcomes_of_the_window_without_symbols(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # WIA-82: HIT / MISS / EXPIRED z odczytów okna (042); otwarte wywołanie,
+        # abstynencja i odczyt sprzed okna poza agregatem.
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
+                "outcome, settled_price, settled_at) VALUES "
+                "('T17RF1', now() - interval '3 days', 10, 'BULLISH', 'HIT', 11, now()), "
+                "('T17RF2', now() - interval '3 days', 10, 'BEARISH', 'MISS', 11, now()), "
+                "('T17RF3', now() - interval '20 days', 10, 'BULLISH', 'EXPIRED', NULL, now()), "
+                "('T17RF4', now() - interval '1 day', 10, 'BULLISH', NULL, NULL, NULL), "
+                "('T17RF5', now() - interval '1 day', 10, NULL, NULL, NULL, NULL), "
+                "('T17RF6', now() - interval '60 days', 10, 'BULLISH', 'HIT', 11, now())"
+            )
+
+        outcomes = repository.get_reference_outcomes(30)
+
+        assert sorted(outcome.value for outcome in outcomes) == ["EXPIRED", "HIT", "MISS"]
+
 
 class TestShadowTrendPrediction:
     """EXP-26 (migracja 083): trend wariantu promptu albo modelu LLM ląduje w
@@ -499,6 +578,42 @@ class TestShadowTrendPrediction:
         assert [row.forecast.model_name for row in settled] == ["champion"]
 
 
+class TestShadowStaleQuote:
+    """ML-57: z `stale_quote_enabled` osadzony SELECT odczytu par niesie `stale_quote`
+    (migracja 055), a rozliczenie z nieaktualnego notowania nie wraca."""
+
+    def test_settled_pairs_skip_stale_quote_settlements(
+        self, postgrest_stack: PostgrestStack
+    ) -> None:
+        from src.domain.promotion import ShadowForecast
+
+        with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
+            repository = SupabaseRepository(
+                url=postgrest_stack.base_url,
+                key=jwt_for("service_role"),
+                stale_quote_enabled=True,
+            )
+        since = datetime.now(UTC) - timedelta(minutes=1)
+        settled_ids = {}
+        for symbol, stale in (("T17SQF", False), ("T17SQS", True)):
+            prediction_id = repository.save_prediction(prediction_record(symbol))
+            repository.save_shadow_predictions(
+                prediction_id, symbol, [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+            )
+            repository.update_prediction_accuracy(
+                prediction_id, Decimal("190.0"), 0.9, True, "Rozliczona.", stale_quote=stale
+            )
+            settled_ids[prediction_id] = symbol
+
+        returned = {
+            settled_ids[row.prediction_id]
+            for row in repository.get_settled_shadow_predictions(since)
+            if row.prediction_id in settled_ids
+        }
+
+        assert returned == {"T17SQF"}
+
+
 class TestShockAlertLevels:
     """ALR-16 (migracja 081): szczebel 1 bez klucza `level`, eskalacja z kluczem —
     oba przez prawdziwy PostgREST, odczyt szczebli dnia i odbicie powtórzonego szczebla."""
@@ -539,7 +654,7 @@ class TestCouncilVoteRounds:
     def test_rounds_upsert_side_by_side_and_reads_take_round_one(
         self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
     ) -> None:
-        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+        with mock.patch.object(supabase_repo, "build_supabase_client", _root_rest_client):
             rounds = SupabaseRepository(
                 url=postgrest_stack.base_url,
                 key=jwt_for("service_role"),

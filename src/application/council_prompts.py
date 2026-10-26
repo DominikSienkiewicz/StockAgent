@@ -113,7 +113,7 @@ def investor_revision_prompt(
     data: CouncilInput,
     peer_opinions: Sequence[InvestorOpinion],
 ) -> str:
-    """Prompt rundy rewizji (debate mode, feature #1).
+    """Prompt rundy rewizji (debate mode, R-19).
 
     Po rundzie 1, gdy rada jest podzielona (są jednocześnie BUY i SELL),
     pokazujemy każdej personie stanowiska jej peerów i prosimy o JEDNĄ rewizję

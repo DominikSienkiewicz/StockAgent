@@ -19,10 +19,19 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 # 55 z 60 dozwolonych na minutę — zapas na drgania zegara i requesty spoza procesu.
 FINNHUB_REQUESTS_PER_MINUTE = 55
 
+# BEZ-15: token jedzie nagłówkiem, nie `&token=` w URL-u — URL trafia do treści
+# wyjątków `requests`, logów urllib3 i tracebacków.
+FINNHUB_TOKEN_HEADER = "X-Finnhub-Token"
+
 _AUTH_STATUSES = frozenset({401, 403})
 _RATE_LIMITED = 429
 
 logger = logging.getLogger(__name__)
+
+
+def finnhub_auth_headers(api_key: str) -> dict[str, str]:
+    """Nagłówki uwierzytelnienia żądania Finnhub (BEZ-15)."""
+    return {FINNHUB_TOKEN_HEADER: api_key}
 
 
 class FinnhubStatusWatcher:

@@ -4,7 +4,6 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any, NamedTuple, TypeVar
 
 from anthropic import Anthropic, APIConnectionError, APIStatusError
@@ -17,9 +16,11 @@ from src.application.errors import (
 )
 from src.application.ports import LLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
-from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.quota import QuotaSeverity
 from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object, strip_code_block
+from src.infrastructure.llm._quota import QuotaEmitter
+from src.infrastructure.llm._retry import RetryPolicy, call_with_retry
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 
 # Centralny model id (rodzina Claude 4.x). Świadomie BEZ daty w komentarzu —
@@ -29,7 +30,7 @@ from src.infrastructure.llm._usage import anthropic_usage, report_usage
 DEFAULT_MODEL = "claude-sonnet-4-6"  # dobry kompromis kosztów/jakości
 # Wszystkie publiczne id modeli Anthropic zaczynają się od "claude-".
 _ANTHROPIC_MODEL_PREFIX = "claude-"
-# #31 — Strukturalne schematy JSON (predykcja, council) potrzebują kilkuset
+# Strukturalne schematy JSON (predykcja, council) potrzebują kilkuset
 # tokenów wyjścia, nie 4096. Ciasny cap tnie koszt per-investor council call;
 # nadpisywalny przez konstruktor (max_tokens=) dla wolnych generacji.
 DEFAULT_MAX_TOKENS = 768
@@ -42,8 +43,6 @@ DEFAULT_TIMEOUT = 30.0
 # odporność: pojedynczy 529 z przeciążonego API nie może ubijać symbolu.
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_BASE = 2.0
-# Sufit pojedynczego czekania (retry-after albo backoff) — job ma 15 minut limitu.
-MAX_RETRY_WAIT_S = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ T = TypeVar("T")
 def validate_model_id(model: str) -> None:
     """Lekka walidacja id modelu — bez sieciowego calla na starcie.
 
-    #30 — Stary/wycofany id failuje dopiero przy 1. API callu (non-retried 4xx),
+    Stary/wycofany id failuje dopiero przy 1. API callu (non-retried 4xx),
     per symbol, co cykl — cichy total outage wykrywany dopiero przez exit code
     "wszystkie symbole padły". Tutaj łapiemy OCZYWISTĄ pomyłkę config (pusty
     string, zły provider prefix) natychmiast, z czytelnym komunikatem. Nie
@@ -183,110 +182,69 @@ class AnthropicAdapter(LLMPort):
         return None
 
     def _call_with_retry(self, fn: Callable[[], T]) -> T:
-        """Retry'uje wyłącznie błędy transient (429 / 5xx / connection).
+        """Retry'uje wyłącznie błędy transient (429 / 5xx / connection) — wspólna pętla
+        `call_with_retry` (ARCH-29).
 
         Sygnalizacja kwot:
         - sukces po >=1 retry → WARNING (na granicy limitu),
         - wyczerpanie retry → CRITICAL przed propagacją wyjątku.
         """
-        attempt = 0
-        while True:
-            try:
-                result = fn()
-                if attempt > 0:
-                    self._emit_quota_alert(
-                        severity=QuotaSeverity.WARNING,
-                        message=(
-                            f"Anthropic {self._model}: przejściowy błąd {attempt}× "
-                            "w jednym wywołaniu (ponowienie się udało)."
-                        ),
-                        action=(
-                            "Przejściowe 429/5xx zwykle mija samo. Jeśli się "
-                            "powtarza, podnieś COUNCIL_VOLATILITY_THRESHOLD albo "
-                            "sprawdź status Anthropic / tier konta."
-                        ),
-                        log_message=(
-                            f"Anthropic {self._model} hit a transient error "
-                            f"{attempt}× during a single call (retry succeeded)."
-                        ),
-                    )
-                return result
-            except (APIStatusError, APIConnectionError) as exc:
-                if not self._is_transient(exc):
-                    raise as_port_error(exc, sdk_error_kind(exc)) from None
-                if attempt >= self._max_retries:
-                    self._emit_quota_alert(
-                        severity=QuotaSeverity.CRITICAL,
-                        message=(
-                            f"Anthropic {self._model} nie odpowiedział po "
-                            f"{self._max_retries} ponowieniach "
-                            f"({type(exc).__name__}) — wywołanie nie powiodło się."
-                        ),
-                        action=(
-                            "Sprawdź stronę statusu Anthropic / podnieś tier konta "
-                            "albo ustaw LLM_PROVIDER=openai dla tego przebiegu."
-                        ),
-                        log_message=(
-                            f"Anthropic {self._model} failed after "
-                            f"{self._max_retries} retries "
-                            f"({type(exc).__name__}) — call failed."
-                        ),
-                    )
-                    raise as_port_error(exc, sdk_error_kind(exc)) from None
-                wait = self._compute_wait(exc, attempt)
-                logger.warning(
-                    "Anthropic transient error %s (attempt %d/%d) — sleeping %.1fs",
-                    type(exc).__name__,
-                    attempt + 1,
-                    self._max_retries,
-                    wait,
-                )
-                time.sleep(wait)
-                attempt += 1
-
-    @staticmethod
-    def _is_transient(exc: APIStatusError | APIConnectionError) -> bool:
-        """429 i 5xx (w tym 529 Overloaded) oraz błędy połączenia są transient.
-
-        Błędy klienta (4xx poza 429 — np. 400 zły prompt, 401 zły klucz) nie
-        mają sensu retry'ować: powtórzenie nie zmieni wyniku."""
-        if isinstance(exc, APIConnectionError):
-            return True
-        status = getattr(exc, "status_code", None)
-        return status == 429 or (isinstance(status, int) and status >= 500)
-
-    def _compute_wait(self, exc: APIStatusError | APIConnectionError, attempt: int) -> float:
-        # Najpierw `retry-after` z odpowiedzi serwera — to jego rekomendacja.
-        response = getattr(exc, "response", None)
-        if response is not None:
-            headers = getattr(response, "headers", {}) or {}
-            raw = headers.get("retry-after")
-            if isinstance(raw, str):
-                try:
-                    return min(float(raw), MAX_RETRY_WAIT_S)
-                except ValueError:
-                    pass
-        # Fallback: backoff wykładniczy (2s, 4s, 8s przy base=2.0).
-        return min(float(self._backoff_base * (2**attempt)), MAX_RETRY_WAIT_S)
-
-    def _emit_quota_alert(
-        self, severity: QuotaSeverity, message: str, action: str, log_message: str
-    ) -> None:
-        # MAIL-15: `message`/`action` idą do maila (po polsku), `log_message`
-        # zostaje angielską diagnozą w logach.
-        level = logging.ERROR if severity is QuotaSeverity.CRITICAL else logging.WARNING
-        logger.log(level, "%s", log_message)
-        if self._quota_monitor is None:
-            return
-        self._quota_monitor.record(
-            QuotaAlert(
-                source=f"Anthropic ({self._model})",
-                severity=severity,
-                message=message,
-                action=action,
-                occurred_at=datetime.now(UTC),
-            )
+        policy = RetryPolicy(
+            retryable=(APIStatusError, APIConnectionError),
+            max_retries=self._max_retries,
+            backoff_base=self._backoff_base,
+            logger=logger,
+            label="Anthropic transient error",
+            is_transient=is_transient_error,
+            translate=to_port_error,
         )
+        return call_with_retry(
+            fn,
+            policy,
+            sleep=time.sleep,
+            on_recovered=self._report_recovered,
+            on_exhausted=self._report_exhausted,
+        )
+
+    def _report_recovered(self, attempts: int) -> None:
+        self._quota().emit(
+            severity=QuotaSeverity.WARNING,
+            message=(
+                f"Anthropic {self._model}: przejściowy błąd {attempts}× "
+                "w jednym wywołaniu (ponowienie się udało)."
+            ),
+            action=(
+                "Przejściowe 429/5xx zwykle mija samo. Jeśli się "
+                "powtarza, podnieś COUNCIL_VOLATILITY_THRESHOLD albo "
+                "sprawdź status Anthropic / tier konta."
+            ),
+            log_message=(
+                f"Anthropic {self._model} hit a transient error "
+                f"{attempts}× during a single call (retry succeeded)."
+            ),
+        )
+
+    def _report_exhausted(self, exc: Exception) -> None:
+        self._quota().emit(
+            severity=QuotaSeverity.CRITICAL,
+            message=(
+                f"Anthropic {self._model} nie odpowiedział po "
+                f"{self._max_retries} ponowieniach "
+                f"({type(exc).__name__}) — wywołanie nie powiodło się."
+            ),
+            action=(
+                "Sprawdź stronę statusu Anthropic / podnieś tier konta "
+                "albo ustaw LLM_PROVIDER=openai dla tego przebiegu."
+            ),
+            log_message=(
+                f"Anthropic {self._model} failed after "
+                f"{self._max_retries} retries "
+                f"({type(exc).__name__}) — call failed."
+            ),
+        )
+
+    def _quota(self) -> QuotaEmitter:
+        return QuotaEmitter(f"Anthropic ({self._model})", self._quota_monitor, logger)
 
     @staticmethod
     def _extract_text(response: Any) -> str:
@@ -375,6 +333,22 @@ class AnthropicAdapter(LLMPort):
         # Diagnoza to wolny tekst, a reflect_node nie ma guardu — ucięta lekcja wraca
         # jak dotąd (WARNING loguje `_call`).
         return self._call(prompt).text.strip()
+
+
+def is_transient_error(exc: Exception) -> bool:
+    """429 i 5xx (w tym 529 Overloaded) oraz błędy połączenia są transient.
+
+    Błędy klienta (4xx poza 429 — np. 400 zły prompt, 401 zły klucz) nie
+    mają sensu retry'ować: powtórzenie nie zmieni wyniku."""
+    if isinstance(exc, APIConnectionError):
+        return True
+    status = getattr(exc, "status_code", None)
+    return status == 429 or (isinstance(status, int) and status >= 500)
+
+
+def to_port_error(exc: Exception) -> Exception:
+    """ARCH-33: błąd SDK w taksonomii portów, wciąż typu SDK."""
+    return as_port_error(exc, sdk_error_kind(exc))
 
 
 def _str_or_none(value: Any) -> str | None:

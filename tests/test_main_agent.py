@@ -742,7 +742,7 @@ class TestBuildAgentGraphDeps:
     def test_paid_run_wires_the_alpha_vantage_feeds_council_and_embeddings(
         self, settings: Settings, mock_external_clients: None
     ) -> None:
-        from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+        from src.application.council_service import LLMAdvisoryCouncil
         from src.infrastructure.adapters.alpha_vantage_adapters import (
             AlphaVantageNewsAdapter,
             AlphaVantageSentimentAdapter,
@@ -815,7 +815,7 @@ class TestProductionConfigWiring:
     (G05), a nie powód do pominięcia testu."""
 
     _SDK_CLIENTS = (
-        "src.infrastructure.adapters.supabase_repo.create_client",
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client",
         "src.infrastructure.llm.openai_client.OpenAI",
         "src.infrastructure.llm.openai_embeddings.OpenAI",
         "src.infrastructure.llm.tool_calling_openai.OpenAI",
@@ -1054,6 +1054,26 @@ class TestProcessOneSymbol:
         assert proc.result.error_message is not None
         assert "401 Client Error" in proc.result.error_message
         assert "symbol-secret-token" not in proc.result.error_message
+
+    def test_price_source_timeout_maps_to_provider_unavailable(
+        self, settings: Settings, mocker: Any
+    ) -> None:
+        # MAIL-32: timeout adaptera ceny → kategoria z taksonomii portów i dostawca;
+        # surowy wyjątek zostaje w logu.
+        import requests
+
+        from src.application.errors import ErrorCategory
+        from src.infrastructure.adapters.finnhub_api import FinnhubAdapter
+
+        mocker.patch("requests.Session.get", side_effect=requests.Timeout("Read timed out."))
+        adapter = FinnhubAdapter(api_key="fh-test")
+        uc = MagicMock()
+        uc.run.side_effect = lambda symbol, **_: adapter.get_current_price(symbol)
+
+        proc = main_agent._process_one_symbol("NVDA", peer_ctx=(), **self._kwargs(settings, uc))
+
+        assert proc.result.error_category is ErrorCategory.PROVIDER_UNAVAILABLE
+        assert proc.result.error_provider == "Finnhub"
 
     def test_port_error_is_one_warning_without_traceback(
         self, settings: Settings, caplog: pytest.LogCaptureFixture
@@ -1787,6 +1807,46 @@ class TestMessengerDigestSplit:
         settings.slack_webhook_url = None
 
         assert isinstance(main_agent.build_push_notifier(settings), NullNotifier)
+
+    def test_build_push_notifier_warns_when_digest_on_and_no_channels(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """NIEZ-34: włączony skrót push bez żadnego kanału milczał — WARNING mówi,
+        których sekretów brakuje, jak `build_notifier` przy mailu."""
+        import logging
+
+        from src.infrastructure.adapters.resend_notifier import NullNotifier
+
+        settings.messenger_digest_enabled = True
+        settings.telegram_bot_token = "tg-token"
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            notifier = main_agent.build_push_notifier(settings)
+
+        assert isinstance(notifier, NullNotifier)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "messenger_digest_enabled" in warnings[0]
+        assert "TELEGRAM_CHAT_ID" in warnings[0]
+        assert "SLACK_WEBHOOK_URL" in warnings[0]
+        assert "TELEGRAM_BOT_TOKEN" not in warnings[0]
+
+    def test_build_push_notifier_is_silent_when_digest_off(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        settings.messenger_digest_enabled = False
+        settings.telegram_bot_token = None
+        settings.telegram_chat_id = None
+        settings.slack_webhook_url = None
+
+        with caplog.at_level(logging.WARNING, logger="main_agent"):
+            main_agent.build_push_notifier(settings)
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_push_digest_is_sent_once_and_stays_under_the_limit(self) -> None:
         from src.application.report_messenger import MAX_DIGEST_CHARS
@@ -4600,7 +4660,7 @@ class TestPortfolioFxWiring:
     ) -> None:
         from src.infrastructure.adapters.nbp_client import NbpFxRateClient
 
-        create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+        create = mocker.patch("src.infrastructure.adapters.fx_rates_cache.build_supabase_client")
 
         port = main_agent.build_fx_port(settings)
 
@@ -4612,7 +4672,7 @@ class TestPortfolioFxWiring:
     ) -> None:
         from src.infrastructure.adapters.fx_rates_cache import SupabaseCachedFxRates
 
-        mocker.patch("src.infrastructure.adapters.fx_rates_cache.create_client")
+        mocker.patch("src.infrastructure.adapters.fx_rates_cache.build_supabase_client")
         settings = settings.model_copy(update={"fx_rates_cache_enabled": True})
 
         assert isinstance(main_agent.build_fx_port(settings), SupabaseCachedFxRates)
@@ -5100,7 +5160,9 @@ def test_build_repository_blocks_writes_when_db_writes_disabled(
     # przebieg nadpisywał snapshot i predykcję z tej samej godziny w produkcji.
     from src.domain.value_objects import Money
 
-    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    client = mocker.patch(
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client"
+    ).return_value
     # Jawnie, choć to default (`TestDbWritesFlag`): test nie zależy od env powłoki.
     settings = settings.model_copy(update={"db_writes_enabled": False})
 
@@ -5189,6 +5251,22 @@ def test_report_flags_carry_the_council_redundancy_flag(settings: Settings, enab
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_recipe_version_flag(settings: Settings, enabled: bool) -> None:
+    # WIA-68: n_trials Deflated Sharpe czyta kolumnę z migracji 030 tylko za jej flagą.
+    settings.recipe_version_enabled = enabled
+
+    assert main_agent._report_flags(settings).recipe_version_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_reference_signal_flag(settings: Settings, enabled: bool) -> None:
+    # WIA-82: wiersz reguły referencyjnej czyta tabelę z migracji 042 tylko za jej flagą.
+    settings.reference_signal_enabled = enabled
+
+    assert main_agent._report_flags(settings).reference_signal_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_receipts_flag_reaches_the_repository_and_the_report(
     settings: Settings, mocker: Any, enabled: bool
 ) -> None:
@@ -5245,7 +5323,9 @@ def test_build_repository_writes_when_db_writes_enabled(settings: Settings, mock
     from src.domain.value_objects import Money
     from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
-    client = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client").return_value
+    client = mocker.patch(
+        "src.infrastructure.adapters.supabase_repo.build_supabase_client"
+    ).return_value
     settings = settings.model_copy(update={"db_writes_enabled": True})
 
     repository = main_agent.build_repository(settings)
@@ -7853,3 +7933,11 @@ class TestPublicStatusPage:
         main_agent.status_page_use_case(settings, repository, clock=lambda: now).publish()
 
         assert expected in publisher.publish.call_args.args[0]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_cost_ledger_flag(settings: Settings, enabled: bool) -> None:
+    # FIN-23: koszt miesiąca w sekcji kosztu czyta ledger tylko, gdy ledger jest pisany.
+    settings.cost_ledger_enabled = enabled
+
+    assert main_agent._report_flags(settings).cost_ledger_enabled is enabled

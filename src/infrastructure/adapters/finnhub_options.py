@@ -1,6 +1,6 @@
 """Adapter Finnhub option-chain → przepływy opcji i IV.
 
-Endpoint: GET /stock/option-chain?symbol={symbol}&token={key}
+Endpoint: GET /stock/option-chain?symbol={symbol}, token w nagłówku X-Finnhub-Token (BEZ-15)
 Odpowiedź:
     {"data": [{"options": {"CALL": [{"volume": .., "impliedVolatility": ..}, ..],
                             "PUT":  [..]}}, ..]}
@@ -29,7 +29,10 @@ from src.application.errors import PortError
 from src.application.ports import OptionsFlowPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.options_flow import OptionsFlowSnapshot
-from src.infrastructure.adapters._finnhub_common import FinnhubStatusWatcher
+from src.infrastructure.adapters._finnhub_common import (
+    FinnhubStatusWatcher,
+    finnhub_auth_headers,
+)
 from src.infrastructure.adapters._http import (
     RateLimiter,
     build_session,
@@ -70,7 +73,8 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
             response = translated_get(
                 self._session,
                 f"{self._base_url}/stock/option-chain",
-                params={"symbol": symbol, "token": self._api_key},
+                params={"symbol": symbol},
+                headers=finnhub_auth_headers(self._api_key),
                 timeout=self._timeout,
             )
             self._status.observe("stock/option-chain", symbol, response.status_code)

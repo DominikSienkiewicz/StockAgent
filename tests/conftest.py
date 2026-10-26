@@ -90,5 +90,5 @@ def settings() -> Settings:
 def mock_external_clients(mocker: Any) -> None:
     """Mockuje wszystkie I/O na poziomie bibliotek zewnętrznych — żaden test
     entry pointa nie strzela do sieci ani na dysk po model XGBoost."""
-    mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")

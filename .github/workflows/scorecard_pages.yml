@@ -49,7 +49,7 @@ jobs:
 
       - name: 📦 Sync dependencies
         # Bez extra: scorecard nie buduje żadnego adaptera LLM.
-        run: uv sync --frozen --no-build --no-install-project
+        run: uv sync --frozen --no-dev --no-build --no-install-project
 
       - name: 🏅 Render public scorecard (free, read-only)
         env:

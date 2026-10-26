@@ -12,6 +12,9 @@
 #
 # Read-only: woła tylko `gh secret list` / `gh variable list`. Niczego nie ustawia.
 #
+# Rotacja (BEZ-24): sekret nieaktualizowany na repo dłużej niż 180 dni dostaje ostrzeżenie
+# (polityka i procedura w SECURITY.md). Ostrzeżenie nie zmienia kodu wyjścia.
+#
 # Auth: jeśli plik env (domyślnie <repo>/.env) definiuje GH_TOKEN, skrypt używa go do
 # każdego wywołania gh — działa więc niezależnie od auth gh w Twojej powłoce i nadpisuje
 # zbyt wąski GH_TOKEN/GITHUB_TOKEN wyeksportowany globalnie. Pusty/brak → fallback do `gh auth login`.
@@ -27,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -R|--repo) REPO="${2:-}"; shift 2 ;;
     -f|--file) ENV_FILE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -35,6 +38,22 @@ done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WF_DIR="$ROOT/.github/workflows"
 [[ -n "$ENV_FILE" ]] || ENV_FILE="$ROOT/.env"
+
+# BEZ-22: sekrety środowiska GitHub (NAZWA=środowisko), nie repo. Job ze swoim `environment:`
+# widzi też sekrety repo, ale te mają żyć WYŁĄCZNIE w środowisku z wymaganym zatwierdzeniem.
+# Zgodność z workflowami pilnuje tests/test_workflow_policy.py.
+ENVIRONMENT_SECRETS="SUPABASE_DB_URL=production-db"
+
+# Środowisko sekretu z ENVIRONMENT_SECRETS albo pusty napis dla sekretu repo.
+secret_environment() {
+  local name="$1" entry
+  for entry in $ENVIRONMENT_SECRETS; do
+    if [[ "${entry%%=*}" = "$name" ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+}
 
 if [[ -t 1 ]]; then
   GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; RESET=$'\033[0m'
@@ -125,6 +144,12 @@ fetch_names() {
   FETCH_OUT="$(printf '%s\n' "$raw" | awk 'NF{print $1}')"
 }
 
+# Nazwy sekretów środowiska; kod != 0, gdy gh nie umie ich wylistować (zwykle środowiska
+# jeszcze nie ma po stronie GitHuba).
+environment_secret_names() {
+  gh secret list --env "$1" "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" 2>/dev/null | awk 'NF{print $1}'
+}
+
 # Pobierz oba store i obie listy wymaganych raz, żeby każda sekcja mogła odróżnić "missing"
 # od "ustawione w złym kubełku" (workflow czyta je jako inny rodzaj → runtime miss).
 fetch_names secret;   HAVE_SECRET="$FETCH_OUT"
@@ -152,7 +177,21 @@ check_kind() {
     while IFS= read -r name; do
       [[ -z "$name" ]] && continue
       total=$((total + 1))
-      if contains_line "$have" "$name"; then
+      environment=""
+      [[ "$noun" = "secret" ]] && environment="$(secret_environment "$name")"
+      if [[ -n "$environment" ]]; then
+        if environment_have="$(environment_secret_names "$environment")" \
+          && contains_line "$environment_have" "$name"; then
+          echo "  ${GREEN}✓${RESET} ${name} ${DIM}(environment ${environment})${RESET}"
+          present=$((present + 1))
+        else
+          echo "  ${RED}✗${RESET} ${name} ${DIM}(missing in environment ${environment} — gh secret set ${name} --env ${environment})${RESET}"
+          missing=$((missing + 1))
+        fi
+        if contains_line "$have" "$name"; then
+          echo "  ${YELLOW}!${RESET} ${name} ${YELLOW}is also a repository secret, readable by every workflow — gh secret delete ${name}${RESET}"
+        fi
+      elif contains_line "$have" "$name"; then
         echo "  ${GREEN}✓${RESET} ${name}"
         present=$((present + 1))
       elif contains_line "$other" "$name"; then
@@ -184,11 +223,46 @@ EOF
   GLOBAL_MISSING=$((GLOBAL_MISSING + missing))
 }
 
+# Data ostatniej rotacji = `updatedAt` sekretu na repo. Granica jako RRRRMMDD z epoki, bo
+# `date -d` (GNU) i `date -r` (BSD/macOS) przyjmują epokę inaczej.
+ROTATION_MAX_AGE_DAYS=180
+rotation_cutoff() {
+  local epoch=$(( $(date -u +%s) - ROTATION_MAX_AGE_DAYS * 86400 ))
+  date -u -d "@$epoch" +%Y%m%d 2>/dev/null || date -u -r "$epoch" +%Y%m%d
+}
+
+check_rotation() {
+  local cutoff listing name updated day stale=0
+  cutoff="$(rotation_cutoff)"
+  echo "${BOLD}Rotation${RESET} ${DIM}(policy: SECURITY.md, rotate at least every ${ROTATION_MAX_AGE_DAYS} days)${RESET}"
+  if ! listing="$(gh secret list "${REPO_FLAG[@]+"${REPO_FLAG[@]}"}" --json name,updatedAt \
+      --jq '.[] | [.name, .updatedAt] | @tsv' 2>/dev/null)"; then
+    echo "  ${YELLOW}could not read the update dates — rotation check skipped${RESET}"
+    echo
+    return 0
+  fi
+  while IFS=$'\t' read -r name updated; do
+    [[ -z "$name" ]] && continue
+    day="${updated:0:10}"
+    day="${day//-/}"
+    [[ "$day" =~ ^[0-9]{8}$ ]] || continue
+    if (( day < cutoff )); then
+      echo "  ${YELLOW}!${RESET} ${name} ${DIM}(updated ${updated:0:10}, older than ${ROTATION_MAX_AGE_DAYS} days — rotate it)${RESET}"
+      stale=$((stale + 1))
+    fi
+  done <<EOF
+$listing
+EOF
+  [[ "$stale" -eq 0 ]] && echo "  ${DIM}— every secret updated within ${ROTATION_MAX_AGE_DAYS} days —${RESET}"
+  echo
+}
+
 echo "${BOLD}StockAgent — GitHub Actions secrets/variables${RESET}"
 echo "Repo: ${REPO_LABEL}"
 echo
 check_kind "Secrets"   secret
 check_kind "Variables" variable
+check_rotation
 
 TOTAL_REQUIRED="$(printf '%s\n' "$REQ_ALL" | grep -c .)"
 if [[ "$GLOBAL_MISSING" -gt 0 ]]; then

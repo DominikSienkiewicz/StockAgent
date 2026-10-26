@@ -465,6 +465,31 @@ class TestPortErrorTaxonomy:
 
         assert isinstance(excinfo.value, APIStatusError)
 
+    @pytest.mark.parametrize(("status", "alerts"), [(429, 1), (529, 1), (400, 0)])
+    def test_rate_limit_is_retried_and_reported(
+        self, mock_anthropic_class: MagicMock, status: int, alerts: int
+    ) -> None:
+        # ARCH-29: ponowienia zostają w SDK (domyślne max_retries klienta), a błąd
+        # przejściowy, który je przetrwał, trafia do QuotaMonitor jak w AnthropicAdapter.
+        from src.application.errors import PortError
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        client = MagicMock()
+        mock_anthropic_class.return_value = client
+        client.messages.create.side_effect = self._status_error(status)
+        monitor = QuotaMonitor()
+        adapter = ToolCallingAnthropicAdapter(api_key="sk-ant-test", quota_monitor=monitor)
+
+        with pytest.raises(PortError):
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])
+
+        assert "max_retries" not in mock_anthropic_class.call_args.kwargs
+        assert client.messages.create.call_count == 1
+        assert [(alert.source, alert.severity) for alert in monitor.alerts] == [
+            ("Anthropic (claude-sonnet-4-6)", QuotaSeverity.CRITICAL)
+        ] * alerts
+
     def test_unparseable_verdict_is_malformed_payload(
         self, adapter_with_client: tuple[ToolCallingAnthropicAdapter, MagicMock]
     ) -> None:

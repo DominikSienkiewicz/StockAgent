@@ -81,6 +81,24 @@ class TestFetchPolishMacro:
         # (4.10 - 4.00) / 4.00 == 0.025
         assert snap.usd_pln_30d_change_ratio == Decimal("0.025")
 
+    def test_snapshot_carries_the_daily_change(self, client: NbpClient, mocker: Any) -> None:
+        # DAT-29: zmiana od przedostatniego notowania tabeli A.
+        eur = _nbp_rates_payload("euro", [4.30, 4.25, 4.27])
+        usd = _nbp_rates_payload("dolar amerykański", [3.70, 3.64, 3.62])
+
+        def get(url: str, **_: object) -> Mock:
+            return _ok_response(eur if "EUR" in url else usd)
+
+        mocker.patch("requests.Session.get", side_effect=get)
+
+        snap = client.fetch_polish_macro()
+
+        assert snap is not None
+        assert snap.usd_pln_1d_change_ratio is not None
+        assert snap.usd_pln_1d_change_ratio.quantize(Decimal("0.0001")) == Decimal("-0.0055")
+        assert snap.eur_pln_1d_change_ratio is not None
+        assert snap.eur_pln_1d_change_ratio.quantize(Decimal("0.0001")) == Decimal("0.0047")
+
     def test_calls_both_currencies(self, client: NbpClient, mocker: Any) -> None:
         mock_get = mocker.patch(
             "requests.Session.get",

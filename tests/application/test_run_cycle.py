@@ -14,6 +14,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from src.application.errors import ErrorCategory, QuotaExhausted
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase
 from src.application.use_cases.enrich_alpha import AlphaEnrichmentUseCase
 from src.application.use_cases.run_cycle import CycleOptions, RunFastLoopCycle, SymbolScope
@@ -72,6 +73,55 @@ def test_failure_of_one_symbol_is_redacted_and_isolated() -> None:
     assert [r.symbol for r in outcome.results] == ["AAPL", "MSFT"]
     assert outcome.results[0].error_message == "token=***"
     assert outcome.results[0].error_type == "RuntimeError"
+
+
+def test_failure_carries_the_category_of_its_port_error() -> None:
+    # MAIL-32: mail pokazuje kategorię z taksonomii portów, nie surowy wyjątek.
+    use_case = _use_case()
+    use_case.run.side_effect = [QuotaExhausted("429 Too Many Requests"), RuntimeError("bug")]
+
+    outcome = _cycle(use_case, CycleOptions()).run(["AAPL", "MSFT"])
+
+    assert [r.error_category for r in outcome.results] == [
+        ErrorCategory.QUOTA_EXHAUSTED,
+        ErrorCategory.UNKNOWN,
+    ]
+
+
+def test_failure_names_the_provider_from_the_injected_hook() -> None:
+    # MAIL-32: dostawcę zna infrastruktura; use case tylko woła wstrzyknięty hook.
+    use_case = _use_case()
+    failure = QuotaExhausted("429")
+    use_case.run.side_effect = failure
+    seen: list[BaseException] = []
+
+    def provider(exc: BaseException) -> str | None:
+        seen.append(exc)
+        return "Finnhub"
+
+    cycle = RunFastLoopCycle(
+        use_case=use_case,
+        alpha_use_case=Mock(spec=AlphaEnrichmentUseCase),
+        options=CycleOptions(),
+        sleep=Mock(),
+        redact=lambda text: text,
+        symbol_scope=lambda symbol: nullcontext(),
+        error_provider=provider,
+    )
+
+    outcome = cycle.run(["AAPL"])
+
+    assert outcome.results[0].error_provider == "Finnhub"
+    assert seen == [failure]
+
+
+def test_without_a_provider_hook_the_provider_is_unknown() -> None:
+    use_case = _use_case()
+    use_case.run.side_effect = QuotaExhausted("429")
+
+    outcome = _cycle(use_case, CycleOptions()).run(["AAPL"])
+
+    assert outcome.results[0].error_provider is None
 
 
 def test_every_symbol_runs_inside_its_log_scope() -> None:

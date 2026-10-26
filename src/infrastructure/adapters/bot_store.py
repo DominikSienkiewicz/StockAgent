@@ -16,11 +16,11 @@ from typing import Any
 
 import httpx
 from postgrest.exceptions import APIError
-from supabase import create_client
 
 from src.application.errors import MalformedPayload, PortError, ProviderUnavailable
 from src.application.ports import BotStatePort, SymbolMutePort
 from src.domain.watchlist import SymbolMute
+from src.infrastructure.adapters._supabase import build_supabase_client
 from src.infrastructure.error_translation import as_port_error
 
 BOT_STATE_TABLE = "bot_state"
@@ -33,7 +33,7 @@ def _utc_now() -> datetime:
 
 
 class SupabaseBotStore(BotStatePort, SymbolMutePort):
-    """`client` to klient `supabase.create_client` z kluczem serwisowym."""
+    """`client` to klient Supabase z `build_supabase_client` (klucz serwisowy, NIEZ-35)."""
 
     def __init__(self, client: Any, *, clock: Callable[[], datetime] = _utc_now) -> None:
         self._client = client
@@ -41,7 +41,7 @@ class SupabaseBotStore(BotStatePort, SymbolMutePort):
 
     @classmethod
     def connect(cls, url: str, key: str) -> SupabaseBotStore:
-        return cls(create_client(url, key))
+        return cls(build_supabase_client(url, key))
 
     def get_update_offset(self) -> int | None:
         rows = _rows(

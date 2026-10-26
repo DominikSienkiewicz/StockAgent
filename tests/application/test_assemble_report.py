@@ -18,6 +18,7 @@ from src.application.ports import RepositoryPort, StoredShockAlert, WebPublisher
 from src.application.quota_monitor import QuotaMonitor
 from src.application.report_builder import ReportContext, SymbolResult
 from src.application.report_evidence import PaperCosts
+from src.application.report_finops import CycleGateTally
 from src.application.report_models import ResolvedPrediction
 from src.application.report_track_record import TrackRecordStats
 from src.application.use_cases.assemble_report import (
@@ -31,10 +32,11 @@ from src.application.use_cases.publish_public_scorecard import (
     PublishPublicScorecardUseCase,
 )
 from src.domain.council_redundancy import CouncilVoteSample
-from src.domain.cycle_maturity import CycleMaturity
+from src.domain.cycle_maturity import CycleMaturity, SkipReason
 from src.domain.evaluation_protocol import EvaluationProtocol
 from src.domain.paper_ledger import LedgerTrade
 from src.domain.persona_track_record import PersonaScoring, PersonaTrackRecord
+from src.domain.reference_signal import ReferenceOutcome, ReferenceTally
 
 STARTED_AT = datetime(2026, 10, 18, 5, 30, tzinfo=UTC)
 _SETTLED = {
@@ -714,3 +716,185 @@ def test_open_entry_curve_off_without_its_flag() -> None:
     flags = ReportFlags(track_record_days=30, reflection_min_age_hours=6)
 
     assert _assemble(repo, flags).open_entry_curve is None
+
+
+def test_gate_tally_of_the_whole_cycle_reaches_the_context() -> None:
+    """FIN-19: licznik symboli zatrzymanych bramką liczy assembler ze wszystkich
+    wyników cyklu, jak koszt — przed filtrem watchlisty subskrybenta."""
+    results = [
+        SymbolResult(symbol="AAPL", status="saved"),
+        SymbolResult(symbol="MSFT", status="ignored", skip_reason=SkipReason.BELOW_THRESHOLD),
+    ]
+
+    context = (
+        ReportAssembler(
+            _repo(),
+            ReportFlags(track_record_days=30, reflection_min_age_hours=12),
+            PaperCosts(cost_bps=10.0),
+        )
+        .assemble(
+            results=results,
+            started_at=STARTED_AT,
+            quota_monitor=QuotaMonitor(),
+            all_symbols=["AAPL", "MSFT"],
+            context=ReportContext(),
+        )
+        .context
+    )
+
+    assert context.cycle_gate == CycleGateTally(gated=1, symbols=2)
+
+
+class TestMonthToDateCost:
+    """FIN-23: koszt miesiąca z ledgera `llm_calls` — tylko z `cost_ledger_enabled`,
+    bo bez flagi ledger nie przybywa (a bez migracji 040 tabeli nie ma)."""
+
+    @staticmethod
+    def _flags(enabled: bool) -> ReportFlags:
+        return ReportFlags(
+            track_record_days=30, reflection_min_age_hours=12, cost_ledger_enabled=enabled
+        )
+
+    def test_ledger_spend_since_the_month_start_reaches_the_context(self) -> None:
+        repo = _repo()
+        repo.get_llm_cost_since.return_value = 3.40
+
+        context = _assemble(repo, self._flags(True))
+
+        repo.get_llm_cost_since.assert_called_once_with(datetime(2026, 10, 1, tzinfo=UTC))
+        assert context.month_cost is not None
+        assert context.month_cost.spent_usd == 3.40
+        assert context.month_cost.days_elapsed == 18
+
+    def test_flag_off_reads_nothing(self) -> None:
+        repo = _repo()
+
+        context = _assemble(repo, self._flags(False))
+
+        repo.get_llm_cost_since.assert_not_called()
+        assert context.month_cost is None
+
+    def test_failed_ledger_read_hides_the_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        repo = _repo()
+        repo.get_llm_cost_since.side_effect = ProviderUnavailable("ledger down")
+
+        with caplog.at_level("WARNING"):
+            context = _assemble(repo, self._flags(True))
+
+        assert context.month_cost is None
+        assert "ledger" in caplog.text
+
+
+def _settled_days(days: int) -> list[dict[str, Any]]:
+    """Po jednym rozliczeniu na dzień UTC — krzywa portfela ma `days` okresów."""
+    start = datetime(2026, 8, 1, 5, 30, tzinfo=UTC)
+    rows = []
+    for day in range(days):
+        up = day % 3 != 0
+        rows.append(
+            {
+                **_SETTLED,
+                "is_trend_correct": up,
+                "actual_price_after_12h": "102" if up else "99",
+                "timestamp": (start + timedelta(days=day)).isoformat(),
+            }
+        )
+    return rows
+
+
+def _sharpe_flags(*, recipe_version_enabled: bool = True) -> ReportFlags:
+    return ReportFlags(
+        track_record_days=90,
+        reflection_min_age_hours=12,
+        equity_curve_enabled=True,
+        recipe_version_enabled=recipe_version_enabled,
+    )
+
+
+class TestSharpeEvidenceOfTheCurve:
+    """WIA-68: PSR i DSR krzywej kapitału; n_trials z liczby wersji przepisu."""
+
+    def test_curve_of_thirty_periods_gets_psr_and_dsr_with_recipe_trials(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+        repo.count_recipe_versions.return_value = 3
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        assert stats is not None
+        assert stats.sharpe is not None
+        assert (stats.sharpe.n, stats.sharpe.n_trials) == (30, 3)
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is not None
+
+    def test_recipe_trials_need_their_flag(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+
+        stats = _assemble(repo, _sharpe_flags(recipe_version_enabled=False)).track_record_stats
+
+        repo.count_recipe_versions.assert_not_called()
+        assert stats is not None and stats.sharpe is not None
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is None
+
+    def test_short_curve_reads_no_trials(self) -> None:
+        repo = _repo()
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        repo.count_recipe_versions.assert_not_called()
+        assert stats is not None and stats.sharpe is not None
+        assert (stats.sharpe.n, stats.sharpe.psr) == (1, None)
+
+    def test_failed_trials_read_leaves_only_the_psr(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+        repo.count_recipe_versions.side_effect = ProviderUnavailable("supabase down")
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        assert stats is not None and stats.sharpe is not None
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is None
+
+
+def _reference_flags(*, reference_signal_enabled: bool = True) -> ReportFlags:
+    return ReportFlags(
+        track_record_days=30,
+        reflection_min_age_hours=12,
+        equity_curve_enabled=True,
+        reference_signal_enabled=reference_signal_enabled,
+    )
+
+
+class TestReferenceRuleTally:
+    """WIA-82: agregat rozliczeń reguły referencyjnej w oknie Track Recordu."""
+
+    def test_tally_of_the_window_reaches_the_track_record(self) -> None:
+        repo = _repo()
+        repo.get_reference_outcomes.return_value = [ReferenceOutcome.HIT] * 6 + [
+            ReferenceOutcome.MISS
+        ] * 4
+
+        stats = _assemble(repo, _reference_flags()).track_record_stats
+
+        repo.get_reference_outcomes.assert_called_once_with(30)
+        assert stats is not None
+        assert stats.reference == ReferenceTally(hits=6, misses=4, expired=0)
+
+    def test_reference_read_needs_its_flag(self) -> None:
+        repo = _repo()
+
+        stats = _assemble(repo, _reference_flags(reference_signal_enabled=False)).track_record_stats
+
+        repo.get_reference_outcomes.assert_not_called()
+        assert stats is not None and stats.reference is None
+
+    def test_failed_read_hides_the_row(self) -> None:
+        repo = _repo()
+        repo.get_reference_outcomes.side_effect = ProviderUnavailable("supabase down")
+
+        stats = _assemble(repo, _reference_flags()).track_record_stats
+
+        assert stats is not None and stats.reference is None

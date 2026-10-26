@@ -4,7 +4,8 @@
     https://api.nbp.pl/api/exchangerates/rates/A/{currency}/last/{N}/?format=json
 Odpowiedź zawiera listę kursów ("rates") posortowaną chronologicznie —
 ostatni element = najświeższy. Adapter używa pierwszego punktu jako
-30-dniowej referencji do liczenia procentowej zmiany.
+30-dniowej referencji do liczenia procentowej zmiany, a przedostatniego jako
+referencji zmiany dziennej (DAT-29); obie liczy domena (`from_rates`).
 
 `NbpFxRateClient` (FxRatePort, PORT-11) — kurs z konkretnego dnia (np. zakupu):
     https://api.nbp.pl/api/exchangerates/rates/a/{code}/{date}/?format=json
@@ -37,7 +38,6 @@ from src.application.ports import FxRatePort, MacroIndicatorsPort
 from src.domain.fx import FxRate
 from src.domain.polish_macro import PolishMacroSnapshot
 from src.domain.portfolio import HOME_CURRENCY
-from src.domain.value_objects import Ratio
 from src.infrastructure.adapters._http import (
     build_session,
     json_payload,
@@ -71,26 +71,19 @@ class NbpClient(MacroIndicatorsPort):
     def fetch_polish_macro(self) -> PolishMacroSnapshot | None:
         eur_rates = self._fetch_rates("EUR")
         usd_rates = self._fetch_rates("USD")
-        if not eur_rates or not usd_rates:
-            return None
         if len(eur_rates) < 2 or len(usd_rates) < 2:
             # Brak punktu referencyjnego do delty 30d.
             return None
 
         try:
-            eur_latest, eur_baseline = _mid(eur_rates[-1]), _mid(eur_rates[0])
-            usd_latest, usd_baseline = _mid(usd_rates[-1]), _mid(usd_rates[0])
+            eur = _window_mids(eur_rates)
+            usd = _window_mids(usd_rates)
         except MalformedPayload:
             logger.exception("NBP rates table without a numeric mid")
             return None
 
-        return PolishMacroSnapshot(
-            eur_pln=eur_latest,
-            usd_pln=usd_latest,
-            eur_pln_30d_change_ratio=Ratio((eur_latest - eur_baseline) / eur_baseline),
-            usd_pln_30d_change_ratio=Ratio((usd_latest - usd_baseline) / usd_baseline),
-            fetched_at=datetime.now(UTC),
-        )
+        # Zmiany 30d i dzienną (DAT-29) liczy domena.
+        return PolishMacroSnapshot.from_rates(eur=eur, usd=usd, fetched_at=datetime.now(UTC))
 
     def _fetch_rates(self, currency: str) -> list[dict[str, object]]:
         url = f"{self._base_url}/{currency}/last/{self._window_days}/?format=json"
@@ -153,6 +146,13 @@ class NbpFxRateClient(FxRatePort):
             on_date,
         )
         return None
+
+
+def _window_mids(rates: list[dict[str, object]]) -> list[Decimal]:
+    """Kursy, których potrzebuje snapshot: pierwszy (baza 30d), przedostatni (baza
+    dzienna, DAT-29) i ostatni. Środek okna nie jest parsowany — śmieć w nim nie
+    psuje snapshotu, tak jak przed DAT-29."""
+    return [_mid(rates[0]), _mid(rates[-2]), _mid(rates[-1])]
 
 
 def _mid(entry: object) -> Decimal:

@@ -118,5 +118,5 @@ def _lead_text(data: SectionInput) -> list[str]:
 
 
 PREHEADER_SECTION = ReportSection(key="preheader", render_html=_preheader_html, render_text=no_text)
-# #1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
+# R-1: lead cyklu — pierwszy ekran, tuż za bannerem kwot.
 LEAD_SECTION = ReportSection(key="lead", render_html=_lead_html, render_text=_lead_text)

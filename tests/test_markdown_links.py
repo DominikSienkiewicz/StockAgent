@@ -1,10 +1,10 @@
 """Strażnik linków względnych w Markdown (CI-32) — w lokalnej bramce, nie tylko w CI.
 
 README jest routerem do `docs/`, więc link, który się nie rozwiązuje, to publiczny
-defekt. PulseDigest wypuścił dokładnie to: commit routera, którego cztery dokumenty
-referencyjne `.gitignore` po cichu wyciął, i 404 wisiały trzy i pół dnia. Dawniej
-sprawdzał to tylko krok basha w `ci.yml`, więc agent zgłaszał „zielono” według
-bramki z CLAUDE.md, a CI padało na linkach. Logika kroku przeszła tutaj bez zmian:
+defekt: wystarczy commit routera, którego dokumenty docelowe `.gitignore` po cichu
+wyciął, a 404 wiszą, dopóki ktoś ich nie kliknie. Dawniej sprawdzał to tylko krok
+basha w `ci.yml`, więc agent zgłaszał „zielono” według bramki z AGENTS.md, a CI
+padało na linkach. Logika kroku przeszła tutaj bez zmian:
 
 - pliki: `git ls-files '*.md'` (gitignorowane `docs/concepts/` nie wchodzą);
 - cel: każde `](…)` w linii, bez kotwicy `#…`; linki zewnętrzne (`http…`,

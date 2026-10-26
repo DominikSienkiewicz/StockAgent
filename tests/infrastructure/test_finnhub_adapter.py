@@ -42,7 +42,7 @@ class TestGetCurrentPrice:
         assert price.amount == Decimal("192.53")
         mock_get.assert_called_once()
 
-    def test_passes_symbol_and_token_as_query_params(
+    def test_passes_symbol_as_query_param_and_token_in_header(
         self, adapter: FinnhubAdapter, mocker: Any
     ) -> None:
         mock_get = mocker.patch(
@@ -53,7 +53,9 @@ class TestGetCurrentPrice:
         adapter.get_current_price("VOO")
 
         call = mock_get.call_args
-        assert call.kwargs["params"] == {"symbol": "VOO", "token": "test-token-123"}
+        # BEZ-15: token w nagłówku X-Finnhub-Token, nie w URL-u.
+        assert call.kwargs["params"] == {"symbol": "VOO"}
+        assert call.kwargs["headers"] == {"X-Finnhub-Token": "test-token-123"}
         assert (
             call.kwargs["url"].endswith("/quote")
             if "url" in call.kwargs

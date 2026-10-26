@@ -1,5 +1,5 @@
 # 📈 StockAgent
-**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications, define the quality gates enforced in CI and review every change.
+**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications and define the quality gates CI runs on every push to `main` and every pull request: ruff, mypy --strict and pytest, including schema tests on a real Postgres with pgvector ([Testing](#testing)).
 
 **Educational proof of concept — not investment advice.** A Python and LangGraph agent that
 analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price action with
@@ -7,6 +7,7 @@ curated financial news sentiment, cross-checks the LLM's reading against Alpha V
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate.
 
+[![CI](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
 ![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
@@ -49,6 +50,10 @@ Each claim links the file that backs it, and each of those runs in CI.
 - **The docs cannot point at nothing.** → [`tests/test_markdown_links.py`](tests/test_markdown_links.py)
   → every relative link in tracked Markdown must resolve, in the same pytest gate that runs
   locally and in CI.
+- **Every `fix:` commit carries its regression test.** →
+  [`src/tools/commit_policy.py`](src/tools/commit_policy.py) → `uv run python main_tools.py
+  commit-policy` checks the branch before `scripts/merge.sh`; the rule applies from 2026-10-26
+  and older history is not rewritten.
 
 ## Invariants under test
 
@@ -65,6 +70,42 @@ The rules that keep the loop cheap and a bad day survivable, each with the test 
 | `main_watch.py` and `main_deadman.py` build no paid port, and the watch writes no price snapshot | [`tests/test_main_watch.py`](tests/test_main_watch.py) `test_watch_starts_with_stubbed_paid_ports_and_database_writes`, `TestWatchCycle::test_watch_never_writes_a_price_snapshot`; [`tests/test_main_deadman.py`](tests/test_main_deadman.py) `test_deadman_builds_no_paid_adapter` |
 | The owner's Telegram bot answers only the `TELEGRAM_CHAT_ID` chat, and a symbol muted from it skips the paid analysis but keeps its price snapshot | [`tests/infrastructure/test_telegram_command_source.py`](tests/infrastructure/test_telegram_command_source.py) `test_only_owner_text_messages_pass_and_offset_moves_past_every_update`; [`tests/test_main_agent_mutes.py`](tests/test_main_agent_mutes.py) `TestFastLoopMutes::test_muted_symbol_skips_the_graph_but_keeps_its_price_snapshot` |
 | CI is under test: the quality job runs ruff and mypy on every entry point, and an active Fast Loop cron needs the deadman, the cost ceiling and the weekly budget | [`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) `test_ci_quality_job_runs_ruff_and_mypy`, `test_ci_lints_and_typechecks_every_entrypoint`; [`tests/test_workflow_env_wiring.py`](tests/test_workflow_env_wiring.py) `test_enabled_fast_loop_schedule_requires_deadman` |
+
+## Testing
+
+The quality job of [CI](.github/workflows/ci.yml) runs these commands on every push to `main`
+and every pull request, and they are the local gate too.
+[`tests/test_quality_gate_sync.py`](tests/test_quality_gate_sync.py) fails when this block,
+[AGENTS.md](AGENTS.md) or the [running guide](docs/running-locally.md) quotes a command CI
+does not run:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy          # strict: src, every main_*.py and all of tests/
+uv run pytest -m "not integration and not containers"
+```
+
+Two markers split off what the plain run leaves out. `integration` marks tests against the
+live APIs (paid LLM calls, a real email): they skip without keys, the CI gate never runs
+them, and only the manual Integration smoke workflow does, with its own keys. `containers`
+marks the tests that need Docker: CI runs them as a separate step and fails when no Docker
+daemon answers. On top of the plain run, CI measures the branch coverage of `src/domain`
+against a floor that only rises. CI also lints the workflows and shell scripts (actionlint,
+zizmor, shellcheck) and scans `uv.lock` with osv-scanner on lockfile changes and weekly.
+
+The layers are tested where they live:
+
+- **Domain:** plain Python without mocks, so a rule is checked on values in and decisions out.
+- **Adapters:** `requests.Session` mocked, parsers fed payloads in the shape of real provider
+  answers ([`tests/fixtures/providers/`](tests/fixtures/providers/)), and no socket: a unit
+  test that tries the network fails ([`tests/test_network_isolation.py`](tests/test_network_isolation.py)).
+- **Application:** the graph, the use cases and the report run on `Mock(spec=Port)` fakes
+  and an in-memory repository.
+- **Schema and repository:** every migration applied to a real Postgres with pgvector, and
+  the repository's contract checked against a real PostgREST, both in containers.
+
+Setup, the local run and the build commands are in [running it](docs/running-locally.md).
 
 ## Status
 
@@ -117,6 +158,26 @@ that renders without any key and the reviewer's tour above; and only then subscr
 the GDPR and terms-of-service work they need. The public hit rate may turn out weak. It gets
 published anyway: a weak result anyone can check says more than a strong one nobody can.
 
+## Non-goals
+
+Four boundaries are deliberate, each for its own reason:
+
+- **No order execution.** The agent writes a recommendation and scores it later; the
+  decision and the trade stay with a person. Placing orders would turn an educational
+  project into an automated trading system with the regulatory weight that carries, and
+  would mix execution into a track record that is meant to measure predictions.
+- **No real-time streaming.** The loop runs once per trading day by design: the volatility
+  gate, the paid-call ceiling of a cycle and the weekly budget are sized for that, and the
+  free hourly price-shock check already covers sharp moves between runs. Streaming would
+  need a paid market-data feed and paid LLM calls on every tick.
+- **No scraping of premium sources.** Every source is an API used under its own terms
+  ([data sources and terms](docs/how-it-works.md#data-sources-and-terms)). Scraping a
+  paywalled source would break those terms and the redistribution limits the email keeps.
+- **No multi-tenant product, for now.** The subscriber fan-out exists behind a flag that
+  stays off: email to other people needs written approval from Finnhub and Alpha Vantage,
+  human review under the Anthropic and OpenAI usage policies, and GDPR work. It is
+  deferred, not rejected (see [Who this is for](#who-this-is-for)).
+
 ## 🧠 The Vision: Signal over Noise
 
 In the era of AI-driven information overload, a single price tick is a useless signal — what
@@ -150,7 +211,7 @@ rendered from fictional data, with English labels added for this screenshot; sec
 section it is described in [the report email](docs/report-email.md).
 
 <details>
-<summary>Annotated sample email (fictional data, rendered 2026-10-22)</summary>
+<summary>Annotated sample email (fictional data, rendered 2026-10-26)</summary>
 
 ![Annotated sample of the report email, rendered from fictional data](docs/img/report-email.png)
 
@@ -176,10 +237,12 @@ sample at 1280 × 640.
 | [The report email](docs/report-email.md) | Section-by-section anatomy of what lands in the inbox |
 | [Running it](docs/running-locally.md) | Stack, prerequisites, local setup, database migrations, build commands, GitHub Actions, secret management |
 | [Configuration](docs/configuration.md) | Every `Settings` field with its default, a tested table of every flag (default, `config.toml`, migration, secret, paid calls, status), and what each flag does and costs |
+| [Data flows to LLM providers](docs/data-flows.md) | What each prompt and embedding sends to OpenAI or Anthropic, from which source, and the providers' retention terms; positions and e-mail addresses never reach a prompt |
 | [Data and access](docs/data-and-access.md) | Every table and view with its data class and who reads and writes it, the Supabase keys, retention, and the Row Level Security rollout |
 | [Reference signal protocol](docs/reference-protocol-v1.md) | The frozen rule of the free weekly benchmark the paid LLM has to beat (`reference-v1`) |
 | [Decision log](docs/decisions.md) | The roadmap items `R-N` that the code and `config.toml` refer to, and the decisions behind the architecture, each with its commit and the test that holds it, plus the rationale behind each feature flag |
 | [Engineering log](docs/engineering-log.md) | Incident, rule, guard: what went wrong, the rule it taught and the test that fails when the rule is broken again |
+| [Security](SECURITY.md) | How to report a vulnerability, the threat model from untrusted news through the LLM to the email, the known gaps left open, and the inventory of the secrets with how each is rotated |
 
 Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero deps) →
 Application (ports + use cases + LangGraph) → Infrastructure (adapters for API / DB / LLM /
@@ -293,3 +356,5 @@ direction get the sign of the return over IVV right).
 This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 
 The code is MIT-licensed; the market data it fetches is not. Every provider's terms, and what of its data reaches the email, are in [how-it-works.md](docs/how-it-works.md#data-sources-and-terms).
+
+The investor personas of the advisory council ([`data/council_personas/`](data/council_personas/)) are the author's own short descriptions of publicly known investing styles, not quotations. The names are used descriptively: the people named are not affiliated with this project and do not endorse it, and the public outputs show an archetype of the style instead of a name.

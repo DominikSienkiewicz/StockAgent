@@ -134,6 +134,11 @@ def render_quota_banner_text(
 # ---------------------------------------------------------------------------
 
 _BUDGET_TITLE = "💸 LIMIT LLM WYCZERPANY"
+# FIN-36: nazwa limitu w sekcji kosztu i w notce budżetu — ta sama przyczyna co banner.
+USD_LIMIT_NAME = {
+    BudgetWindow.DAY: "dzienny limit USD",
+    BudgetWindow.MONTH: "miesięczny limit USD",
+}
 _BUDGET_WINDOW_LABEL = {
     BudgetWindow.DAY: ("Dzienny limit", "od północy UTC"),
     BudgetWindow.MONTH: ("Miesięczny limit", "od 1. dnia miesiąca UTC"),
@@ -202,8 +207,5 @@ def _section_text(data: SectionInput) -> list[str]:
 
 # Banner idzie NAJWYŻEJ: wyczerpany płatny klucz waży więcej niż ruch ceny.
 QUOTA_BANNER_SECTION = ReportSection(
-    key="quota_banner",
-    render_html=_section_html,
-    render_text=_section_text,
-    context_fields=frozenset({"llm_budget_breach"}),
+    key="quota_banner", render_html=_section_html, render_text=_section_text
 )

@@ -21,10 +21,12 @@ from src.domain.reference_signal import (
     ReferenceCall,
     ReferenceOutcome,
     ReferenceRead,
+    ReferenceTally,
     momentum_call,
     protocol_digest,
     select_baseline,
     settle_call,
+    tally_outcomes,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,3 +176,30 @@ class TestOneCallPerSixDays:
         # Zawinięcie linii w Markdownie nie zmienia zdania — porównujemy po spacjach.
         text = " ".join((ROOT / REFERENCE_PROTOCOL_PATH).read_text(encoding="utf-8").split())
         assert f"At most one call per symbol in {BASELINE_MIN_AGE.days} days" in text
+
+
+class TestTally:
+    """WIA-82: agregat rozliczeń reguły referencyjnej — bez symboli, n bez wygasłych."""
+
+    def test_hits_and_misses_make_the_sample_and_expired_stay_out(self) -> None:
+        outcomes = (
+            [ReferenceOutcome.HIT] * 6
+            + [ReferenceOutcome.MISS] * 4
+            + [ReferenceOutcome.EXPIRED] * 2
+        )
+
+        tally = tally_outcomes(outcomes)
+
+        assert tally == ReferenceTally(hits=6, misses=4, expired=2)
+        assert tally.n == 10
+        assert tally.rate == 0.6
+
+    def test_pending_is_not_a_settlement(self) -> None:
+        tally = tally_outcomes([ReferenceOutcome.PENDING, ReferenceOutcome.HIT])
+
+        assert (tally.n, tally.expired) == (1, 0)
+
+    def test_without_settlements_there_is_no_rate(self) -> None:
+        tally = tally_outcomes([ReferenceOutcome.EXPIRED])
+
+        assert (tally.n, tally.rate) == (0, None)

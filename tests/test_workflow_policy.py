@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +140,16 @@ def test_dependabot_groups_weekly_updates_for_actions_and_uv() -> None:
         assert any(group.get("patterns") == ["*"] for group in groups.values()), (
             f"{ecosystem}: bez grupy `*` każda zależność dostaje osobny PR"
         )
+
+
+def test_dependabot_waits_two_weeks_before_proposing_a_release() -> None:
+    """CI-23 (zizmor dependabot-cooldown): świeżo wydana wersja bywa przejętym albo wycofanym
+    wydaniem; jak przy ręcznym przypinaniu (wersja ≥ 2 tygodnie) Dependabot czeka 14 dni."""
+    spec = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+
+    for update in spec["updates"]:
+        cooldown = update.get("cooldown") or {}
+        assert cooldown.get("default-days", 0) >= 14, update["package-ecosystem"]
 
 
 # NIEZ-27: ręczne DB Migrate w trakcie cyklu (022 robi DROP i CREATE ml_feature_store)
@@ -523,3 +534,306 @@ def test_harden_runner_never_blocks_traffic() -> None:
     for inputs in audited:
         assert inputs.get("egress-policy") == "audit", inputs
         assert "allowed-endpoints" not in inputs, "allowlista należy do trybu block"
+
+
+# CI-18: job z entry-pointem (`python main_*.py`) i jego sekretami nie potrzebuje pytesta,
+# mypy, ruffa ani testcontainers, więc kod z grupy dev nie trafia do środowiska z kluczami.
+# Bramka (ci.yml) i joby, które same uruchamiają pytest (smoke, mutmut TEST-35), synchronizują
+# grupę dev, bo jej używają.
+_ENTRYPOINT_RUN = re.compile(r"\bpython\s+main_\w+\.py\b")
+_RUNS_PYTEST = re.compile(r"\bpytest\b")
+EXPECTED_ENTRYPOINT_WORKFLOWS = frozenset(
+    {
+        "bot_poll.yml",
+        "deadman_daily.yml",
+        "fast_loop_12h.yml",
+        "scorecard_pages.yml",
+        "shock_watch_hourly.yml",
+        "slow_loop_weekly.yml",
+    }
+)
+
+
+def _entrypoint_sync_steps() -> list[tuple[str, str, str]]:
+    """(workflow, job, komenda) każdego `uv sync` w jobie, który uruchamia `main_*.py`
+    i nie uruchamia pytesta."""
+    found: list[tuple[str, str, str]] = []
+    for workflow, spec in _workflow_specs().items():
+        if workflow == "ci.yml":
+            continue
+        for name, job in _jobs(spec).items():
+            runs = [str(step.get("run", "")) for step in job.get("steps", [])]
+            if any(_RUNS_PYTEST.search(run) for run in runs):
+                continue
+            if any(_ENTRYPOINT_RUN.search(run) for run in runs):
+                found.extend((workflow, name, run) for run in runs if "uv sync" in run)
+    return found
+
+
+def test_entrypoint_sync_detection_finds_every_entrypoint_workflow() -> None:
+    assert {workflow for workflow, _, _ in _entrypoint_sync_steps()} == (
+        EXPECTED_ENTRYPOINT_WORKFLOWS
+    )
+
+
+def test_production_workflows_sync_without_dev_dependencies() -> None:
+    with_dev = [
+        f"{workflow}:{job}"
+        for workflow, job, run in _entrypoint_sync_steps()
+        if "--no-dev" not in run.split()
+    ]
+
+    assert with_dev == [], (
+        f"`uv sync` bez `--no-dev` w jobach z entry-pointem: {with_dev} — grupa dev "
+        "(pytest, mypy, testcontainers) nie ma czego szukać w jobie z sekretami"
+    )
+
+
+# BEZ-22: connection string z prawem DDL na produkcji był sekretem repo, czytelnym dla każdego
+# workflowu z main. Job migracji biegnie w środowisku `production-db` (wymagane zatwierdzenie
+# właściciela, audyt w UI), a sekret żyje wyłącznie w tym środowisku. Środowisko, którego
+# jeszcze nie ma po stronie GitHuba, powstaje przy pierwszym runie bez reguł ochrony, a sekret
+# repo o tej samej nazwie dalej działa — workflow nie pada przed krokami właściciela.
+MIGRATION_ENVIRONMENT = "production-db"
+ENVIRONMENT_SECRETS = {"SUPABASE_DB_URL": MIGRATION_ENVIRONMENT}
+SECRET_SCRIPTS = ("gh-secrets-check.sh", "gh-secrets-sync.sh")
+
+
+def _job_environment(job: dict[str, Any]) -> str | None:
+    """Nazwa środowiska joba — `environment: x` albo `environment: {name: x}`."""
+    declared = job.get("environment")
+    if isinstance(declared, dict):
+        return str(declared.get("name"))
+    return None if declared is None else str(declared)
+
+
+def _jobs_reading_secret(secret: str) -> list[tuple[str, str]]:
+    return [
+        (workflow, name)
+        for workflow, name in _job_ids()
+        if f"secrets.{secret}" in yaml.safe_dump(_jobs(_workflow_specs()[workflow])[name])
+    ]
+
+
+def test_db_migrate_runs_in_protected_environment() -> None:
+    migrate = _jobs(_workflow_specs()["db_migrate.yml"])["migrate"]
+
+    assert _job_environment(migrate) == MIGRATION_ENVIRONMENT
+
+
+@pytest.mark.parametrize(("secret", "environment"), sorted(ENVIRONMENT_SECRETS.items()))
+def test_environment_secrets_are_read_only_inside_their_environment(
+    secret: str, environment: str
+) -> None:
+    readers = _jobs_reading_secret(secret)
+
+    assert readers, f"żaden job nie czyta {secret} — mapa ENVIRONMENT_SECRETS jest martwa"
+    outside = [
+        f"{workflow}:{name}"
+        for workflow, name in readers
+        if _job_environment(_jobs(_workflow_specs()[workflow])[name]) != environment
+    ]
+    assert outside == [], f"{secret} czytany poza środowiskiem {environment}: {outside}"
+
+
+def _script_environment_secrets(script: str) -> dict[str, str]:
+    text = (ROOT / "scripts" / script).read_text(encoding="utf-8")
+    match = re.search(r'^ENVIRONMENT_SECRETS="([^"]*)"$', text, re.MULTILINE)
+    assert match, f"scripts/{script} nie deklaruje ENVIRONMENT_SECRETS"
+    return dict(entry.split("=", 1) for entry in match.group(1).split())
+
+
+@pytest.mark.parametrize("script", SECRET_SCRIPTS)
+def test_secret_scripts_know_the_environment_secrets(script: str) -> None:
+    assert _script_environment_secrets(script) == ENVIRONMENT_SECRETS
+
+
+FAKE_GH = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_DIR/calls"
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "repo view") echo "owner/repo" ;;
+  "variable list") ;;
+  "secret set") cat > /dev/null ;;
+  "secret list")
+    case " $* " in
+      *" --env "*) cat "$FAKE_DIR/environment_secrets" 2>/dev/null || exit 1 ;;
+      *) cat "$FAKE_DIR/repo_secrets" ;;
+    esac ;;
+  *) echo "unexpected gh call: $*" >&2; exit 3 ;;
+esac
+"""
+
+
+def _workflow_secret_names() -> set[str]:
+    text = "".join(path.read_text(encoding="utf-8") for path in WORKFLOWS_DIR.glob("*.yml"))
+    return set(re.findall(r"secrets\.([A-Za-z0-9_]+)", text)) - {"GITHUB_TOKEN"}
+
+
+def _run_secret_script(
+    tmp_path: Path, script: str, *args: str, repo: set[str], environment: set[str] | None
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    gh = fake_bin / "gh"
+    gh.write_text(FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    (tmp_path / "repo_secrets").write_text("".join(f"{n}\n" for n in sorted(repo)), "utf-8")
+    if environment is not None:
+        names = "".join(f"{n}\n" for n in sorted(environment))
+        (tmp_path / "environment_secrets").write_text(names, encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SUPABASE_DB_URL=postgresql://example\nOPENAI_API_KEY=sk-example\n", encoding="utf-8"
+    )
+    result = subprocess.run(
+        [str(ROOT / "scripts" / script), "-R", "owner/repo", "-f", str(env_file), *args],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DIR": str(tmp_path),
+            "GH_TOKEN": "",
+            "GITHUB_TOKEN": "",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls_file = tmp_path / "calls"
+    calls = calls_file.read_text(encoding="utf-8").splitlines() if calls_file.exists() else []
+    return result, calls
+
+
+def test_secret_sync_pushes_the_migration_url_into_its_environment(tmp_path: Path) -> None:
+    result, calls = _run_secret_script(
+        tmp_path, "gh-secrets-sync.sh", "--yes", repo=set(), environment=set()
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    sets = [call for call in calls if call.startswith("secret set")]
+    assert "secret set SUPABASE_DB_URL --env production-db --repo owner/repo" in sets
+    assert "secret set OPENAI_API_KEY --repo owner/repo" in sets
+
+
+def test_secret_check_reads_the_migration_url_from_its_environment(tmp_path: Path) -> None:
+    repo = _workflow_secret_names() - set(ENVIRONMENT_SECRETS)
+
+    result, calls = _run_secret_script(
+        tmp_path, "gh-secrets-check.sh", repo=repo, environment=set(ENVIRONMENT_SECRETS)
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "secret list --env production-db --repo owner/repo" in calls
+
+
+def test_secret_check_flags_a_migration_url_left_only_on_the_repo(tmp_path: Path) -> None:
+    result, _ = _run_secret_script(
+        tmp_path, "gh-secrets-check.sh", repo=_workflow_secret_names(), environment=None
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "SUPABASE_DB_URL" in result.stdout
+    assert "production-db" in result.stdout
+
+
+# BEZ-21: Dependabot podbija wersje, ale nic nie mówiło, że lock niesie znaną podatność.
+# osv-scanner skanuje uv.lock przy pushu na main, który zmienia lock (merge.sh i push, PR-ów
+# nie ma), oraz co tydzień (nowe advisory na niezmienionym locku). Binarka jest przypięta
+# wersją i sumą SHA-256, a wynik trafia do podsumowania joba także przy znaleziskach.
+AUDIT_WORKFLOW = "dependency_audit.yml"
+
+
+def _audit_runs() -> list[str]:
+    spec = _workflow_specs()[AUDIT_WORKFLOW]
+    return [
+        str(step.get("run", "")) for job in _jobs(spec).values() for step in job.get("steps", [])
+    ]
+
+
+def test_dependency_audit_runs_on_lockfile_pushes_to_main_and_weekly() -> None:
+    assert AUDIT_WORKFLOW in _workflow_specs(), f"brak .github/workflows/{AUDIT_WORKFLOW}"
+    triggers = _triggers(_workflow_specs()[AUDIT_WORKFLOW])
+
+    assert set(triggers) == {"push", "schedule", "workflow_dispatch"}, triggers
+    assert triggers["push"] == {"branches": ["main"], "paths": ["uv.lock"]}
+    (entry,) = triggers["schedule"]
+    _minute, _hour, day, month, weekday = str(entry["cron"]).split()
+    assert (day, month) == ("*", "*") and weekday.isdigit(), f"nie co tydzień: {entry['cron']}"
+
+
+def test_dependency_audit_scans_the_lockfile_with_a_verified_binary() -> None:
+    assert AUDIT_WORKFLOW in _workflow_specs(), f"brak .github/workflows/{AUDIT_WORKFLOW}"
+    runs = "\n".join(_audit_runs())
+
+    assert re.search(r"osv-scanner\S*\s+scan\s+source\s+--lockfile\s+uv\.lock\b", runs), runs
+    assert "sha256sum --check --strict" in runs, "binarka osv-scanner bez sprawdzenia sumy"
+    assert '>> "$GITHUB_STEP_SUMMARY"' in runs, "wynik skanu poza podsumowaniem joba"
+
+
+# CI-23: narzędzie z PyPI uruchamiane przez `uvx` (actionlint, zizmor, shellcheck, mutmut)
+# wykonuje kod w jobie tak samo jak akcja, więc ma dokładną wersję (`pkg==x.y.z` albo
+# `pkg@x.y.z`) — inaczej każdy run brałby najnowsze wydanie.
+_EXACT_PIN = re.compile(r"^[A-Za-z0-9._-]+(?:==|@)\d+(?:\.\d+)+$")
+
+
+def _uvx_package_specs(command: str) -> list[str]:
+    """Pakiety każdego `uvx` w komendzie: `--from X`, `--with X` albo pierwszy argument."""
+    tokens = shlex.split(command.replace("\\\n", " "))
+    specs: list[str] = []
+    for start in (index for index, token in enumerate(tokens) if token == "uvx"):
+        rest = tokens[start + 1 :]
+        explicit = [
+            rest[i + 1] for i, token in enumerate(rest[:-1]) if token in ("--from", "--with")
+        ]
+        positional = [
+            token
+            for i, token in enumerate(rest)
+            if not token.startswith("-")
+            and (i == 0 or rest[i - 1] not in ("--from", "--with", "--python"))
+        ]
+        specs.extend(explicit if "--from" in rest else [*explicit, *positional[:1]])
+    return specs
+
+
+def test_uvx_spec_reader_sees_from_with_and_bare_specs() -> None:
+    assert _uvx_package_specs("uvx zizmor@1.30.1 --offline .") == ["zizmor@1.30.1"]
+    assert _uvx_package_specs(
+        "uvx --python 3.12 --from mutmut==2.5.1 mutmut run \\\n  --no-progress"
+    ) == ["mutmut==2.5.1"]
+    assert _uvx_package_specs("uvx --from a==1.0 --with b==2.0 a") == ["a==1.0", "b==2.0"]
+    assert _uvx_package_specs("uvx zizmor .") == ["zizmor"]
+
+
+def test_uvx_tools_in_workflows_are_pinned_to_an_exact_version() -> None:
+    specs = [
+        (workflow, spec)
+        for workflow, name in _job_ids()
+        for step in _jobs(_workflow_specs()[workflow])[name].get("steps", [])
+        for spec in _uvx_package_specs(str(step.get("run", "")))
+    ]
+
+    assert {spec.split("=")[0].split("@")[0] for _, spec in specs} >= {
+        "actionlint-py",
+        "zizmor",
+        "shellcheck-py",
+        "mutmut",
+    }
+    unpinned = [(workflow, spec) for workflow, spec in specs if not _EXACT_PIN.match(spec)]
+    assert unpinned == [], f"uvx bez dokładnej wersji: {unpinned}"
+
+
+# CI-23: zizmor (artipacked) traktuje checkout bez `persist-credentials` jako pozostawiony
+# token. Każdy checkout deklaruje więc zamiar jawnie: false, a true tylko tam, gdzie job
+# pushuje tym tokenem (`publish-attestation-ledger`).
+@pytest.mark.parametrize(("workflow", "name"), _job_ids())
+def test_every_checkout_declares_persist_credentials(workflow: str, name: str) -> None:
+    job = _jobs(_workflow_specs()[workflow])[name]
+
+    for checkout in _checkouts(job):
+        declared = dict(checkout.get("with") or {}).get("persist-credentials")
+        assert isinstance(declared, bool), (
+            f"{workflow}:{name}: checkout bez jawnego `persist-credentials`"
+        )
+        assert declared is False or (workflow, name) in _pushing_jobs(), (
+            f"{workflow}:{name}: `persist-credentials: true` w jobie, który nie pushuje"
+        )

@@ -11,20 +11,28 @@ Kontrakt:
 2. Dokumenty dla agentów i ludzi cytują dokładnie te same komendy co CI.
 3. Bramka pytest w plikach agentowych pomija testy `integration` (TEST-07): gołe
    `uv run pytest` przy wyeksportowanych kluczach woła płatne API i wysyła mail.
+
+Dokument czytamy tak, jak widzi go agent: linia `@plik` to import, który Claude Code
+zastępuje treścią pliku (DOC-29: `CLAUDE.md` = `@AGENTS.md` + dodatki Claude'a).
 """
 
 from __future__ import annotations
 
+import ast
+import io
+import re
 import shlex
+import tokenize
 import tomllib
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).parent.parent
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md")
+GATE_DOCS = ("CLAUDE.md", "AGENTS.md", "docs/running-locally.md", "README.md")
 GATE_TOOLS = ("ruff", "mypy")
 AGENT_DOCS = ("CLAUDE.md", "AGENTS.md")
 # TEST-13: katalogi `tests/` już objęte bramką mypy — lista tylko rośnie.
@@ -35,6 +43,23 @@ MYPY_RATCHET = (
     "tests/application",
     "tests/*.py",
 )
+
+
+_IMPORT_LINE = re.compile(r"^@(\S+)$")
+
+
+def _doc_lines(doc: str) -> list[str]:
+    """Linie dokumentu z rozwiniętymi importami `@plik` (ścieżka względem dokumentu)."""
+    path = ROOT / doc
+    lines: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        imported = _IMPORT_LINE.match(line.strip())
+        if imported is None:
+            lines.append(line)
+        else:
+            target = (path.parent / imported.group(1)).relative_to(ROOT)
+            lines.extend(_doc_lines(target.as_posix()))
+    return lines
 
 
 def _entrypoints() -> list[str]:
@@ -108,7 +133,7 @@ def test_agent_docs_quote_the_ci_gate(doc: str, tool: str) -> None:
     ci_commands = _ci_tool_commands(tool)
     quoted = {
         " ".join(_from_tool(line, tool))
-        for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
+        for line in _doc_lines(doc)
         if line.lstrip().startswith(f"uv run {tool}")
     }
     assert quoted, f"{doc} nie cytuje komendy `{tool}` z bramki"
@@ -150,7 +175,7 @@ def test_agent_docs_pytest_gate_skips_live_api_tests(doc: str) -> None:
     )
     quoted = [
         _pytest_marker(line)
-        for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
+        for line in _doc_lines(doc)
         if line.lstrip().startswith("uv run pytest")
     ]
 
@@ -328,3 +353,126 @@ def test_coverage_plugin_is_a_declared_dev_dependency() -> None:
     ]
 
     assert any(str(requirement).startswith("pytest-cov") for requirement in dev)
+
+
+# CI-15: ucieczki z typów w kodzie produkcyjnym są dziś wąskie, ale nic nie pilnowało, żeby
+# takie zostały. Goły `# type: ignore` (bez kodu błędu) odrzuca mypy (`ignore-without-code`),
+# a liczba ignore z kodem i `cast(Any, …)` w src/ i main_*.py tylko maleje. Stan na eb11938
+# (2026-10-26): 5 ignore i 1 cast; ARCH-20, ARCH-21, ARCH-22 i ARCH-41 usunęły wszystkie ignore.
+# Gdy zmiana usuwa ucieczkę, obniż zapadkę w tym samym commicie.
+TYPE_IGNORE_BASELINE = 0
+CAST_ANY_BASELINE = 1
+_TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore(?P<codes>\[[^\]]*\])?")
+
+
+def _production_sources() -> dict[str, str]:
+    paths = sorted([*(ROOT / "src").rglob("*.py"), *ROOT.glob("main_*.py")])
+    return {path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8") for path in paths}
+
+
+def count_type_ignores(source: str) -> tuple[int, int]:
+    """(ignore z kodem, gołe ignore) — tylko w komentarzach, nie w napisach."""
+    coded = bare = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        for match in _TYPE_IGNORE.finditer(token.string):
+            if match.group("codes"):
+                coded += 1
+            else:
+                bare += 1
+    return coded, bare
+
+
+def _named(node: ast.expr, name: str) -> bool:
+    return (isinstance(node, ast.Name) and node.id == name) or (
+        isinstance(node, ast.Attribute) and node.attr == name
+    )
+
+
+def count_cast_any(source: str) -> int:
+    return sum(
+        1
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and _named(node.func, "cast")
+        and node.args
+        and _named(node.args[0], "Any")
+    )
+
+
+def test_type_escape_counters_read_comments_and_calls() -> None:
+    source = (
+        "from typing import Any, cast\nimport typing\n"
+        "a = f()  # type: ignore[arg-type]\n"
+        "b = g()  # type: ignore\n"
+        'c = "# type: ignore"\n'
+        "d = cast(Any, x)\n"
+        "e = typing.cast(typing.Any, x)\n"
+        "f = cast(int, x)\n"
+    )
+
+    assert count_type_ignores(source) == (1, 1)
+    assert count_cast_any(source) == 2
+
+
+def test_type_escapes_have_codes_and_do_not_grow() -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    enabled = config["tool"]["mypy"].get("enable_error_code", [])
+    sources = _production_sources()
+    ignores = {name: count_type_ignores(text) for name, text in sources.items()}
+    coded = sum(count for count, _ in ignores.values())
+    bare = [name for name, (_, count) in ignores.items() if count]
+    casts = sum(count_cast_any(text) for text in sources.values())
+
+    assert "ignore-without-code" in enabled, (
+        "[tool.mypy] bez enable_error_code = ['ignore-without-code'] przepuszcza goły "
+        "`# type: ignore`, który ucisza każdy błąd w linii"
+    )
+    assert bare == [], f"goły `# type: ignore` bez kodu błędu w {bare}"
+    assert coded <= TYPE_IGNORE_BASELINE, (
+        f"{coded} `# type: ignore[...]` w src/ i main_*.py > zapadka {TYPE_IGNORE_BASELINE} "
+        "— popraw typy zamiast uciszać mypy"
+    )
+    assert casts <= CAST_ANY_BASELINE, (
+        f"{casts} `cast(Any, ...)` w src/ i main_*.py > zapadka {CAST_ANY_BASELINE}"
+    )
+
+
+# CI-27: jedyny hook pre-commit walidował persony; lint, format, lock i sekrety sprawdzało
+# dopiero CI. Hooki lokalne cytują komendy ruff z joba `quality` (te same tokeny), lock
+# sprawdza `uv lock --check`, sekrety gitleaks na staged, a składnię TOML/YAML hooki
+# pre-commit-hooks. Zdalne repo hooków przypięte pełnym SHA (`# frozen: vX.Y.Z`).
+# mypy zostaje w CI: w hooku jest za wolny.
+PRECOMMIT_CONFIG = ROOT / ".pre-commit-config.yaml"
+PRECOMMIT_REMOTE_HOOKS = frozenset({"gitleaks", "check-toml", "check-yaml"})
+
+
+def _precommit_repos() -> list[dict[str, Any]]:
+    config: dict[str, Any] = yaml.safe_load(PRECOMMIT_CONFIG.read_text(encoding="utf-8"))
+    repos: list[dict[str, Any]] = config["repos"]
+    return repos
+
+
+def _precommit_hooks(local: bool) -> list[dict[str, Any]]:
+    return [
+        hook
+        for repo in _precommit_repos()
+        if (repo["repo"] == "local") is local
+        for hook in repo["hooks"]
+    ]
+
+
+def test_precommit_mirrors_ci_linters() -> None:
+    local_entries = [str(hook.get("entry", "")) for hook in _precommit_hooks(local=True)]
+    ruff_hooks = {" ".join(_from_tool(entry, "ruff")) for entry in local_entries} - {""}
+    remote_ids = {str(hook["id"]) for hook in _precommit_hooks(local=False)}
+    remote_revs = [str(repo["rev"]) for repo in _precommit_repos() if repo["repo"] != "local"]
+
+    assert ruff_hooks == _ci_tool_commands("ruff"), (
+        f"pre-commit uruchamia {sorted(ruff_hooks)}, a CI {sorted(_ci_tool_commands('ruff'))}"
+    )
+    assert any(entry.split() == ["uv", "lock", "--check"] for entry in local_entries)
+    assert "uv run python -m src.tools.validate_personas" in local_entries
+    assert remote_ids >= PRECOMMIT_REMOTE_HOOKS, sorted(PRECOMMIT_REMOTE_HOOKS - remote_ids)
+    assert all(re.fullmatch(r"[0-9a-f]{40}", rev) for rev in remote_revs), remote_revs

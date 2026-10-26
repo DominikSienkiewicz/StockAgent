@@ -168,7 +168,7 @@ class TestBuildLLMAdapter:
 
 class TestFastLoopWiring:
     def _deps(self, settings: Settings, mocker: Any) -> MagicMock:
-        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
         use_case_cls = mocker.patch("main_agent.AnalyzeMarketUseCase")
         main_agent.build_use_case(settings)
         deps: MagicMock = use_case_cls.call_args.args[0]

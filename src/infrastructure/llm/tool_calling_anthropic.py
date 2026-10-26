@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -10,17 +11,21 @@ from anthropic import Anthropic, APIConnectionError, APIStatusError
 from src.application.errors import MalformedPayload
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaSeverity
 from src.infrastructure.adapters._http import redact_secrets
-from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object
+from src.infrastructure.llm._quota import QuotaEmitter
+from src.infrastructure.llm._retry import RetryPolicy, call_with_retry
 from src.infrastructure.llm._usage import anthropic_usage, report_usage
 from src.infrastructure.llm.anthropic_client import (
     DEFAULT_TIMEOUT,
     AnthropicAdapter,
+    is_transient_error,
+    to_port_error,
     validate_model_id,
 )
 
-# #6 — domyślny model do pętli tool-use (taki sam kompromis kosztów/jakości co
+# R-24 — domyślny model do pętli tool-use (taki sam kompromis kosztów/jakości co
 # zwykły AnthropicAdapter). Tool-use to wieloetapowa, PŁATNA ścieżka — dlatego
 # liczba rund jest twardo ograniczona (`max_rounds`).
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -34,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallingAnthropicAdapter(ToolUseLLMPort):
-    """#6 — adapter Anthropic z pętlą tool-use (Messages API tools).
+    """R-24 — adapter Anthropic z pętlą tool-use (Messages API tools).
 
     Model może na żądanie wywołać read-only narzędzia (fundamenty, RAG, makro)
     zanim wyda finalny werdykt JSON. Pętla:
@@ -98,7 +103,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
         args = tool_input if isinstance(tool_input, dict) else {}
         try:
             return tool.func(args)
-        except Exception as exc:  # noqa: BLE001 — celowo łapiemy wszystko
+        except Exception as exc:  # celowo łapiemy wszystko
             # Treść wyjątku (URL z kluczem, echo klucza) idzie do płatnego modelu.
             message = redact_secrets(str(exc), self._secret_values)
             logger.warning("Tool %s raised: %s", tool.name, message)
@@ -122,10 +127,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             if offer_tools:
                 kwargs["tools"] = tool_schema
 
-            try:
-                response = self._client.messages.create(**kwargs)
-            except (APIStatusError, APIConnectionError) as exc:
-                raise as_port_error(exc, sdk_error_kind(exc)) from None
+            response = self._create(kwargs)
             if self._usage_sink is not None:
                 report_usage(self._usage_sink, anthropic_usage(response, self._model))
 
@@ -155,6 +157,45 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             messages.append({"role": "user", "content": tool_results})
             rounds += 1
 
+    def _create(self, kwargs: dict[str, Any]) -> Any:
+        """Jedna runda pętli. Ponowienia robi SDK (jego domyślne `max_retries`), więc
+        wspólna pętla ARCH-29 dostaje zero własnych: błąd przejściowy, który przetrwał
+        ponowienia SDK, idzie do `QuotaMonitor` jako CRITICAL, a każdy błąd SDK wychodzi
+        w taksonomii portów (ARCH-33)."""
+        policy = RetryPolicy(
+            retryable=(APIStatusError, APIConnectionError),
+            max_retries=0,
+            backoff_base=0.0,
+            logger=logger,
+            label="Anthropic tool-use",
+            is_transient=is_transient_error,
+            translate=to_port_error,
+        )
+        return call_with_retry(
+            lambda: self._client.messages.create(**kwargs),
+            policy,
+            sleep=time.sleep,
+            on_recovered=_never_recovered,
+            on_exhausted=self._report_exhausted,
+        )
+
+    def _report_exhausted(self, exc: Exception) -> None:
+        reason = type(exc).__name__
+        QuotaEmitter(f"Anthropic ({self._model})", self._quota_monitor, logger).emit(
+            severity=QuotaSeverity.CRITICAL,
+            message=(
+                f"Anthropic {self._model} (narzędzia) zwrócił {reason} mimo ponowień "
+                "SDK — analiza z narzędziami nie powiodła się."
+            ),
+            action=(
+                "Sprawdź stronę statusu Anthropic / podnieś tier konta albo wyłącz "
+                "tool_use_enabled w config.toml."
+            ),
+            log_message=(
+                f"Anthropic {self._model} tool-use call failed with {reason} after the SDK retries."
+            ),
+        )
+
     @staticmethod
     def _extract_text(content: Any) -> str:
         for block in content or []:
@@ -183,3 +224,7 @@ class ToolCallingAnthropicAdapter(ToolUseLLMPort):
             raise MalformedPayload(
                 f"Anthropic tool-use returned invalid JSON: {cleaned[:200]!r}"
             ) from None
+
+
+def _never_recovered(_attempts: int) -> None:
+    """Bez własnych ponowień pętla nigdy nie kończy się sukcesem po ponowieniu."""

@@ -36,6 +36,10 @@ from src.application.attestation_cycle import (
     seal_attestation_cycle,
 )
 from src.application.circuit_alerts import record_open_circuit_alerts
+from src.application.council_service import (
+    COUNCIL_MAX_PERSONAS,
+    LLMAdvisoryCouncil,
+)
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.errors import PortError
 from src.application.http_metering import HttpCallMeter
@@ -213,10 +217,6 @@ from src.infrastructure.adapters._http import (
     process_circuits,
     redact_secrets,
 )
-from src.infrastructure.adapters.advisory_council import (
-    COUNCIL_MAX_PERSONAS,
-    LLMAdvisoryCouncil,
-)
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (
     AlphaVantageNewsAdapter,
@@ -246,6 +246,7 @@ from src.infrastructure.adapters.write_guard import (
     ReadOnlyRepository,
 )
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter, load_challenger
+from src.infrastructure.error_provider import provider_of
 from src.infrastructure.llm.local_stub import LocalStubLLMAdapter
 from src.infrastructure.logging_setup import configure_logging, symbol_context
 from src.infrastructure.persona_loader import load_council_personas, personas_sha256
@@ -617,13 +618,33 @@ def build_legacy_push_notifier(
     return CompositeNotifier(channels)
 
 
+def _missing_push_secrets(settings: Settings) -> list[str]:
+    """NIEZ-34: nazwy nieustawionych sekretów kanałów push (Telegram, Slack)."""
+    secrets = {
+        "TELEGRAM_BOT_TOKEN": settings.telegram_bot_token,
+        "TELEGRAM_CHAT_ID": settings.telegram_chat_id,
+        "SLACK_WEBHOOK_URL": settings.slack_webhook_url,
+    }
+    return [name for name, value in secrets.items() if not value]
+
+
 def build_push_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort:
     """#5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
-    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje)."""
+    per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje).
+
+    NIEZ-34: włączony `messenger_digest_enabled` bez żadnego kanału loguje WARNING
+    z brakującymi sekretami, jak `build_notifier` przy mailu — inaczej skrót milczy."""
     channels = build_push_channels(settings, quota_monitor=quota_monitor)
     if not channels:
+        if settings.messenger_digest_enabled:
+            logger.warning(
+                "Skrót push WŁĄCZONY (messenger_digest_enabled=true), ale brak kanału — "
+                "brakuje sekretów: %s — ustaw je jako GitHub repo Secrets (nie Variables) "
+                "/ w .env.",
+                ", ".join(_missing_push_secrets(settings)),
+            )
         return NullNotifier()
     if len(channels) == 1:
         return channels[0]
@@ -2201,8 +2222,8 @@ def _cycle_runner(
     phase_two_feeds: PhaseTwoFeeds | None = None,
 ) -> RunFastLoopCycle:
     """ARCH-07: use case przebiegu z hookami świata — `time.sleep` (czytany przy
-    wywołaniu, więc patch `time.sleep` w testach działa), redakcja sekretów
-    i kontekst logu symbolu."""
+    wywołaniu, więc patch `time.sleep` w testach działa), redakcja sekretów,
+    kontekst logu symbolu i dostawca błędu symbolu (MAIL-32)."""
     return RunFastLoopCycle(
         use_case=use_case,
         alpha_use_case=alpha_use_case,
@@ -2211,6 +2232,7 @@ def _cycle_runner(
         redact=_secret_redactor(secret_values),
         symbol_scope=symbol_context,
         phase_two_feeds=phase_two_feeds,
+        error_provider=provider_of,
     )
 
 
@@ -2452,6 +2474,9 @@ def _report_flags(settings: Settings) -> ReportFlags:
         receipts_enabled=settings.receipts_enabled,
         paper_ledger_curve_enabled=settings.paper_ledger_enabled,
         open_entry_curve_enabled=settings.executable_entry_enabled,
+        cost_ledger_enabled=settings.cost_ledger_enabled,
+        recipe_version_enabled=settings.recipe_version_enabled,
+        reference_signal_enabled=settings.reference_signal_enabled,
     )
 
 

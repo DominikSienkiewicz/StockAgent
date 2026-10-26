@@ -37,6 +37,7 @@ from src.application.report_evidence import (
     ledger_curve,
     portfolio_curve,
 )
+from src.application.report_finops import cycle_gate_tally
 from src.application.report_lessons import LessonsReport, build_lessons
 from src.application.report_model_scorecard import (
     ModelScorecardView,
@@ -68,7 +69,18 @@ from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.council_redundancy import CouncilRedundancy, assess_council_redundancy
 from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
-from src.domain.equity_curve import EquityCurve
+from src.domain.equity_curve import (
+    MIN_SHARPE_SAMPLE,
+    EquityCurve,
+    SharpeEvidence,
+    sharpe_evidence,
+)
+from src.domain.finops import (
+    BudgetWindow,
+    MonthToDateCost,
+    budget_window_start,
+    month_to_date_cost,
+)
 from src.domain.isotonic_calibration import (
     ISOTONIC_FIT_WINDOW,
     ClassIsotonicSelection,
@@ -86,6 +98,7 @@ from src.domain.persona_track_record import (
     sort_personas,
 )
 from src.domain.quota import QuotaAlert
+from src.domain.reference_signal import ReferenceTally, tally_outcomes
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
@@ -95,7 +108,7 @@ QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 # ALR-06: okno szoków, gdy nie wiadomo, kiedy wyszedł ostatni mail (doba = cykl
 # Fast Loopa w dzień roboczy).
 SHOCK_FALLBACK_LOOKBACK_HOURS = 24
-# Okno track recordu person (#3) — 90 dni, tak jak domyślne okno RPC z migracji
+# Okno track recordu person (R-3) — 90 dni, tak jak domyślne okno RPC z migracji
 # 018. Dłuższe niż okno accuracy: hit-rate per persona potrzebuje próbki.
 PERSONA_TRACK_RECORD_DAYS = 90
 
@@ -122,7 +135,7 @@ class ReportFlags:
     model_scorecard_enabled: bool = False
     cycle_diff_enabled: bool = False
     settled_at_windows_enabled: bool = False
-    # ALR-06: szoki z watcha (#11) od ostatniego maila — czytane tylko, gdy watch działa.
+    # ALR-06: szoki z watcha (R-11) od ostatniego maila — czytane tylko, gdy watch działa.
     shock_alerts_enabled: bool = False
     # WIA-44: leaderboard person po Brier Skill pewności (RPC 065) zamiast hit-rate'u.
     persona_brier_ranking_enabled: bool = False
@@ -140,10 +153,17 @@ class ReportFlags:
     paper_ledger_curve_enabled: bool = False
     # WIA-54: krzywa „od otwarcia” z ceny wykonalnej (`entry_price`, migracja 072).
     open_entry_curve_enabled: bool = False
+    # FIN-23: koszt miesiąca w sekcji kosztu z ledgera `llm_calls` (migracja 040) —
+    # czytany tylko, gdy ledger jest pisany.
+    cost_ledger_enabled: bool = False
+    # WIA-68: n_trials Deflated Sharpe z liczby wersji przepisu (kolumna z migracji 030).
+    recipe_version_enabled: bool = False
+    # WIA-82: wiersz reguły referencyjnej (0 zł) w Track Record — tabela z migracji 042.
+    reference_signal_enabled: bool = False
 
 
 def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
-    """#4 — skład portfela wg sektorów (sektor → liczba instrumentów).
+    """R-4 — skład portfela wg sektorów (sektor → liczba instrumentów).
 
     Etykiety z mapy sektorów configu (PORT-05); symbole spoza mapy trafiają do
     "Inne", żeby licznik zawsze sumował się do liczby instrumentów.
@@ -156,7 +176,7 @@ def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]
 
 
 def classify_cycle_maturity(results: list[SymbolResult]) -> CycleMaturity:
-    """#4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
+    """R-4 — dojrzałość cyklu z policzonych przyczyn pominięcia.
 
     Symbole nieobsługiwane cenowo są jawnie POZA mianownikiem (nigdy nie dostaną
     punktu odniesienia), a błędy liczone osobno — cykl zdominowany przez awarie
@@ -184,7 +204,7 @@ def build_consensus_shifts(
     *,
     now: datetime,
 ) -> list[tuple[str, ConsensusShift]]:
-    """#8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
+    """R-8 — wykrywa zmiany nastawienia rady względem poprzedniego cyklu.
 
     Tłumienie stęchłych flipów: symbol bez ŚWIEŻEGO werdyktu (odcięty bramką
     volatility) jest pomijany — inaczej stary flip pokazywałby się w kółko.
@@ -222,7 +242,7 @@ def build_consensus_shifts(
 def build_model_scorecard(
     flags: ReportFlags, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> ModelScorecardView | None:
-    """#12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
+    """R-12 — widok karty kondycji modelu. Flaga OFF / brak migracji 019 / błąd
     odczytu → None → sekcja sama się chowa, cykl leci dalej. ML-15: okno odczytu
     to `MODEL_SCORECARD_WINDOW_DAYS`, nie `track_record_days` — karta starsza niż
     próg świeżości zostaje widoczna z odznaką STALE."""
@@ -288,7 +308,7 @@ def build_council_redundancy(
 def build_signal_calibration(
     flags: ReportFlags, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> list[CalibrationBucket] | None:
-    """#9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
+    """R-9 — kubełki kalibracji pod RANKING sygnałów (nie pod sekcję Track Record).
 
     Świadomie osobne od `build_track_record`: `calibration_curve_enabled` rysuje
     sekcję, a `calibrated_confidence_enabled` zmienia ranking. Sprzęgnięcie ich
@@ -441,15 +461,53 @@ def build_symbol_track_record(
     return symbol_track_record_view(resolved, flags.track_record_days)
 
 
+def build_sharpe_evidence(
+    flags: ReportFlags, repository: RepositoryPort, curve: EquityCurve | None
+) -> SharpeEvidence | None:
+    """WIA-68: PSR i DSR zwrotów okresu krzywej kapitału (tej z maila).
+
+    n_trials (liczba wersji przepisu) czytamy dopiero, gdy krzywa ma
+    `MIN_SHARPE_SAMPLE` okresów — wcześniej liczb i tak nie ma. Bez flagi
+    `recipe_version_enabled` albo po błędzie odczytu zostaje sam PSR."""
+    if not flags.equity_curve_enabled or curve is None or curve.n_trades == 0:
+        return None
+    returns = [point.period_return for point in curve.points]
+    enough = len(returns) >= MIN_SHARPE_SAMPLE
+    trials = _recipe_trials(repository) if enough and flags.recipe_version_enabled else None
+    return sharpe_evidence(returns, trials)
+
+
+def _recipe_trials(repository: RepositoryPort) -> int | None:
+    try:
+        return repository.count_recipe_versions() or None
+    except PortError:
+        logger.warning("Recipe versions unavailable — Track Record without DSR", exc_info=True)
+        return None
+
+
+def build_reference_tally(flags: ReportFlags, repository: RepositoryPort) -> ReferenceTally | None:
+    """WIA-82: rozliczenia reguły referencyjnej z okna Track Recordu — agregat bez
+    symboli. Bez flagi `reference_signal_enabled` nic nie czyta; błąd odczytu chowa
+    wiersz, cykl leci dalej."""
+    if not (flags.equity_curve_enabled and flags.reference_signal_enabled):
+        return None
+    try:
+        return tally_outcomes(repository.get_reference_outcomes(flags.track_record_days))
+    except PortError:
+        logger.warning("Reference outcomes unavailable — Track Record without the baseline row")
+        return None
+
+
 def build_track_record_stats(
     flags: ReportFlags,
     repository: RepositoryPort,
     costs: PaperCosts | None = None,
     *,
     reads: TrackRecordReads | None = None,
+    equity_curve: EquityCurve | None = None,
 ) -> TrackRecordStats | None:
-    """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
-    pod sekcją Track Record.
+    """Dowód trafności (T1), Brier / BSS (T2), pokrycie przedziałów 80% (ML-34)
+    i PSR / DSR krzywej `equity_curve` (WIA-68) pod sekcją Track Record.
 
     Te same flagi co podsekcje, które statystyki uzupełniają; pokrycie za
     `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
@@ -502,7 +560,8 @@ def build_track_record_stats(
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
     paper_costs = costs if flags.equity_curve_enabled else None
-    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop)
+    sharpe = build_sharpe_evidence(flags, repository, equity_curve)
+    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop, sharpe)
     if all(part is None for part in parts):
         return None
     return TrackRecordStats(
@@ -513,6 +572,8 @@ def build_track_record_stats(
         benchmark=benchmark,
         sideways_scores=sideways_scores,
         accuracy_drop=accuracy_drop,
+        sharpe=sharpe,
+        reference=build_reference_tally(flags, repository),
     )
 
 
@@ -539,6 +600,27 @@ def shocks_since_last_mail(
     except PortError:
         logger.warning("Failed to fetch shock alerts — report without them", exc_info=True)
         return None
+
+
+def month_cost(
+    flags: ReportFlags, repository: RepositoryPort, now: datetime
+) -> MonthToDateCost | None:
+    """FIN-23: wydatek miesiąca UTC z ledgera `llm_calls` i jego prognoza liniowa.
+
+    None bez `cost_ledger_enabled` (ledger nie przybywa) i gdy odczyt padł — sekcja
+    kosztu zostaje wtedy bez linii miesiąca, a mail idzie dalej."""
+    if not flags.cost_ledger_enabled:
+        return None
+    try:
+        spent = repository.get_llm_cost_since(budget_window_start(BudgetWindow.MONTH, now))
+    except PortError as exc:
+        logger.warning(
+            "Month-to-date cost: llm_calls ledger read failed (%s) — cost section "
+            "without the month line",
+            exc,
+        )
+        return None
+    return month_to_date_cost(spent, now)
 
 
 def persist_quota_alerts(repository: RepositoryPort, alerts: list[QuotaAlert]) -> None:
@@ -618,7 +700,7 @@ def fetch_report_context(
     except Exception:
         logger.exception("Failed to fetch council vote history")
 
-    # #3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
+    # R-3: leaderboard person. Surowe (hit_rate, votes) z RPC, ranking i próg
     # min_votes liczy domena. Brak migracji 018 / błąd RPC → pusty ranking
     # → sekcja sama się chowa, cykl leci dalej. WIA-30: po dolnej granicy Wilsona.
     persona_track_record: list[PersonaTrackRecord] = []
@@ -725,7 +807,9 @@ class ReportAssembler:
         equity_curve, calibration_buckets, lessons = build_track_record(
             flags, repository, self._costs, reads=reads
         )
-        track_record_stats = build_track_record_stats(flags, repository, self._costs, reads=reads)
+        track_record_stats = build_track_record_stats(
+            flags, repository, self._costs, reads=reads, equity_curve=equity_curve
+        )
         persona_track_record = assess_personas(persona_track_record, track_record_stats)
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
@@ -734,7 +818,7 @@ class ReportAssembler:
                 *recent_alerts,
                 accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
             ]
-        # #9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
+        # R-9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
         signal_calibration_buckets = build_signal_calibration(flags, repository, reads=reads)
         # ML-28: mapa izotoniczna (flaga) — tylko gdy ranking ma kubełki (WIA-38);
         # ML-54: z tego samego odczytu mapy per klasa aktywa (osobna flaga).
@@ -743,12 +827,12 @@ class ReportAssembler:
             if signal_calibration_buckets
             else (None, None)
         )
-        # #4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
+        # R-4: dojrzałość cyklu + skład sektorowy pod powitanie "Dzień 1".
         maturity = classify_cycle_maturity(results)
         sectors = portfolio_sectors(results, context.sector_map or {})
-        # #12: karta kondycji modelu (flaga + migracja 019).
+        # R-12: karta kondycji modelu (flaga + migracja 019).
         model_scorecard = build_model_scorecard(flags, repository, reads=reads)
-        # #8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
+        # R-8: zmiany nastawienia rady vs poprzedni cykl (flaga, bez migracji).
         consensus_shifts = (
             build_consensus_shifts(repository, results, now=started_at)
             if flags.cycle_diff_enabled
@@ -775,6 +859,9 @@ class ReportAssembler:
             signal_isotonic_calibration=signal_isotonic_calibration,
             signal_isotonic_class_calibration=signal_isotonic_class_calibration,
             cycle_maturity=maturity,
+            # FIN-19: licznik bramki z wyników CAŁEGO cyklu, jak koszt w sekcji.
+            cycle_gate=cycle_gate_tally(results),
+            month_cost=month_cost(flags, repository, started_at),
             portfolio_sectors=sectors,
             model_scorecard=model_scorecard,
             consensus_shifts=consensus_shifts,

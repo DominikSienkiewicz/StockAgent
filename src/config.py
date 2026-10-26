@@ -1767,12 +1767,12 @@ class Settings(BaseSettings):
 
     @classmethod
     def from_env(cls) -> Settings:
-        """Mypy-friendly entry point — pydantic-settings ładuje pola z env/.env.
+        """Jedyny punkt wejścia entry-pointów — pydantic-settings ładuje pola z env/.env.
 
-        Bezpośrednie `Settings()` daje fałszywy alarm `Missing named argument`,
-        bo mypy nie zna mechanizmu source loading w BaseSettings.
+        ARCH-22: plugin `pydantic.mypy` zna ładowanie pól z env w `BaseSettings`
+        (wszystkie pola opcjonalne w `__init__`), więc wywołanie nie potrzebuje ignore.
         """
-        return cls()  # type: ignore[call-arg]
+        return cls()
 
 
 # WIA-42: protokół ewaluacji w roocie repo. Hash liczony z BAJTÓW pliku (razem

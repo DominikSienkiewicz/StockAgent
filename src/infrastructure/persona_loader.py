@@ -31,7 +31,7 @@ ARCHETYPES_FILE_NAME = "archetypes.toml"
 _MIN_STYLE_LENGTH = 20
 
 # Górne granice długości. `name` i `style` wpadają wprost do promptu LLM rady
-# (finding #37) — operator-controlled, więc ryzyko ograniczone, ale oversized
+# (audyt z czerwca 2026) — operator-controlled, więc ryzyko ograniczone, ale oversized
 # plik to wektor kosztu/prompt-injection. Fail-fast przy ładowaniu.
 _MAX_NAME_LENGTH = 120
 _MAX_STYLE_LENGTH = 2000

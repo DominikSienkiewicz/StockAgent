@@ -25,6 +25,8 @@ Użycie:
     uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
         [--rekor-repository OWNER/REPO] [--rekor-workflow PATH]
     uv run python main_tools.py reproduce-training [--sidecar PATH]
+    uv run python main_tools.py junit-summary [--mutation] [ETYKIETA=]RAPORT.xml...
+    uv run python main_tools.py commit-policy [--range origin/main..HEAD] [--repo PATH]
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -40,6 +43,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
 from src.domain.council_ablation import leave_one_out
+from src.tools.commit_policy import (
+    GIT_LOG_FORMAT,
+    fix_commits_without_test,
+    parse_git_log,
+)
 from src.tools.cost_envelope import (
     EnvelopeInputs,
     cost_envelope,
@@ -63,6 +71,11 @@ from src.tools.import_positions import (
     format_plan,
     parse_positions_csv,
     plan_import,
+)
+from src.tools.junit_summary import (
+    render_mutation_summary,
+    render_test_summary,
+    totals_or_reason,
 )
 from src.tools.offline_scenario import (
     OfflineCycleSummary,
@@ -159,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_council_ablation(subcommands)
     _add_verify_attestation(subcommands)
     _add_reproduce_training(subcommands)
+    _add_junit_summary(subcommands)
+    _add_commit_policy(subcommands)
     return parser
 
 
@@ -406,7 +421,7 @@ def _add_cost_envelope(
 
 def _run_cost_envelope(args: argparse.Namespace) -> int:
     """FIN-06: koperta kosztu cyklu dla bieżącej konfiguracji (offline); exit 0."""
-    from src.infrastructure.adapters.advisory_council import COUNCIL_MAX_PERSONAS
+    from src.application.council_service import COUNCIL_MAX_PERSONAS
     from src.infrastructure.adapters.alpha_vantage_client import supported_tickers
     from src.infrastructure.persona_loader import load_council_personas
 
@@ -581,10 +596,10 @@ def run_offline(
     wcześniej), więc pierwszy cykl ma referencję delty. Zegar scenariusza stoi
     w chwili startu cyklu — czas trwania w mailu to 0 s, a wynik jest ten sam
     co do bajtu przy każdym uruchomieniu."""
+    from src.application.council_service import LLMAdvisoryCouncil
     from src.application.report_evidence import PaperCosts
     from src.application.use_cases.assemble_report import ReportFlags
     from src.domain.value_objects import Money
-    from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
     from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
     from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
     from src.infrastructure.persona_loader import load_council_personas
@@ -1129,6 +1144,105 @@ def _run_reproduce_training(args: argparse.Namespace) -> int:
     )
     print(format_reproduction(report))
     return 0 if report.ok else 1
+
+
+def _add_junit_summary(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "junit-summary",
+        help="Markdown table of test (or mutant) counts from JUnit reports, for a job summary.",
+        description=(
+            "CI-16: sums tests, skipped, failures and errors of each JUnit report (pytest "
+            "--junitxml) into a Markdown table on stdout, which CI appends to "
+            "GITHUB_STEP_SUMMARY. With --mutation the reports come from `mutmut junitxml` "
+            "(TEST-35): survived = failure, timeout = error, untested = skipped. A missing "
+            "or unreadable file is a row, not an error; exit 0. No keys, no network."
+        ),
+    )
+    parser.add_argument(
+        "reports",
+        nargs="+",
+        metavar="[LABEL=]REPORT",
+        help="JUnit XML file, optionally labelled (default label: the file name stem).",
+    )
+    parser.add_argument(
+        "--mutation",
+        action="store_true",
+        help="Read mutmut reports: mutants, killed, survived, timeouts, score.",
+    )
+    parser.set_defaults(handler=_run_junit_summary)
+
+
+def _run_junit_summary(args: argparse.Namespace) -> int:
+    """CI-16: tabela z raportów JUnit na stdout — bez `Settings`, kluczy i sieci; exit 0."""
+    rows = []
+    for spec in args.reports:
+        label, separator, path = str(spec).partition("=")
+        report = Path(path if separator else label)
+        text = report.read_text(encoding="utf-8") if report.is_file() else None
+        rows.append((label if separator else report.stem, totals_or_reason(text)))
+    render = render_mutation_summary if args.mutation else render_test_summary
+    print(render(rows), end="")
+    return 0
+
+
+def _add_commit_policy(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "commit-policy",
+        help="Does every fix: commit on the branch carry a test? Run before scripts/merge.sh.",
+        description=(
+            "DOC-27: reads `git log` of the branch range and flags every `fix:` commit that "
+            "neither changes a file under tests/ nor follows a `test:` commit on the branch. "
+            "`fix(ci):` and `fix(docs):` are exempt, merge commits are skipped. Exit 0 = "
+            "clean, 1 = flagged commits, 2 = git failed. No keys, no network."
+        ),
+    )
+    parser.add_argument(
+        "--range",
+        dest="revision_range",
+        default="origin/main..HEAD",
+        help="Revision range of the branch (default: origin/main..HEAD).",
+    )
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=_REPO_ROOT,
+        help="Repository or worktree to read (default: this checkout).",
+    )
+    parser.set_defaults(handler=_run_commit_policy)
+
+
+def _run_commit_policy(args: argparse.Namespace) -> int:
+    """DOC-27: `git log` zakresu gałęzi (I/O tutaj) → czysta polityka z src/tools."""
+    revision_range: str = args.revision_range
+    command = [
+        "git",
+        "-C",
+        str(args.repo),
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--name-only",
+        f"--format={GIT_LOG_FORMAT}",
+        "--end-of-options",
+        revision_range,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print(f"❌ git log {revision_range}: {result.stderr.strip()}", file=sys.stderr)
+        return 2
+    commits = parse_git_log(result.stdout)
+    flagged = fix_commits_without_test(commits)
+    if not flagged:
+        print(f"✅ {len(commits)} commitów w {revision_range}: każdy fix: ma test (DOC-27)")
+        return 0
+    print(f"❌ {len(flagged)} commit(ów) fix: bez testu w {revision_range} (DOC-27):")
+    for subject in flagged:
+        print(f"  - {subject}")
+    print(
+        "Test odtwarzający błąd idzie w tym samym commicie albo w commicie test: przed fixem; "
+        "poprawki samego CI i dokumentacji oznacz fix(ci): / fix(docs):."
+    )
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -18,10 +18,11 @@ from typing import Any
 
 import httpx
 from postgrest.exceptions import APIError
-from supabase import StorageException, create_client
+from supabase import StorageException
 
 from src.application.errors import MalformedPayload, ProviderUnavailable
 from src.application.ports import DigestArchivePort, DigestRecord
+from src.infrastructure.adapters._supabase import build_supabase_client
 from src.infrastructure.error_translation import as_port_error
 
 DIGESTS_BUCKET = "digests"
@@ -37,7 +38,7 @@ def digest_object_path(cycle_id: str) -> str:
 
 
 class SupabaseStorageDigestArchive(DigestArchivePort):
-    """`client` to klient `supabase.create_client` z kluczem serwisowym."""
+    """`client` to klient Supabase z `build_supabase_client` (klucz serwisowy, NIEZ-35)."""
 
     def __init__(self, client: Any) -> None:
         self._client = client
@@ -45,7 +46,7 @@ class SupabaseStorageDigestArchive(DigestArchivePort):
     @classmethod
     def connect(cls, url: str, key: str) -> SupabaseStorageDigestArchive:
         """Archiwum na nowym kliencie Supabase (klucz serwisowy, jak repozytorium)."""
-        return cls(create_client(url, key))
+        return cls(build_supabase_client(url, key))
 
     def store(self, cycle_id: str, html: str) -> str:
         path = digest_object_path(cycle_id)

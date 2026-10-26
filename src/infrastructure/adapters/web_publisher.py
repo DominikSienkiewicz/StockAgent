@@ -1,4 +1,4 @@
-"""Adaptery dla `WebPublisherPort` (publiczny scorecard #10):
+"""Adaptery dla `WebPublisherPort` (publiczny scorecard R-10):
 - `FileWebPublisher` — zapisuje stronę HTML na dysk jako artefakt serwowany
   przez GitHub Pages (WIA-16/52).
 - `NullWebPublisher` — no-op gdy feature wyłączony (mirror `NullNotifier`).

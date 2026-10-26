@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.application.decision_receipt import DecisionReceipt
+from src.application.errors import ErrorCategory
 from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
@@ -57,7 +58,7 @@ class SymbolResult:
     status: str  # "saved" | "ignored" | "error"
     delta: Decimal | None = None
     current_price: Decimal | None = None
-    # #4: dlaczego symbol został pominięty. Rozdziela cold-start (brak punktu
+    # R-4: dlaczego symbol został pominięty. Rozdziela cold-start (brak punktu
     # odniesienia) od realnego odcięcia bramką volatility i od tickerów
     # niewspieranych cenowo. None = nie pominięto (saved) albo błąd.
     # Bez tego rozdziału powitalny ton "Dzień 1" przykryłby masową awarię źródeł.
@@ -84,6 +85,11 @@ class SymbolResult:
     # NIEZ-22: nazwa klasy wyjątku symbolu, który padł — agregat w step summary.
     # Sama nazwa klasy (bez komunikatu), więc może trafić na publiczną stronę runu.
     error_type: str | None = None
+    # MAIL-32: kategoria błędu z taksonomii portów — tę (nie `error_message`) widzi
+    # czytelnik maila. None = wynik spoza przebiegu symboli (traktowany jak UNKNOWN).
+    error_category: ErrorCategory | None = None
+    # MAIL-32: dostawca, którego adapter zgłosił błąd („Finnhub”); None = nieznany.
+    error_provider: str | None = None
     council_verdict: CouncilVerdict | None = None
     valuation: ValuationSection | None = None
     # Q5: analogi RAG użyte w tym cyklu (precedent receipts). Pusta lista =
@@ -104,7 +110,7 @@ class SymbolResult:
     # bez przedziału (brak okna kalibracyjnego) → renderer pomija linię.
     move_interval: MoveInterval | None = None
     # MAIL-18: próg EFEKTYWNY bramki (ułamek) dla wyniku 'ignored' i mnożniki,
-    # które go podniosły (reżim #7, earnings #6). None = wynik spoza bramki.
+    # które go podniosły (reżim R-25, earnings R-6). None = wynik spoza bramki.
     effective_threshold: Decimal | None = None
     regime_multiplier: float = 1.0
     earnings_multiplier: float = 1.0
@@ -137,9 +143,9 @@ class TradeSignal:
     # track recordu agenta). None = brak danych do sizingu (np. brak werdyktu
     # rady) — wsteczna kompatybilność, renderer pomija magnitudę.
     size_band: SizeBand | None = None
-    # #9: pewność skorygowana historycznym hit-rate'em swojego kubełka kalibracji.
+    # R-9: pewność skorygowana historycznym hit-rate'em swojego kubełka kalibracji.
     # None = brak historii → `strength` policzone na surowej `confidence`
-    # (zachowanie identyczne jak przed #9). Surowa `confidence` zostaje obok,
+    # (zachowanie identyczne jak przed R-9). Surowa `confidence` zostaje obok,
     # żeby raport mógł pokazać "pewność LLM: 85% → skalibrowana historią: 58%".
     calibrated_confidence: float | None = None
     # WIA-13 (G03): True = brak prognozy ruchu (XGBoost bez wag), `strength` to

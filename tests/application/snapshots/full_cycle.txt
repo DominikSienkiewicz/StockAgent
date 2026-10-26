@@ -173,7 +173,7 @@ POMINIĘTE (poniżej progu zmienności)
 
 BŁĘDY
 ----------------------------------------------------------------
-  ASML (ASML Holding N.V.): HTTPError: 429 Too Many Requests
+  ASML (ASML Holding N.V.): nieoczekiwany błąd agenta — szczegóły w logu runu
 
 ----------------------------------------------------------------
 Zastrzeżenie: raport generuje automatycznie model statystyczny wspierany przez LLM, wyłącznie w celach informacyjnych i edukacyjnych. Treść nie stanowi rekomendacji inwestycyjnej ani porady inwestycyjnej, podatkowej lub prawnej i nie jest ofertą kupna ani sprzedaży instrumentów finansowych. Sygnały i prognozy modelu mogą być błędne, a historyczna trafność nie gwarantuje przyszłych wyników. Decyzje inwestycyjne podejmujesz na własne ryzyko.

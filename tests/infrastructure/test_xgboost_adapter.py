@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.application.ports import MLPredictionPort, ReturnScaleUnavailableError
+from src.domain.backtest import WalkForwardFold
 from src.domain.model_scorecard import TargetUnit, TrainingOutcome, TrainingReport
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
@@ -669,6 +670,40 @@ class TestSignalSkillMetrics:
         folds = adapter.walk_forward_report(features, pd.Series([0.0] * 200))
 
         assert all(fold["ic"] == 0.0 for fold in folds)
+
+
+class TestSuppliedFolds:
+    """ARCH-27: foldy projektuje domena po stronie wołającego (`walk_forward_folds`),
+    a adapter tylko trenuje i mierzy na podanych."""
+
+    def test_walk_forward_report_respects_supplied_folds(self, adapter: XGBoostAdapter) -> None:
+        features, target = _synthetic_dataset(n=200)
+        folds = (
+            WalkForwardFold(tuple(range(60)), train_end=100, valid_end=130),
+            WalkForwardFold(tuple(range(0, 150, 3)), train_end=150, valid_end=200),
+        )
+
+        report = adapter.walk_forward_report(features, target, folds=folds)
+
+        assert [(f["n_train"], f["train_end"], f["valid_end"], f["n_valid"]) for f in report] == [
+            (60.0, 100.0, 130.0, 30.0),
+            (50.0, 150.0, 200.0, 50.0),
+        ]
+
+    def test_train_gate_uses_supplied_folds(self, adapter: XGBoostAdapter) -> None:
+        features, target = _synthetic_dataset(n=200)
+        folds = (WalkForwardFold(tuple(range(100)), train_end=100, valid_end=200),)
+
+        report = adapter.train(features, target, persist=False, folds=folds)
+
+        assert (report.n_folds, report.n_oos_points) == (1, 100)
+
+    def test_supplied_folds_must_fit_the_rows(self, adapter: XGBoostAdapter) -> None:
+        features, target = _synthetic_dataset(n=200)
+        folds = (WalkForwardFold((0,), train_end=150, valid_end=250),)
+
+        with pytest.raises(ValueError, match="fold"):
+            adapter.walk_forward_report(features, target, folds=folds)
 
 
 class TestWalkForwardReportPurge:

@@ -12,7 +12,7 @@ from typing import Any, NamedTuple, cast
 
 import httpx
 from postgrest.exceptions import APIError
-from supabase import create_client
+from supabase import Client
 
 from src.application.errors import MalformedPayload, NotFound, PortError, ProviderUnavailable
 from src.application.ports import (
@@ -44,7 +44,7 @@ from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     GENESIS_HASH,
@@ -96,6 +96,10 @@ from src.domain.value_objects import (
     Fundamentals,
     Money,
 )
+from src.infrastructure.adapters._supabase import (
+    FEATURE_STORE_REFRESH_TIMEOUT_S,
+    build_supabase_client,
+)
 from src.infrastructure.error_translation import as_port_error
 
 logger = logging.getLogger(__name__)
@@ -113,6 +117,8 @@ DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
 DEFAULT_SHADOW_PREDICTION_TABLE = "shadow_predictions"
 # WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
 REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
+# WIA-68: sufit luźnego skanu wersji przepisu — powyżej wynik to dolna granica.
+_MAX_RECIPE_VERSIONS = 500
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
 LLM_CALLS_TABLE = "llm_calls"
 # NIEZ-29: historia przebiegów pętli (migracja 041).
@@ -132,7 +138,7 @@ _CORPORATE_ACTION_PRICE_COLUMNS = frozenset({"prev_close", "reference_price"})
 _REFRESH_MAX_ATTEMPTS = 3
 _REFRESH_BACKOFF_S = 2.0
 
-# Hosted Supabase / PostgREST tnie SELECT do ~1000 wierszy BEZ błędu (#8).
+# Hosted Supabase / PostgREST tnie SELECT do ~1000 wierszy BEZ błędu (audyt z czerwca 2026).
 # Agregaty (get_accuracy_stats itd.) muszą paginować po .range(), inaczej
 # trafność liczona jest na obciętym, niedeterministycznym podzbiorze.
 _PAGE_SIZE = 1000
@@ -412,10 +418,11 @@ def _optional_float(value: Any) -> float | None:
 
 def _settled_shadow(row: Mapping[str, Any]) -> SettledShadowForecast | None:
     """ML-33: wiersz cienia z osadzoną predykcją → prognoza ze zwrotem zrealizowanym.
-    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, albo prognoza łamie
-    kontrakt domeny (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
+    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, została rozliczona
+    z nieaktualnego notowania (ML-57, DAT-14) albo prognoza łamie kontrakt domeny
+    (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
     prediction = row.get("prediction_logs")
-    if not isinstance(prediction, Mapping):
+    if not isinstance(prediction, Mapping) or prediction.get(_STALE_QUOTE_COLUMN) is True:
         return None
     price = _optional_float(prediction.get("price_at_prediction"))
     actual = _optional_float(prediction.get("actual_price_after_12h"))
@@ -796,7 +803,13 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         council_vote_rounds_enabled: bool = False,
         council_vote_rounds_from_schema: bool = False,
     ) -> None:
-        self._client = create_client(url, key)
+        self._client = build_supabase_client(url, key)
+        # NIEZ-35: REFRESH widoku cech trwa dłużej niż 15 s zwykłego zapytania — osobny
+        # klient z dłuższym limitem, budowany dopiero przy pierwszym odświeżeniu.
+        self._connect_refresh_client: Callable[[], Client] = lambda: build_supabase_client(
+            url, key, timeout_s=FEATURE_STORE_REFRESH_TIMEOUT_S
+        )
+        self._refresh_client: Client | None = None
         # ML-23: dokładne KNN analogów RAG (funkcja z migracji 063) zamiast ivfflat
         # z probes = 1. Bez flagi RPC sprzed ML-23 — analogi w prompcie jak dziś.
         self._rag_function, self._rag_migration = (
@@ -891,7 +904,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
 
     def get_price_history(self, symbol: str, days: int) -> list[tuple[datetime, Money]]:
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        # PORT-22: radar czyta 90 dni — paginacja (#8), bo PostgREST tnie SELECT
+        # PORT-22: radar czyta 90 dni — paginacja (`_paginate`), bo PostgREST tnie SELECT
         # do ~1000 wierszy bez błędu i najstarsze snapshoty znikałyby po cichu.
         query = (
             self._client.table(self._snapshot_table)
@@ -974,7 +987,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # oznaczeniu. `OR ... IS NULL`: wiersze sprzed migracji 008 nie mają flag
         # (samo `NOT cs` wycięłoby NULL), a one zostają w kolejce.
         query = query.or_(_NOT_EXPIRED_FILTER)
-        # ASC (oldest-first) — #19: opróżniamy backlog, rozliczając NAJSTARSZĄ
+        # ASC (oldest-first) — opróżniamy backlog, rozliczając NAJSTARSZĄ
         # nierozliczoną predykcję, która przekroczyła próg min_age_hours. Przy
         # DESC starsze nierozliczone predykcje nigdy nie stałyby się znów
         # "najnowsze" i utknęłyby na zawsze (brak actual_price_after_12h →
@@ -1059,12 +1072,15 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         snapshocie). Wywoływane przez Slow Loop przed treningiem.
 
         Retry z exponential backoff — transient błąd sieci/Supabase
-        (gateway 5xx) nie powinien wywalać całego Slow Loop.
+        (gateway 5xx) nie powinien wywalać całego Slow Loop. Klient z dłuższym
+        limitem PostgREST (`FEATURE_STORE_REFRESH_TIMEOUT_S`, NIEZ-35).
         """
+        if self._refresh_client is None:
+            self._refresh_client = self._connect_refresh_client()
         last_exc: Exception | None = None
         for attempt in range(1, _REFRESH_MAX_ATTEMPTS + 1):
             try:
-                self._client.rpc("refresh_ml_feature_store").execute()
+                self._refresh_client.rpc("refresh_ml_feature_store").execute()
                 return
             except Exception as exc:
                 last_exc = exc
@@ -1093,7 +1109,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         # Pełen post-mortem w raporcie: oryginalne uzasadnienie + diagnoza + ceny
         # (a nie tylko kierunek), żeby pokazać "dlaczego wzrosło/spadło i czy
         # prognoza się potwierdziła".
-        # Paginacja (#8) — bez niej raport pokazałby max ~1000 zamkniętych
+        # Paginacja (`_paginate`) — bez niej raport pokazałby max ~1000 zamkniętych
         # predykcji (cichy cap PostgREST).
         columns = (
             "symbol, predicted_trend, is_trend_correct, timestamp, "
@@ -1116,7 +1132,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         Ten sam zestaw kolumn co `get_recently_resolved_predictions` (godziny),
         ale szersze okno dniowe — zasila track-record (krzywa kapitału, panel
         lessons). `parse_resolved_predictions` parsuje oba kształty. Paginacja
-        (#8) — pełen zbiór, nie obcięte ~1000 wierszy PostgREST."""
+        (`_paginate`) — pełen zbiór, nie obcięte ~1000 wierszy PostgREST."""
         cutoff = datetime.now(UTC) - timedelta(days=days)
         columns = (
             "symbol, predicted_trend, is_trend_correct, timestamp, "
@@ -1139,7 +1155,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     def get_resolved_predictions_detailed(
         self, days: int, since: datetime | None = None
     ) -> list[dict[str, Any]]:
-        """#17 — zamknięte predykcje z polami, których `get_resolved_predictions`
+        """R-17 — zamknięte predykcje z polami, których `get_resolved_predictions`
         nie zwraca: `id`, `predicted_target_price`, `confidence_score` i werdykt
         rady (JSONB). Recap tygodniowy liczy z nich accuracy, ECE i wybronionych
         dysydentów. Paginacja jak w pozostałych odczytach track-recordu.
@@ -1201,7 +1217,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if name not in _EVAL_EXTRA_FIELDS:
                 raise ValueError(f"unknown evaluation field: {name}")
             columns += f", {_EVAL_EXTRA_FIELDS[name].select}"
-        # Paginacja (#8) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
+        # Paginacja (`_paginate`) — ewaluacja musi widzieć pełen zbiór, nie obcięte 1000.
         query = (
             self._client.table(self._table)
             .select(columns)
@@ -1219,7 +1235,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
 
     def get_settled_moves(self, days: int, *, with_intervals: bool = False) -> list[dict[str, Any]]:
         # ML-34: rosnąco po czasie, bo replay ACI idzie chronologicznie. Paginacja
-        # (#8) — okno kalibracyjne nie może być po cichu obcięte do ~1000 wierszy.
+        # (`_paginate`) — okno kalibracyjne nie może być po cichu obcięte do ~1000 wierszy.
         cutoff = datetime.now(UTC) - timedelta(days=days)
         columns = (
             "symbol, timestamp, price_at_prediction, predicted_target_price, actual_price_after_12h"
@@ -1258,7 +1274,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         razem, więc sizing patrzy na liczbę niezależnych zakładów, nie wierszy.
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        # Paginacja (#8): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
+        # Paginacja (`_paginate`): hit-rate liczony na PEŁNYM zbiorze, nie obciętych 1000
         # wierszy. .order("timestamp") czyni podzbiór deterministycznym —
         # bez niego obcięta próbka była losowa przy każdym wywołaniu.
         columns = "is_trend_correct, predicted_trend, data_quality_flags, timestamp"
@@ -1397,7 +1413,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     # -----------------------------------------------------------------------
 
     def save_price_snapshot(self, symbol: str, price: Money) -> None:
-        # Upsert na (symbol, timestamp_hour) (#7) — re-run GHA / nakładający się
+        # Upsert na (symbol, timestamp_hour) — re-run GHA / nakładający się
         # workflow_dispatch / retry LangGraph aktualizuje istniejący wiersz w tej
         # samej godzinie zamiast duplikować (duplikaty zaburzały trafność).
         record = _serialize_record({"symbol": symbol, "price": _storage_price(price.amount)})
@@ -1479,11 +1495,14 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         # ML-33: `!inner` + filtr na osadzonej predykcji — tylko rozliczone. `id`
         # jako drugi klucz: granica strony deterministyczna przy równych `created_at`.
+        # ML-57: z flagą DAT-14 osadzony SELECT niesie `stale_quote` (migracja 055),
+        # a `_settled_shadow` odsiewa rozliczenia z nieaktualnego notowania.
+        settlement = self._countable_columns("price_at_prediction, actual_price_after_12h")
         query = (
             self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
             .select(
                 "prediction_id, model_name, model_version, predicted_return, proba, "
-                "prediction_logs!inner(price_at_prediction, actual_price_after_12h)"
+                f"prediction_logs!inner({settlement})"
             )
             .gte("created_at", since.isoformat())
             .not_.is_("prediction_logs.actual_price_after_12h", "null")
@@ -1525,7 +1544,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         ).execute()
 
     def save_prediction(self, prediction: dict[str, Any]) -> str:
-        # Upsert na (symbol, timestamp_hour) (#7) — idempotentny zapis predykcji.
+        # Upsert na (symbol, timestamp_hour) — idempotentny zapis predykcji.
         # Domyślny merge upsertu zwraca wiersz, więc nadal mamy z czego odczytać
         # id (graf używa go jako prediction_id).
         record = _serialize_record(prediction, _PREDICTION_PRICE_COLUMNS)
@@ -2054,7 +2073,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
 
     def read_rows(self, table: str, columns: Sequence[str]) -> list[dict[str, Any]]:
         """NIEZ-32 (`EvidenceSourcePort`): wszystkie wiersze `table`, tylko `columns`,
-        stronami po `id` (paginacja #8). Kolumna bez swojej migracji (42703) wypada
+        stronami po `id` (`_paginate`). Kolumna bez swojej migracji (42703) wypada
         z selecta z WARNING-iem — kopia reszty kolumn i tak powstaje."""
         remaining = list(columns)
         while remaining:
@@ -2550,7 +2569,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self._client.table(LLM_CALLS_TABLE).insert(rows).execute()
 
     def get_llm_cost_since(self, since: datetime) -> float:
-        # Paginacja (#8): miesiąc ledgera to tysiące wierszy. Suma po stronie klienta,
+        # Paginacja (`_paginate`): miesiąc ledgera to tysiące wierszy. Suma po stronie klienta,
         # bo hosted PostgREST nie ma włączonych agregatów; NULL (model spoza cennika)
         # pomijamy — kosztu nie zgadujemy.
         query = (
@@ -2563,6 +2582,22 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             (float(cost) for row in _paginate(query) if (cost := row.get("cost_usd")) is not None),
             0.0,
         )
+
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        # Paginacja (`_paginate`): tydzień ledgera to tysiące wierszy; agregację robi domena.
+        query = (
+            self._client.table(LLM_CALLS_TABLE)
+            .select("symbol, cost_usd")
+            .gte("created_at", since.isoformat())
+            .order("id", desc=False)
+        )
+        return [
+            LedgerCost(
+                symbol=None if (symbol := row.get("symbol")) is None else str(symbol),
+                cost_usd=None if (cost := row.get("cost_usd")) is None else float(cost),
+            )
+            for row in _paginate(query)
+        ]
 
     def save_cycle_run(self, run: CycleRun) -> None:
         # Jeden insert na przebieg; `paid_calls` idzie jako JSONB (dict, nie string).
@@ -2581,7 +2616,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         self._client.table(CYCLE_RUNS_TABLE).insert(row).execute()
 
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
-        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        # Paginacja (`_paginate`) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
         query = (
             self._client.table(CYCLE_RUNS_TABLE)
             .select(
@@ -2595,7 +2630,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         return [_cycle_run(row) for row in _paginate(query)]
 
     def get_reference_reads(self, since: datetime) -> list[ReferenceRead]:
-        # Paginacja (#8) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
+        # Paginacja (`_paginate`) i `id` jako drugi klucz, jak w pozostałych odczytach historii.
         query = (
             self._client.table(REFERENCE_PREDICTIONS_TABLE)
             .select("symbol, price, read_at")
@@ -2633,6 +2668,20 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             )
             for row in _paginate(query)
         ]
+
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        # WIA-82: sam wynik, bez symbolu — agregat do prywatnego Track Record. Okno po
+        # chwili wywołania (`read_at`, indeks z 042), jak okno predykcji LLM; `_paginate`.
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("outcome")
+            .gte("read_at", cutoff.isoformat())
+            .not_.is_("outcome", "null")
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [ReferenceOutcome(str(row["outcome"])) for row in _paginate(query)]
 
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         # Etykietę stawia jawnie kod (stała domeny), nie tylko DEFAULT kolumny.
@@ -2820,6 +2869,28 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if _rows(response):
                 expired += 1
         return expired
+
+    def count_recipe_versions(self) -> int:
+        # WIA-68: PostgREST nie ma COUNT(DISTINCT), a stemplowanych wierszy przybywa
+        # z każdym cyklem. Luźny skan indeksu `idx_prediction_logs_recipe_version`
+        # (030): kolejne zapytanie bierze najmniejszą wersję większą od poprzedniej,
+        # więc zapytań jest tyle, ile wersji (+1), a nie stron całej historii.
+        count = 0
+        last: str | None = None
+        while count < _MAX_RECIPE_VERSIONS:
+            query = (
+                self._client.table(self._table)
+                .select("recipe_version")
+                .not_.is_("recipe_version", "null")
+            )
+            if last is not None:
+                query = query.gt("recipe_version", last)
+            rows = _rows(query.order("recipe_version").limit(1).execute())
+            if not rows:
+                break
+            last = str(rows[0]["recipe_version"])
+            count += 1
+        return count
 
     def count_expired_unverified(self, days: int) -> int:
         # WIA-49: flaga żyje w `data_quality_flags` (JSONB, 008), więc zliczamy wiersze

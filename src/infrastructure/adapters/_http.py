@@ -20,6 +20,9 @@ NIEZ-31: każda sesja ma circuit breaker per host na czas procesu
 obwód hosta zostaje otwarty i żądanie od razu rzuca `CircuitOpenError` bez ruchu
 sieciowego. Awaria Finnhuba nie zjada już 15 minut joba na 43 × 4 próby.
 
+TEST-31: żądanie bez `timeout=` dostaje `DEFAULT_TIMEOUT_SECONDS` w adapterze
+sesji — `requests` bez limitu czekałby bez końca.
+
 NIEZ-24: każda sesja ma hook odpowiedzi, który liczy żądanie per host w
 `HttpCallMeter` — jawnie podanym (`build_session(meter=...)`) albo zainstalowanym
 na przebieg przez `metered_http`. Dzięki temu licznik obejmuje wszystkie adaptery
@@ -57,6 +60,11 @@ RETRY_TOTAL = 3
 RETRY_BACKOFF_FACTOR = 0.5
 RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
 RETRY_AFTER_MAX_SECONDS = 10
+
+# TEST-31: limit żądania sesji, które nie podało własnego `timeout=` — `requests`
+# czekałby wtedy bez końca, a jeden zawieszony adapter zjadłby limit joba. 30 s to
+# najdłuższy jawny limit adapterów (Alpha Vantage, Rekor), więc nikogo nie skraca.
+DEFAULT_TIMEOUT_SECONDS = 30
 
 
 # NIEZ-24: miernik przebiegu dla sesji bez jawnego `meter`. Czytany przy KAŻDEJ
@@ -247,7 +255,8 @@ def process_circuits() -> CircuitBreakerRegistry:
 
 class _CircuitBreakingAdapter(HTTPAdapter):
     """`HTTPAdapter` z retry urllib3, który pyta obwód hosta przed wysyłką i zgłasza
-    mu wynik. Jedna porażka = jedno logiczne żądanie po wyczerpaniu ponowień."""
+    mu wynik. Jedna porażka = jedno logiczne żądanie po wyczerpaniu ponowień.
+    Żądanie bez `timeout=` dostaje `DEFAULT_TIMEOUT_SECONDS` (TEST-31)."""
 
     def __init__(self, breakers: CircuitBreakerRegistry, *, max_retries: Retry) -> None:
         super().__init__(max_retries=max_retries)
@@ -264,6 +273,8 @@ class _CircuitBreakingAdapter(HTTPAdapter):
     ) -> requests.Response:
         host = urlsplit(request.url or "").hostname or "unknown"
         self._breakers.before_request(host)
+        if timeout is None:
+            timeout = DEFAULT_TIMEOUT_SECONDS
         try:
             response = super().send(
                 request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies
@@ -297,6 +308,9 @@ def build_session(
     jest zainstalowany.
 
     `breakers` (NIEZ-31) — obwody hostów; None = wspólne obwody procesu.
+
+    Żądanie bez `timeout=` dostaje `DEFAULT_TIMEOUT_SECONDS` (TEST-31) — adaptery
+    nadal podają własny limit, a ten domyślny łapie nowy adapter, który o nim zapomniał.
     """
     session = requests.Session()
     session.hooks["response"].append(_response_hook(meter))

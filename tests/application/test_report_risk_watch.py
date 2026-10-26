@@ -321,3 +321,58 @@ class TestCompanyNames:
 
         assert "SH (ProShares Short S&amp;P 500)" in html
         assert "S&P 500" not in html
+
+
+def _snapshot_with_daily_change() -> PolishMacroSnapshot:
+    return PolishMacroSnapshot(
+        eur_pln=Decimal("4.27"),
+        usd_pln=Decimal("3.62"),
+        eur_pln_30d_change_ratio=Ratio(Decimal("-0.007")),
+        usd_pln_30d_change_ratio=Ratio(Decimal("-0.021")),
+        fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
+        eur_pln_1d_change_ratio=Ratio(Decimal("0.0047")),
+        usd_pln_1d_change_ratio=Ratio(Decimal("-0.0055")),
+    )
+
+
+class TestDailyFxChange:
+    """DAT-29: dzienna zmiana kursu obok 30d — „USD/PLN 3,62 (−0,55% d/d, −2,10% 30d)”."""
+
+    def test_html_shows_daily_change_next_to_the_month(self) -> None:
+        report = MacroRiskReport(
+            polish_macro=_snapshot_with_daily_change(), overall_alert=MacroAlertLevel.NORMAL
+        )
+
+        html = render_risk_watch_html(report)
+
+        assert "USD/PLN: <strong>3,62</strong> (-0,55% d/d, -2,10% 30d)" in html
+        assert "EUR/PLN: <strong>4,27</strong> (+0,47% d/d, -0,70% 30d)" in html
+
+    def test_text_shows_daily_change_next_to_the_month(self) -> None:
+        report = MacroRiskReport(
+            polish_macro=_snapshot_with_daily_change(), overall_alert=MacroAlertLevel.NORMAL
+        )
+
+        text = render_risk_watch_text(report)
+
+        assert "USD/PLN: 3,62 (-0,55% d/d, -2,10% / 30d)" in text
+        assert "EUR/PLN: 4,27 (+0,47% d/d, -0,70% / 30d)" in text
+
+    def test_without_daily_change_the_block_is_unchanged(self) -> None:
+        snap = PolishMacroSnapshot(
+            eur_pln=Decimal("4.45"),
+            usd_pln=Decimal("4.10"),
+            eur_pln_30d_change_ratio=Ratio(Decimal("0.035")),
+            usd_pln_30d_change_ratio=Ratio(Decimal("0.02")),
+            fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        report = MacroRiskReport(polish_macro=snap, overall_alert=MacroAlertLevel.ELEVATED)
+
+        html = render_risk_watch_html(report)
+        text = render_risk_watch_text(report)
+
+        assert "(NBP, 30d):" in html
+        assert "EUR/PLN: <strong>4,45</strong> (+3,50%) · " in html
+        assert "d/d" not in html
+        assert "  EUR/PLN: 4,45 (+3,50% / 30d)" in text
+        assert "d/d" not in text

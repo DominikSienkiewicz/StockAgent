@@ -47,7 +47,7 @@ def settings() -> Settings:
 
 @pytest.fixture
 def mock_external_clients(mocker: Any) -> None:
-    mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
 
 

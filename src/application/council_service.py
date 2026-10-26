@@ -1,4 +1,4 @@
-# src/infrastructure/adapters/advisory_council.py
+# src/application/council_service.py
 from __future__ import annotations
 
 import contextvars
@@ -65,7 +65,7 @@ def _clamp_unit(raw: Any, default: float = 0.5) -> float:
 
     Model dryfujący na skalę 0-100 (częsta usterka) zwracałby confidence=85,
     co bez bramki czyniłoby KAŻDĄ opinię HIGH (progi confidence_label to
-    0.75/0.5) i korumpowało sygnał konwikcji (finding #20). Brak/None/błędny
+    0.75/0.5) i korumpowało sygnał konwikcji (audyt z czerwca 2026). Brak/None/błędny
     typ → wartość domyślna.
     """
     try:
@@ -105,10 +105,10 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         if not personas:
             raise ValueError("LLMAdvisoryCouncil requires at least one persona.")
         self._llm = llm_port
-        # Feature #3: dostawca wag person z historycznej trafności (per typ aktywa).
+        # R-21: dostawca wag person z historycznej trafności (per typ aktywa).
         # None → ważenie wyłączone (każda persona waży 1.0, werdykt jak dotąd).
         self._weights_provider = weights_provider
-        # Feature #1: jedna runda rewizji, gdy round-1 jest podzielone. Off → jak dziś.
+        # R-19: jedna runda rewizji, gdy round-1 jest podzielone. Off → jak dziś.
         self._debate_mode = debate_mode
         # BEZ-14: uzasadnienia person w prompcie przewodniczącego w fence'u DATA-ONLY.
         self._fence_opinion_reasoning = fence_opinion_reasoning
@@ -204,7 +204,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         return [op for op in opinions if op is not None]
 
     def _resolve_weights(self, data: CouncilInput) -> Mapping[str, float] | None:
-        """Pobiera wagi person z providera (feature #3) lub None.
+        """Pobiera wagi person z providera (R-21) lub None.
 
         Błąd providera nie może zatrzymać rady — degradujemy do braku wag
         (każda persona waży 1.0, werdykt jak bez ważenia).
@@ -233,7 +233,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         if not resolved_opinions:
             raise CouncilUnavailableError(f"{symbol}: no council persona answered")
 
-        # --- Debate mode (feature #1): JEDNA runda rewizji, gdy round-1 split ---
+        # --- Debate mode (R-19): JEDNA runda rewizji, gdy round-1 split ---
         # Cap = dokładnie jedna runda rewizji; po niej derive_consensus z REVISED.
         # ML-40: głosy rundy 1 zostają w werdykcie obok zrewidowanych.
         first_round: list[InvestorOpinion] = []
@@ -258,7 +258,7 @@ class LLMAdvisoryCouncil(AdvisoryCouncilPort):
         # AUTORYTATYWNA decyzja + siła konsensusu liczone z REALNYCH głosów
         # (domena), nie z liczby od chairmana. Dzięki temu jednogłośne BUY
         # zostaje BUY nawet gdy chairman padnie — nie ma cichego defaultu
-        # HOLD/0.5 nadpisującego głosy inwestorów (finding #3). Wagi (feature #3)
+        # HOLD/0.5 nadpisującego głosy inwestorów (audyt z czerwca 2026). Wagi (R-21)
         # ważą głos każdej persony jej historyczną trafnością.
         weights = self._resolve_weights(data)
         final_recommendation, consensus_strength = derive_consensus(resolved_opinions, weights)

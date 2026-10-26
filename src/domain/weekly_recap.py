@@ -18,6 +18,9 @@ przy N >= `MIN_CLOSED_PREDICTIONS_FOR_RECAP` zamkniętych predykcjach. Poniżej
 progu funkcja zwraca `None` → mail NIE WYCHODZI. Powód: przy chudym tygodniu
 recap robiłby dramat z szumu.
 
+FIN-26: rachunek tygodnia (`summarize_weekly_cost`) jest osobną funkcją bez progu
+próbki — sekcja kosztu wychodzi także wtedy, gdy recap nie powstaje.
+
 Czysta domena: stdlib + inne moduły domeny, ZERO importów zewnętrznych i ZERO
 LLM. Narracyjną syntezę LLM dokłada warstwa application (use case) — poza tym
 modułem. Wejście (`ClosedPrediction`) to WŁASNY typ domenowy; mapowanie z DTO
@@ -39,6 +42,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.council import InvestorOpinion, Recommendation, vindicated_dissenters
 from src.domain.council_redundancy import CouncilRedundancy
+from src.domain.finops import LedgerCost
 from src.domain.prediction import Prediction, sideways_tolerance_for
 from src.domain.value_objects import AssetType
 
@@ -240,4 +244,90 @@ def build_weekly_recap(
         previous_ece=previous_ece,
         ece_delta=ece_delta,
         scores=probability_scores(samples, n_buckets),
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIN-26: koszt tygodnia — osobno od narracji LLM.
+#
+# Sekcja „💸 Koszt tygodnia” wychodzi także przy recapie pominiętym progiem
+# próbki (i podczas pauzy), więc jej rachunek nie zależy od `build_weekly_recap`.
+# Dwa źródła i dwie miary, świadomie nazwane osobno: liczba płatnych wywołań i
+# cykle w pełni zatrzymane — z przebiegów Fast Loopa (`cycle_runs`); USD i ranking
+# symboli — z ledgera `llm_calls` (tokeny LLM i embeddingów obu pętli).
+# ---------------------------------------------------------------------------
+
+# Najdroższe symbole tygodnia w sekcji kosztu.
+TOP_COST_SYMBOLS = 3
+
+
+@dataclass(frozen=True)
+class SymbolCost:
+    """Koszt z ledgera jednego symbolu w tygodniu (suma wierszy z wyceną)."""
+
+    symbol: str
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class WeeklyCostSummary:
+    """Rachunek tygodnia: przebiegi Fast Loopa, koszt z ledgera i jego rozkład.
+
+    - `cycles`, `gated_cycles` — przebiegi i te z zerem płatnych wywołań (bramka
+      volatility, a przy wyczerpanym limicie USD także limit — `cycle_runs` nie
+      zapisuje przyczyny);
+    - `paid_calls` — płatne wywołania przebiegów, wszystkie źródła cennika;
+    - `total_usd` — suma `llm_calls.cost_usd` okna (wiersz bez wyceny poza sumą,
+      więc to dolna granica);
+    - `top_symbols` — najdroższe symbole malejąco, remis alfabetycznie;
+    - `settled_predictions` — predykcje rozliczone w tym samym tygodniu.
+    """
+
+    cycles: int
+    gated_cycles: int
+    paid_calls: int
+    total_usd: float
+    top_symbols: tuple[SymbolCost, ...]
+    settled_predictions: int
+
+    @property
+    def gated_ratio(self) -> float | None:
+        """Odsetek przebiegów bez płatnych wywołań; None bez przebiegów (pauza)."""
+        return None if self.cycles == 0 else self.gated_cycles / self.cycles
+
+    @property
+    def cost_per_settled_usd(self) -> float | None:
+        """Koszt tygodnia na rozliczoną predykcję; None bez rozliczeń."""
+        if self.settled_predictions == 0:
+            return None
+        return self.total_usd / self.settled_predictions
+
+
+def summarize_weekly_cost(
+    cycle_paid_calls: Sequence[int],
+    ledger: Sequence[LedgerCost],
+    *,
+    settled_predictions: int,
+    top_n: int = TOP_COST_SYMBOLS,
+) -> WeeklyCostSummary:
+    """Składa rachunek tygodnia z płatnych wywołań każdego przebiegu Fast Loopa
+    i wierszy ledgera. Bez LLM i bez progu próbki — zero przebiegów i zero
+    rozliczeń to poprawny tydzień pauzy."""
+    if any(calls < 0 for calls in cycle_paid_calls):
+        raise ValueError("paid calls of a cycle must be non-negative")
+    if settled_predictions < 0:
+        raise ValueError(f"settled predictions must be non-negative (got {settled_predictions})")
+    priced = [row for row in ledger if row.cost_usd is not None]
+    by_symbol: dict[str, float] = {}
+    for row in priced:
+        if row.symbol is not None and row.cost_usd:
+            by_symbol[row.symbol] = by_symbol.get(row.symbol, 0.0) + row.cost_usd
+    ranked = sorted(by_symbol.items(), key=lambda item: (-item[1], item[0]))
+    return WeeklyCostSummary(
+        cycles=len(cycle_paid_calls),
+        gated_cycles=sum(1 for calls in cycle_paid_calls if calls == 0),
+        paid_calls=sum(cycle_paid_calls),
+        total_usd=sum((row.cost_usd or 0.0 for row in priced), 0.0),
+        top_symbols=tuple(SymbolCost(symbol, cost) for symbol, cost in ranked[:top_n]),
+        settled_predictions=settled_predictions,
     )

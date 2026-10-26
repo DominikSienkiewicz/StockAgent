@@ -232,17 +232,34 @@ def _render_drawdowns_table_html(drawdowns: list[DrawdownSignal]) -> str:
     )
 
 
+def _fx_change_html(daily: Ratio | None, monthly: Ratio) -> str:
+    """DAT-29: „-0,55% d/d, -2,10% 30d”; bez zmiany dziennej sama zmiana 30d
+    (okno podaje wtedy nagłówek bloku, jak przed DAT-29)."""
+    if daily is None:
+        return _format_pct(monthly)
+    return f"{_format_pct(daily)} d/d, {_format_pct(monthly)} 30d"
+
+
+def _fx_change_text(daily: Ratio | None, monthly: Ratio) -> str:
+    """DAT-29: „-0,55% d/d, -2,10% / 30d”; bez zmiany dziennej „-2,10% / 30d”."""
+    month = f"{_format_pct(monthly)} / 30d"
+    return month if daily is None else f"{_format_pct(daily)} d/d, {month}"
+
+
 def _render_polish_macro_html(snap: PolishMacroSnapshot) -> str:
     stress = snap.evaluate_stress_level()
     label = _STRESS_LABEL[stress]
+    # Z dzienną zmianą (DAT-29) okno stoi przy każdej liczbie, nie w nagłówku.
+    daily = (snap.eur_pln_1d_change_ratio, snap.usd_pln_1d_change_ratio)
+    window = ", 30d" if None in daily else ""
     return (
         "<div style='padding: 10px 14px; background: #f9fafb; "
         "border-radius: 4px; font-size: 13px; margin-bottom: 16px;'>"
-        "<strong>Polska — kursy referencyjne (NBP, 30d):</strong><br>"
+        f"<strong>Polska — kursy referencyjne (NBP{window}):</strong><br>"
         f"EUR/PLN: <strong>{number_exact(snap.eur_pln)}</strong> "
-        f"({_format_pct(snap.eur_pln_30d_change_ratio)}) · "
+        f"({_fx_change_html(snap.eur_pln_1d_change_ratio, snap.eur_pln_30d_change_ratio)}) · "
         f"USD/PLN: <strong>{number_exact(snap.usd_pln)}</strong> "
-        f"({_format_pct(snap.usd_pln_30d_change_ratio)})<br>"
+        f"({_fx_change_html(snap.usd_pln_1d_change_ratio, snap.usd_pln_30d_change_ratio)})<br>"
         f"Poziom stresu fiskalnego: <strong>{label}</strong>"
         "</div>"
     )
@@ -300,11 +317,11 @@ def render_risk_watch_text(report: MacroRiskReport) -> str:
         snap = report.polish_macro
         lines.append(
             f"  EUR/PLN: {number_exact(snap.eur_pln)} "
-            f"({_format_pct(snap.eur_pln_30d_change_ratio)} / 30d)"
+            f"({_fx_change_text(snap.eur_pln_1d_change_ratio, snap.eur_pln_30d_change_ratio)})"
         )
         lines.append(
             f"  USD/PLN: {number_exact(snap.usd_pln)} "
-            f"({_format_pct(snap.usd_pln_30d_change_ratio)} / 30d)"
+            f"({_fx_change_text(snap.usd_pln_1d_change_ratio, snap.usd_pln_30d_change_ratio)})"
         )
         lines.append(f"  Stres fiskalny: {_STRESS_LABEL[snap.evaluate_stress_level()]}")
         lines.append("")

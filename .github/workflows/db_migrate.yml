@@ -24,6 +24,12 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # BEZ-22: jedyny sekret z prawem DDL na produkcji (`SUPABASE_DB_URL`) jest sekretem tego
+    # środowiska, nie repo, więc widzi go wyłącznie ten job, a run czeka na zatwierdzenie
+    # właściciela (required reviewer) z audytem w UI. Środowiska jeszcze nie ma po stronie
+    # GitHuba? Pierwszy run je utworzy bez reguł ochrony, a sekret repo o tej samej nazwie
+    # dalej działa — kroki właściciela: docs/running-locally.md (Repository secrets).
+    environment: production-db
     # NIEZ-27: jedna kolejka dla wszystkich jobów piszących do bazy (Fast Loop, Slow Loop,
     # DB Migrate), bez anulowania. Na poziomie JOBA, bo grupa workflowu zostaje własna
     # (kolejka runów tego workflowu) i musi mieć inną nazwę, inaczej run czekałby na

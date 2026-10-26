@@ -49,7 +49,7 @@ from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     GENESIS_HASH,
@@ -351,6 +351,9 @@ class InMemoryRepository(RepositoryPort):
             1 for row in rows if row.get("actual_price_after_12h") is None and not _not_expired(row)
         )
 
+    def count_recipe_versions(self) -> int:
+        return len({row["recipe_version"] for row in self._rows() if row.get("recipe_version")})
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,
@@ -554,7 +557,7 @@ class InMemoryRepository(RepositoryPort):
             row["correction_insights"] = DIAGNOSIS_REJECTED_INSIGHT
 
     # ------------------------------------------------------------------
-    # Atestacja (#16, WIA-01) — kolumny w wierszu predykcji
+    # Atestacja (R-16, WIA-01) — kolumny w wierszu predykcji
     # ------------------------------------------------------------------
 
     def get_unrevealed_commitments(self, days: int | None = None) -> list[dict[str, Any]]:
@@ -934,6 +937,15 @@ class InMemoryRepository(RepositoryPort):
             0.0,
         )
 
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        with self._lock:
+            calls = list(self._llm_calls)
+        return [
+            LedgerCost(symbol=call.symbol, cost_usd=call.cost_usd)
+            for saved_at, call in calls
+            if saved_at >= since
+        ]
+
     def save_cycle_run(self, run: CycleRun) -> None:
         with self._lock:
             self._cycle_runs.append(run)
@@ -1044,6 +1056,14 @@ class InMemoryRepository(RepositoryPort):
             key=lambda row: (row["read"].read_at, int(row["id"])),
         )
         return [OpenReferenceCall(id=str(row["id"]), call=row["call"]) for row in rows]
+
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        cutoff = self._now() - timedelta(days=days)
+        return [
+            row["outcome"]
+            for row in self._reference.values()
+            if row["outcome"] is not None and row["read"].read_at >= cutoff
+        ]
 
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         with self._lock:

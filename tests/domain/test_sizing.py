@@ -243,6 +243,20 @@ class TestSizingKnowsPortfolioRisk:
         assert suggest_band(0.9, 0.1, 0.7, drawdown=0.15).tier == "starter"
         assert suggest_band(0.9, 0.1, 0.7, drawdown=0.1499).tier == "full"
 
+    @pytest.mark.parametrize("drawdown", [math.nan, math.inf, -math.inf])
+    def test_nan_drawdown_is_treated_as_deep_drawdown(self, drawdown: float) -> None:
+        # PORT-24: `NaN >= próg` to False — niefinitne obsunięcie przechodziło jako płytkie.
+        assert suggest_band(0.9, 0.1, 0.7, drawdown=drawdown).tier == "starter"
+
+    @pytest.mark.parametrize("var", [math.nan, math.inf, -math.inf])
+    def test_nan_portfolio_var_tightens_band(self, var: float) -> None:
+        # PORT-24: niefinitny VaR zdejmuje stopień jak VaR ponad progiem.
+        assert suggest_band(0.9, 0.1, 0.7, portfolio_var=var).tier == "standard"
+
+    def test_none_risk_inputs_still_mean_no_data(self) -> None:
+        # PORT-24: fail-closed tylko dla wartości niefinitnych; None to brak danych.
+        assert suggest_band(0.9, 0.1, 0.7, portfolio_var=None, drawdown=None).tier == "full"
+
     def test_ineffective_hedge_lowers_the_band_one_step(self) -> None:
         assert suggest_band(0.9, 0.1, 0.7, hedge_effective=False).tier == "standard"
 

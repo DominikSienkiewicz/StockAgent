@@ -9,13 +9,22 @@ from __future__ import annotations
 import dataclasses
 from decimal import Decimal
 
+from src.application.report_formatting import INVESTMENT_DISCLAIMER
 from src.application.report_weekly_recap import (
+    render_weekly_cost_html,
+    render_weekly_cost_text,
     render_weekly_recap_html,
     render_weekly_recap_text,
 )
 from src.domain.calibration_curve import ProbabilityScores
 from src.domain.council import InvestorOpinion
-from src.domain.weekly_recap import RecapHighlight, WeeklyRecap
+from src.domain.finops import LedgerCost
+from src.domain.weekly_recap import (
+    RecapHighlight,
+    WeeklyCostSummary,
+    WeeklyRecap,
+    summarize_weekly_cost,
+)
 
 
 def _recap(
@@ -303,3 +312,62 @@ class TestCouncilRedundancyLine:
     def test_recap_without_redundancy_has_no_such_line(self) -> None:
         assert "niezależnego głosu" not in render_weekly_recap_html(_recap())
         assert "niezależnego głosu" not in render_weekly_recap_text(_recap())
+
+
+# --- FIN-26: 💸 Koszt tygodnia --------------------------------------------------
+
+
+def _week_cost(*, cycles: list[int] | None = None, settled: int = 10) -> WeeklyCostSummary:
+    return summarize_weekly_cost(
+        [0, 5, 0, 0, 12] if cycles is None else cycles,
+        [
+            LedgerCost("NVDA", 0.40),
+            LedgerCost("AAPL", 0.30),
+            LedgerCost("MSFT", 0.20),
+            LedgerCost("AMD", 0.10),
+            LedgerCost(None, 0.23),
+        ],
+        settled_predictions=settled,
+    )
+
+
+class TestWeeklyCostSection:
+    def test_none_is_self_suppressing(self) -> None:
+        assert render_weekly_cost_html(None) == ""
+        assert render_weekly_cost_text(None) == ""
+
+    def test_shows_total_cycles_gated_share_top_symbols_and_unit_cost(self) -> None:
+        html = render_weekly_cost_html(_week_cost())
+        text = render_weekly_cost_text(_week_cost())
+
+        assert "💸 Koszt tygodnia" in html
+        assert "KOSZT TYGODNIA" in text
+        for rendered in (html, text):
+            assert "Koszt LLM z ledgera: $1,2300" in rendered
+            assert "5 cykli · 17 płatnych wywołań" in rendered
+            assert "w pełni zatrzymane (0 płatnych wywołań): 3 z 5 (60%)" in rendered
+            assert "Najdroższe symbole: NVDA $0,4000 · AAPL $0,3000 · MSFT $0,2000" in rendered
+            assert "AMD" not in rendered
+            assert "Koszt na rozliczoną predykcję: $0,1230 (10 rozliczonych)" in rendered
+            assert "nie faktura" in rendered
+
+    def test_paused_week_says_there_were_no_cycles(self) -> None:
+        text = render_weekly_cost_text(_week_cost(cycles=[], settled=0))
+
+        assert "Fast Loop: brak przebiegów w tym tygodniu" in text
+        assert "Koszt na rozliczoną predykcję: — (brak rozliczeń w tym tygodniu)" in text
+
+    def test_recap_mail_puts_the_cost_before_the_disclaimer(self) -> None:
+        html = render_weekly_recap_html(_recap(), "narracja", cost=_week_cost())
+        text = render_weekly_recap_text(_recap(), "narracja", cost=_week_cost())
+
+        assert html.index("💸 Koszt tygodnia") < html.index(INVESTMENT_DISCLAIMER)
+        assert text.index("KOSZT TYGODNIA") < text.index(INVESTMENT_DISCLAIMER)
+
+    def test_recap_without_cost_is_unchanged(self) -> None:
+        assert render_weekly_recap_html(_recap(), "n", cost=None) == render_weekly_recap_html(
+            _recap(), "n"
+        )
+        assert render_weekly_recap_text(_recap(), "n", cost=None) == render_weekly_recap_text(
+            _recap(), "n"
+        )

@@ -903,3 +903,49 @@ def test_budget_window_rejects_a_naive_clock() -> None:
 
     with pytest.raises(ValueError, match="timezone"):
         budget_window_start(BudgetWindow.DAY, datetime(2026, 10, 25, 12, 0))
+
+
+# --- FIN-23: koszt miesiąca narastająco i prognoza liniowa ------------------------
+
+
+def test_month_to_date_projection_is_linear() -> None:
+    """10 dni po 0,34 USD w 31-dniowym październiku → prognoza ≈ 10,54 USD."""
+    from datetime import UTC, date, datetime
+
+    from src.domain.finops import month_to_date_cost
+
+    month = month_to_date_cost(3.40, datetime(2026, 10, 10, 12, 0, tzinfo=UTC))
+
+    assert month.month_start == date(2026, 10, 1)
+    assert month.spent_usd == 3.40
+    assert (month.days_elapsed, month.days_in_month) == (10, 31)
+    assert month.projected_usd == pytest.approx(10.54)
+
+
+def test_month_to_date_counts_today_and_the_utc_calendar() -> None:
+    """Dzień bieżący liczy się w całości; miesiąc i dzień idą po UTC, jak ledger."""
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from src.domain.finops import month_to_date_cost
+
+    first_day = month_to_date_cost(0.50, datetime(2026, 2, 1, 0, 30, tzinfo=UTC))
+    last_day = month_to_date_cost(5.0, datetime(2026, 2, 28, 23, 0, tzinfo=UTC))
+    # 1 listopada 00:30 w Warszawie to wciąż 31 października w UTC.
+    warsaw = timezone(timedelta(hours=1))
+    late_october = month_to_date_cost(3.1, datetime(2026, 11, 1, 0, 30, tzinfo=warsaw))
+
+    assert first_day.projected_usd == pytest.approx(0.50 * 28)
+    assert last_day.projected_usd == pytest.approx(5.0)
+    assert (late_october.days_elapsed, late_october.days_in_month) == (31, 31)
+    assert late_october.projected_usd == pytest.approx(3.1)
+
+
+def test_month_to_date_rejects_negative_spend_and_a_naive_clock() -> None:
+    from datetime import UTC, datetime
+
+    from src.domain.finops import month_to_date_cost
+
+    with pytest.raises(ValueError, match="non-negative"):
+        month_to_date_cost(-0.01, datetime(2026, 10, 10, tzinfo=UTC))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        month_to_date_cost(1.0, datetime(2026, 10, 10))

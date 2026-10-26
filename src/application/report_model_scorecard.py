@@ -583,7 +583,7 @@ def build_scorecard_view(rows: list[dict[str, Any]]) -> ModelScorecardView | Non
 
 
 def _section_html(data: SectionInput) -> str:
-    """#12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
+    """R-12: karta kondycji modelu. Brak danych → "" (sekcja sama się chowa)."""
     model_scorecard = data.context.model_scorecard
     if model_scorecard is None:
         return ""
@@ -631,7 +631,7 @@ def _section_text(data: SectionInput) -> list[str]:
     return text_block(text)
 
 
-# #12: tuż za Track Recordem i Historią trafności — ta sama oś zaufania.
+# R-12: tuż za Track Recordem i Historią trafności — ta sama oś zaufania.
 MODEL_SCORECARD_SECTION = ReportSection(
     key="model_scorecard",
     render_html=_section_html,

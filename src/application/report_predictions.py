@@ -140,7 +140,7 @@ def _render_saved_section_html(
     parts.extend(_render_prediction_row_html(r) for r in saved)
     parts.append("</table>")
 
-    # #2: wykres prognozy jako INLINE HTML — koniec z <img> z zewnętrznego hosta.
+    # R-2: wykres prognozy jako INLINE HTML — koniec z <img> z zewnętrznego hosta.
     # Fragment jest już zescapowany przez renderer, więc wstawiamy go wprost.
     forecast_chart = build_forecast_chart_html(saved)
     if forecast_chart:

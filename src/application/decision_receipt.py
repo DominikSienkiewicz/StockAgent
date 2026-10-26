@@ -1,4 +1,4 @@
-"""Kwit decyzyjny predykcji (#13, WIA-20) — wersje schematu i czytnik.
+"""Kwit decyzyjny predykcji (R-13, WIA-20) — wersje schematu i czytnik.
 
 Kwit żyje w JSONB `prediction_logs.decision_receipts` miesiącami po zapisie,
 a JSONB nie ma migracji kolumn, więc wersję niesie pole `schema_version`:
@@ -101,7 +101,7 @@ def receipt_line_pl(receipt: DecisionReceipt) -> str:
     """WIA-56: jedna linia kwitu pod chybieniem, np. „stała na analogach
     #3f2a1b9c (0,91), #77aa0e12 (0,87) przy progu 3,0%”.
 
-    Analog bez `id` (zapis sprzed #13) nie da się wskazać, więc go pomijamy."""
+    Analog bez `id` (zapis sprzed R-13) nie da się wskazać, więc go pomijamy."""
     analogs: list[str] = []
     for precedent in receipt.precedents:
         analog_id = precedent.get("id")

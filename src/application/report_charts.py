@@ -202,11 +202,11 @@ def _correlation_chart_html(data: SectionInput) -> str:
     ) + chart
 
 
-# #2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
+# R-2: wykres Δ cen jako inline HTML (żadne dane nie opuszczają maila).
 DELTA_CHART_SECTION = ReportSection(
     key="delta_chart", render_html=_delta_chart_html, render_text=no_text
 )
-# #2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
+# R-2: dawny scatter → tabela kwadrantów, inline (≥3 punkty).
 CORRELATION_CHART_SECTION = ReportSection(
     key="correlation_chart", render_html=_correlation_chart_html, render_text=no_text
 )

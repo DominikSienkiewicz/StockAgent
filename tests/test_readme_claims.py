@@ -90,3 +90,27 @@ def test_readme_links_files_not_line_numbers() -> None:
     )
 
     assert line_links == []
+
+
+# BEZ-30: MIT dotyczy kodu. Dane dostawców mają własne warunki (tabela „Data sources and
+# terms”), a opisy stylu inwestorów w `data/council_personas/` to tekst autora o osobach,
+# które z projektem nie mają nic wspólnego — README mówi to wprost, zamiast sugerować, że
+# MIT i nazwiska obejmują wszystko, co leży w repo.
+PERSONAS_DIR = "data/council_personas/"
+
+
+def test_readme_license_section_scopes_mit_to_code() -> None:
+    section = _section("License")
+
+    assert "LICENSE" in _links(section)
+    assert "The code is MIT-licensed" in section
+    assert PERSONAS_DIR in _links(section), "sekcja License milczy o opisach person"
+    assert "not affiliated" in section
+    assert "do not endorse" in section
+
+
+# DOC-24: model zagrożeń, znane luki, model sekretów i kontakt żyją w SECURITY.md (GitHub
+# pokazuje go też w zakładce Security), a README do niego prowadzi.
+def test_readme_routes_to_the_security_policy() -> None:
+    assert "SECURITY.md" in _links(README.read_text(encoding="utf-8"))
+    assert (ROOT / "SECURITY.md").is_file()

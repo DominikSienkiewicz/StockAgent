@@ -18,9 +18,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.application.ports import LLMPort, RepositoryPort
+from src.application.errors import ProviderUnavailable
+from src.application.ports import CycleRun, LLMPort, RepositoryPort
 from src.application.use_cases.weekly_recap import WeeklyRecapUseCase
-from src.domain.weekly_recap import WeeklyRecap
+from src.domain.finops import LedgerCost
+from src.domain.weekly_recap import WeeklyCostSummary, WeeklyRecap
 
 
 def _use_case(repo: Mock, llm: Mock) -> WeeklyRecapUseCase:
@@ -453,3 +455,90 @@ class TestCouncilRedundancy:
 
     def test_flag_off_leaves_the_recap_untouched(self) -> None:
         assert self._run(enabled=False).redundancy is None
+
+
+class TestWeeklyCost:
+    """FIN-26: koszt tygodnia liczony bez LLM i bez progu próbki — wychodzi także
+    przy recapie pominiętym (< 5 rozliczeń), więc i podczas pauzy."""
+
+    SINCE = datetime(2026, 10, 19, 6, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _run(paid_calls: list[dict[str, int]], n_rows: int) -> tuple[dict[str, Any], Mock]:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = _rows(n_rows)
+        repo.get_cycle_runs_since.return_value = [
+            _cycle_run(calls, loop="fast") for calls in paid_calls
+        ] + [_cycle_run({"llm": 9}, loop="slow")]
+        repo.get_llm_costs_since.return_value = [
+            LedgerCost("NVDA", 0.03),
+            LedgerCost(None, 0.01),
+        ]
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "ok"}
+        use_case = WeeklyRecapUseCase(
+            repository_port=repo, llm_port=llm, cost_since=TestWeeklyCost.SINCE
+        )
+        return use_case.run(), repo
+
+    def test_skipped_recap_still_carries_the_weekly_cost(self) -> None:
+        result, repo = self._run([{}, {"llm": 3, "sentiment": 2}, {}], n_rows=2)
+
+        cost = result["cost"]
+        assert result["status"] == "skipped_below_threshold"
+        assert isinstance(cost, WeeklyCostSummary)
+        # Przebieg Slow Loopa nie jest cyklem Fast Loopa.
+        assert (cost.cycles, cost.gated_cycles, cost.paid_calls) == (3, 2, 5)
+        assert cost.total_usd == pytest.approx(0.04)
+        assert cost.settled_predictions == 2
+        repo.get_cycle_runs_since.assert_called_once_with(TestWeeklyCost.SINCE)
+        repo.get_llm_costs_since.assert_called_once_with(TestWeeklyCost.SINCE)
+
+    def test_ready_recap_carries_the_weekly_cost_too(self) -> None:
+        result, _ = self._run([{"llm": 1}], n_rows=5)
+
+        assert result["status"] == "recap_ready"
+        assert result["cost"].settled_predictions == 5
+
+    def test_without_a_window_nothing_is_read(self) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = _rows(2)
+
+        result = _use_case(repo, Mock(spec=LLMPort)).run()
+
+        assert result["cost"] is None
+        repo.get_cycle_runs_since.assert_not_called()
+        repo.get_llm_costs_since.assert_not_called()
+
+    def test_failed_read_drops_the_cost_but_not_the_recap(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo = Mock(spec=RepositoryPort)
+        repo.get_resolved_predictions_detailed.return_value = _rows(5)
+        repo.get_cycle_runs_since.side_effect = ProviderUnavailable("cycle_runs down")
+        llm = Mock(spec=LLMPort)
+        llm.analyze.return_value = {"narrative": "ok"}
+
+        with caplog.at_level(logging.WARNING):
+            result = WeeklyRecapUseCase(
+                repository_port=repo, llm_port=llm, cost_since=TestWeeklyCost.SINCE
+            ).run()
+
+        assert result["status"] == "recap_ready"
+        assert result["cost"] is None
+        assert "Weekly cost" in caplog.text
+
+
+def _cycle_run(paid_calls: dict[str, int], *, loop: str) -> CycleRun:
+    return CycleRun(
+        loop=loop,
+        run_id="1",
+        run_attempt=1,
+        started_at=datetime(2026, 10, 20, 5, 30, tzinfo=UTC),
+        duration_s=60.0,
+        eligible=3,
+        saved=0,
+        failures=0,
+        paid_calls=paid_calls,
+        report_delivered=True,
+    )

@@ -39,7 +39,17 @@ READ_ONLY_ENTRYPOINTS = frozenset({"main_deadman.py", "main_backtest.py", "main_
 # Joby, które dziś zapisują — chroni przed pustą parametryzacją poniżej.
 EXPECTED_WRITING_JOBS = frozenset({"main_agent.py", "main_trainer.py", "main_watch.py"})
 
-_ENTRYPOINT_RUN = re.compile(r"python\s+(main_\w+\.py)")
+_ENTRYPOINT_RUN = re.compile(r"python\s+(main_\w+\.py)(?:\s+([a-z][a-z-]*))?")
+# CI-16: podkomendy `main_tools.py`, które nie budują `Settings` ani adapterów (czytają tylko
+# pliki z dysku), więc nie mają czego zapisać. Krok z taką podkomendą jest sprawdzany jak
+# entry-point tylko do odczytu: przełącznika zapisu nie dostaje.
+READ_ONLY_TOOL_SUBCOMMANDS = frozenset({"junit-summary"})
+
+
+def _classified_entrypoint(entrypoint: str, subcommand: str) -> str:
+    if entrypoint == "main_tools.py" and subcommand in READ_ONLY_TOOL_SUBCOMMANDS:
+        return f"{entrypoint} {subcommand}"
+    return entrypoint
 
 
 def _entrypoint_steps() -> list[tuple[str, str, dict[str, object]]]:
@@ -49,8 +59,14 @@ def _entrypoint_steps() -> list[tuple[str, str, dict[str, object]]]:
         spec = yaml.safe_load(path.read_text(encoding="utf-8"))
         for job in spec.get("jobs", {}).values():
             for step in job.get("steps", []):
-                for entrypoint in _ENTRYPOINT_RUN.findall(str(step.get("run", ""))):
-                    found.append((path.name, entrypoint, dict(step.get("env") or {})))
+                for entrypoint, subcommand in _ENTRYPOINT_RUN.findall(str(step.get("run", ""))):
+                    found.append(
+                        (
+                            path.name,
+                            _classified_entrypoint(entrypoint, subcommand),
+                            dict(step.get("env") or {}),
+                        )
+                    )
     return found
 
 
@@ -102,3 +118,12 @@ def test_env_example_ships_db_writes_disabled() -> None:
     lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
 
     assert f"{ENV_KEY}=false" in lines
+
+
+def test_read_only_tool_subcommands_are_real_subcommands() -> None:
+    import main_tools
+
+    parser = main_tools.build_parser()
+    for subcommand in sorted(READ_ONLY_TOOL_SUBCOMMANDS):
+        args = parser.parse_args([subcommand, "report.xml"])
+        assert args.command == subcommand

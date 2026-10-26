@@ -11,7 +11,9 @@ import pytest
 import main_trainer
 from src.application.ports import RepositoryPort
 from src.config import Settings
+from src.domain.finops import LedgerCost
 from src.domain.quota import QuotaSeverity
+from src.domain.weekly_recap import summarize_weekly_cost
 from tests.entrypoint_support import UNDELIVERED_ANNOTATION, build_quota_alert, build_usage
 
 
@@ -231,6 +233,19 @@ class TestModelScorecardRunId:
 
         assert supabase_cls.call_args.kwargs["scorecard_provenance_enabled"] is enabled
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_stale_quote_flag(
+        self, settings: Settings, mocker: Any, enabled: bool
+    ) -> None:
+        # ML-57: pary champion/challenger (i pozostałe odczyty rozliczeń Slow Loopa)
+        # bez rozliczeń z nieaktualnego notowania — kolumna z migracji 055 za flagą.
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"stale_quote_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs.get("stale_quote_enabled") is enabled
+
     def test_build_use_case_hands_the_commit_sha_to_the_use_case(
         self, settings: Settings, mocker: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -357,6 +372,80 @@ class TestWeeklyRecapWiring:
 
         recap_uc.run.assert_not_called()
         notifier.send_report.assert_not_called()
+
+    def test_cost_only_mail_goes_out_when_the_recap_is_skipped(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        # FIN-26: sekcja kosztu nie czeka na narrację LLM — chudy tydzień (i pauza)
+        # dostaje sam rachunek tygodnia.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        recap_uc, notifier = self._trainer(settings, mocker, "skipped_below_threshold")
+        recap_uc.run.return_value = {
+            "status": "skipped_below_threshold",
+            "n_closed": 2,
+            "cost": summarize_weekly_cost(
+                [0, 4], [LedgerCost("NVDA", 0.05)], settled_predictions=2
+            ),
+        }
+
+        main_trainer.main(settings)
+
+        notifier.send_report.assert_called_once()
+        sent = notifier.send_report.call_args.kwargs
+        assert sent["subject"] == "💸 Koszt tygodnia StockAgenta"
+        assert "💸 Koszt tygodnia" in sent["html_body"]
+        assert "KOSZT TYGODNIA" in sent["plain_text"]
+
+    def test_ready_recap_mail_carries_the_cost(
+        self, settings: Settings, mock_external_clients: None, mocker: Any
+    ) -> None:
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        recap_uc, notifier = self._trainer(settings, mocker, "recap_ready")
+        cost = summarize_weekly_cost([0], [], settled_predictions=5)
+        recap_uc.run.return_value = {
+            "status": "recap_ready",
+            "recap": MagicMock(),
+            "narrative": "opowieść",
+            "cost": cost,
+        }
+
+        main_trainer.main(settings)
+
+        assert notifier.send_report.call_args.kwargs["subject"] == "📅 Tydzień StockAgenta"
+        html_render = cast(Any, main_trainer).render_weekly_recap_html
+        assert html_render.call_args.kwargs["cost"] is cost
+
+    @pytest.mark.parametrize(
+        ("ledger", "cycle_runs", "reads_cost"),
+        [(True, True, True), (True, False, False), (False, True, False)],
+    )
+    def test_cost_window_needs_the_ledger_and_the_cycle_runs(
+        self,
+        settings: Settings,
+        mock_external_clients: None,
+        mocker: Any,
+        ledger: bool,
+        cycle_runs: bool,
+        reads_cost: bool,
+    ) -> None:
+        # FIN-26: rachunek tygodnia czyta `llm_calls` (040) i `cycle_runs` (041) —
+        # tylko gdy obie tabele są pisane; inaczej mail jak przed FIN-26.
+        settings.weekly_recap_enabled = True
+        settings.symbols = ["AAPL"]
+        settings.cost_ledger_enabled = ledger
+        settings.cycle_runs_enabled = cycle_runs
+        self._trainer(settings, mocker, "recap_ready")
+        before = datetime.now(UTC)
+
+        main_trainer.main(settings)
+
+        since = cast(Any, main_trainer).WeeklyRecapUseCase.call_args.kwargs["cost_since"]
+        if reads_cost:
+            assert before - timedelta(days=7) <= since <= datetime.now(UTC) - timedelta(days=7)
+        else:
+            assert since is None
 
     def test_recap_failure_does_not_fail_the_slow_loop(
         self, settings: Settings, mock_external_clients: None, mocker: Any

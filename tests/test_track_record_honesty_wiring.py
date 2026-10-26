@@ -126,7 +126,7 @@ class TestExpireStalePredictions:
     def test_main_passes_the_expired_count_to_the_report(
         self, cycle_settings: Settings, mocker: MockerFixture
     ) -> None:
-        mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+        mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
         mocker.patch("src.infrastructure.llm.openai_client.OpenAI")
         repository = MagicMock(spec=RepositoryPort)
         repository.expire_unverified_predictions.return_value = 2

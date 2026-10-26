@@ -140,3 +140,34 @@ def settle_call(call: ReferenceCall, read: ReferenceRead) -> ReferenceOutcome:
     if prediction.is_trend_correct(read.price):
         return ReferenceOutcome.HIT
     return ReferenceOutcome.MISS
+
+
+@dataclass(frozen=True)
+class ReferenceTally:
+    """WIA-82: rozliczenia reguły referencyjnej w oknie — sam agregat, bez symboli.
+
+    Próba (`n`) to trafienia i pudła; wygasłe (`expired`) są poza próbą, jak
+    predykcje LLM wygasłe bez oceny (WIA-49), ale raport podaje ich liczbę."""
+
+    hits: int
+    misses: int
+    expired: int
+
+    @property
+    def n(self) -> int:
+        return self.hits + self.misses
+
+    @property
+    def rate(self) -> float | None:
+        """Trafność wśród rozliczonych; None bez rozliczeń."""
+        return self.hits / self.n if self.n else None
+
+
+def tally_outcomes(outcomes: Iterable[ReferenceOutcome]) -> ReferenceTally:
+    """Zlicza wyniki rozliczeń; PENDING to nie rozliczenie i nie wchodzi nigdzie."""
+    counted = list(outcomes)
+    return ReferenceTally(
+        hits=counted.count(ReferenceOutcome.HIT),
+        misses=counted.count(ReferenceOutcome.MISS),
+        expired=counted.count(ReferenceOutcome.EXPIRED),
+    )

@@ -49,7 +49,7 @@ from src.domain.council import FIRST_COUNCIL_ROUND, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import CachedEarningsDate
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     LedgerHead,
@@ -139,6 +139,7 @@ class ReadOnlyRepository(RepositoryPort):
             "get_persona_scoring",
             "get_council_vote_samples",
             "count_expired_unverified",
+            "count_recipe_versions",
             "get_deferred_diagnoses",
             "get_diagnoses_to_judge",
             "get_resolved_predictions_detailed",
@@ -165,8 +166,10 @@ class ReadOnlyRepository(RepositoryPort):
             "get_council_vote_history",
             "get_reference_reads",
             "get_open_reference_calls",
+            "get_reference_outcomes",
             "get_cycle_runs_since",
             "get_llm_cost_since",
+            "get_llm_costs_since",
             "get_settled_shadow_predictions",
         }
     )
@@ -310,6 +313,9 @@ class ReadOnlyRepository(RepositoryPort):
     def count_expired_unverified(self, days: int) -> int:
         return self._delegate.count_expired_unverified(days)
 
+    def count_recipe_versions(self) -> int:
+        return self._delegate.count_recipe_versions()
+
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)
 
@@ -398,11 +404,17 @@ class ReadOnlyRepository(RepositoryPort):
     def get_open_reference_calls(self) -> list[OpenReferenceCall]:
         return self._delegate.get_open_reference_calls()
 
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        return self._delegate.get_reference_outcomes(days)
+
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
         return self._delegate.get_cycle_runs_since(since)
 
     def get_llm_cost_since(self, since: datetime) -> float:
         return self._delegate.get_llm_cost_since(since)
+
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        return self._delegate.get_llm_costs_since(since)
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         return self._delegate.get_settled_shadow_predictions(since)

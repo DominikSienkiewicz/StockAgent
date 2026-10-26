@@ -78,7 +78,7 @@ def _send_alert(settings: Settings, subject: str, body: str) -> int:
 
 def main(settings: Settings | None = None, now: datetime | None = None) -> int:
     """`now` — chwila sprawdzenia (testy); None = bieżący czas UTC."""
-    settings = settings or Settings()  # type: ignore[call-arg]
+    settings = settings or Settings.from_env()
     configure_logging("main_deadman", settings.secret_values())
 
     # Import lokalny — fabryki z DI Containera Fast Loopa; tylko darmowe adaptery

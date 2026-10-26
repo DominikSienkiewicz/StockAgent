@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -10,16 +11,21 @@ from openai import APIConnectionError, APIStatusError, OpenAI
 from src.application.errors import MalformedPayload
 from src.application.ports import Tool, ToolUseLLMPort, UsageSink
 from src.application.quota_monitor import QuotaMonitor
+from src.domain.quota import QuotaSeverity
 from src.infrastructure.adapters._http import redact_secrets
-from src.infrastructure.error_translation import as_port_error, sdk_error_kind
 from src.infrastructure.llm._json_text import parse_json_object
+from src.infrastructure.llm._quota import QuotaEmitter
+from src.infrastructure.llm._retry import RetryPolicy, call_with_retry
 from src.infrastructure.llm._usage import openai_chat_usage, report_usage
 from src.infrastructure.llm.openai_client import (
     DEFAULT_TIMEOUT,
+    is_transient_error,
+    to_port_error,
+    transient_reason,
     validate_model_id,
 )
 
-# #6 — tani, deterministyczny model do pętli tool-use (taki sam default jak
+# R-24 — tani, deterministyczny model do pętli tool-use (taki sam default jak
 # zwykły OpenAIAdapter). Tool-use to wieloetapowa, PŁATNA ścieżka — dlatego
 # domyślny model jest tani, a liczba rund twardo ograniczona (`max_rounds`).
 DEFAULT_MODEL = "gpt-4o"
@@ -33,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallingOpenAIAdapter(ToolUseLLMPort):
-    """#6 — adapter OpenAI z pętlą tool-use (function calling).
+    """R-24 — adapter OpenAI z pętlą tool-use (function calling).
 
     Model może na żądanie wywołać read-only narzędzia (fundamenty, RAG, makro)
     zanim wyda finalny werdykt JSON. Pętla:
@@ -100,7 +106,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             return {"error": f"invalid tool arguments: {exc}"}
         try:
             return tool.func(args)
-        except Exception as exc:  # noqa: BLE001 — celowo łapiemy wszystko
+        except Exception as exc:  # celowo łapiemy wszystko
             # Treść wyjątku (URL z kluczem, echo klucza) idzie do płatnego modelu.
             message = redact_secrets(str(exc), self._secret_values)
             logger.warning("Tool %s raised: %s", tool.name, message)
@@ -124,10 +130,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             if offer_tools:
                 kwargs["tools"] = tool_schema
 
-            try:
-                response = self._client.chat.completions.create(**kwargs)
-            except (APIStatusError, APIConnectionError) as exc:
-                raise as_port_error(exc, sdk_error_kind(exc)) from None
+            response = self._create(kwargs)
             if self._usage_sink is not None:
                 report_usage(self._usage_sink, openai_chat_usage(response, self._model))
             message = response.choices[0].message
@@ -170,6 +173,43 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
                 )
             rounds += 1
 
+    def _create(self, kwargs: dict[str, Any]) -> Any:
+        """Jedna runda pętli. Ponowienia robi SDK (jego domyślne `max_retries`), więc
+        wspólna pętla ARCH-29 dostaje zero własnych: błąd przejściowy, który przetrwał
+        ponowienia SDK, idzie do `QuotaMonitor` jako CRITICAL, a każdy błąd SDK wychodzi
+        w taksonomii portów (ARCH-33)."""
+        policy = RetryPolicy(
+            retryable=(APIStatusError, APIConnectionError),
+            max_retries=0,
+            backoff_base=0.0,
+            logger=logger,
+            label="OpenAI tool-use",
+            is_transient=is_transient_error,
+            reason=transient_reason,
+            translate=to_port_error,
+        )
+        return call_with_retry(
+            lambda: self._client.chat.completions.create(**kwargs),
+            policy,
+            sleep=time.sleep,
+            on_recovered=_never_recovered,
+            on_exhausted=self._report_exhausted,
+        )
+
+    def _report_exhausted(self, exc: Exception) -> None:
+        reason = transient_reason(exc)
+        QuotaEmitter(f"OpenAI ({self._model})", self._quota_monitor, logger).emit(
+            severity=QuotaSeverity.CRITICAL,
+            message=(
+                f"OpenAI {self._model} (narzędzia) zwrócił {reason} mimo ponowień SDK — "
+                "analiza z narzędziami nie powiodła się."
+            ),
+            action=("Podnieś tier konta OpenAI albo wyłącz tool_use_enabled w config.toml."),
+            log_message=(
+                f"OpenAI {self._model} tool-use call failed with {reason} after the SDK retries."
+            ),
+        )
+
     @staticmethod
     def _parse_final(content: str | None) -> dict[str, Any]:
         if not content:
@@ -180,3 +220,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             raise MalformedPayload(
                 f"OpenAI tool-use returned invalid JSON: {content[:200]!r}"
             ) from exc
+
+
+def _never_recovered(_attempts: int) -> None:
+    """Bez własnych ponowień pętla nigdy nie kończy się sukcesem po ponowieniu."""

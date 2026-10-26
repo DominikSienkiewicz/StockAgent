@@ -19,7 +19,7 @@ from src.infrastructure.adapters.supabase_repo import SupabaseRepository
 
 @pytest.fixture
 def mock_client(mocker: Any) -> MagicMock:
-    create = mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    create = mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     client = MagicMock()
     create.return_value = client
     return client

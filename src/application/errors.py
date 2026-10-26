@@ -12,6 +12,8 @@ dotychczasowe `except requests.RequestException` i podobne działają bez zmian.
 
 from __future__ import annotations
 
+from enum import Enum
+
 
 class PortError(Exception):
     """Błąd zgłoszony przez port — baza całej taksonomii."""
@@ -52,3 +54,36 @@ class LLMTruncatedError(LLMOutputIncomplete):
 
 class LLMRefusalError(LLMOutputIncomplete):
     """Model odmówił odpowiedzi (`stop_reason = refusal`)."""
+
+
+class ErrorCategory(Enum):
+    """MAIL-32: kategoria błędu symbolu dla czytelnika maila — klasa taksonomii
+    portów, której instancją jest wyjątek. `PORT_ERROR` to błąd portu bez
+    węższej klasy (np. odrzucony klucz API), `UNKNOWN` — wyjątek spoza taksonomii,
+    czyli błąd kodu agenta albo adapter, który jeszcze nie tłumaczy wyjątków."""
+
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+    MALFORMED_PAYLOAD = "MALFORMED_PAYLOAD"
+    NOT_FOUND = "NOT_FOUND"
+    PORT_ERROR = "PORT_ERROR"
+    UNKNOWN = "UNKNOWN"
+
+
+# Od najwęższej klasy: `PortError` jest bazą wszystkich, więc idzie na końcu.
+_CATEGORY_BY_CLASS: tuple[tuple[type[PortError], ErrorCategory], ...] = (
+    (ProviderUnavailable, ErrorCategory.PROVIDER_UNAVAILABLE),
+    (QuotaExhausted, ErrorCategory.QUOTA_EXHAUSTED),
+    (MalformedPayload, ErrorCategory.MALFORMED_PAYLOAD),
+    (NotFound, ErrorCategory.NOT_FOUND),
+    (PortError, ErrorCategory.PORT_ERROR),
+)
+
+
+def error_category_of(exc: BaseException) -> ErrorCategory:
+    """Kategoria z klasy taksonomii; wyjątek spoza niej → `UNKNOWN`. Typ dostawcy
+    (`requests`, SDK LLM) nie decyduje — ten sam `requests` stoi w wielu adapterach."""
+    for kind, category in _CATEGORY_BY_CLASS:
+        if isinstance(exc, kind):
+            return category
+    return ErrorCategory.UNKNOWN

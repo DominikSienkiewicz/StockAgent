@@ -156,7 +156,7 @@ def test_failing_step_does_not_raise(
 
 
 def test_slow_loop_runs_the_step_once_after_training(settings: Settings, mocker: Any) -> None:
-    mocker.patch("src.infrastructure.adapters.supabase_repo.create_client")
+    mocker.patch("src.infrastructure.adapters.supabase_repo.build_supabase_client")
     fake_uc = MagicMock()
     fake_uc.run.return_value = {"status": "skipped"}
     fake_uc.run_pooled.return_value = {"status": "skipped"}

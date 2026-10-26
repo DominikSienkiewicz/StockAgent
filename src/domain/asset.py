@@ -38,7 +38,7 @@ class PriceDelta:
     `fraction` to UŁAMEK zmiany (jednostka `Ratio`: 0.02 = +2%), NIE procent — na
     nim działa bramka volatility i on trafia do stanu grafu (`AgentState.delta`).
     Procent do prezentacji daje `percent`. Dawna nazwa `percentage` była myląca
-    i groziła 100x błędem (finding #33, gap4-1); alias usunięty w ARCH-14.
+    i groziła 100x błędem (audyt z czerwca 2026, gap4-1); alias usunięty w ARCH-14.
     """
 
     fraction: Decimal
@@ -91,7 +91,7 @@ def effective_threshold(
     """FIN-08: efektywny próg bramki volatility — jedna reguła dla każdej bramki.
 
     CRYPTO ma własną zmienność (3-5% dziennie), więc dostaje `crypto_override`,
-    gdy jest podany. Potem mnożniki: reżim rynku (#7) i bliskość earnings (#6)
+    gdy jest podany. Potem mnożniki: reżim rynku (R-25) i bliskość earnings (R-6)
     mnożą się, a oba są >= 1.0 z kontraktu domeny — bramka tylko się zacieśnia.
     `max(..., 1.0)` to pas bezpieczeństwa, gdyby kiedyś przeciekła wartość < 1."""
     chosen = (

@@ -15,6 +15,7 @@ from src.application.agent_graph import (
     ShadowSetup,
     create_agent_graph,
 )
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import (
     EmbeddingPort,
     LLMPort,
@@ -5212,12 +5213,11 @@ class TestPaidCallMeter:
         graph_ports: GraphPorts,
     ) -> None:
         # Sedno FinOps repo: cykl odcięty bramką volatility nie kosztuje nic.
-        from collections import Counter
-
         market_port.get_current_price.return_value = Money(Decimal("100.5"))
-        meter: Counter[str] = Counter()
+        telemetry = CycleTelemetry()
+        meter = telemetry.paid_calls
 
-        create_agent_graph(make_deps(**graph_ports, paid_call_meter=meter)).compile().invoke(
+        create_agent_graph(make_deps(**graph_ports, telemetry=telemetry)).compile().invoke(
             _initial_state("100.0")
         )
 
@@ -5233,8 +5233,6 @@ class TestPaidCallMeter:
         llm_port: Mock,
         graph_ports: GraphPorts,
     ) -> None:
-        from collections import Counter
-
         market_port.get_current_price.return_value = Money(Decimal("90.0"))
         _setup_full_analysis_mocks(
             sentiment_port,
@@ -5243,9 +5241,10 @@ class TestPaidCallMeter:
             ml_port,
             llm_port,
         )
-        meter: Counter[str] = Counter()
+        telemetry = CycleTelemetry()
+        meter = telemetry.paid_calls
 
-        create_agent_graph(make_deps(**graph_ports, paid_call_meter=meter)).compile().invoke(
+        create_agent_graph(make_deps(**graph_ports, telemetry=telemetry)).compile().invoke(
             _initial_state("100.0")
         )
 
@@ -5299,7 +5298,7 @@ class TestPaidCallMeter:
             llm_port,
         )
         repository_port.find_similar_predictions.return_value = []
-        meter: Counter[str] = Counter()
+        telemetry = CycleTelemetry()
         ports = GraphPorts(
             market_port=market_port,
             sentiment_port=sentiment_port,
@@ -5312,10 +5311,10 @@ class TestPaidCallMeter:
             make_deps(
                 **ports,
                 embedding_port=embedding_port,
-                paid_call_meter=meter,
+                telemetry=telemetry,
             )
         ).compile().invoke(state or _initial_state("100.0"))
-        return meter
+        return telemetry.paid_calls
 
     def test_embedding_call_is_metered(
         self,
@@ -5417,14 +5416,13 @@ class TestPaidCallMeter:
             llm_port,
         )
         news_port.get_news_context.return_value = []
-        from collections import Counter
-
-        meter: Counter[str] = Counter()
+        telemetry = CycleTelemetry()
+        meter = telemetry.paid_calls
         create_agent_graph(
             make_deps(
                 **graph_ports,
                 embedding_port=embedding_port,
-                paid_call_meter=meter,
+                telemetry=telemetry,
             )
         ).compile().invoke(_initial_state("100.0"))
 
@@ -5700,8 +5698,7 @@ class TestFeatureSnapshots:
         news_port.get_news_context.assert_not_called()
         embedding_port.embed.assert_not_called()
         ml_port.predict.assert_not_called()
-        assert deps.paid_call_meter is not None
-        assert sum(deps.paid_call_meter.values()) == 0
+        assert sum(deps.telemetry.paid_calls.values()) == 0
 
     def test_rebaseline_cycle_writes_the_price_but_no_feature_vector(
         self,
@@ -6708,8 +6705,7 @@ class TestBlindCouncilArm:
                 llm_port,
                 arms=arms,
             )
-            assert deps.paid_call_meter is not None
-            meters.append(dict(deps.paid_call_meter))
+            meters.append(dict(deps.telemetry.paid_calls))
 
         assert meters[0] == meters[1]
         assert "council_llm" not in meters[0]
@@ -6865,8 +6861,7 @@ class TestNoMemoryArm:
                 llm_port,
                 arms=arms,
             )
-            assert deps.paid_call_meter is not None
-            meters.append(dict(deps.paid_call_meter))
+            meters.append(dict(deps.telemetry.paid_calls))
             embeds.append(embedding_port.embed.call_count)
 
         assert meters[0] == meters[1]
@@ -6897,6 +6892,16 @@ class TestCycleTelemetryWiring:
             llm_port=llm_port,
             **extra,
         )
+
+    def test_deps_count_paid_calls_only_through_telemetry(self) -> None:
+        # ARCH-40: dawny alias `paid_call_meter` był drugą nazwą tego samego licznika —
+        # nowy kod mógł pisać do niego i ominąć telemetrię cyklu.
+        import dataclasses
+
+        fields = {field.name for field in dataclasses.fields(AgentGraphDeps)}
+
+        assert "paid_call_meter" not in fields
+        assert "telemetry" in fields
 
     def test_gated_cycle_records_the_gate_and_no_paid_call(
         self,
@@ -6979,43 +6984,6 @@ class TestCycleTelemetryWiring:
         assert metrics.paid_calls["sentiment"] == 1
         assert metrics.paid_calls["news"] == 1
         assert {"analyze_sentiment", "fetch_news", "predict"} <= set(metrics.node_max_ms)
-        # Ten sam magazyn pod dawnym polem — jedno źródło prawdy, nie dwa liczniki.
-        assert deps.paid_call_meter is telemetry.paid_calls
-
-    def test_caller_meter_and_telemetry_share_one_store(
-        self,
-        market_port: Mock,
-        sentiment_port: Mock,
-        news_port: Mock,
-        repository_port: Mock,
-        ml_port: Mock,
-        llm_port: Mock,
-    ) -> None:
-        from collections import Counter
-
-        market_port.get_current_price.return_value = Money(Decimal("90.0"))
-        _setup_full_analysis_mocks(
-            sentiment_port,
-            news_port,
-            repository_port,
-            ml_port,
-            llm_port,
-        )
-        meter: Counter[str] = Counter()
-        deps = self._deps(
-            market_port,
-            sentiment_port,
-            news_port,
-            repository_port,
-            ml_port,
-            llm_port,
-            paid_call_meter=meter,
-        )
-
-        create_agent_graph(deps).compile().invoke(_initial_state("100.0"))
-
-        assert deps.telemetry.paid_calls is meter
-        assert dict(deps.telemetry.snapshot().paid_calls) == dict(meter)
 
     def test_failing_council_counts_as_node_failure(
         self,

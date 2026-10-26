@@ -2,6 +2,8 @@
 
 What the Supabase database holds, which job reads and writes each relation, which key the
 app needs, how long data is kept, and how Row Level Security is rolled out.
+What leaves the system for the LLM and embedding providers, and the guard that keeps
+positions and e-mail addresses out of every prompt, is in [Data flows to LLM providers](data-flows.md).
 
 > **Status.** Row Level Security arrives with migration
 > [`038_enable_rls.sql`](../supabase/migrations/038_enable_rls.sql). Production gets it only
@@ -34,7 +36,7 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `fx_rates` | `036` | Market data: NBP exchange-rate cache | on, no policies | Fast Loop | Fast Loop |
 | `llm_calls` | `040` | Operational: one row per LLM or embedding request (tokens, cost, run, node, symbol), no prompt text | on, no policies | Fast Loop, Slow Loop (`cost_ledger_enabled`) | nobody in the app yet |
 | `cycle_runs` | `041` | Operational: one row per loop run (run id and attempt, start, duration, symbol counts, paid calls per source, email delivered), no symbols | on, no policies | Fast Loop (`cycle_runs_enabled`) | Fast Loop (start of the last run whose email went out, for the `⚡ Między mailami` window, ALR-06); public status page (`public_status_page_enabled`: Fast Loop and `main_scorecard.py`, aggregates only, NIEZ-33) |
-| `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls) |
+| `reference_predictions` | `042` | Model output: the free reference signal (WIA-24) — one row per weekly read with its call and settlement, `recipe_version = 'reference-v1'`, kept out of `prediction_logs` | on, no policies | Slow Loop (`reference_signal_enabled`) | Slow Loop (baseline read and open calls); Fast Loop (outcomes of the window, no symbols, for the Track Record baseline row, WIA-82) |
 | `earnings_cache` | `053` | Market data: the next earnings report date per stock symbol from Alpha Vantage (FIN-11) | on, no policies | Slow Loop (`earnings_cache_enabled`) | Fast Loop (earnings gate) |
 | `price_level_alerts` | `057` | User settings: price levels to alert on (symbol, level, direction, note) with the watch's last reading and the hit time (ALR-11) | on, no policies | Shock Watch (`price_level_alerts_enabled`: adds the `price_alerts` list, records readings, disables a hit) | Shock Watch |
 | `digests` | `061` | Model output: index of the private digest archive (MAIL-24) — one row per cycle with the subject, the lead and the top signals (tickers and labels, no amounts); the full HTML sits in the private Storage bucket `digests` | on, no policies | Fast Loop (`digest_archive_enabled`) | nobody in the app yet |
@@ -44,19 +46,19 @@ unless `DB_WRITES_ENABLED=true` ([running-locally](running-locally.md#local-runs
 | `bot_state` | `079` | Operational: the `getUpdates` offset of the owner's Telegram bot (MAIL-48) — one row per channel, no message text and no chat id | on, no policies | Bot (`telegram_bot_enabled`, after the commands of a run) | Bot (start of a run) |
 | `symbol_mutes` | `080` | User settings: symbols muted from the owner's bot (MAIL-45) — symbol, end of the mute, time of the last `/mute`; symbols are added only through `config.toml` | on, no policies | Bot (`symbol_mutes_enabled`: `/mute` upserts, `/unmute` deletes) | Fast Loop (`symbol_mutes_enabled`: a muted symbol gets no paid analysis and no section, only its price snapshot), Bot (`/watch`) |
 
-The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()` and `db_size_report()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function still run with the caller's path:
+The functions in `public`, all `SECURITY INVOKER` (they run with the caller's privileges) except `schema_version()` and `db_size_report()`. Migration `070` (BEZ-18) pins `search_path = public, extensions, pg_catalog` on `match_news_embeddings`, `persona_accuracy_weights` and `persona_accuracy_stats`, so a call from a session with another path cannot swap in a same-named object; migration `084` (BEZ-17) pins the same path on `refresh_ml_feature_store`, `persona_vote_outcomes` and the trigger function `stamp_prediction_settled_at`, still without `SECURITY DEFINER`:
 
 | Function | Migration | Called by | `EXECUTE` after `038` |
 |---|---|---|---|
-| `refresh_ml_feature_store()` | `001`, `004` | Slow Loop, backtest (RPC) | `service_role` only |
+| `refresh_ml_feature_store()` | `001`, `004`, `084` (`search_path`) | Slow Loop, backtest (RPC) | `service_role` only |
 | `match_news_embeddings(vector, int, text)` | `011`, `017` | Fast Loop (RAG, RPC) | `service_role` only |
 | `match_news_embeddings_exact(vector, int, text)` | `063` | Fast Loop (RAG, RPC, `rag_exact_search_enabled`) | `service_role` only |
 | `match_news_embeddings_pit(vector, int, text, timestamptz, text, int)` | `076` | Fast Loop (RAG, RPC, `rag_point_in_time_enabled`) | `service_role` only |
 | `persona_accuracy_weights(int)` | `015`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
 | `persona_accuracy_stats(int)` | `018`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC) | `service_role` only |
-| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
+| `persona_vote_outcomes(int)` | `045`, `058` (without `stale_quote = true` settlements), `084` (`search_path`) | Fast Loop (RPC, `persona_vote_outcomes_enabled`), tools (`persona-ablation`) | `service_role` only |
 | `persona_scoring_stats(int, text[])` | `065` (without `stale_quote = true` settlements) | Fast Loop (RPC, `persona_brier_ranking_enabled`) | `service_role` only |
-| `stamp_prediction_settled_at()` | `029` | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
+| `stamp_prediction_settled_at()` | `029`, `084` (`search_path`) | trigger on `prediction_logs` | `service_role` only; the trigger fires for any writer |
 | `schema_version()` | `071` | Fast Loop and Slow Loop at start (RPC, NIEZ-30) | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads `supabase_migrations.schema_migrations`, which `service_role` cannot, and returns only the highest numeric version (`NULL` when the registry is missing or empty) |
 | `db_size_report()` | `077` | Slow Loop (RPC, NIEZ-37): the size of every relation in `public` with its indexes and TOAST, largest first, against `db_size_budget_mb` | `service_role` only. `SECURITY DEFINER` with `search_path = ''`: it reads only the system catalog (`pg_class`, `pg_total_relation_size`) and returns relation names and byte counts, never rows |
 | `save_calibration_scores(jsonb, smallint)` | `077` | Slow Loop (RPC, `calibration_judge_enabled`, WIA-65): the arithmetic calibration scores of the 30-day window in one bulk `UPDATE` of `confidence_calibration` and `calibration_score_version` | `service_role` only; `search_path = ''` |
@@ -93,7 +95,9 @@ refuses to start with a publishable key or an `anon` / `authenticated` JWT (BEZ-
 entry point stops with a validation error that names the fix and does not print the key.
 
 `SUPABASE_DB_URL`, the Postgres connection string of the `postgres` role, is a separate secret
-used only by the DB Migrate workflow. The app never reads it.
+used only by the DB Migrate workflow. It is a secret of the `production-db` environment, not of
+the repository, so only the `migrate` job can read it, after the owner approves the run (BEZ-22).
+The app never reads it.
 
 ## Retention
 
@@ -148,6 +152,10 @@ afterwards.
   guarded by `pg_roles`, as in `038`, because the test container has no such roles.
 - New tables, views and sequences no longer get grants for `anon` and `authenticated`:
   `038` removed them from the default privileges of the migration role.
+- A new table or view needs a row in the [Relations](#relations) table, and a dropped one
+  loses its row. `tests/test_data_and_access_relations.py` (DOC-37, no Docker) replays the
+  `CREATE` and `DROP` statements of `supabase/migrations/*.sql` in order and fails when the
+  table and the migrations disagree.
 
 The container tests in `tests/infrastructure/test_migrations.py` enforce this:
 `test_every_public_table_has_row_level_security` fails on a table without RLS, and

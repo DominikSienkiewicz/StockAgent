@@ -402,6 +402,31 @@ class TestPortErrorTaxonomy:
 
         assert isinstance(excinfo.value, APIStatusError)
 
+    @pytest.mark.parametrize(("status", "alerts"), [(429, 1), (503, 1), (400, 0)])
+    def test_rate_limit_is_retried_and_reported(
+        self, mock_openai_class: MagicMock, status: int, alerts: int
+    ) -> None:
+        # ARCH-29: ponowienia zostają w SDK (domyślne max_retries klienta), a błąd
+        # przejściowy, który je przetrwał, trafia do QuotaMonitor jak w OpenAIAdapter.
+        from src.application.errors import PortError
+        from src.application.quota_monitor import QuotaMonitor
+        from src.domain.quota import QuotaSeverity
+
+        client = MagicMock()
+        mock_openai_class.return_value = client
+        client.chat.completions.create.side_effect = self._status_error(status)
+        monitor = QuotaMonitor()
+        adapter = ToolCallingOpenAIAdapter(api_key="sk-test", quota_monitor=monitor)
+
+        with pytest.raises(PortError):
+            adapter.analyze_with_tools("p", [_make_tool(lambda **_: {})])
+
+        assert "max_retries" not in mock_openai_class.call_args.kwargs
+        assert client.chat.completions.create.call_count == 1
+        assert [(alert.source, alert.severity) for alert in monitor.alerts] == [
+            ("OpenAI (gpt-4o)", QuotaSeverity.CRITICAL)
+        ] * alerts
+
     def test_unparseable_verdict_is_malformed_payload(
         self, adapter_with_client: tuple[ToolCallingOpenAIAdapter, MagicMock]
     ) -> None:

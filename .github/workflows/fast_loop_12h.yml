@@ -115,7 +115,7 @@ jobs:
       - name: 📦 Sync dependencies
         # SDK anthropic jest zależnością rdzeniową (analiza główna chodzi na Claude);
         # `--extra anthropic` to zachowany alias, pilnowany przez test_workflow_env_wiring.
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        run: uv sync --frozen --no-dev --extra anthropic --no-build --no-install-project
 
       - name: 📦 Download model weights (Release model-latest)
         # CI-13: wagi XGBoost trzyma Release `model-latest` (upload w Slow Loopie), nie
@@ -271,6 +271,9 @@ jobs:
           ref: attestation-log
           path: public/attestation
           fetch-depth: 0
+          # CI-23: jawnie — jedyny checkout, który zostawia token w .git/config, bo krok
+          # niżej nim pushuje; job nie wysyła żadnego artefaktu (zizmor: artipacked).
+          persist-credentials: true
 
       - name: 📥 Download attestation ledger
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

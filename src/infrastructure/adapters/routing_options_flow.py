@@ -1,6 +1,6 @@
 """Kompozyt OptionsFlowPort — routing per symbol (krypto vs akcje), DAT-18.
 
-Graf dostaje JEDEN port opcji (implied edge, #18): krypto idzie do Deribit DVOL,
+Graf dostaje JEDEN port opcji (implied edge, R-18): krypto idzie do Deribit DVOL,
 reszta do źródła akcji (Finnhub option-chain albo Null). Klasyfikacja symbolu
 to detal infrastruktury — jak w `RoutingMarketDataPort`.
 """

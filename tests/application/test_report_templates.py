@@ -13,6 +13,9 @@ przez test_report_council.py / test_report_valuation_section.py.
 from __future__ import annotations
 
 from src.application.report_templates import get_template, render_template
+from src.domain.council import CouncilVerdict, InvestorOpinion
+
+_SCRIPT = "<script>alert('xss')</script>"
 
 
 def test_get_template_loads_council_section() -> None:
@@ -46,3 +49,59 @@ def test_autoescape_html_attacks() -> None:
     # Z autoescape powinien być &lt;script&gt;...
     assert "<script>" not in rendered
     assert "&lt;script&gt;" in rendered
+
+
+def test_real_council_template_escapes_llm_text() -> None:
+    """TEST-22 (G80): autoescape na PRAWDZIWYM pliku `council_section.html.j2`.
+
+    Rozszerzenie `.j2` nie należy do `enabled_extensions` `select_autoescape`,
+    więc o escapowaniu pliku decyduje `default=` — test `from_string` wyżej
+    sprawdza tylko `default_for_string` i tej gałęzi nie widzi. Podsumowanie,
+    czynniki i głosy niezgodne pochodzą z LLM-a."""
+    verdict = CouncilVerdict(
+        final_recommendation="BUY",
+        consensus_strength=0.73,
+        summary=f"Rada radzi kupować {_SCRIPT}",
+        dissenting_views=(f"Soros: {_SCRIPT}",),
+        investor_opinions=(
+            InvestorOpinion(
+                investor_name="Warren Buffett",
+                recommendation="BUY",
+                confidence=0.9,
+                reasoning=_SCRIPT,
+                key_factors=(_SCRIPT,),
+            ),
+        ),
+    )
+
+    html = render_template(
+        "council_section.html.j2",
+        {
+            "verdict": verdict,
+            "label": "KUP",
+            "fill": "fu",
+            "row_tone": "gu",
+            "strength_pct": 73,
+            "opinion_rows": [
+                {
+                    "name": "Warren Buffett",
+                    "label": "KUP",
+                    "emoji": "🟢",
+                    "tone": "up",
+                    "row_tone": "gu",
+                    "confidence_pct": 90,
+                    "confidence_label": "wysoka",
+                    "factors": _SCRIPT,
+                }
+            ],
+            "vote_dist": verdict.vote_distribution(),
+            "is_split": False,
+            "strong_consensus": False,
+            "dissenting_views": verdict.dissenting_views,
+        },
+    )
+
+    assert "RADA DORADCZA" in html
+    assert "Głosy niezgodne" in html
+    assert "<script>" not in html
+    assert html.count("&lt;script&gt;") == 3
