@@ -19,7 +19,7 @@ GOOD_HIT_RATE_THRESHOLD = 0.55
 # porada z szumu.
 MIN_HIT_SAMPLE = 20
 
-# #15 faza 2 — istniejąca ekspozycja. Banda może zostać wyłącznie ZWĘŻONA:
+# R-15 faza 2 — istniejąca ekspozycja. Banda może zostać wyłącznie ZWĘŻONA:
 # sizing nie ma prawa podbić słabego sygnału tylko dlatego, że portfel jest pusty.
 # `CROWDED_*` = już sporo mamy → schodzimy o jeden stopień.
 # `SATURATED_*` = mamy tak dużo, że jedyną rozsądną sugestią jest banda startowa.
@@ -99,7 +99,7 @@ def suggest_band(
       lub poniżej progu (rada przekonana, agent jeszcze nieudowodniony).
     - `starter` (1-2%): słaby konsensus lub wysoki dissent — konserwatywnie.
 
-    #15 faza 2: `current_weight` (udział symbolu w portfelu) i `cluster_exposure`
+    R-15 faza 2: `current_weight` (udział symbolu w portfelu) i `cluster_exposure`
     (udział jego klastra korelacji) mogą bandę wyłącznie ZWĘZIĆ. Sugerowanie
     „pełnej bandy 4-5%" komuś, kto ma już 40% kapitału w tym symbolu, było
     poradą liczoną na pustym portfelu. Oba argumenty domyślnie `None` →
@@ -144,7 +144,7 @@ def suggest_band(
     # brak/słaby track record → banda standardowa.
     tier = "full" if good_hit_rate else "standard"
 
-    # #15 faza 2: dopiero TERAZ patrzymy na to, co już mamy. Ekspozycja może
+    # R-15 faza 2: dopiero TERAZ patrzymy na to, co już mamy. Ekspozycja może
     # bandę wyłącznie zwęzić — nigdy poszerzyć.
     tier = _apply_exposure(tier, current_weight, cluster_exposure)
     tier = _apply_risk(tier, portfolio_var, drawdown, hedge_effective)

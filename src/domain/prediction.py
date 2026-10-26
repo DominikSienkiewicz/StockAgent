@@ -9,7 +9,7 @@ from src.domain.value_objects import AssetType, Quote
 
 
 def calibration_error(samples: Sequence[tuple[float, bool]]) -> float:
-    """#4 — luka kalibracji: |śr. deklarowana pewność − realna trafność| ∈ [0,1].
+    """R-22 — luka kalibracji: |śr. deklarowana pewność − realna trafność| ∈ [0,1].
 
     0 = idealnie skalibrowane; wysokie = rada przepewna (lub niedopewna).
     Każdy sample to (confidence∈[0,1], czy_trafiona_kierunkowo). Pusta → 0.0."""
@@ -27,7 +27,7 @@ BRIER_CALIBRATION_SCORE_VERSION = 2
 
 
 def calibration_score(confidence: float, correct: bool) -> float:
-    """#4 — kalibracja pojedynczej predykcji: `1 − |confidence − wynik(0/1)|`
+    """R-22 — kalibracja pojedynczej predykcji: `1 − |confidence − wynik(0/1)|`
     ∈ [0,1]. 1 = pewność idealnie dopasowana do wyniku.
 
     Wycofywana (v1, WIA-37): reguła niewłaściwa — przy prawdziwej trafności 0.6

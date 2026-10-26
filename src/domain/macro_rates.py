@@ -2,7 +2,7 @@
 
 Czysta logika: spread 10Y-2Y i poziom stóp klasyfikują stan krzywej
 rentowności. Inwersja (10Y < 2Y) to klasyczny sygnał recesyjny — istotne tło
-makro, które może zacieśniać reżim (komplementarne do Risk Watch / AI #7)."""
+makro, które może zacieśniać reżim (komplementarne do Risk Watch / R-25)."""
 
 from __future__ import annotations
 

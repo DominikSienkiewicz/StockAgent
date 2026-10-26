@@ -1,4 +1,4 @@
-"""Domena rankingu wiarygodności person rady doradczej (#3).
+"""Domena rankingu wiarygodności person rady doradczej (R-3).
 
 Sekcja "historia głosów" pokazuje, KTO jak głosował. Ta domena odpowiada na
 pytanie, KTO MIAŁ RACJĘ: zamienia surowe statystyki trafności (hit-rate +

@@ -28,7 +28,7 @@ class CouncilInput:
     # Pola opcjonalne — domyślne wartości zapewniają wsteczną kompatybilność
     fundamentals: Fundamentals | None = field(default=None)
     valuation_verdict: ValuationVerdict = field(default=ValuationVerdict.UNKNOWN)
-    # Klasa aktywa — pozwala adaptacyjnemu ważeniu person (feature #3) dobrać
+    # Klasa aktywa — pozwala adaptacyjnemu ważeniu person (R-21) dobrać
     # tabelę wag zależnie od typu (np. inne trafności person dla krypto niż akcji).
     asset_type: AssetType = field(default=AssetType.STOCK)
     # G03: False = model ML nie ma wag (cold-start) i `ml_price_target` jest tylko
@@ -204,7 +204,7 @@ class CouncilVerdict:
     def opinion_shift(self, before: Sequence[InvestorOpinion]) -> int:
         """Ilu inwestorów zmieniło rekomendację względem stanu `before`.
 
-        Używane przez debate mode (feature #1): porównuje rekomendacje z rundy 1
+        Używane przez debate mode (R-19): porównuje rekomendacje z rundy 1
         (`before`) z opiniami w tym werdykcie (po rewizji), dopasowując po
         `investor_name`. Inwestor obecny tylko w `before` (brak w werdykcie) jest
         ignorowany — liczymy realne zmiany zdania, nie różnice w składzie.
@@ -230,7 +230,7 @@ def derive_consensus(
 
     Algorytm:
     - Każda rekomendacja zbiera "masę" = sumę `confidence * waga_persony` swoich
-      głosów. Waga (feature #3) pochodzi z historycznej trafności persony;
+      głosów. Waga (R-21) pochodzi z historycznej trafności persony;
       `weights.get(name, 1.0)` — brak wpisu = waga neutralna 1.0.
     - Zwycięski koszyk = ten z największą masą (confidence-weighted, nie headcount).
       Remis rozstrzygany preferencją BUY > SELL > HOLD (stabilna kolejność).

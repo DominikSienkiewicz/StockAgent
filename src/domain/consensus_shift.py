@@ -16,7 +16,7 @@ CONSENSUS_DROP_THRESHOLD = 0.25
 
 # Próg wieku porównania. Cron Fast Loopa bywa ZAKOMENTOWANY, więc "wczoraj"
 # potrafi być sprzed tygodnia. Powyżej tej luki degradujemy do STALE_COMPARISON,
-# żeby nie robić fałszywej dramaturgii ze stęchłych danych (największe ryzyko #8).
+# żeby nie robić fałszywej dramaturgii ze stęchłych danych (największe ryzyko R-8).
 STALE_GAP_HOURS = 48.0
 
 _HOURS_PER_DAY = 24.0
