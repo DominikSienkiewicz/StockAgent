@@ -61,16 +61,27 @@ jobs:
         # CI-03: pokrycie z gałęziami na src/domain z progiem 98% (zmierzone 2026-10-24:
         # 98,49%). Próg tylko rośnie: ten sam numer w [tool.coverage.report].fail_under
         # w pyproject.toml, a stałą COVERAGE_RATCHET pilnuje tests/test_quality_gate_sync.py.
+        # CI-16: raport JUnit dla podsumowania joba (krok „Test counts” niżej).
         run: >-
           uv run --frozen --no-build --no-sync pytest -m "not integration and not containers"
           --cov=src/domain --cov-branch --cov-fail-under=98
+          --junitxml=test-results/unit.xml
 
       - name: 🐳 Pytest (container schema tests)
         # Testy migracji SQL odpalają Postgres + pgvector przez testcontainers.
         env:
           # CI-06: brak demona Dockera = porażka kroku, nie zielony skip zera testów.
           REQUIRE_DOCKER: "1"
-        run: uv run --frozen --no-build --no-sync pytest -m containers
+        run: uv run --frozen --no-build --no-sync pytest -m containers --junitxml=test-results/containers.xml
+
+      - name: 📊 Test counts (JUnit → job summary)
+        # CI-16: tests, skipped i failures liczone z raportów JUnit obu kroków pytest, nie
+        # z `def test_` — w commitach linkuj run zamiast przepisywać liczby. Także po
+        # czerwonym pytest; krok, który nie ruszył, ma w tabeli wiersz „no report”.
+        if: ${{ !cancelled() && hashFiles('test-results/*.xml') != '' }}
+        run: >-
+          uv run --frozen --no-build --no-sync python main_tools.py junit-summary
+          test-results/unit.xml test-results/containers.xml >> "$GITHUB_STEP_SUMMARY"
 
   sonarcloud:
     name: SonarCloud

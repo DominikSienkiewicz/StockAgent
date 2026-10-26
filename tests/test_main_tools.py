@@ -665,3 +665,47 @@ def test_reproduce_training_without_a_sidecar_exits_two(
 
     assert code == 2
     assert "price_predictor.json" in capsys.readouterr().err
+
+
+# --- CI-16: junit-summary -------------------------------------------------------
+
+_JUNIT = '<testsuites><testsuite tests="7" failures="1" errors="0" skipped="2"/></testsuites>'
+
+
+def test_junit_summary_prints_the_markdown_table_without_settings(
+    tmp_path: Path, mocker: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from_env = mocker.patch("src.config.Settings.from_env")
+    (tmp_path / "unit.xml").write_text(_JUNIT, encoding="utf-8")
+
+    code = main_tools.main(
+        ["junit-summary", str(tmp_path / "unit.xml"), str(tmp_path / "containers.xml")]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "| unit | 7 | 4 | 2 | 1 | 0 |" in out
+    assert "| containers | no report |" in out
+    from_env.assert_not_called()
+
+
+def test_junit_summary_of_mutation_reports_counts_mutants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "mutmut-var.xml").write_text(_JUNIT, encoding="utf-8")
+
+    code = main_tools.main(["junit-summary", "--mutation", f"var={tmp_path / 'mutmut-var.xml'}"])
+
+    assert code == 0
+    assert "| var | 7 | 4 | 1 | 0 | 2 | 80.0% |" in capsys.readouterr().out
+
+
+def test_junit_summary_reports_an_unreadable_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "unit.xml").write_text("<testsuites", encoding="utf-8")
+
+    code = main_tools.main(["junit-summary", str(tmp_path / "unit.xml")])
+
+    assert code == 0
+    assert "| unit | unreadable report |" in capsys.readouterr().out

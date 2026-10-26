@@ -25,6 +25,7 @@ Użycie:
     uv run python main_tools.py verify-attestation [--commitments PATH] [--reveals PATH]
         [--rekor-repository OWNER/REPO] [--rekor-workflow PATH]
     uv run python main_tools.py reproduce-training [--sidecar PATH]
+    uv run python main_tools.py junit-summary [--mutation] [ETYKIETA=]RAPORT.xml...
 """
 
 from __future__ import annotations
@@ -63,6 +64,11 @@ from src.tools.import_positions import (
     format_plan,
     parse_positions_csv,
     plan_import,
+)
+from src.tools.junit_summary import (
+    render_mutation_summary,
+    render_test_summary,
+    totals_or_reason,
 )
 from src.tools.offline_scenario import (
     OfflineCycleSummary,
@@ -159,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_council_ablation(subcommands)
     _add_verify_attestation(subcommands)
     _add_reproduce_training(subcommands)
+    _add_junit_summary(subcommands)
     return parser
 
 
@@ -1129,6 +1136,45 @@ def _run_reproduce_training(args: argparse.Namespace) -> int:
     )
     print(format_reproduction(report))
     return 0 if report.ok else 1
+
+
+def _add_junit_summary(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "junit-summary",
+        help="Markdown table of test (or mutant) counts from JUnit reports, for a job summary.",
+        description=(
+            "CI-16: sums tests, skipped, failures and errors of each JUnit report (pytest "
+            "--junitxml) into a Markdown table on stdout, which CI appends to "
+            "GITHUB_STEP_SUMMARY. With --mutation the reports come from `mutmut junitxml` "
+            "(TEST-35): survived = failure, timeout = error, untested = skipped. A missing "
+            "or unreadable file is a row, not an error; exit 0. No keys, no network."
+        ),
+    )
+    parser.add_argument(
+        "reports",
+        nargs="+",
+        metavar="[LABEL=]REPORT",
+        help="JUnit XML file, optionally labelled (default label: the file name stem).",
+    )
+    parser.add_argument(
+        "--mutation",
+        action="store_true",
+        help="Read mutmut reports: mutants, killed, survived, timeouts, score.",
+    )
+    parser.set_defaults(handler=_run_junit_summary)
+
+
+def _run_junit_summary(args: argparse.Namespace) -> int:
+    """CI-16: tabela z raportów JUnit na stdout — bez `Settings`, kluczy i sieci; exit 0."""
+    rows = []
+    for spec in args.reports:
+        label, separator, path = str(spec).partition("=")
+        report = Path(path if separator else label)
+        text = report.read_text(encoding="utf-8") if report.is_file() else None
+        rows.append((label if separator else report.stem, totals_or_reason(text)))
+    render = render_mutation_summary if args.mutation else render_test_summary
+    print(render(rows), end="")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
