@@ -330,6 +330,27 @@ job, with no new dependency, while the flag stays off.
 
 **Guards** [`tests/infrastructure/test_rekor_publisher.py`](../tests/infrastructure/test_rekor_publisher.py) `test_posts_hashedrekord_with_sha256_of_root` · [`tests/tools/test_verify_attestation.py`](../tests/tools/test_verify_attestation.py) `test_a_cycle_root_logged_by_another_workflow_fails_the_verdict` · [`tests/test_workflow_env_wiring.py`](../tests/test_workflow_env_wiring.py) `test_rekor_flag_needs_oidc_on_every_agent_job`
 
+### D-14 · The Fast Loop sees a narrow store port, and one file holds the agent rules
+
+**Date** 2026-10-26 · **Status** in force · **Commits** `f3eca09`, `56ffd09`, `69a676b`
+
+`AgentGraphDeps` used to take the whole `RepositoryPort`, an ABC with dozens of methods, so the
+graph could reach any table and a fake had to stub all of them. It now depends on
+`PredictionStorePort`, a `Protocol` in `ports.py` with exactly the methods the graph, the market
+features phase and `AnalyzeMarketUseCase` call (ARCH-32, step 1); `SupabaseRepository` and
+`InMemoryRepository` still satisfy it without change. Splitting `RepositoryPort` further was
+rejected on 2026-10-26: one adapter behind several ports would only move the size around. The
+council orchestration `LLMAdvisoryCouncil` holds no I/O, so it moved from the infrastructure to
+`src/application/council_service.py` (ARCH-19). The agent rules lived in two full copies,
+`CLAUDE.md` and `AGENTS.md`, which had already drifted once (G58); `AGENTS.md` is now the single
+source and `CLAUDE.md` imports it with `@AGENTS.md`, keeping only Claude Code additions (DOC-29).
+
+*Costs:* a new graph call means a method on the Protocol as well, and the agent rules depend on
+the harness expanding the `@` import. *Gains:* the graph's reach into the database is a short,
+tested list, and a rule changes in one place.
+
+**Guards** [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_graph_deps_depend_on_exactly_the_methods_the_fast_loop_calls` · [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_prediction_store_mirrors_repository_port_signatures` · [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) `test_claude_md_delegates_to_agents_md`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:
