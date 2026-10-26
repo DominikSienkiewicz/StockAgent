@@ -105,6 +105,18 @@ def test_toml_cross_list_invariants() -> None:
     assert sorted(set(data["symbols_unsupported_price"]) - symbols) == []
 
 
+def test_risk_symbol_types_cover_exactly_risk_symbols() -> None:
+    """TEST-18: `risk_symbol_types` i `risk_symbols` łączy tylko konwencja.
+    Instrument bez typu nie ma kierunku sygnału w Risk Watch, a typ bez
+    instrumentu to martwa konfiguracja — obie listy muszą mieć ten sam zbiór."""
+    data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
+    symbols = set(data["risk_symbols"])
+    typed = set(data["risk_symbol_types"])
+
+    assert sorted(symbols - typed) == [], "risk_symbols bez typu w risk_symbol_types"
+    assert sorted(typed - symbols) == [], "typ w risk_symbol_types bez symbolu w risk_symbols"
+
+
 def test_real_config_toml_bounds_reflection_settlement_age() -> None:
     """WIA-04: produkcja rozlicza predykcje w oknie 6 h – 96 h."""
     data = tomllib.loads(CONFIG_TOML.read_text(encoding="utf-8"))
