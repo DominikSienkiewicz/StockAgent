@@ -1,4 +1,4 @@
-# tests/infrastructure/test_advisory_council.py
+# tests/application/test_council_service.py
 from __future__ import annotations
 
 import logging
@@ -10,6 +10,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from src.application.council_service import (
+    COUNCIL_MAX_PERSONAS,
+    LLMAdvisoryCouncil,
+    _parse_opinion,
+)
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import AdvisoryCouncilPort, LLMPort
 from src.domain.council import (
@@ -19,11 +24,6 @@ from src.domain.council import (
     InvestorPersona,
 )
 from src.domain.value_objects import AssetType, Percent
-from src.infrastructure.adapters.advisory_council import (
-    COUNCIL_MAX_PERSONAS,
-    LLMAdvisoryCouncil,
-    _parse_opinion,
-)
 
 ALL_INVESTORS = [
     "Warren Buffett",
@@ -693,7 +693,7 @@ class TestTotalTimeout:
     ) -> None:
         # NIEZ-08: `with ThreadPoolExecutor` czekał w __exit__ na wiszące wywołania,
         # więc limit czasu rady był tylko filtrem wyników, nie limitem czasu.
-        mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.1)
+        mocker.patch("src.application.council_service._COUNCIL_TOTAL_TIMEOUT_S", 0.1)
         slow = ALL_INVESTORS[0]
         llm_port.analyze.side_effect = _routed(slow={slow})
 
@@ -783,7 +783,7 @@ def test_timed_out_persona_request_is_still_counted(llm_port: Mock, mocker: Any)
     # Request spóźnionej persony poszedł do dostawcy — płacimy za niego, choć
     # głos odpada po limicie czasu rady. Limit 0.3 s (persona śpi 1 s) daje
     # wątkom czas na start także na obciążonej maszynie.
-    mocker.patch("src.infrastructure.adapters.advisory_council._COUNCIL_TOTAL_TIMEOUT_S", 0.3)
+    mocker.patch("src.application.council_service._COUNCIL_TOTAL_TIMEOUT_S", 0.3)
     slow = _SEVEN_PERSONAS[0].name
     llm_port.analyze.side_effect = _routed(slow={slow})
     council, telemetry = _metered_council(llm_port)

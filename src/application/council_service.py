@@ -1,4 +1,4 @@
-# src/infrastructure/adapters/advisory_council.py
+# src/application/council_service.py
 from __future__ import annotations
 
 import contextvars

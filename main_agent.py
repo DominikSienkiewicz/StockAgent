@@ -36,6 +36,10 @@ from src.application.attestation_cycle import (
     seal_attestation_cycle,
 )
 from src.application.circuit_alerts import record_open_circuit_alerts
+from src.application.council_service import (
+    COUNCIL_MAX_PERSONAS,
+    LLMAdvisoryCouncil,
+)
 from src.application.cycle_telemetry import CycleTelemetry
 from src.application.errors import PortError
 from src.application.http_metering import HttpCallMeter
@@ -212,10 +216,6 @@ from src.infrastructure.adapters._http import (
     metered_http,
     process_circuits,
     redact_secrets,
-)
-from src.infrastructure.adapters.advisory_council import (
-    COUNCIL_MAX_PERSONAS,
-    LLMAdvisoryCouncil,
 )
 from src.infrastructure.adapters.alert_notifier import DelegatingAlertNotifier
 from src.infrastructure.adapters.alpha_vantage_adapters import (

@@ -96,7 +96,7 @@ def test_symbol_context_restores_previous_symbol_on_exit() -> None:
 
 
 def test_symbol_reaches_threads_started_with_a_copied_context() -> None:
-    # Rada person (advisory_council._run_round) startuje wątki przez copy_context.
+    # Rada person (council_service._run_round) startuje wątki przez copy_context.
     logger, stream = _json_logger(GHA_ENV)
 
     with symbol_context("MSFT"), ThreadPoolExecutor(max_workers=2) as executor:

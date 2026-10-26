@@ -742,7 +742,7 @@ class TestBuildAgentGraphDeps:
     def test_paid_run_wires_the_alpha_vantage_feeds_council_and_embeddings(
         self, settings: Settings, mock_external_clients: None
     ) -> None:
-        from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
+        from src.application.council_service import LLMAdvisoryCouncil
         from src.infrastructure.adapters.alpha_vantage_adapters import (
             AlphaVantageNewsAdapter,
             AlphaVantageSentimentAdapter,

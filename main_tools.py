@@ -406,7 +406,7 @@ def _add_cost_envelope(
 
 def _run_cost_envelope(args: argparse.Namespace) -> int:
     """FIN-06: koperta kosztu cyklu dla bieżącej konfiguracji (offline); exit 0."""
-    from src.infrastructure.adapters.advisory_council import COUNCIL_MAX_PERSONAS
+    from src.application.council_service import COUNCIL_MAX_PERSONAS
     from src.infrastructure.adapters.alpha_vantage_client import supported_tickers
     from src.infrastructure.persona_loader import load_council_personas
 
@@ -581,10 +581,10 @@ def run_offline(
     wcześniej), więc pierwszy cykl ma referencję delty. Zegar scenariusza stoi
     w chwili startu cyklu — czas trwania w mailu to 0 s, a wynik jest ten sam
     co do bajtu przy każdym uruchomieniu."""
+    from src.application.council_service import LLMAdvisoryCouncil
     from src.application.report_evidence import PaperCosts
     from src.application.use_cases.assemble_report import ReportFlags
     from src.domain.value_objects import Money
-    from src.infrastructure.adapters.advisory_council import LLMAdvisoryCouncil
     from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
     from src.infrastructure.adapters.xgboost_local import XGBoostAdapter
     from src.infrastructure.persona_loader import load_council_personas
