@@ -82,3 +82,61 @@ class TestInvariants:
         critical = Decimal("0.02")
         with pytest.raises(ValueError):
             snap.evaluate_stress_level(elevated_threshold=elevated, critical_threshold=critical)
+
+
+def _rates(*mids: str) -> list[Decimal]:
+    return [Decimal(mid) for mid in mids]
+
+
+class TestFromRates:
+    """DAT-29: zmiana 30d i dzienna z notowań tabeli A (najstarsze → najświeższe)."""
+
+    def test_snapshot_exposes_daily_change(self) -> None:
+        snap = PolishMacroSnapshot.from_rates(
+            eur=_rates("4.30", "4.25", "4.27"),
+            usd=_rates("3.70", "3.64", "3.62"),
+            fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+
+        assert snap is not None
+        # (3.62 - 3.64) / 3.64 ≈ −0,55% d/d
+        assert snap.usd_pln_1d_change_ratio is not None
+        assert float(snap.usd_pln_1d_change_ratio) == pytest.approx(-0.0055, abs=1e-4)
+        # (4.27 - 4.25) / 4.25 ≈ +0,47% d/d
+        assert snap.eur_pln_1d_change_ratio is not None
+        assert float(snap.eur_pln_1d_change_ratio) == pytest.approx(0.0047, abs=1e-4)
+
+    def test_month_change_is_from_the_oldest_rate(self) -> None:
+        snap = PolishMacroSnapshot.from_rates(
+            eur=_rates("4.30", "4.32", "4.35", "4.40"),
+            usd=_rates("4.00", "3.95", "4.05", "4.10"),
+            fetched_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+
+        assert snap is not None
+        assert snap.eur_pln == Decimal("4.40")
+        assert snap.usd_pln == Decimal("4.10")
+        assert snap.usd_pln_30d_change_ratio == Decimal("0.025")
+
+    @pytest.mark.parametrize(
+        ("eur", "usd"),
+        [
+            (_rates("4.30"), _rates("3.70", "3.62")),
+            (_rates("4.30", "4.27"), _rates()),
+            (_rates("0", "4.27"), _rates("3.70", "3.62")),
+            (_rates("4.30", "4.27"), _rates("3.70", "-1")),
+        ],
+        ids=["one_rate", "no_rates", "zero_baseline", "negative_previous"],
+    )
+    def test_without_two_positive_rates_there_is_no_snapshot(
+        self, eur: list[Decimal], usd: list[Decimal]
+    ) -> None:
+        snap = PolishMacroSnapshot.from_rates(
+            eur=eur, usd=usd, fetched_at=datetime(2026, 6, 1, tzinfo=UTC)
+        )
+
+        assert snap is None
+
+    def test_daily_change_defaults_to_unknown(self) -> None:
+        # Snapshot zbudowany wprost (fixture'y, sample mail) nie zna zmiany dziennej.
+        assert _snap(eur_change="0.01", usd_change="0.01").usd_pln_1d_change_ratio is None
