@@ -344,11 +344,12 @@ Work happens on a feature branch in its own worktree under `.worktrees/`, never 
 scripts/worktree-new.sh <type> <description>   # branch <type>/<description>-YYYY-MM-DD from origin/main in .worktrees/<description>-YYYY-MM-DD; prints the path
 # … work and commit in that worktree …
 scripts/worktree-status.sh                     # every worktree with ahead/behind, uncommitted files and a state: ready, dirty, empty or detached
+uv run python main_tools.py commit-policy        # in the worktree, before merge.sh: every fix: commit of origin/main..HEAD carries a test (DOC-27); exit 1 lists the ones that do not
 scripts/merge.sh <branch> "<Conventional Commit message>" --dry-run   # validate and print the plan, change nothing
 scripts/merge.sh <branch> "<Conventional Commit message>"             # merge --no-ff into main, remove the worktree, delete the branch
 ```
 
-`<type>` is a Conventional Commit type (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, …) and `<description>` is kebab-case. The merge message is required. `merge.sh` refuses before merging when the primary or the source worktree has uncommitted work, when `origin/main` is ahead, or when the source is a protected branch.
+`<type>` is a Conventional Commit type (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`, …) and `<description>` is kebab-case. `commit-policy` turns the TDD rule into a check of the branch history (DOC-27): a `fix:` commit has to change a file under `tests/` or follow a `test:` commit on the same branch; `fix(ci):` and `fix(docs):` are exempt (nothing to test) and merge commits are skipped. `--range` and `--repo` point it at another range or worktree. The rule applies from the day it shipped; older history on `main` is not rewritten. There are no pull requests (the owner merges with `merge.sh`), so it is a step before `merge.sh`, not a CI job. The merge message is required. `merge.sh` refuses before merging when the primary or the source worktree has uncommitted work, when `origin/main` is ahead, or when the source is a protected branch.
 
 These three files are canonical copies of the Platform templates (`Platform/templates/<name>`, named on the `CANON:` line of each header). Do not edit them here: a change goes into the template and is copied back byte for byte. [`tests/test_workflow_scripts.py`](../tests/test_workflow_scripts.py) checks that each one exists, is executable, names its template and parses in bash.
 

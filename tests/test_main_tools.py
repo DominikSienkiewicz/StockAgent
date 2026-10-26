@@ -6,6 +6,8 @@ czystą logikę. Każde narzędzie to podkomenda argparse.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -709,3 +711,80 @@ def test_junit_summary_reports_an_unreadable_file(
 
     assert code == 0
     assert "| unit | unreadable report |" in capsys.readouterr().out
+
+
+# --- DOC-27: commit-policy -------------------------------------------------------
+
+_GIT_ENV = {
+    "GIT_AUTHOR_NAME": "test",
+    "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "test",
+    "GIT_COMMITTER_EMAIL": "test@example.com",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args], cwd=repo, env={**os.environ, **_GIT_ENV}, check=True, capture_output=True
+    )
+
+
+def _commit(repo: Path, subject: str, path: str) -> None:
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(subject + "\n", encoding="utf-8")
+    _git(repo, "add", path)
+    _git(repo, "commit", "--quiet", "-m", subject)
+
+
+@pytest.fixture
+def branch_repo(tmp_path: Path) -> Path:
+    """Repo z commitem na `main` i gałęzią `fix/x` wyciętą z niego."""
+    _git(tmp_path, "init", "--quiet", "--initial-branch=main")
+    _commit(tmp_path, "chore: init", "README.md")
+    _git(tmp_path, "checkout", "--quiet", "-b", "fix/x")
+    return tmp_path
+
+
+def _commit_policy(repo: Path, revision_range: str = "main..HEAD") -> int:
+    return main_tools.main(["commit-policy", "--repo", str(repo), "--range", revision_range])
+
+
+def test_commit_policy_flags_a_fix_without_a_test_on_the_branch(
+    branch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(branch_repo, "fix: x", "src/a.py")
+
+    code = _commit_policy(branch_repo)
+
+    assert code == 1
+    assert "fix: x" in capsys.readouterr().out
+
+
+def test_commit_policy_passes_a_fix_preceded_by_its_test(
+    branch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(branch_repo, "test: reproduce x", "tests/test_x.py")
+    _commit(branch_repo, "fix: x", "src/a.py")
+
+    code = _commit_policy(branch_repo)
+
+    assert code == 0
+    assert "2" in capsys.readouterr().out
+
+
+def test_commit_policy_with_a_bad_range_exits_two(
+    branch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = _commit_policy(branch_repo, "no-such-branch..HEAD")
+
+    assert code == 2
+    assert "no-such-branch" in capsys.readouterr().err
+
+
+def test_commit_policy_defaults_to_the_branch_against_origin_main() -> None:
+    args = main_tools.build_parser().parse_args(["commit-policy"])
+
+    assert args.revision_range == "origin/main..HEAD"

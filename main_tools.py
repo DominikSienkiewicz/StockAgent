@@ -26,6 +26,7 @@ Użycie:
         [--rekor-repository OWNER/REPO] [--rekor-workflow PATH]
     uv run python main_tools.py reproduce-training [--sidecar PATH]
     uv run python main_tools.py junit-summary [--mutation] [ETYKIETA=]RAPORT.xml...
+    uv run python main_tools.py commit-policy [--range origin/main..HEAD] [--repo PATH]
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -41,6 +43,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
 from src.domain.council_ablation import leave_one_out
+from src.tools.commit_policy import (
+    GIT_LOG_FORMAT,
+    fix_commits_without_test,
+    parse_git_log,
+)
 from src.tools.cost_envelope import (
     EnvelopeInputs,
     cost_envelope,
@@ -166,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_verify_attestation(subcommands)
     _add_reproduce_training(subcommands)
     _add_junit_summary(subcommands)
+    _add_commit_policy(subcommands)
     return parser
 
 
@@ -1175,6 +1183,66 @@ def _run_junit_summary(args: argparse.Namespace) -> int:
     render = render_mutation_summary if args.mutation else render_test_summary
     print(render(rows), end="")
     return 0
+
+
+def _add_commit_policy(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subcommands.add_parser(
+        "commit-policy",
+        help="Does every fix: commit on the branch carry a test? Run before scripts/merge.sh.",
+        description=(
+            "DOC-27: reads `git log` of the branch range and flags every `fix:` commit that "
+            "neither changes a file under tests/ nor follows a `test:` commit on the branch. "
+            "`fix(ci):` and `fix(docs):` are exempt, merge commits are skipped. Exit 0 = "
+            "clean, 1 = flagged commits, 2 = git failed. No keys, no network."
+        ),
+    )
+    parser.add_argument(
+        "--range",
+        dest="revision_range",
+        default="origin/main..HEAD",
+        help="Revision range of the branch (default: origin/main..HEAD).",
+    )
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=_REPO_ROOT,
+        help="Repository or worktree to read (default: this checkout).",
+    )
+    parser.set_defaults(handler=_run_commit_policy)
+
+
+def _run_commit_policy(args: argparse.Namespace) -> int:
+    """DOC-27: `git log` zakresu gałęzi (I/O tutaj) → czysta polityka z src/tools."""
+    revision_range: str = args.revision_range
+    command = [
+        "git",
+        "-C",
+        str(args.repo),
+        "log",
+        "--reverse",
+        "--no-merges",
+        "--name-only",
+        f"--format={GIT_LOG_FORMAT}",
+        "--end-of-options",
+        revision_range,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print(f"❌ git log {revision_range}: {result.stderr.strip()}", file=sys.stderr)
+        return 2
+    commits = parse_git_log(result.stdout)
+    flagged = fix_commits_without_test(commits)
+    if not flagged:
+        print(f"✅ {len(commits)} commitów w {revision_range}: każdy fix: ma test (DOC-27)")
+        return 0
+    print(f"❌ {len(flagged)} commit(ów) fix: bez testu w {revision_range} (DOC-27):")
+    for subject in flagged:
+        print(f"  - {subject}")
+    print(
+        "Test odtwarzający błąd idzie w tym samym commicie albo w commicie test: przed fixem; "
+        "poprawki samego CI i dokumentacji oznacz fix(ci): / fix(docs):."
+    )
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
