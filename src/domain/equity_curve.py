@@ -28,12 +28,19 @@ predykcji żyje w `benchmark.py`.
 
 Tu mieszka też jedyna definicja hit-rate kierunkowego (`directional_hit_rate`,
 WIA-05): SIDEWAYS nie stawia zakładu, więc nie wchodzi do mianownika.
+
+WIA-68: `probabilistic_sharpe` (PSR) to prawdopodobieństwo, że prawdziwy Sharpe
+krzywej przewyższa próg, z poprawką na skośność i grube ogony zwrotów, a
+`deflated_sharpe` (DSR) — PSR wobec progu, jaki dałby najlepszy z `n_trials`
+wariantów bez żadnej umiejętności (Bailey, López de Prado 2012 i 2014).
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from statistics import NormalDist, fmean, stdev
 
 from src.domain.trading_costs import net_return
 from src.domain.value_objects import require_finite
@@ -42,6 +49,11 @@ from src.domain.value_objects import require_finite
 LONG_TREND = "BULLISH"
 # Najgorszy zwrot okresu: utrata całego kapitału.
 _TOTAL_LOSS = -1.0
+# WIA-68: od tylu zwrotów okresu PSR i DSR dostają liczbę — przy mniejszej próbie
+# rozkład estymatora Sharpe'a jest za daleko od normalnego, na którym stoją wzory.
+MIN_SHARPE_SAMPLE = 30
+_EULER_GAMMA = 0.5772156649015329
+_NORMAL = NormalDist()
 
 
 def signal_of(predicted_trend: str) -> int:
@@ -323,3 +335,104 @@ def _compound(
         max_drawdown=max_drawdown,
         n_trades=len(trades),
     )
+
+
+@dataclass(frozen=True)
+class SharpeEvidence:
+    """WIA-68: PSR i DSR krzywej kapitału.
+
+    `n` — liczba zwrotów okresu (punktów krzywej), `n_trials` — liczba wariantów
+    przepisu, wobec których DSR koryguje próg (None = nieznana, bez DSR). Poniżej
+    `MIN_SHARPE_SAMPLE` albo bez rozrzutu zwrotów obie miary są None.
+    """
+
+    n: int
+    psr: float | None
+    dsr: float | None
+    n_trials: int | None
+
+
+def sharpe(period_returns: Sequence[float]) -> float | None:
+    """Sharpe okresu (bez annualizacji i stopy wolnej od ryzyka): średnia przez
+    odchylenie z próby. Mniej niż dwa zwroty albo zerowy rozrzut → None."""
+    if len(period_returns) < 2:
+        return None
+    spread = stdev(period_returns)
+    if spread == 0:
+        return None
+    return fmean(period_returns) / spread
+
+
+def _shape(period_returns: Sequence[float]) -> tuple[float, float]:
+    """Skośność γ3 i kurtoza γ4 (nie nadwyżkowa: rozkład normalny = 3) z momentów
+    centralnych próby, jak we wzorze PSR."""
+    mean = fmean(period_returns)
+    m2 = fmean((r - mean) ** 2 for r in period_returns)
+    m3 = fmean((r - mean) ** 3 for r in period_returns)
+    m4 = fmean((r - mean) ** 4 for r in period_returns)
+    return m3 / m2**1.5, m4 / m2**2
+
+
+def _sharpe_variance(sr: float, n: int, skew: float, kurt: float) -> float | None:
+    """Wariancja estymatora Sharpe'a przy nienormalnych zwrotach (Mertens 2002):
+    (1 − γ3·SR + (γ4 − 1)/4·SR²) / (n − 1). Niedodatnia (skrajna skośność) → None."""
+    spread = 1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr * sr
+    if n < 2 or spread <= 0:
+        return None
+    return spread / (n - 1)
+
+
+def probabilistic_sharpe(
+    sr: float, n: int, *, skew: float, kurt: float, sr_benchmark: float = 0.0
+) -> float | None:
+    """PSR: Φ((SR − SR*) / σ(SR)) — prawdopodobieństwo, że prawdziwy Sharpe
+    przekracza `sr_benchmark`, z `n` zwrotów o skośności `skew` i kurtozie `kurt`.
+    None, gdy wariancja estymatora wychodzi niedodatnia."""
+    variance = _sharpe_variance(sr, n, skew, kurt)
+    if variance is None:
+        return None
+    return _NORMAL.cdf((sr - sr_benchmark) / math.sqrt(variance))
+
+
+def _expected_max_sharpe(n_trials: int, sr_std: float) -> float:
+    """Oczekiwany najlepszy Sharpe z `n_trials` niezależnych prób o prawdziwym
+    Sharpe 0 (False Strategy Theorem); jedna próba → 0."""
+    if n_trials == 1:
+        return 0.0
+    return sr_std * (
+        (1 - _EULER_GAMMA) * _NORMAL.inv_cdf(1 - 1 / n_trials)
+        + _EULER_GAMMA * _NORMAL.inv_cdf(1 - 1 / (n_trials * math.e))
+    )
+
+
+def deflated_sharpe(sr: float, n: int, *, skew: float, kurt: float, n_trials: int) -> float | None:
+    """DSR: PSR wobec Sharpe'a, jaki najlepszy z `n_trials` wariantów osiągnąłby
+    bez umiejętności. Rozrzutu Sharpe'a między wariantami nie znamy, więc
+    przybliża go odchylenie estymatora tej krzywej — `n_trials` i ten rozrzut to
+    szacunki, DSR jest orientacyjny. `n_trials` < 1 → `ValueError`."""
+    if n_trials < 1:
+        raise ValueError(f"n_trials must be at least 1, got {n_trials}")
+    variance = _sharpe_variance(sr, n, skew, kurt)
+    if variance is None:
+        return None
+    threshold = _expected_max_sharpe(n_trials, math.sqrt(variance))
+    return probabilistic_sharpe(sr, n, skew=skew, kurt=kurt, sr_benchmark=threshold)
+
+
+def sharpe_evidence(period_returns: Sequence[float], n_trials: int | None) -> SharpeEvidence:
+    """PSR (próg 0) i DSR (`n_trials` wariantów przepisu) zwrotów okresu krzywej.
+
+    Poniżej `MIN_SHARPE_SAMPLE` zwrotów albo bez rozrzutu — bez liczb; nieznane
+    `n_trials` (None) — sam PSR."""
+    n = len(period_returns)
+    sr = sharpe(period_returns) if n >= MIN_SHARPE_SAMPLE else None
+    if sr is None:
+        return SharpeEvidence(n=n, psr=None, dsr=None, n_trials=n_trials)
+    skew, kurt = _shape(period_returns)
+    psr = probabilistic_sharpe(sr, n, skew=skew, kurt=kurt)
+    dsr = (
+        None
+        if n_trials is None
+        else deflated_sharpe(sr, n, skew=skew, kurt=kurt, n_trials=n_trials)
+    )
+    return SharpeEvidence(n=n, psr=psr, dsr=dsr, n_trials=n_trials)

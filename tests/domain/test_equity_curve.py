@@ -15,6 +15,8 @@ Reguły metryk:
 
 from __future__ import annotations
 
+import math
+import statistics
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
@@ -22,17 +24,22 @@ import pytest
 
 from src.domain.benchmark import index_curve, window_change
 from src.domain.equity_curve import (
+    MIN_SHARPE_SAMPLE,
     DirectionalHitRate,
     EquityCurve,
     EquityPoint,
     PaperTrade,
     buy_and_hold_curve,
+    deflated_sharpe,
     directional_hit_rate,
     equity_curve,
     excess_return,
     market_relative_hit_rate,
     paper_portfolio_curve,
     portfolio_equity_curve,
+    probabilistic_sharpe,
+    sharpe,
+    sharpe_evidence,
     signal_of,
 )
 
@@ -469,3 +476,98 @@ def test_non_finite_change_raises(bad: float) -> None:
         equity_curve([("BULLISH", 0.01), ("BEARISH", bad)])
     with pytest.raises(ValueError, match="finite"):
         portfolio_equity_curve([[("BULLISH", bad)]])
+
+
+class TestSharpeRatios:
+    """WIA-68: Sharpe okresu i jego wersje Probabilistic / Deflated (Bailey,
+    López de Prado) — miara niepewności total_return z korektą za liczbę prób."""
+
+    def test_sharpe_is_mean_over_sample_std(self) -> None:
+        returns = [0.01, 0.03, -0.01]
+
+        assert sharpe(returns) == pytest.approx(
+            statistics.fmean(returns) / statistics.stdev(returns)
+        )
+
+    @pytest.mark.parametrize("returns", [[], [0.01], [0.02, 0.02, 0.02]])
+    def test_sharpe_needs_two_different_returns(self, returns: list[float]) -> None:
+        assert sharpe(returns) is None
+
+    def test_psr_is_half_when_sharpe_equals_benchmark(self) -> None:
+        assert probabilistic_sharpe(0.3, 60, skew=0.0, kurt=3.0, sr_benchmark=0.3) == (
+            pytest.approx(0.5)
+        )
+
+    def test_psr_of_normal_returns(self) -> None:
+        # z = SR·√(n−1) / √(1 + SR²/2) = 0,2·10 / √1,02
+        expected = statistics.NormalDist().cdf(2 / math.sqrt(1.02))
+
+        assert probabilistic_sharpe(0.2, 101, skew=0.0, kurt=3.0) == pytest.approx(expected)
+
+    def test_negative_skew_and_fat_tails_lower_the_psr(self) -> None:
+        normal = probabilistic_sharpe(0.2, 101, skew=0.0, kurt=3.0)
+        fat_left_tail = probabilistic_sharpe(0.2, 101, skew=-1.0, kurt=6.0)
+
+        assert normal is not None
+        assert fat_left_tail is not None
+        assert fat_left_tail < normal
+
+    def test_psr_is_unknown_when_the_estimator_variance_is_not_positive(self) -> None:
+        # 1 − γ3·SR + (γ4 − 1)/4·SR² ≤ 0 przy skrajnej skośności — brak liczby.
+        assert probabilistic_sharpe(1.0, 50, skew=5.0, kurt=3.0) is None
+
+    def test_deflated_sharpe_decreases_with_more_trials(self) -> None:
+        values = [
+            deflated_sharpe(0.3, 60, skew=0.0, kurt=3.0, n_trials=trials)
+            for trials in (1, 2, 10, 100)
+        ]
+
+        assert all(value is not None for value in values)
+        assert values == sorted(values, key=lambda value: -(value or 0.0))
+        assert (values[-1] or 0.0) < (values[0] or 0.0) - 0.1
+
+    def test_one_trial_is_not_deflated(self) -> None:
+        assert deflated_sharpe(0.3, 60, skew=0.0, kurt=3.0, n_trials=1) == pytest.approx(
+            probabilistic_sharpe(0.3, 60, skew=0.0, kurt=3.0)
+        )
+
+    def test_dsr_is_unknown_when_the_estimator_variance_is_not_positive(self) -> None:
+        assert deflated_sharpe(1.0, 50, skew=5.0, kurt=3.0, n_trials=3) is None
+
+    def test_trials_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="n_trials"):
+            deflated_sharpe(0.3, 60, skew=0.0, kurt=3.0, n_trials=0)
+
+
+class TestSharpeEvidence:
+    """WIA-68: PSR i DSR krzywej — poniżej 30 okresów bez liczby."""
+
+    _RETURNS = [0.01, -0.005, 0.004] * 10
+
+    def test_min_sample_is_thirty(self) -> None:
+        assert MIN_SHARPE_SAMPLE == 30
+
+    def test_below_the_minimum_sample_there_is_no_number(self) -> None:
+        evidence = sharpe_evidence(self._RETURNS[:29], n_trials=3)
+
+        assert (evidence.n, evidence.psr, evidence.dsr) == (29, None, None)
+
+    def test_from_the_minimum_sample_psr_and_deflated_dsr(self) -> None:
+        evidence = sharpe_evidence(self._RETURNS, n_trials=3)
+
+        assert evidence.n == 30
+        assert evidence.n_trials == 3
+        assert evidence.psr is not None
+        assert evidence.dsr is not None
+        assert evidence.dsr < evidence.psr
+
+    def test_unknown_trials_leave_only_the_psr(self) -> None:
+        evidence = sharpe_evidence(self._RETURNS, n_trials=None)
+
+        assert evidence.psr is not None
+        assert evidence.dsr is None
+
+    def test_flat_returns_have_no_sharpe(self) -> None:
+        evidence = sharpe_evidence([0.0] * 30, n_trials=2)
+
+        assert (evidence.psr, evidence.dsr) == (None, None)
