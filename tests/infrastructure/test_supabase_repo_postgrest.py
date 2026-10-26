@@ -3,7 +3,7 @@
 Adapter testowano mockami łańcucha `table().select()…`, a schemat osobno
 (test_migrations.py), więc szew adapter ↔ schemat nie miał testu: PGRST204 przy
 kolumnie bez migracji (incydent 013), NUMERIC wracający jako liczba JSON, cicha
-granica ~1000 wierszy (G48, #8). Tu jeden zestaw kontenerów na moduł (pamięć
+granica ~1000 wierszy (G48). Tu jeden zestaw kontenerów na moduł (pamięć
 maszyny): Postgres z pgvector z kompletem migracji i rolami jak w Supabase oraz
 `postgrest/postgrest` z JWT podpisanym lokalnym sekretem — repozytorium mówi do
 niego tym samym klientem `supabase-py` co na produkcji.
@@ -63,7 +63,7 @@ POSTGREST_PORT = 3000
 JWT_SECRET = "stockagent-test17-local-jwt-secret-0123456789"
 AUTHENTICATOR_PASSWORD = "authenticator-test17"
 DB_ALIAS = "db"
-# Hosted Supabase tnie SELECT do 1000 wierszy bez błędu (#8) — ten sam limit tutaj.
+# Hosted Supabase tnie SELECT do 1000 wierszy bez błędu — ten sam limit tutaj.
 POSTGREST_MAX_ROWS = 1000
 _READY_TIMEOUT_S = 60.0
 

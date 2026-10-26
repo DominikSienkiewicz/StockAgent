@@ -356,7 +356,7 @@ class TestQuotaAlertEmit:
 
 
 class TestModelIdValidation:
-    """#30 — Hardcoded model id bez guardu = cichy total outage. Walidacja w
+    """Audyt z czerwca 2026 — Hardcoded model id bez guardu = cichy total outage. Walidacja w
     __init__ łapie pusty/typo'd id natychmiast, z czytelnym komunikatem."""
 
     def test_empty_model_id_raises_at_construction(self, mock_openai_class: MagicMock) -> None:
@@ -389,7 +389,7 @@ class TestModelIdValidation:
 
 
 class TestMaxTokensCap:
-    """#31 — Bez `max_tokens`/`max_completion_tokens` output OpenAI jest
+    """Audyt z czerwca 2026 — Bez `max_tokens`/`max_completion_tokens` output OpenAI jest
     ograniczony tylko defaultem modelu. Schematy JSON potrzebują kilkuset
     tokenów — ustawiamy ciasny, nadpisywalny cap. Reasoning models (gpt-5,
     o-series) używają `max_completion_tokens`, reszta `max_tokens`."""

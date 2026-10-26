@@ -1,4 +1,4 @@
-"""Testy dla adapterów `AttestationPublisherPort` (#16 — commit-reveal):
+"""Testy dla adapterów `AttestationPublisherPort` (R-16 — commit-reveal):
 - `FileAttestationPublisher` — append-only JSONL (osobne pliki commit/reveal).
 - `NullAttestationPublisher` — no-op gdy feature wyłączony.
 

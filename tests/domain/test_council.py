@@ -341,7 +341,7 @@ class TestDeriveConsensus:
 
 
 class TestDeriveConsensusWeighted:
-    """Feature #3: adaptacyjne ważenie person. Masa głosu = confidence * waga
+    """R-21: adaptacyjne ważenie person. Masa głosu = confidence * waga
     person (z historycznej trafności). weights=None → identycznie jak dziś."""
 
     def _named(self, name: str, rec: str, conf: float = 0.8) -> InvestorOpinion:
@@ -398,7 +398,7 @@ class TestDeriveConsensusWeighted:
 
 
 class TestOpinionShift:
-    """Feature #1 (debate mode): ilu inwestorów zmieniło rekomendację między
+    """R-19 (debate mode): ilu inwestorów zmieniło rekomendację między
     rundą 1 a finalnym werdyktem (po rewizji)."""
 
     def _verdict(self, opinions: list[InvestorOpinion]) -> CouncilVerdict:

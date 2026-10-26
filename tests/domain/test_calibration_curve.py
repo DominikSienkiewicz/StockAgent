@@ -371,7 +371,7 @@ class TestCalibrationErrorEvidence:
 
 
 class TestDiscrimination:
-    """WIA-38: kalibracja (#9) zakłada, że pewność niesie informację. Jeśli LLM
+    """WIA-38: kalibracja (R-9) zakłada, że pewność niesie informację. Jeśli LLM
     zawsze mówi ~0.7, kalibracja tylko przesuwa wszystkich do stopy bazowej,
     a ranking po pewności jest szumem. AUC (Mann–Whitney) i krzywa
     ryzyko–pokrycie mówią, czy wyższa pewność znaczy częstsze trafienie."""

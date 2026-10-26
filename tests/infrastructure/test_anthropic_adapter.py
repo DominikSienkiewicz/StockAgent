@@ -367,7 +367,7 @@ class TestRetryAndQuota:
 
 
 class TestModelIdValidation:
-    """#30 — Hardcoded model id bez guardu = cichy total outage (pusty/typo'd
+    """Audyt z czerwca 2026 — Hardcoded model id bez guardu = cichy total outage (pusty/typo'd
     config failuje dopiero przy 1. callu, per symbol, co cykl). Walidacja w
     __init__ łapie oczywiście-zły id natychmiast, z czytelnym komunikatem."""
 
@@ -400,7 +400,7 @@ class TestModelIdValidation:
 
 
 class TestMaxTokensCap:
-    """#31 — Schematy JSON potrzebują kilkuset tokenów; uniformny 4096 (w tym
+    """Audyt z czerwca 2026 — Schematy JSON potrzebują kilkuset tokenów; uniformny 4096 (w tym
     per-investor council calls) to przeszacowanie. Domyślny cap ~768 tnie koszt
     wyjścia, pozostaje nadpisywalny przez konstruktor."""
 

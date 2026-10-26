@@ -124,7 +124,7 @@ class TestLoadCouncilPersonas:
 
 
 class TestPersonaNameBounds:
-    """Finding #37: `name` (i `style`) wpadają do promptu LLM rady. Bez górnej
+    """Audyt z czerwca 2026: `name` (i `style`) wpadają do promptu LLM rady. Bez górnej
     granicy długości i bez odrzucania znaków kontrolnych/nowych linii
     plik persony staje się wektorem prompt-injection / kosztu. Fail-fast
     przy ładowaniu, zanim nazwa dotrze do LLM."""

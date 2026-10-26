@@ -421,7 +421,7 @@ class TestMigrations:
     def test_persona_accuracy_stats_rpc_returns_hit_rate_and_vote_count(
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
-        """RPC leaderboardu person (#3, migracja 018) zwraca surowy hit-rate
+        """RPC leaderboardu person (R-3, migracja 018) zwraca surowy hit-rate
         ORAZ liczbę rozliczonych głosów.
 
         Regresja kontraktu: `persona_accuracy_weights` (015) niesie tylko
@@ -636,7 +636,7 @@ class TestMigrations:
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
         """Upsert ON CONFLICT (symbol, timestamp_hour): same-hour re-run
-        aktualizuje istniejący wiersz zamiast duplikować (regresja #7)."""
+        aktualizuje istniejący wiersz zamiast duplikować (regresja z audytu z czerwca 2026)."""
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM prediction_logs WHERE symbol = 'UPSERT_PL'")
             cur.execute(
@@ -663,7 +663,7 @@ class TestMigrations:
         assert row[0] == 1
         assert float(row[1]) == pytest.approx(250.0)
 
-    # -- Migracja 019: model_scorecards (karta kondycji modelu, #12) ----------
+    # -- Migracja 019: model_scorecards (karta kondycji modelu, R-12) ---------
 
     def test_model_scorecards_has_symbol_column(
         self, pg_conn: psycopg2.extensions.connection
@@ -675,7 +675,7 @@ class TestMigrations:
         cols = _columns(pg_conn, "model_scorecards")
         assert "symbol" in cols, "Brak kolumny symbol w model_scorecards (migracja 019)"
 
-    # -- Migracja 020: decision_receipts (kwity decyzyjne, #13) ---------------
+    # -- Migracja 020: decision_receipts (kwity decyzyjne, R-13) --------------
 
     def test_decision_receipts_column_is_nullable(
         self, pg_conn: psycopg2.extensions.connection
@@ -695,7 +695,7 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, #11) -----------
+    # -- Migracja 021: shock_alerts (alerty szoku poza cyklem, R-11) ----------
 
     def test_shock_alerts_dedups_per_symbol_per_day(
         self, pg_conn: psycopg2.extensions.connection
@@ -721,7 +721,7 @@ class TestMigrations:
                     ("SHOCK_DUP", "2026-06-05", -9.0, "DOWN"),
                 )
 
-    # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, #14) ----------
+    # -- Migracja 022: alpha_fusion_score (fuzja sygnałów alfa, R-14) ---------
 
     def test_ml_feature_store_exposes_alpha_fusion_score(
         self, pg_conn: psycopg2.extensions.connection
@@ -764,14 +764,14 @@ class TestMigrations:
         assert result is not None, "Wiersz nie pojawił się w widoku po REFRESH"
         assert result[0] == 0.0, f"alpha_fusion_score = {result[0]!r}, oczekiwano 0.0 (COALESCE)"
 
-    # -- Migracja 023: positions (realny portfel użytkownika, #15) ------------
+    # -- Migracja 023: positions (realny portfel użytkownika, R-15) -----------
 
     def test_positions_table_exists(self, pg_conn: psycopg2.extensions.connection) -> None:
         cols = _columns(pg_conn, "positions")
         required = {"id", "symbol", "quantity", "avg_cost", "as_of", "created_at"}
         assert required <= cols, f"Brakujące kolumny: {required - cols}"
 
-    # -- Migracja 024: attestation (commit-reveal track record, #16) ----------
+    # -- Migracja 024: attestation (commit-reveal track record, R-16) ---------
 
     def test_attestation_columns_are_nullable(
         self, pg_conn: psycopg2.extensions.connection
@@ -791,12 +791,12 @@ class TestMigrations:
             row = cur.fetchone()
         assert row is not None
 
-    # -- Migracja 025: implied_edge (edge vs rynek opcji, #18) ----------------
+    # -- Migracja 025: implied_edge (edge vs rynek opcji, R-18) ---------------
 
     def test_revealed_at_column_supports_the_reveal_sweep(
         self, pg_conn: psycopg2.extensions.connection
     ) -> None:
-        """#16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
+        """R-16 — bez `revealed_at` sweep nie wie, co już ujawnił, a predykcje
         symboli usuniętych z configu nigdy nie zostałyby odsłonięte. Dla sceptyka
         wygląda to jak ukrywanie nietrafień."""
         cols = _columns(pg_conn, "prediction_logs")

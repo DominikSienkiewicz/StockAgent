@@ -99,7 +99,7 @@ class TestSummarizeEvaluation:
 
 
 class TestDirectionalHitRateSplit:
-    """Finding #24: blended `hit_rate` zalicza SIDEWAYS jako trafienie zawsze, gdy
+    """Audyt z czerwca 2026: blended `hit_rate` zalicza SIDEWAYS jako trafienie zawsze, gdy
     ruch < ±0.5% — czyli „nic się nie ruszyło" myli się z „trafiłem kierunek".
     Rozdzielamy: directional-only hit-rate (BULLISH/BEARISH) + pokrycie SIDEWAYS."""
 
