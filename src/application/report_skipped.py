@@ -169,8 +169,13 @@ def _render_budget_exhausted_html(
         f"<span style='color: {_delta_color(r.delta)}'>{direction_pct(r.delta)}</span></span>"
         for r in cut
     )
+    # Tytuł FIN-12 zostaje literałem, żeby strażnik nagłówków maila (test_docs_report_sections)
+    # widział go obok opisu w docs/report-email.md; tytuł limitu USD składa się z okna.
+    heading = (
+        _section_h2(f"💸 {_BUDGET_CUT_TITLE}") if breach is None else _section_h2(f"💸 {title}")
+    )
     return (
-        _section_h2(f"💸 {title}")
+        heading
         + "<div style='font-size: 12px; color: #6b7280; margin: 0 0 6px 0;'>"
         + _html(note)
         + f"</div><div>{rows}</div>"
