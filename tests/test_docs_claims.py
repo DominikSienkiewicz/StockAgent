@@ -257,3 +257,98 @@ def test_sources_rows_stating_a_config_toml_state_match_config_toml() -> None:
 
     assert checked >= len(DATA_SOURCE_FLAGS) - 2, "wzorzec stanu przestał łapać wiersze"
     assert wrong == []
+
+
+# DOC-41: polityka degradacji żyła tylko w komentarzach. Tabela „Failure modes” w
+# how-it-works ma wiersz dla każdej flagi jakości, którą kod zostawia na rekordzie, i
+# uczciwie pokazuje „raport niedostarczony → exit 0”; nowa flaga bez wiersza czerwieni
+# test. Flagi zbieramy ze stałych `*_FLAG` w `src/`, z rejestrów flag (trening, stan
+# źródeł) i z literałów oraz szablonów pól w `agent_graph.py`.
+FAILURE_MODES_HEADING = "## Failure modes"
+AGENT_GRAPH = ROOT / "src" / "application" / "agent_graph.py"
+_FLAG_CONSTANT = re.compile(
+    r'^_?[A-Z][A-Z0-9_]*_FLAG(?:\s*:\s*\w+)?\s*=\s*"([a-z][a-z0-9_]*)"', re.MULTILINE
+)
+_APPENDED_FLAG = re.compile(r'flags\.append\("([a-z][a-z0-9_]*)"\)')
+_FIELD_FLAG_TEMPLATE = re.compile(r'f"\{\w+\}_([a-z][a-z0-9_]*)"')
+# Wiersze, których katalog (DOC-41) wymaga z nazwy, nie tylko przez wzorzec `*_…`.
+NAMED_FAILURE_ROWS = (
+    "llm_analysis_failed",
+    "av_keys_exhausted",
+    "price_delta_no_prior_prediction",
+    "trend_direction_invalid",
+    "*_missing",
+)
+
+
+def _quality_flags_in_code() -> tuple[set[str], set[str]]:
+    """(nazwy flag, wzorce `*_sufiks` z szablonów pól) — to, co kod zapisuje na rekordzie."""
+    from src.application.ml_features import TRAINING_EXCLUDED_QUALITY_FLAGS
+    from src.application.source_health import LLM_DEGRADATION_FLAGS
+
+    graph = AGENT_GRAPH.read_text(encoding="utf-8")
+    named = {
+        flag
+        for path in sorted((ROOT / "src").rglob("*.py"))
+        for flag in _FLAG_CONSTANT.findall(path.read_text(encoding="utf-8"))
+    }
+    named |= set(TRAINING_EXCLUDED_QUALITY_FLAGS) | set(LLM_DEGRADATION_FLAGS)
+    named |= set(_APPENDED_FLAG.findall(graph))
+    patterns = {f"*_{suffix}" for suffix in _FIELD_FLAG_TEMPLATE.findall(graph)}
+    return named, patterns
+
+
+def _failure_rows() -> list[list[str]]:
+    text = _how_it_works()
+    start = text.find(FAILURE_MODES_HEADING)
+    if start == -1:
+        return []
+    end = text.find("\n## ", start + 1)
+    section = text[start:] if end == -1 else text[start:end]
+    return [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.startswith("| ") and not line.startswith("| What failed")
+    ]
+
+
+def _documented_flags() -> set[str]:
+    return {
+        token for row in _failure_rows() for token in re.findall(r"`([a-z*][a-z0-9_*]*)`", row[1])
+    }
+
+
+def _covered(flag: str, documented: set[str]) -> bool:
+    return flag in documented or any(
+        token.startswith("*_") and flag.endswith(token[1:]) for token in documented
+    )
+
+
+def test_quality_flag_sources_find_the_known_flags() -> None:
+    named, patterns = _quality_flags_in_code()
+
+    assert {"llm_analysis_failed", "av_keys_exhausted", "price_delta_no_prior_prediction"} <= named
+    assert {"*_missing", "*_invalid", "*_out_of_range"} <= patterns
+
+
+def test_failure_modes_table_lists_every_quality_flag() -> None:
+    named, patterns = _quality_flags_in_code()
+    documented = _documented_flags()
+
+    missing = sorted(
+        {flag for flag in named if not _covered(flag, documented)}
+        | {pattern for pattern in patterns if pattern not in documented}
+        | {row for row in NAMED_FAILURE_ROWS if row not in documented}
+    )
+    assert missing == [], f"tabela Failure modes w how-it-works.md nie ma wierszy dla: {missing}"
+
+
+def test_failure_modes_table_links_the_exit_code_table_and_shows_delivery_exit_zero() -> None:
+    text = _how_it_works()
+    start = text.find(FAILURE_MODES_HEADING)
+    section = "" if start == -1 else text[start:].split("\n## ", 1)[0]
+    delivery = [row for row in _failure_rows() if "Resend" in row[0]]
+
+    assert "](running-locally.md#github-actions)" in section, "brak linku do tabeli exit code"
+    assert delivery, "brak wiersza o niedostarczonym raporcie (Resend)"
+    assert all(row[3].startswith("0") for row in delivery), delivery
