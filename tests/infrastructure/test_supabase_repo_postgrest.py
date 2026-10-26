@@ -491,6 +491,29 @@ class TestRecipeVersionCount:
         assert repository.count_recipe_versions() == before + 2
 
 
+class TestReferenceOutcomes:
+    def test_reads_settled_outcomes_of_the_window_without_symbols(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # WIA-82: HIT / MISS / EXPIRED z odczytów okna (042); otwarte wywołanie,
+        # abstynencja i odczyt sprzed okna poza agregatem.
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO reference_predictions (symbol, read_at, price, predicted_trend, "
+                "outcome, settled_price, settled_at) VALUES "
+                "('T17RF1', now() - interval '3 days', 10, 'BULLISH', 'HIT', 11, now()), "
+                "('T17RF2', now() - interval '3 days', 10, 'BEARISH', 'MISS', 11, now()), "
+                "('T17RF3', now() - interval '20 days', 10, 'BULLISH', 'EXPIRED', NULL, now()), "
+                "('T17RF4', now() - interval '1 day', 10, 'BULLISH', NULL, NULL, NULL), "
+                "('T17RF5', now() - interval '1 day', 10, NULL, NULL, NULL, NULL), "
+                "('T17RF6', now() - interval '60 days', 10, 'BULLISH', 'HIT', 11, now())"
+            )
+
+        outcomes = repository.get_reference_outcomes(30)
+
+        assert sorted(outcome.value for outcome in outcomes) == ["EXPIRED", "HIT", "MISS"]
+
+
 class TestShadowTrendPrediction:
     """EXP-26 (migracja 083): trend wariantu promptu albo modelu LLM ląduje w
     `shadow_predictions` obok predykcji, upsertem po (prediction_id, model_name),

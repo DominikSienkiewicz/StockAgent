@@ -18,7 +18,9 @@ import pytest
 
 from src.application.ports import RepositoryPort
 from src.domain.council import CouncilVerdict, InvestorOpinion
+from src.domain.prediction import TrendDirection
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.domain.reference_signal import ReferenceCall, ReferenceOutcome, ReferenceRead
 from src.domain.value_objects import Money
 from src.infrastructure.adapters.in_memory_repo import InMemoryRepository
 
@@ -394,3 +396,27 @@ def test_recipe_versions_are_counted_once_each_without_unstamped_rows() -> None:
         repo.save_prediction(_record(symbol, recipe_version=recipe))
 
     assert repo.count_recipe_versions() == 2
+
+
+def test_reference_outcomes_of_the_window_without_open_calls() -> None:
+    # WIA-82: rozliczone wywołania z odczytów okna; otwarte i starsze poza agregatem.
+    clock = _Clock()
+    repo = _repo(clock)
+    reads = [
+        ("NVDA", START - timedelta(days=40), ReferenceOutcome.HIT),
+        ("AMD", START - timedelta(days=10), ReferenceOutcome.MISS),
+        ("MSFT", START - timedelta(days=9), ReferenceOutcome.EXPIRED),
+        ("AAPL", START - timedelta(days=2), None),
+    ]
+    for symbol, read_at, _outcome in reads:
+        read = ReferenceRead(symbol=symbol, price=Decimal("100"), read_at=read_at)
+        repo.save_reference_read(
+            read, ReferenceCall(symbol, TrendDirection.BULLISH, Decimal("100"), read_at)
+        )
+    for open_call in repo.get_open_reference_calls():
+        outcome = next(o for sym, _, o in reads if sym == open_call.call.symbol)
+        if outcome is not None:
+            price = None if outcome is ReferenceOutcome.EXPIRED else Decimal("101")
+            repo.settle_reference_call(open_call.id, outcome, price, START)
+
+    assert sorted(o.value for o in repo.get_reference_outcomes(30)) == ["EXPIRED", "MISS"]

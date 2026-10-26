@@ -942,6 +942,12 @@ class RepositoryPort(ABC):
         stare wygasają w kolejnym przebiegu."""
 
     @abstractmethod
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        """WIA-82 — wyniki rozliczonych wywołań (HIT / MISS / EXPIRED) z odczytów
+        ostatnich `days` dni, bez symboli: agregat do wiersza reguły referencyjnej
+        w prywatnym Track Record."""
+
+    @abstractmethod
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         """Jeden wiersz: odczyt przebiegu i wywołanie z niego (None = abstynencja)."""
 

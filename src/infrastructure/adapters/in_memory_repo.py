@@ -1057,6 +1057,14 @@ class InMemoryRepository(RepositoryPort):
         )
         return [OpenReferenceCall(id=str(row["id"]), call=row["call"]) for row in rows]
 
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        cutoff = self._now() - timedelta(days=days)
+        return [
+            row["outcome"]
+            for row in self._reference.values()
+            if row["outcome"] is not None and row["read"].read_at >= cutoff
+        ]
+
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         with self._lock:
             record_id = self._next_id()

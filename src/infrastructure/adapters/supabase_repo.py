@@ -2669,6 +2669,20 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             for row in _paginate(query)
         ]
 
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        # WIA-82: sam wynik, bez symbolu — agregat do prywatnego Track Record. Okno po
+        # chwili wywołania (`read_at`, indeks z 042), jak okno predykcji LLM; paginacja (#8).
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        query = (
+            self._client.table(REFERENCE_PREDICTIONS_TABLE)
+            .select("outcome")
+            .gte("read_at", cutoff.isoformat())
+            .not_.is_("outcome", "null")
+            .order("read_at", desc=False)
+            .order("id", desc=False)
+        )
+        return [ReferenceOutcome(str(row["outcome"])) for row in _paginate(query)]
+
     def save_reference_read(self, read: ReferenceRead, call: ReferenceCall | None) -> None:
         # Etykietę stawia jawnie kod (stała domeny), nie tylko DEFAULT kolumny.
         record = _serialize_record(

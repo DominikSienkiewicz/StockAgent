@@ -166,6 +166,7 @@ class ReadOnlyRepository(RepositoryPort):
             "get_council_vote_history",
             "get_reference_reads",
             "get_open_reference_calls",
+            "get_reference_outcomes",
             "get_cycle_runs_since",
             "get_llm_cost_since",
             "get_llm_costs_since",
@@ -402,6 +403,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_open_reference_calls(self) -> list[OpenReferenceCall]:
         return self._delegate.get_open_reference_calls()
+
+    def get_reference_outcomes(self, days: int) -> list[ReferenceOutcome]:
+        return self._delegate.get_reference_outcomes(days)
 
     def get_cycle_runs_since(self, since: datetime) -> list[CycleRun]:
         return self._delegate.get_cycle_runs_since(since)
