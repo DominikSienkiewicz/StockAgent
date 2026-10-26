@@ -25,6 +25,17 @@ uv run pytest -m "not integration and not containers"   # jak CI; kontenerowe: u
 
 Nie zgłaszaj pracy jako ukończonej, dopóki te cztery nie są zielone. Commit samego
 formatowania dopisz do `.git-blame-ignore-revs`.
+Jednorazowo per klon: `uv tool install pre-commit && pre-commit install` — hooki: ruff check,
+ruff format --check, `uv lock --check`, gitleaks, check-toml, check-yaml (CI-27); mypy i pytest
+zostają w bramce.
+Goły `# type: ignore` odrzuca mypy (`ignore-without-code`, CI-15); liczba `# type: ignore[...]`
+i `cast(Any, …)` w `src/` i `main_*.py` tylko maleje — obniż `TYPE_IGNORE_BASELINE` /
+`CAST_ANY_BASELINE` (`tests/test_quality_gate_sync.py`) w commicie, który usuwa ucieczkę.
+Brak stubów wyciszamy tylko per moduł (`[[tool.mypy.overrides]]`: pandas, jsonschema, psycopg2,
+docker, testcontainers); nowa biblioteka bez stubów = `types-*` albo wpis w override. Ruff ma
+RUF100 (martwe `noqa`).
+Workflow z `main_*.py` poza `ci.yml` synchronizuje `uv sync --frozen --no-dev` (CI-18);
+narzędzie przez `uvx` w workflowie ma dokładną wersję (CI-23).
 CI (job `quality`) uruchamia pytest dodatkowo z `--cov=src/domain --cov-branch --cov-fail-under=98`
 (CI-03). Próg tylko rośnie: ten sam numer w `[tool.coverage.report].fail_under` i w
 `COVERAGE_RATCHET` (`tests/test_quality_gate_sync.py`).
@@ -65,6 +76,11 @@ i `AnalyzeMarketUseCase`, więc nie ma już trzech list argumentów do zsynchron
 Węzeł grafu zwraca `AgentState`; nowy klucz stanu = pole w `AgentState`. LangGraph po
 cichu gubi klucz spoza schematu — pilnują tego mypy i
 `test_node_outputs_use_only_declared_state_keys` (ARCH-10).
+Repozytorium Fast Loopa to wąski `PredictionStorePort` (Protocol w `ports.py`, ARCH-32) z
+metodami wołanymi przez graf i `AnalyzeMarketUseCase`. Nowe wywołanie repozytorium w grafie =
+metoda dopisana do Protocolu z sygnaturą identyczną z `RepositoryPort`
+(`tests/application/test_prediction_store_port.py`). `LLMAdvisoryCouncil` to orkiestracja w
+`src/application/council_service.py` (ARCH-19).
 
 Analogicznie nowa sekcja maila = nowy moduł `src/application/report_<nazwa>.py`
 (renderery HTML i tekstu + obiekt `ReportSection`), jeden wpis w `REPORT_SECTIONS`
@@ -82,7 +98,12 @@ z równych wag to „watchlista”; etykiety rekomendacji i prefiks tematu są w
 `ReportAssembler.assemble` (`application/use_cases/assemble_report.py`) przez
 `dataclasses.replace`; pole z adaptera (np. portfel właściciela) dokłada
 `main_agent._report_inputs`. Zwarty mail cichego dnia (MAIL-35) = `COMPACT_REPORT_SECTIONS`;
-stopka ze źródłami danych i warunkami jest w każdej postaci maila.
+stopka ze źródłami danych i warunkami jest w każdej postaci maila. `llm_budget_breach` jest w
+`SHARED_CONTEXT_FIELDS` — czytają je banner limitów, sekcja kosztu i notka budżetu (FIN-36).
+Błąd symbolu w mailu (MAIL-32): `SymbolResult.error_category` (`ErrorCategory`,
+`application/errors.py`) i `error_provider` (`infrastructure/error_provider.provider_of`, hook
+`error_provider` w `RunFastLoopCycle`); `error_message` jest tylko do logów. Nowy adapter
+dostawcy = wpis w `PROVIDER_BY_MODULE`.
 
 `main_agent.py` zostaje DI rootem Fast Loopa: mapuje `Settings` na opcje use case'ów
 (`ReportFlags`, `CycleOptions`, `PublicScorecardOptions`), buduje adaptery i kanały
@@ -124,6 +145,9 @@ symboli publikuje jedną linię rootu Merkle'a na cykl (WIA-60). `main_agent.del
 Pracuj cyklem **Red → Green → Refactor**: najpierw test (który failuje), potem
 minimalna implementacja, na końcu porządki. Każdy port ma testy z mockami,
 każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
+Przed `scripts/merge.sh`, w worktree: `uv run python main_tools.py commit-policy` — każdy `fix:`
+na gałęzi zmienia `tests/` albo idzie po commicie `test:` (DOC-27); `fix(ci):` i `fix(docs):`
+są zwolnione.
 
 ## Konwencje testów
 
@@ -137,11 +161,15 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 - Mocki portów: `Mock(spec=SomePort)`.
 - Prawdziwe `Settings` w testach, nie `MagicMock`: `build_settings(**overrides)` z
   `tests/entrypoint_support.py` (rzuca na nieznane pole) albo `Settings(**NO_ENV_FILE, ...)`
-  z `tests/settings_kwargs.py` — mypy nie zna `_env_file`, więc bez `# type: ignore`.
+  z `tests/settings_kwargs.py` — mypy ma plugin `pydantic.mypy` (`init_typed`,
+  `init_forbid_extra`) i zna `_env_file`; `NO_ENV_FILE` zostaje wspólną konwencją testów.
   Wspólne fixture'y `settings` i `mock_external_clients` żyją w `tests/conftest.py`.
 - Stan bota i wyciszenia to osobne porty `BotStatePort` i `SymbolMutePort` (adapter
   `bot_store.py`, nie `RepositoryPort`); kontrakt w
   `test_supabase_repo_postgrest.py::TestBotStoreContract`.
+- Adapter Supabase buduje klienta przez `build_supabase_client` (`adapters/_supabase.py`, limit
+  PostgREST 15 s, NIEZ-35); testy patchują `<moduł>.build_supabase_client`. Token Finnhub idzie
+  nagłówkiem `X-Finnhub-Token` (`finnhub_auth_headers`, BEZ-15).
 - Payloady dostawców: `tests/fixtures/providers/` (TEST-16). Nowy parser adaptera = plik w
   kształcie prawdziwej odpowiedzi (bez kluczy i treści newsów) + test w
   `tests/infrastructure/test_provider_shapes.py`.
@@ -167,7 +195,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `prompts.py` — bajty modułów promptów wchodzą do `prompt_sha256` przepisu.
   Twardy limit USD doby i miesiąca UTC (FIN-25, `daily_llm_budget_usd`,
   `monthly_llm_budget_usd`) czyta `llm_calls` raz przed grafem (fail-open) i ustawia
-  `AgentGraphDeps.llm_budget_spent`.
+  `AgentGraphDeps.llm_budget_spent`. Koszt tygodnia (FIN-26) liczy domena
+  `summarize_weekly_cost` bez LLM i przed progiem próbki recapu; przy pominiętym recapie Slow
+  Loop wysyła sam rachunek tygodnia (za `cost_ledger_enabled` i `cycle_runs_enabled`).
 - **Cold-start**: snapshot ceny (`price_snapshots`) zapisuje węzeł TERMINALNY każdego
   ukończonego cyklu — `save_node` albo `ignore_node` (`_persist_price_snapshot`), nie
   `check_price_node` — żeby następny cykl miał punkt odniesienia. Cykl padły w połowie
@@ -204,7 +234,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   (NIEZ-31). Adapter HTTP woła `translated_get`, `raise_for_status_translated` i
   `json_payload` z `_http.py`, adapter SDK LLM — `as_port_error(exc, sdk_error_kind(exc))`;
   każda publiczna metoda `SupabaseRepository` tłumaczy `APIError` i błędy httpx dekoratorem
-  klasy `_translates_public_methods`.
+  klasy `_translates_public_methods`. Pętla ponowień i alert kwot adapterów LLM to
+  `llm/_retry.py` (`call_with_retry`, `RetryPolicy`) i `llm/_quota.py` (`QuotaEmitter`,
+  ARCH-29). Sesja `build_session()` daje żądaniu bez `timeout=` 30 s (TEST-31).
 - **Paper ledger (WIA-59)**: `paper_trades` jest append-only — save otwiera pozycję, reflect
   zamyka ją raz. `row_hash = sha256(canonicalize(wejście) + prev_hash)` liczy domena
   (`paper_ledger.py`); baza pilnuje liniowości i jednorazowego zamknięcia. Zmiana
@@ -217,7 +249,14 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   `purge_training_indices` (`domain/backtest.py`, ML-26). Każdy trening niesie
   `TrainingProvenance` (odcisk zbioru, parametry z jawnym `random_state`, wersja XGBoost, SHA
   kodu), zapis wag pisze sidecar `.json`, a `main_tools.py reproduce-training` sprawdza
-  odtworzenie (ML-22).
+  odtworzenie (ML-22). Granice foldów i ich wiersze treningu projektuje domena
+  (`walk_forward_folds`, `expanding_window_bounds`, ARCH-27); `MLPredictionPort.train` i
+  `walk_forward_report` przyjmują gotowe `folds` oraz wiersze cech bez DataFrame (ML-55), a
+  `BacktestUseCase` liczy foldy sam.
+- **Track Record (WIA-82, WIA-68)**: wiersz reguły referencyjnej to wyłącznie agregat
+  `get_reference_outcomes` w prywatnym mailu; scorecard publiczny jest bez niego do zgody
+  Finnhub i CoinGecko. PSR/DSR od 30 okresów krzywej, n_trials = `count_recipe_versions` za
+  `recipe_version_enabled`.
 - **Shadow mode wariantu promptu/modelu (EXP-26)**: wariant (`shadow_prompt_variant`, flaga
   `shadow_prompt_variant_enabled`, migracja 083) wołany tylko dla stałej podpróbki
   (`in_shadow_sample`) za bramką; wynik wyłącznie do `shadow_predictions`
@@ -266,11 +305,20 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
   Mapę z kolumną Migration tabeli flag w `docs/configuration.md` pilnuje
   `tests/test_feature_requirements_wiring.py`. Nowa migracja = też wiersz w
   `MIGRATION_PROBES` w `scripts/prod-state-check.sh` (`tests/test_prod_state_probes.py`).
+- Nowa tabela albo widok = wiersz w tabeli Relations w `docs/data-and-access.md`
+  (`tests/test_data_and_access_relations.py`, DOC-37, bez Dockera). Runbook odtworzenia kopii
+  dowodów (`docs/running-locally.md`) wykonuje test kontenerowy `TestEvidenceRestoreDrill`
+  (NIEZ-48) — zmiana kroków runbooka = zmiana testu.
 
 ## Sekrety
 
 - **Nigdy** nie commituj `.env`. Do `.env.example` wpisuj wyłącznie placeholdery.
 - Klucze API w GitHub Actions: jako Repository Secrets (workflowy czytają `${{ secrets.* }}`).
+  Wyjątek: `SUPABASE_DB_URL` to sekret środowiska `production-db` (BEZ-22), nie repo;
+  `scripts/gh-secrets-*.sh` znają go z `ENVIRONMENT_SECRETS`.
+- Pozycje, P/L i adresy e-mail nigdy nie trafiają do promptu ani embeddingu. Inwentarz jest w
+  `docs/data-flows.md`, strażnik w `tests/test_llm_private_data_guard.py` (BEZ-32). Nowe pole
+  promptu = wiersz w tabeli `docs/data-flows.md`.
 - Nowy sekret (w workflowie albo w `.env.example`) = wiersz w tabeli „Secrets inventory and
   rotation” w `SECURITY.md` (rola, konto, rotacja, bez wartości i prefiksu klucza);
   pilnuje tego `tests/test_secrets_inventory.py` (BEZ-24).
@@ -310,10 +358,9 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 
 ## Znane kompromisy
 
-- `agent_graph.py` ma jeden wąski inline `# type: ignore[arg-type]` przy węźle
-  `fetch_fundamentals` (`workflow.add_node`) — typing stubs LangGraph 1.x typują
-  węzły jako `_Node[Never]` i nie inferują `StateGraph[AgentState]`. W `[tool.mypy]`
-  nie ma per-file override'u. Runtime jest poprawny; nie usuwaj ignore'a bez weryfikacji.
+- `agent_graph.py` nie ma `# type: ignore`: każdy węzeł, także `fetch_fundamentals`,
+  rejestrujemy lambdą (`lambda s: node(s)`). Goła funkcja węzła w `workflow.add_node` daje
+  błąd arg-type stubów LangGraph 1.x (`_Node[Never]`) (ARCH-20).
 
 ## Lokalne koncepcje
 

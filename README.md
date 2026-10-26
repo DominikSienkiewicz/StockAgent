@@ -50,6 +50,10 @@ Each claim links the file that backs it, and each of those runs in CI.
 - **The docs cannot point at nothing.** → [`tests/test_markdown_links.py`](tests/test_markdown_links.py)
   → every relative link in tracked Markdown must resolve, in the same pytest gate that runs
   locally and in CI.
+- **Every `fix:` commit carries its regression test.** →
+  [`src/tools/commit_policy.py`](src/tools/commit_policy.py) → `uv run python main_tools.py
+  commit-policy` checks the branch before `scripts/merge.sh`; the rule applies from 2026-10-26
+  and older history is not rewritten.
 
 ## Invariants under test
 
@@ -87,7 +91,8 @@ live APIs (paid LLM calls, a real email): they skip without keys, the CI gate ne
 them, and only the manual Integration smoke workflow does, with its own keys. `containers`
 marks the tests that need Docker: CI runs them as a separate step and fails when no Docker
 daemon answers. On top of the plain run, CI measures the branch coverage of `src/domain`
-against a floor that only rises.
+against a floor that only rises. CI also lints the workflows and shell scripts (actionlint,
+zizmor, shellcheck) and scans `uv.lock` with osv-scanner on lockfile changes and weekly.
 
 The layers are tested where they live:
 
@@ -232,6 +237,7 @@ sample at 1280 × 640.
 | [The report email](docs/report-email.md) | Section-by-section anatomy of what lands in the inbox |
 | [Running it](docs/running-locally.md) | Stack, prerequisites, local setup, database migrations, build commands, GitHub Actions, secret management |
 | [Configuration](docs/configuration.md) | Every `Settings` field with its default, a tested table of every flag (default, `config.toml`, migration, secret, paid calls, status), and what each flag does and costs |
+| [Data flows to LLM providers](docs/data-flows.md) | What each prompt and embedding sends to OpenAI or Anthropic, from which source, and the providers' retention terms; positions and e-mail addresses never reach a prompt |
 | [Data and access](docs/data-and-access.md) | Every table and view with its data class and who reads and writes it, the Supabase keys, retention, and the Row Level Security rollout |
 | [Reference signal protocol](docs/reference-protocol-v1.md) | The frozen rule of the free weekly benchmark the paid LLM has to beat (`reference-v1`) |
 | [Decision log](docs/decisions.md) | The roadmap items `R-N` that the code and `config.toml` refer to, and the decisions behind the architecture, each with its commit and the test that holds it, plus the rationale behind each feature flag |
