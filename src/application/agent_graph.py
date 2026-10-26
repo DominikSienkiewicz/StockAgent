@@ -3004,13 +3004,10 @@ def create_agent_graph(deps: AgentGraphDeps) -> StateGraph[AgentState]:
     if deps.fundamentals_port is not None:
         # reflect → fetch_fundamentals → bramka volatility.
         # Węzeł fundamentów jest PRZED bramką — czytanie cache jest darmowe.
-        workflow.add_node(
-            "fetch_fundamentals",
-            # #17: LangGraph 1.x stubs typują węzły jako `_Node[Never]` i nie
-            # inferują schematu opartego o TypedDict (StateGraph[AgentState]).
-            # Runtime jest poprawny; wąski ignore zamiast szerokiego override.
-            _build_fetch_fundamentals_node(deps.fundamentals_port),  # type: ignore[arg-type]
-        )
+        # ARCH-20: lambdą jak pozostałe węzły — stuby LangGraph inferują wtedy węzeł
+        # `StateGraph[AgentState]` i nie trzeba wąskiego `type: ignore`.
+        fetch_fundamentals = _build_fetch_fundamentals_node(deps.fundamentals_port)
+        workflow.add_node("fetch_fundamentals", lambda s: fetch_fundamentals(s))
         workflow.add_edge("reflect", "fetch_fundamentals")
         # fetch_fundamentals → bramka volatility: dopiero TU decydujemy, czy robić
         # nową prognozę.
