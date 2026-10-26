@@ -142,6 +142,16 @@ def test_dependabot_groups_weekly_updates_for_actions_and_uv() -> None:
         )
 
 
+def test_dependabot_waits_two_weeks_before_proposing_a_release() -> None:
+    """CI-23 (zizmor dependabot-cooldown): świeżo wydana wersja bywa przejętym albo wycofanym
+    wydaniem; jak przy ręcznym przypinaniu (wersja ≥ 2 tygodnie) Dependabot czeka 14 dni."""
+    spec = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+
+    for update in spec["updates"]:
+        cooldown = update.get("cooldown") or {}
+        assert cooldown.get("default-days", 0) >= 14, update["package-ecosystem"]
+
+
 # NIEZ-27: ręczne DB Migrate w trakcie cyklu (022 robi DROP i CREATE ml_feature_store)
 # dawało błędy PGRST w połowie cyklu albo kolizję z odświeżeniem feature store w Slow
 # Loopie. Każdy job piszący do bazy bierze tę samą grupę, a kolejka nie anuluje nikogo.

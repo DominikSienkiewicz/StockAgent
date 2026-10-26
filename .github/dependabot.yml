@@ -2,6 +2,8 @@
 # z uv.lock. Jedna grupa na ekosystem = jeden PR tygodniowo zamiast PR-a na pakiet.
 # PR-y Dependabota nie dostają sekretów repo, więc job SonarCloud się w nich pomija
 # (brak SONAR_TOKEN), a bramka ruff + mypy + pytest biegnie normalnie.
+# Cooldown 14 dni (CI-23, zizmor dependabot-cooldown): wydanie młodsze niż dwa tygodnie
+# czeka, jak przy ręcznym przypinaniu wersji.
 # Strażnik: tests/test_workflow_policy.py.
 version: 2
 updates:
@@ -11,6 +13,8 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    cooldown:
+      default-days: 14
     groups:
       actions:
         patterns: ["*"]
@@ -21,6 +25,8 @@ updates:
       interval: weekly
     commit-message:
       prefix: build
+    cooldown:
+      default-days: 14
     groups:
       python-deps:
         patterns: ["*"]
