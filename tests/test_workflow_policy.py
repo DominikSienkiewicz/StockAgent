@@ -528,8 +528,10 @@ def test_harden_runner_never_blocks_traffic() -> None:
 
 # CI-18: job z entry-pointem (`python main_*.py`) i jego sekretami nie potrzebuje pytesta,
 # mypy, ruffa ani testcontainers, więc kod z grupy dev nie trafia do środowiska z kluczami.
-# Bramka (ci.yml) i smoke (pytest) synchronizują grupę dev, bo jej używają.
+# Bramka (ci.yml) i joby, które same uruchamiają pytest (smoke, mutmut TEST-35), synchronizują
+# grupę dev, bo jej używają.
 _ENTRYPOINT_RUN = re.compile(r"\bpython\s+main_\w+\.py\b")
+_RUNS_PYTEST = re.compile(r"\bpytest\b")
 EXPECTED_ENTRYPOINT_WORKFLOWS = frozenset(
     {
         "bot_poll.yml",
@@ -543,13 +545,16 @@ EXPECTED_ENTRYPOINT_WORKFLOWS = frozenset(
 
 
 def _entrypoint_sync_steps() -> list[tuple[str, str, str]]:
-    """(workflow, job, komenda) każdego `uv sync` w jobie, który uruchamia `main_*.py`."""
+    """(workflow, job, komenda) każdego `uv sync` w jobie, który uruchamia `main_*.py`
+    i nie uruchamia pytesta."""
     found: list[tuple[str, str, str]] = []
     for workflow, spec in _workflow_specs().items():
         if workflow == "ci.yml":
             continue
         for name, job in _jobs(spec).items():
             runs = [str(step.get("run", "")) for step in job.get("steps", [])]
+            if any(_RUNS_PYTEST.search(run) for run in runs):
+                continue
             if any(_ENTRYPOINT_RUN.search(run) for run in runs):
                 found.extend((workflow, name, run) for run in runs if "uv sync" in run)
     return found
