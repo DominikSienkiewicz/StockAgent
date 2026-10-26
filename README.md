@@ -153,6 +153,26 @@ that renders without any key and the reviewer's tour above; and only then subscr
 the GDPR and terms-of-service work they need. The public hit rate may turn out weak. It gets
 published anyway: a weak result anyone can check says more than a strong one nobody can.
 
+## Non-goals
+
+Four boundaries are deliberate, each for its own reason:
+
+- **No order execution.** The agent writes a recommendation and scores it later; the
+  decision and the trade stay with a person. Placing orders would turn an educational
+  project into an automated trading system with the regulatory weight that carries, and
+  would mix execution into a track record that is meant to measure predictions.
+- **No real-time streaming.** The loop runs once per trading day by design: the volatility
+  gate, the paid-call ceiling of a cycle and the weekly budget are sized for that, and the
+  free hourly price-shock check already covers sharp moves between runs. Streaming would
+  need a paid market-data feed and paid LLM calls on every tick.
+- **No scraping of premium sources.** Every source is an API used under its own terms
+  ([data sources and terms](docs/how-it-works.md#data-sources-and-terms)). Scraping a
+  paywalled source would break those terms and the redistribution limits the email keeps.
+- **No multi-tenant product, for now.** The subscriber fan-out exists behind a flag that
+  stays off: email to other people needs written approval from Finnhub and Alpha Vantage,
+  human review under the Anthropic and OpenAI usage policies, and GDPR work. It is
+  deferred, not rejected (see [Who this is for](#who-this-is-for)).
+
 ## 🧠 The Vision: Signal over Noise
 
 In the era of AI-driven information overload, a single price tick is a useless signal — what
