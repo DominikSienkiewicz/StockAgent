@@ -25,7 +25,7 @@ from typing import Any, NamedTuple
 
 from src.application.agent_graph import AgentState
 from src.application.alpha_signals import AlphaSignals
-from src.application.errors import PortError
+from src.application.errors import PortError, error_category_of
 from src.application.ports import NewsPort, SentimentPort
 from src.application.report_builder import SymbolResult, to_symbol_result
 from src.application.use_cases.analyze_market import AnalyzeMarketUseCase, PaidPhase
@@ -310,7 +310,11 @@ class RunFastLoopCycle:
             logger.exception("Failed to process symbol %s", symbol)
         result = to_symbol_result(symbol, None, error=error)
         # NIEZ-22: typ wyjątku osobno — step summary liczy błędy per klasa, bez komunikatu.
-        return ProcessedSymbol(replace(result, error_type=type(exc).__name__), True, None, None)
+        # MAIL-32: kategoria z taksonomii portów — mail pokazuje ją zamiast komunikatu.
+        failed = replace(
+            result, error_type=type(exc).__name__, error_category=error_category_of(exc)
+        )
+        return ProcessedSymbol(failed, True, None, None)
 
     def _run_parallel(self, eligible: Sequence[str]) -> CycleOutcome:
         """Ścieżka równoległa: concurrency > 1 ORAZ contagion off (contagion #5 zależy

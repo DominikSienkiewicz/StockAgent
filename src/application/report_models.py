@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.application.decision_receipt import DecisionReceipt
+from src.application.errors import ErrorCategory
 from src.domain.conformal import MoveInterval
 from src.domain.council import CouncilVerdict
 from src.domain.cycle_maturity import SkipReason
@@ -84,6 +85,9 @@ class SymbolResult:
     # NIEZ-22: nazwa klasy wyjątku symbolu, który padł — agregat w step summary.
     # Sama nazwa klasy (bez komunikatu), więc może trafić na publiczną stronę runu.
     error_type: str | None = None
+    # MAIL-32: kategoria błędu z taksonomii portów — tę (nie `error_message`) widzi
+    # czytelnik maila. None = wynik spoza przebiegu symboli (traktowany jak UNKNOWN).
+    error_category: ErrorCategory | None = None
     council_verdict: CouncilVerdict | None = None
     valuation: ValuationSection | None = None
     # Q5: analogi RAG użyte w tym cyklu (precedent receipts). Pusta lista =
