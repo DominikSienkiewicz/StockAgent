@@ -83,6 +83,40 @@ jobs:
           uv run --frozen --no-build --no-sync python main_tools.py junit-summary
           test-results/unit.xml test-results/containers.xml >> "$GITHUB_STEP_SUMMARY"
 
+  lint-infra:
+    name: Lint workflows and shell scripts
+    # CI-23: analiza statyczna workflowów z sekretami i skryptów bash operujących na sekretach
+    # repo. Narzędzia z PyPI przez `uvx` w dokładnych wersjach (wydanych ≥ 2 tygodnie przed
+    # przypięciem); podbijaj świadomie, ostrzeżenia spłacaj, nie wyciszaj.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: ⚡ Install uv
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: "0.9.22"
+
+      - name: 🧹 actionlint (workflow syntax + shellcheck of run blocks)
+        # `--with shellcheck-py`: actionlint woła shellcheck z PATH, więc bloki `run:`
+        # sprawdza ta sama przypięta wersja co skrypty niżej, nie ta z obrazu runnera.
+        run: uvx --from actionlint-py==1.7.12.25 --with shellcheck-py==0.11.0.1 actionlint
+
+      - name: 🛡️ zizmor (workflow security audit)
+        # Token tylko do odczytu włącza audyty online: commit-podróbka pod przypiętym SHA,
+        # znane podatności akcji, komentarz wersji niezgodny z SHA.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor@1.30.1 .github/workflows
+
+      - name: 🐚 shellcheck (scripts/)
+        run: uvx --from shellcheck-py==0.11.0.1 shellcheck scripts/*.sh
+
   sonarcloud:
     name: SonarCloud
     runs-on: ubuntu-latest

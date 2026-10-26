@@ -271,6 +271,9 @@ jobs:
           ref: attestation-log
           path: public/attestation
           fetch-depth: 0
+          # CI-23: jawnie — jedyny checkout, który zostawia token w .git/config, bo krok
+          # niżej nim pushuje; job nie wysyła żadnego artefaktu (zizmor: artipacked).
+          persist-credentials: true
 
       - name: 📥 Download attestation ledger
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

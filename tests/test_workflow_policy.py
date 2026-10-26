@@ -758,3 +758,72 @@ def test_dependency_audit_scans_the_lockfile_with_a_verified_binary() -> None:
     assert re.search(r"osv-scanner\S*\s+scan\s+source\s+--lockfile\s+uv\.lock\b", runs), runs
     assert "sha256sum --check --strict" in runs, "binarka osv-scanner bez sprawdzenia sumy"
     assert '>> "$GITHUB_STEP_SUMMARY"' in runs, "wynik skanu poza podsumowaniem joba"
+
+
+# CI-23: narzędzie z PyPI uruchamiane przez `uvx` (actionlint, zizmor, shellcheck, mutmut)
+# wykonuje kod w jobie tak samo jak akcja, więc ma dokładną wersję (`pkg==x.y.z` albo
+# `pkg@x.y.z`) — inaczej każdy run brałby najnowsze wydanie.
+_EXACT_PIN = re.compile(r"^[A-Za-z0-9._-]+(?:==|@)\d+(?:\.\d+)+$")
+
+
+def _uvx_package_specs(command: str) -> list[str]:
+    """Pakiety każdego `uvx` w komendzie: `--from X`, `--with X` albo pierwszy argument."""
+    tokens = shlex.split(command.replace("\\\n", " "))
+    specs: list[str] = []
+    for start in (index for index, token in enumerate(tokens) if token == "uvx"):
+        rest = tokens[start + 1 :]
+        explicit = [
+            rest[i + 1] for i, token in enumerate(rest[:-1]) if token in ("--from", "--with")
+        ]
+        positional = [
+            token
+            for i, token in enumerate(rest)
+            if not token.startswith("-")
+            and (i == 0 or rest[i - 1] not in ("--from", "--with", "--python"))
+        ]
+        specs.extend(explicit if "--from" in rest else [*explicit, *positional[:1]])
+    return specs
+
+
+def test_uvx_spec_reader_sees_from_with_and_bare_specs() -> None:
+    assert _uvx_package_specs("uvx zizmor@1.30.1 --offline .") == ["zizmor@1.30.1"]
+    assert _uvx_package_specs(
+        "uvx --python 3.12 --from mutmut==2.5.1 mutmut run \\\n  --no-progress"
+    ) == ["mutmut==2.5.1"]
+    assert _uvx_package_specs("uvx --from a==1.0 --with b==2.0 a") == ["a==1.0", "b==2.0"]
+    assert _uvx_package_specs("uvx zizmor .") == ["zizmor"]
+
+
+def test_uvx_tools_in_workflows_are_pinned_to_an_exact_version() -> None:
+    specs = [
+        (workflow, spec)
+        for workflow, name in _job_ids()
+        for step in _jobs(_workflow_specs()[workflow])[name].get("steps", [])
+        for spec in _uvx_package_specs(str(step.get("run", "")))
+    ]
+
+    assert {spec.split("=")[0].split("@")[0] for _, spec in specs} >= {
+        "actionlint-py",
+        "zizmor",
+        "shellcheck-py",
+        "mutmut",
+    }
+    unpinned = [(workflow, spec) for workflow, spec in specs if not _EXACT_PIN.match(spec)]
+    assert unpinned == [], f"uvx bez dokładnej wersji: {unpinned}"
+
+
+# CI-23: zizmor (artipacked) traktuje checkout bez `persist-credentials` jako pozostawiony
+# token. Każdy checkout deklaruje więc zamiar jawnie: false, a true tylko tam, gdzie job
+# pushuje tym tokenem (`publish-attestation-ledger`).
+@pytest.mark.parametrize(("workflow", "name"), _job_ids())
+def test_every_checkout_declares_persist_credentials(workflow: str, name: str) -> None:
+    job = _jobs(_workflow_specs()[workflow])[name]
+
+    for checkout in _checkouts(job):
+        declared = dict(checkout.get("with") or {}).get("persist-credentials")
+        assert isinstance(declared, bool), (
+            f"{workflow}:{name}: checkout bez jawnego `persist-credentials`"
+        )
+        assert declared is False or (workflow, name) in _pushing_jobs(), (
+            f"{workflow}:{name}: `persist-credentials: true` w jobie, który nie pushuje"
+        )

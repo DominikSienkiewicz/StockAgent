@@ -7,10 +7,12 @@ skipped i failures do podsumowania joba — w commitach linkujemy run zamiast li
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parent.parent
@@ -58,3 +60,33 @@ def test_pytest_steps_emit_junit() -> None:
     assert "!cancelled()" in str(summary.get("if", "")), "podsumowanie także po czerwonym pytest"
     assert all(str(report) in run for report in reports), run
     assert '>> "$GITHUB_STEP_SUMMARY"' in run
+
+
+# CI-23: workflowy z sekretami i skrypty bash operujące na sekretach repo nie miały żadnej
+# analizy statycznej. Job `lint-infra` uruchamia actionlint (składnia workflowów i shellcheck
+# bloków `run:`), zizmor (template injection, uprawnienia, nieprzypięte akcje, artipacked)
+# i shellcheck skryptów — każde narzędzie w przypiętej wersji (pilnuje test_workflow_policy).
+LINT_INFRA_TOOLS = ("actionlint", "zizmor", "shellcheck")
+SECRET_SCRIPTS = ("scripts/gh-secrets-check.sh", "scripts/gh-secrets-sync.sh")
+
+
+def _lint_infra_runs() -> str:
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    assert "lint-infra" in jobs, "ci.yml bez joba lint-infra"
+    return "\n".join(str(step.get("run", "")) for step in jobs["lint-infra"]["steps"])
+
+
+@pytest.mark.parametrize("tool", LINT_INFRA_TOOLS)
+def test_lint_infra_runs_each_linter(tool: str) -> None:
+    assert re.search(rf"\b{tool}\b", _lint_infra_runs()), f"lint-infra nie uruchamia {tool}"
+
+
+def test_lint_infra_shellchecks_the_secret_scripts() -> None:
+    runs = _lint_infra_runs()
+    shellchecked = {
+        str(path.relative_to(ROOT))
+        for path in sorted((ROOT / "scripts").glob("*.sh"))
+        if "scripts/*.sh" in runs or str(path.relative_to(ROOT)) in runs
+    }
+
+    assert set(SECRET_SCRIPTS) <= shellchecked, runs
