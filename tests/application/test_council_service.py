@@ -200,7 +200,7 @@ class TestFallbacks:
 
 
 class TestConsensusDerivedFromVotes:
-    """Finding #3: consensus_strength + final_recommendation muszą pochodzić
+    """Audyt z czerwca 2026: consensus_strength + final_recommendation muszą pochodzić
     z REALNYCH głosów inwestorów, nie z liczby wymyślonej przez chairman-LLM."""
 
     def _council_3_personas(self, llm_port: Mock) -> LLMAdvisoryCouncil:
@@ -272,12 +272,12 @@ class TestConsensusDerivedFromVotes:
         result = council.analyze("AAPL", _make_input())
 
         assert result.summary == "Większość radzi kupować."
-        # dissenting_views to teraz tuple (frozen value object — finding #32).
+        # dissenting_views to teraz tuple (frozen value object, audyt z czerwca 2026).
         assert result.dissenting_views == ("Soros: zbyt ryzykowne",)
 
 
 class TestConfidenceClamp:
-    """Finding #20: confidence dostarczane przez LLM musi być przycięte do
+    """Audyt z czerwca 2026: confidence dostarczane przez LLM musi być przycięte do
     [0,1] na granicy parsowania. Model dryfujący na skalę 0-100 nie może
     podbijać każdej opinii do HIGH (progi confidence_label to 0.75/0.5)."""
 
@@ -322,7 +322,7 @@ class TestRecommendationParsing:
 
 
 class TestPersonaCap:
-    """Finding #11: liczba wywołań LLM ograniczona górnym capem person."""
+    """Audyt z czerwca 2026: liczba wywołań LLM ograniczona górnym capem person."""
 
     def _personas(self, count: int) -> tuple[InvestorPersona, ...]:
         return tuple(
@@ -388,7 +388,7 @@ def _personas(names: tuple[str, ...]) -> tuple[InvestorPersona, ...]:
 
 
 class TestAdaptivePersonaWeighting:
-    """Feature #3: weights_provider waży głosy person ich historyczną
+    """R-21: weights_provider waży głosy person ich historyczną
     trafnością. Brak providera → werdykt jak dziś (wagi 1.0)."""
 
     def _opinion(self, rec: str, conf: float = 0.5) -> dict[str, Any]:
@@ -488,7 +488,7 @@ class TestAdaptivePersonaWeighting:
 
 
 class TestDebateMode:
-    """Feature #1: jedna runda rewizji, gdy round-1 jest podzielone
+    """R-19: jedna runda rewizji, gdy round-1 jest podzielone
     (jednocześnie BUY i SELL). N round-1 + N rewizji + 1 chairman = 2N+1."""
 
     def _split_side_effect(self, llm_port: Mock, n: int) -> None:

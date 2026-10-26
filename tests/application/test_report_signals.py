@@ -115,7 +115,7 @@ class TestBuildTradeSignalsSizeBand:
 
 
 class TestCalibratedConfidenceInSignalRanking:
-    """#9 — historyczny hit-rate kubełka pewności koryguje `strength`, które
+    """R-9 — historyczny hit-rate kubełka pewności koryguje `strength`, które
     steruje rankingiem "🎯 Najsilniejsze sygnały". Render-only, bez persystencji."""
 
     @staticmethod

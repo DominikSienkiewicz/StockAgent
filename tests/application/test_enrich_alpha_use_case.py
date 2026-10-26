@@ -98,7 +98,7 @@ def test_graceful_when_a_port_raises() -> None:
 
 
 class TestEarningsPrefetchDedup:
-    """#6 — bramka earnings pobiera EarningsEvent PRZED grafem. Żeby nie płacić
+    """R-6 — bramka earnings pobiera EarningsEvent PRZED grafem. Żeby nie płacić
     drugi raz za to samo AV-wywołanie, orkiestrator wstrzykuje pobrany event
     do `enrich`, a ten pomija własny fetch."""
 

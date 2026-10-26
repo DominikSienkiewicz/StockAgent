@@ -171,7 +171,7 @@ def _setup_full_analysis_mocks(
 
 # ---------------------------------------------------------------------------
 # Price snapshot — zapisuje go węzeł TERMINALNY (save / ignore) każdego
-# UKOŃCZONEGO cyklu, nie check_price (cold-start deadlock fix, #6). Cykl, który
+# UKOŃCZONEGO cyklu, nie check_price (cold-start deadlock fix). Cykl, który
 # padł w połowie, i symbol odcięty sufitem budżetu (FIN-12) nie zostawiają snapshotu.
 # ---------------------------------------------------------------------------
 
@@ -225,7 +225,7 @@ class TestPriceSnapshot:
         ml_port: Mock,
         llm_port: Mock,
     ) -> None:
-        # #6: idempotencja. Snapshot ceny musi być zapisany dopiero w węźle
+        # Idempotencja (audyt z czerwca 2026). Snapshot ceny musi być zapisany dopiero w węźle
         # TERMINALNYM (save / ignore), NIE na starcie check_price. Gdy cykl
         # pada w połowie (np. predict_node rzuca), żaden snapshot nie może
         # zostać zapisany — inaczej retry odczytałby świeży snapshot padłej
@@ -238,7 +238,7 @@ class TestPriceSnapshot:
             ml_port,
             llm_port,
         )
-        # predict_node pada twardo (ML niezależny od guardu LLM z #12) —
+        # predict_node pada twardo (ML niezależny od guardu błędu LLM) —
         # symuluje crash PO check_price, PRZED save.
         ml_port.predict.side_effect = RuntimeError("XGBoost segfault")
 
@@ -261,7 +261,7 @@ class TestPriceSnapshot:
         market_port: Mock,
         repository_port: Mock,
     ) -> None:
-        # #15: przejściowy błąd Supabase na zapisie snapshotu (teraz w węźle
+        # Audyt z czerwca 2026: przejściowy błąd Supabase na zapisie snapshotu (teraz w węźle
         # terminalnym) nie może wywalić grafu. Cykl kończy się normalnie.
         market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
         repository_port.save_price_snapshot.side_effect = RuntimeError("Supabase 503")
@@ -281,7 +281,7 @@ class TestPriceSnapshot:
         ml_port: Mock,
         llm_port: Mock,
     ) -> None:
-        # #15: jak wyżej, ale dla cyklu z pełną analizą (save_node).
+        # Jak wyżej, ale dla cyklu z pełną analizą (save_node).
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
         _setup_full_analysis_mocks(
             sentiment_port,
@@ -745,7 +745,7 @@ class TestReflectMistakeCategory:
 
 
 # ---------------------------------------------------------------------------
-# #16 — paid analyze_mistake bounded by volatility gate; cheap bookkeeping
+# Audyt z czerwca 2026 — paid analyze_mistake bounded by volatility gate; cheap bookkeeping
 #        (accuracy/trend/update) runs ALWAYS, regardless of current volatility.
 # ---------------------------------------------------------------------------
 
@@ -778,7 +778,7 @@ class TestReflectMistakeDiagnosisGatedByVolatility:
         final = workflow.compile().invoke(_initial_state("100.0"))
 
         assert final["status"] == "ignored"
-        # PŁATNE LLM pominięte — sedno #16.
+        # PŁATNE LLM pominięte — sedno tej reguły.
         llm_port.analyze_mistake.assert_not_called()
         # Tania księgowość WYKONANA mimo niskiej zmienności.
         repository_port.update_prediction_accuracy.assert_called_once()
@@ -825,7 +825,7 @@ class TestReflectMistakeDiagnosisGatedByVolatility:
         llm_port: Mock,
         graph_ports: GraphPorts,
     ) -> None:
-        # #16 reużywa _pick_threshold: dla CRYPTO bramka diagnozy używa
+        # Bramka diagnozy reużywa _pick_threshold: dla CRYPTO bramka diagnozy używa
         # crypto_threshold. prev=100, current=97 → |Δ|=3%. Akcje (2%) by
         # przepuściły, ale crypto_threshold=5% → diagnoza pominięta.
         from src.domain.asset import Asset
@@ -1125,7 +1125,7 @@ class TestSelfReflectionOnCorrectPrediction:
 
 
 # ---------------------------------------------------------------------------
-# #14 — instrumentacja: timing per-node + jawny log każdego płatnego wywołania
+# Instrumentacja (audyt z czerwca 2026): timing per-node + jawny log każdego płatnego wywołania
 # ---------------------------------------------------------------------------
 
 
@@ -1265,7 +1265,7 @@ class TestSentimentWithNullValues:
 
 
 # ---------------------------------------------------------------------------
-# #12-guard — predict_node degraduje gracefully gdy llm_port.analyze rzuca
+# Guard z audytu z czerwca 2026 — predict_node degraduje gracefully gdy llm_port.analyze rzuca
 # ---------------------------------------------------------------------------
 
 
@@ -1405,7 +1405,7 @@ class TestPredictNodeLlmGuard:
 
 
 # ---------------------------------------------------------------------------
-# #21 — walidacja trend_direction z LLM przed mapowaniem na sygnał ML
+# Audyt z czerwca 2026 — walidacja trend_direction z LLM przed mapowaniem na sygnał ML
 # ---------------------------------------------------------------------------
 
 
@@ -1642,7 +1642,7 @@ class TestTrendDirectionValidation:
         ml_port: Mock,
         llm_port: Mock,
     ) -> None:
-        # Brak pola → SIDEWAYS bez flagi (reguła #21). NULL w predicted_trend
+        # Brak pola → SIDEWAYS bez flagi (walidacja trend_direction). NULL w predicted_trend
         # wywracał później reflect przy TrendDirection(...).
         _, saved = self._run_with_analysis(
             workflow,
@@ -1793,7 +1793,7 @@ class TestVolatilityBelowThreshold:
         repository_port: Mock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # #13: decyzja bramki volatility musi być widoczna w logach (wcześniej
+        # Audyt z czerwca 2026: decyzja bramki volatility musi być widoczna w logach (wcześniej
         # cisza — niemożliwe było odróżnienie "ignore z premedytacją" od buga).
         market_port.get_current_price.return_value = Money(Decimal("99.0"))  # -1%
         with caplog.at_level(logging.INFO, logger="src.application.agent_graph"):
@@ -1817,7 +1817,7 @@ class TestVolatilityBelowThreshold:
         llm_port: Mock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # #13: decyzja "przepuść" też loguje się (symetria z "ignore").
+        # Decyzja "przepuść" też loguje się (symetria z "ignore").
         market_port.get_current_price.return_value = Money(Decimal("90.0"))  # -10%
         _setup_full_analysis_mocks(
             sentiment_port,
@@ -2419,7 +2419,7 @@ class TestTrendCorrectnessPersisted:
 
 
 # ---------------------------------------------------------------------------
-# Embedding podsumowania newsów → pgvector (#4)
+# Embedding podsumowania newsów → pgvector
 # ---------------------------------------------------------------------------
 
 
@@ -2519,7 +2519,7 @@ class TestEmbeddingPersistence:
 
 
 # ---------------------------------------------------------------------------
-# RAG retrieval (#7) — embedding newsów wykorzystany do wstrzyknięcia
+# RAG retrieval — embedding newsów wykorzystany do wstrzyknięcia
 # podobnych historycznych sytuacji do promptu predykcji.
 # ---------------------------------------------------------------------------
 
@@ -3062,7 +3062,7 @@ class TestProvenanceSignals:
 
 
 # ---------------------------------------------------------------------------
-# #6 — Tool-use research agent: na NAJWIĘKSZYCH ruchach (osobny, wyższy próg)
+# R-24 — Tool-use research agent: na NAJWIĘKSZYCH ruchach (osobny, wyższy próg)
 # predict_node przełącza główną analizę na pętlę tool-use (ToolUseLLMPort),
 # która pozwala modelowi dociągnąć read-only toole (fundamenty/makro) przed
 # werdyktem. Poniżej progu tool-use — zwykły llm_port.analyze (FinOps).
@@ -3374,7 +3374,7 @@ class TestToolUseResearchAgent:
         graph_ports: GraphPorts,
     ) -> None:
         # Pętla tool-use rzuca (np. cap rund + zła odpowiedź) → predict_node
-        # degraduje do neutralnej analizy + flagi, jak guard #12. Brak crashu.
+        # degraduje do neutralnej analizy + flagi, jak guard błędu LLM. Brak crashu.
         tool_use_port = Mock(spec=ToolUseLLMPort)
         tool_use_port.analyze_with_tools.side_effect = RuntimeError("tool loop boom")
         workflow = create_agent_graph(
@@ -3584,7 +3584,7 @@ class TestVectorMemory:
 
 
 class TestEarningsThresholdGate:
-    """#6 — mnożnik earnings zacieśnia bramkę volatility i mnoży się
+    """R-6 — mnożnik earnings zacieśnia bramkę volatility i mnoży się
     z mnożnikiem reżimu. Oba są >= 1.0, więc bramka może się tylko zacieśnić."""
 
     @staticmethod
@@ -3634,7 +3634,7 @@ class TestEarningsThresholdGate:
 
 
 class TestDecisionReceipts:
-    """#13 — persystowany audit trail predykcji (migracja 020).
+    """R-13 — persystowany audit trail predykcji (migracja 020).
 
     Flaga `receipts_enabled` NIE jest ozdobnikiem: nowy klucz w rekordzie przed
     zaaplikowaniem migracji powoduje PGRST204 i kładzie zapis CAŁEJ predykcji.
@@ -4105,7 +4105,7 @@ class TestRecipeVersionColumn:
 
 
 class TestFormatAnalogCarriesIdentity:
-    """#13 — RPC zwraca `id` i `similarity`, a `_format_analog` je gubiło.
+    """R-13 — RPC zwraca `id` i `similarity`, a `_format_analog` je gubiło.
     Bez nich kwit nie pozwala zaudytować, KTÓRY analog stał za predykcją."""
 
     def test_precedent_keeps_id_and_similarity(self) -> None:
@@ -4128,7 +4128,7 @@ class TestFormatAnalogCarriesIdentity:
 
 
 class TestImpliedEdge:
-    """#18 — edge vs rynek opcji. Fetch opcji siedzi w `_predict_node`, czyli
+    """R-18 — edge vs rynek opcji. Fetch opcji siedzi w `_predict_node`, czyli
     NATURALNIE za bramką volatility: przy niskiej zmienności płatny port nie rusza."""
 
     @staticmethod
@@ -4381,7 +4381,7 @@ class TestImpliedEdge:
 
 
 class TestAlphaFusionInGraph:
-    """#14 — score fuzji sygnałów alfa dociera do promptu LLM i do rekordu.
+    """R-14 — score fuzji sygnałów alfa dociera do promptu LLM i do rekordu.
     Bez niego 5 pobieranych źródeł alfa było render-only."""
 
     def _make(self, ports: GraphPorts) -> StateGraph[AgentState]:
@@ -4478,7 +4478,7 @@ class TestAlphaFusionInGraph:
 
 
 class TestAttestationCommitment:
-    """#16 — commit-reveal. Przy zapisie predykcji publikujemy SHA-256
+    """R-16 — commit-reveal. Przy zapisie predykcji publikujemy SHA-256
     commitment (hash treści + sól); sól ujawniamy dopiero przy reveal."""
 
     @staticmethod

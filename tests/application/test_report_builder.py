@@ -325,7 +325,7 @@ class TestPolishLabels:
 
 
 class TestDeltaChart:
-    """#2 — wykres Δ jako inline HTML. Kontrakt zmieniony świadomie: dawniej
+    """R-2 — wykres Δ jako inline HTML. Kontrakt zmieniony świadomie: dawniej
     `<img>` z quickchart.io (dziura w Gmailu z blokadą obrazków + wyciek danych
     portfela w URL-u), teraz div-bary renderowane w treści maila."""
 
@@ -358,7 +358,7 @@ class TestDeltaChart:
             datetime(2026, 5, 14, tzinfo=UTC),
             1.0,
         )
-        # Sedno #2: żadne dane nie opuszczają maila, żaden obrazek się nie ładuje.
+        # Sedno R-2: żadne dane nie opuszczają maila, żaden obrazek się nie ładuje.
         assert "quickchart.io" not in html
         assert "<img" not in html
 
@@ -1059,7 +1059,7 @@ class TestHtmlEscaping:
     def test_escapes_unknown_risk_signal_type_fallback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Finding #36: gdy `rs.type` nie ma etykiety w `type_label`, surowa
+        """Audyt z czerwca 2026: gdy `rs.type` nie ma etykiety w `type_label`, surowa
         wartość trafia do HTML jako fallback. Dziś typy są hardcodowane, ale
         jeśli kiedyś staną się danymi pochodzącymi z zewnątrz, fallback bez
         escapowania jest sinkiem dla wstrzyknięcia HTML. Sąsiedni
@@ -1082,7 +1082,7 @@ class TestHtmlEscaping:
         assert "&lt;i&gt;desc&lt;/i&gt;" in html
 
 
-# Payloady używane przez regresje escapowania (finding #35). Każdy niesie
+# Payloady używane przez regresje escapowania (audyt z czerwca 2026). Każdy niesie
 # surowy znacznik, który MUSI zniknąć z outputu, oraz "marker" — fragment
 # zescapowany identycznie przez stdlib `html.escape` i autoescape Jinja
 # (MarkupSafe). Różnią się one tylko escapowaniem `"` (`&quot;` vs `&#34;`),
@@ -1107,7 +1107,7 @@ def _assert_escaped(html: str, payload: str, marker: str) -> None:
 
 
 class TestHtmlEscapingRegression:
-    """Finding #35 — twardy regression guard na escapowanie niezaufanych pól.
+    """Audyt z czerwca 2026 — twardy regression guard na escapowanie niezaufanych pól.
 
     Większość maila składana jest f-stringami, gdzie KAŻDA niezaufana wartość
     musi być ręcznie owinięta w `_html(...)`. Jedno zapomniane `_html()` =
@@ -1863,7 +1863,7 @@ class TestBuildReportWithRiskWatch:
 
 
 class TestPersonaLeaderboardSection:
-    """#3 — sekcja "Rada — ranking wiarygodności" wpięta w slot raportu."""
+    """R-3 — sekcja "Rada — ranking wiarygodności" wpięta w slot raportu."""
 
     @staticmethod
     def _records() -> list[PersonaTrackRecord]:
@@ -1904,7 +1904,7 @@ class TestPersonaLeaderboardSection:
 
 
 class TestLeadSection:
-    """#1 — lead na pierwszym ekranie, PO quota bannerze. Ranking robi domena
+    """R-1 — lead na pierwszym ekranie, PO quota bannerze. Ranking robi domena
     (`build_lead`); report_builder tylko mapuje DTO i renderuje."""
 
     _HEADING = "Najważniejsze w tym cyklu"
@@ -2013,7 +2013,7 @@ class TestLeadSection:
         assert signal.price_delta_pct == Decimal("-4.2")
 
     def test_council_flip_from_the_context_leads_the_report_and_its_subject(self) -> None:
-        # MAIL-19: flip rady był tylko w sekcji #8 w połowie maila, a temat mówił
+        # MAIL-19: flip rady był tylko w sekcji R-8 w połowie maila, a temat mówił
         # o czymś innym — teraz to lead, więc i temat (lead_headline).
         from src.domain.consensus_shift import ConsensusShift, ShiftKind
         from src.domain.digest_lead import lead_headline
@@ -2061,7 +2061,7 @@ class TestLeadSection:
 
 
 class TestSkipReasonMapping:
-    """#4 — `skip_reason` rozdziela przyczyny pominięcia. Bez tego powitalny
+    """R-4 — `skip_reason` rozdziela przyczyny pominięcia. Bez tego powitalny
     ton „Dzień 1" przykryłby masową awarię źródeł."""
 
     def test_cold_start_is_detected_from_zero_previous_price(self) -> None:
@@ -2096,7 +2096,7 @@ class TestSkipReasonMapping:
 
 
 class TestUserPortfolioSection:
-    """#15 — sekcja 💼 z realnymi wagami i P/L. Kurs PLN dostaje jako wartość
+    """R-15 — sekcja 💼 z realnymi wagami i P/L. Kurs PLN dostaje jako wartość
     z `MacroRiskReport.polish_macro`, NIE przez port — renderery są czyste."""
 
     @staticmethod
@@ -4396,7 +4396,7 @@ def test_consensus_shift_sell_to_buy_reads_sprzedaj_kup_in_the_mail() -> None:
 
 
 def test_watchlist_mood_section_not_called_portfolio() -> None:
-    # MAIL-31: sentyment liczy się po symbolach watchlisty; „portfel” to od #15
+    # MAIL-31: sentyment liczy się po symbolach watchlisty; „portfel” to od R-15
     # sekcja „💼 Twój portfel” z realnymi pozycjami.
     html, text = build_html_report([_saved_result()], datetime(2026, 5, 14, tzinfo=UTC), 1.0)
 

@@ -151,7 +151,7 @@ class TestHtmlEscaping:
 
 
 class TestBuildScorecardView:
-    """#12 — surowe wiersze z `model_scorecards` → widok sekcji."""
+    """R-12 — surowe wiersze z `model_scorecards` → widok sekcji."""
 
     def test_no_rows_yields_no_view(self) -> None:
         assert build_scorecard_view([]) is None
