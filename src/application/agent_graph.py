@@ -4,7 +4,6 @@ import dataclasses
 import logging
 import math
 import time
-from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -986,10 +985,6 @@ class AgentGraphDeps:
     # współdzielone między symbolami. Własny egzemplarz per deps, gdy wołający
     # nie poda go z DI — `use_case.paid_calls` działa i wtedy.
     telemetry: CycleTelemetry = dataclasses.field(default_factory=CycleTelemetry)
-    # Zgodność wstecz: dawny goły licznik płatnych wywołań. To NIE drugi licznik —
-    # po `__post_init__` jest magazynem `telemetry.paid_calls` (podany Counter
-    # zostaje przejęty przez telemetrię, brak = Counter telemetrii).
-    paid_call_meter: Counter[str] | None = None
     # FIN-12: sufit płatnych wywołań LLM cyklu (`PAID_LLM_SOURCES`). None = bez
     # limitu. Decyzję podejmuje domena (`paid_budget_allows`) po bramce volatility.
     paid_call_cap: int | None = None
@@ -1014,10 +1009,6 @@ class AgentGraphDeps:
         if self.tool_use_port is not None and missing_tool_use:
             # ARCH-18: niepełna trójka cicho spadała do zwykłego `llm_port.analyze`.
             raise ValueError(f"tool-use: tool_use_port requires {' and '.join(missing_tool_use)}")
-        if self.paid_call_meter is None:
-            object.__setattr__(self, "paid_call_meter", self.telemetry.paid_calls)
-        else:
-            self.telemetry.bind_paid_calls(self.paid_call_meter)
 
 
 # DAT-14: klasy aktywów notowane w sesjach NYSE — krypto handluje 24/7 (CoinGecko).

@@ -86,16 +86,6 @@ class CycleTelemetry:
         nowi konsumenci biorą spójny odczyt ze `snapshot()`."""
         return self._paid_calls
 
-    def bind_paid_calls(self, counter: Counter[str]) -> None:
-        """Zgodność wstecz z `AgentGraphDeps(paid_call_meter=...)`: licznik
-        wołającego staje się magazynem płatnych wywołań, z dotychczasowymi
-        wpisami dopisanymi do niego."""
-        with self._lock:
-            if counter is self._paid_calls:
-                return
-            counter.update(self._paid_calls)
-            self._paid_calls = counter
-
     def paid_calls_of(self, sources: Set[str]) -> int:
         """FIN-12: suma płatnych wywołań wskazanych źródeł, odczytana pod lockiem
         (symbole idą równolegle, a budżet cyklu czyta licznik w trakcie zapisów)."""

@@ -1,4 +1,3 @@
-from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -8,6 +7,7 @@ import pytest
 from langgraph.graph import StateGraph
 
 from src.application.agent_graph import AgentGraphDeps, AgentState, create_gate_graph
+from src.application.cycle_telemetry import CycleTelemetry
 from src.application.ports import (
     AttestationPublisherPort,
     EmbeddingPort,
@@ -319,7 +319,7 @@ class TestPaidCallMeter:
         assert use_case.paid_calls["news"] == 1
         assert use_case.paid_calls["llm"] == 1
 
-    def test_counts_into_the_meter_the_caller_supplied(
+    def test_counts_into_the_telemetry_the_caller_supplied(
         self,
         market_port: Mock,
         sentiment_port: Mock,
@@ -329,11 +329,11 @@ class TestPaidCallMeter:
         llm_port: Mock,
         graph_ports: GraphPorts,
     ) -> None:
-        meter: Counter[str] = Counter()
+        telemetry = CycleTelemetry()
         use_case = AnalyzeMarketUseCase(
             make_deps(
                 **graph_ports,
-                paid_call_meter=meter,
+                telemetry=telemetry,
             )
         )
         self._arrange_paid_cycle(
@@ -343,8 +343,8 @@ class TestPaidCallMeter:
         use_case.run("AAPL")
 
         # Ten sam obiekt, nie kopia — wołający trzyma referencję i na niej raportuje.
-        assert use_case.paid_calls is meter
-        assert meter["llm"] == 1
+        assert use_case.paid_calls is telemetry.paid_calls
+        assert telemetry.paid_calls["llm"] == 1
 
 
 class TestMlModelLoaded:
