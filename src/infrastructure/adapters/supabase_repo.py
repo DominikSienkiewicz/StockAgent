@@ -117,6 +117,8 @@ DEFAULT_REGIME_HISTORY_TABLE = "regime_history"
 DEFAULT_SHADOW_PREDICTION_TABLE = "shadow_predictions"
 # WIA-24 (migracja 042): sygnał referencyjny poza `prediction_logs`.
 REFERENCE_PREDICTIONS_TABLE = "reference_predictions"
+# WIA-68: sufit luźnego skanu wersji przepisu — powyżej wynik to dolna granica.
+_MAX_RECIPE_VERSIONS = 500
 # FIN-13: ledger kosztów per request LLM / embeddingów (migracja 040).
 LLM_CALLS_TABLE = "llm_calls"
 # NIEZ-29: historia przebiegów pętli (migracja 041).
@@ -2853,6 +2855,28 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             if _rows(response):
                 expired += 1
         return expired
+
+    def count_recipe_versions(self) -> int:
+        # WIA-68: PostgREST nie ma COUNT(DISTINCT), a stemplowanych wierszy przybywa
+        # z każdym cyklem. Luźny skan indeksu `idx_prediction_logs_recipe_version`
+        # (030): kolejne zapytanie bierze najmniejszą wersję większą od poprzedniej,
+        # więc zapytań jest tyle, ile wersji (+1), a nie stron całej historii.
+        count = 0
+        last: str | None = None
+        while count < _MAX_RECIPE_VERSIONS:
+            query = (
+                self._client.table(self._table)
+                .select("recipe_version")
+                .not_.is_("recipe_version", "null")
+            )
+            if last is not None:
+                query = query.gt("recipe_version", last)
+            rows = _rows(query.order("recipe_version").limit(1).execute())
+            if not rows:
+                break
+            last = str(rows[0]["recipe_version"])
+            count += 1
+        return count
 
     def count_expired_unverified(self, days: int) -> int:
         # WIA-49: flaga żyje w `data_quality_flags` (JSONB, 008), więc zliczamy wiersze

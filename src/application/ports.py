@@ -374,6 +374,13 @@ class RepositoryPort(ABC):
         z WARNING-iem (wołający trzyma wtedy liczbę z bieżącego przebiegu)."""
 
     @abstractmethod
+    def count_recipe_versions(self) -> int:
+        """WIA-68: liczba różnych `prediction_logs.recipe_version` (migracja 030) w całej
+        historii — tyle wariantów przepisu predykcji wypróbowano (n_trials Deflated
+        Sharpe). Wiersze bez stempla się nie liczą. Bez migracji 030 → `PortError`;
+        wołający pilnuje flagi `recipe_version_enabled`."""
+
+    @abstractmethod
     def update_prediction_accuracy(
         self,
         prediction_id: str,

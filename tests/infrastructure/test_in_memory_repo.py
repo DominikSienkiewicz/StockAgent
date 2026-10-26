@@ -384,3 +384,13 @@ def test_revision_votes_sit_next_to_the_first_round_and_reads_stay_on_round_one(
     ]
     assert [h.recommendations for h in history] == [("SELL",)]
     assert [s.recommendation for s in repo.get_council_vote_samples()] == ["SELL"]
+
+
+def test_recipe_versions_are_counted_once_each_without_unstamped_rows() -> None:
+    # WIA-68: n_trials Deflated Sharpe = różne wersje przepisu w historii predykcji.
+    clock = _Clock()
+    repo = _repo(clock)
+    for symbol, recipe in (("NVDA", "r-a"), ("AMD", "r-a"), ("MSFT", "r-b"), ("AAPL", None)):
+        repo.save_prediction(_record(symbol, recipe_version=recipe))
+
+    assert repo.count_recipe_versions() == 2

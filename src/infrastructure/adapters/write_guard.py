@@ -139,6 +139,7 @@ class ReadOnlyRepository(RepositoryPort):
             "get_persona_scoring",
             "get_council_vote_samples",
             "count_expired_unverified",
+            "count_recipe_versions",
             "get_deferred_diagnoses",
             "get_diagnoses_to_judge",
             "get_resolved_predictions_detailed",
@@ -310,6 +311,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def count_expired_unverified(self, days: int) -> int:
         return self._delegate.count_expired_unverified(days)
+
+    def count_recipe_versions(self) -> int:
+        return self._delegate.count_recipe_versions()
 
     def get_deferred_diagnoses(self, limit: int) -> list[DeferredDiagnosis]:
         return self._delegate.get_deferred_diagnoses(limit)

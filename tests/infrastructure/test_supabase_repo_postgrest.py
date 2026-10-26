@@ -470,6 +470,27 @@ class TestLlmCostLedger:
         assert all(row.symbol != "AAPL" for row in rows)
 
 
+class TestRecipeVersionCount:
+    def test_counts_distinct_stamped_recipe_versions(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # WIA-68: n_trials DSR = różne `recipe_version` (030); NULL się nie liczy,
+        # powtórzona wersja liczy się raz. Moduł współdzieli bazę — liczymy przyrost.
+        before = repository.count_recipe_versions()
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prediction_logs (symbol, price_at_prediction, predicted_trend, "
+                "recipe_version, timestamp) VALUES "
+                "('T17RV1', 10, 'BULLISH', 't17-recipe-a', %s), "
+                "('T17RV2', 10, 'BULLISH', 't17-recipe-a', %s), "
+                "('T17RV3', 10, 'BEARISH', 't17-recipe-b', %s), "
+                "('T17RV4', 10, 'BEARISH', NULL, %s)",
+                (_hours_ago(4), _hours_ago(3), _hours_ago(2), _hours_ago(1)),
+            )
+
+        assert repository.count_recipe_versions() == before + 2
+
+
 class TestShadowTrendPrediction:
     """EXP-26 (migracja 083): trend wariantu promptu albo modelu LLM ląduje w
     `shadow_predictions` obok predykcji, upsertem po (prediction_id, model_name),

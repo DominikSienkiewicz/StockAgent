@@ -351,6 +351,9 @@ class InMemoryRepository(RepositoryPort):
             1 for row in rows if row.get("actual_price_after_12h") is None and not _not_expired(row)
         )
 
+    def count_recipe_versions(self) -> int:
+        return len({row["recipe_version"] for row in self._rows() if row.get("recipe_version")})
+
     def update_prediction_accuracy(
         self,
         prediction_id: str,
