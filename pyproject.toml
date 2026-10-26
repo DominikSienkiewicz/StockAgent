@@ -56,7 +56,7 @@ dev = [
     "pytest-socket>=0.8.1",
     # Przypięta wersja wydana co najmniej 2 tygodnie przed dodaniem (6.168.5 z 2026-10-05):
     # świeże wydanie nie trafia do lockfile'a, zanim przeleży swoje. Podbijamy świadomie.
-    "hypothesis==6.168.5",
+    "hypothesis==6.169.0",
     "jsonschema>=4.26.0",
     # Stuby typów `yaml` dla strażników workflowów i konfiguracji (TEST-24): bez nich
     # ratchet mypy po katalogach tests/ (TEST-13) widziałby `yaml` jako Any.
