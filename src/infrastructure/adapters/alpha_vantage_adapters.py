@@ -1,7 +1,9 @@
 """Adaptery News + Sentiment oparte o wspólny `AlphaVantageClient`.
 
 Oba implementują kontrakty z `application.ports`, dzięki czemu graf LangGraph
-nie wie, że pod spodem chodzi jeden batch call.
+nie wie, że pod spodem jest jeden request NEWS_SENTIMENT per ticker
+(`DEFAULT_BATCH_SIZE = 1`) z buforem feedu na cały cykl — wspólnym dla obu
+adapterów, więc News i Sentiment jednego symbolu kosztują jeden request (DOC-23).
 """
 
 from __future__ import annotations
