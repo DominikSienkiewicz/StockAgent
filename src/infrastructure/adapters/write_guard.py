@@ -49,7 +49,7 @@ from src.domain.council import FIRST_COUNCIL_ROUND, InvestorOpinion
 from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import CachedEarningsDate
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     LedgerHead,
@@ -167,6 +167,7 @@ class ReadOnlyRepository(RepositoryPort):
             "get_open_reference_calls",
             "get_cycle_runs_since",
             "get_llm_cost_since",
+            "get_llm_costs_since",
             "get_settled_shadow_predictions",
         }
     )
@@ -403,6 +404,9 @@ class ReadOnlyRepository(RepositoryPort):
 
     def get_llm_cost_since(self, since: datetime) -> float:
         return self._delegate.get_llm_cost_since(since)
+
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        return self._delegate.get_llm_costs_since(since)
 
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         return self._delegate.get_settled_shadow_predictions(since)

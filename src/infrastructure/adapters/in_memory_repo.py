@@ -49,7 +49,7 @@ from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     GENESIS_HASH,
@@ -933,6 +933,15 @@ class InMemoryRepository(RepositoryPort):
             ),
             0.0,
         )
+
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        with self._lock:
+            calls = list(self._llm_calls)
+        return [
+            LedgerCost(symbol=call.symbol, cost_usd=call.cost_usd)
+            for saved_at, call in calls
+            if saved_at >= since
+        ]
 
     def save_cycle_run(self, run: CycleRun) -> None:
         with self._lock:

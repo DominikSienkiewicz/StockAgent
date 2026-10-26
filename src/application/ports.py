@@ -23,7 +23,7 @@ from src.domain.council_redundancy import CouncilVoteSample
 from src.domain.db_size import RelationSize
 from src.domain.direction_variant import DirectionReport
 from src.domain.earnings import CachedEarningsDate, EarningsEvent
-from src.domain.finops import LLMCallEntry, LLMUsage
+from src.domain.finops import LedgerCost, LLMCallEntry, LLMUsage
 from src.domain.fx import FxRate
 from src.domain.insider_flow import InsiderFlowSnapshot
 from src.domain.macro_rates import YieldCurveSnapshot
@@ -901,6 +901,14 @@ class RepositoryPort(ABC):
         Wiersz bez wyceny (`cost_usd` NULL, model spoza cennika) nie wchodzi do sumy,
         więc wynik jest dolną granicą wydatku. Bez migracji 040 → `PortError`;
         wołający decyduje, czy błąd odczytu zamyka płatne wywołania (FIN-25: nie)."""
+
+    @abstractmethod
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        """FIN-26 — wiersze `llm_calls` od `since` (włącznie): symbol (None dla jobów
+        Slow Loopa) i `cost_usd` (None = model spoza cennika), w kolejności zapisu.
+
+        Napędza koszt tygodnia w Slow Loopie (suma i najdroższe symbole). Bez
+        migracji 040 → `PortError`; wołający pilnuje flagi `cost_ledger_enabled`."""
 
     @abstractmethod
     def save_cycle_run(self, run: CycleRun) -> None:

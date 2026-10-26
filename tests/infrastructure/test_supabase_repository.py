@@ -10,6 +10,7 @@ import pytest
 
 from src.application.errors import NotFound, ProviderUnavailable
 from src.application.ports import RepositoryPort, StoredShockAlert
+from src.domain.finops import LedgerCost
 from src.domain.paper_ledger import PaperTradeEntry
 from src.domain.prediction import TrendDirection
 from src.domain.session_close import SessionCloseSettlement
@@ -4096,6 +4097,55 @@ class TestGetLlmCostSince:
 
         with pytest.raises(PortError):
             repo.get_llm_cost_since(datetime(2026, 10, 25, tzinfo=UTC))
+
+
+class TestGetLlmCostsSince:
+    """FIN-26: wiersze ledgera `llm_calls` od początku tygodnia — symbol i koszt."""
+
+    @staticmethod
+    def _order_builder(mock_client: MagicMock) -> MagicMock:
+        chain = mock_client.table.return_value.select.return_value.gte.return_value
+        return cast(MagicMock, chain.order.return_value)
+
+    def test_returns_symbol_and_cost_of_every_row_since_the_window_start(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        _set_paginated_response(
+            self._order_builder(mock_client),
+            [
+                [
+                    {"symbol": "NVDA", "cost_usd": 0.25},
+                    {"symbol": None, "cost_usd": None},
+                    {"symbol": "AAPL", "cost_usd": "1.5"},
+                ]
+            ],
+        )
+
+        rows = repo.get_llm_costs_since(datetime(2026, 10, 19, tzinfo=UTC))
+
+        mock_client.table.assert_called_once_with("llm_calls")
+        mock_client.table.return_value.select.assert_called_once_with("symbol, cost_usd")
+        gte = mock_client.table.return_value.select.return_value.gte
+        assert gte.call_args.args == ("created_at", "2026-10-19T00:00:00+00:00")
+        assert rows == [
+            LedgerCost("NVDA", 0.25),
+            LedgerCost(None, None),
+            LedgerCost("AAPL", 1.5),
+        ]
+
+    def test_postgrest_error_is_a_port_error(
+        self, repo: SupabaseRepository, mock_client: MagicMock
+    ) -> None:
+        from postgrest.exceptions import APIError
+
+        from src.application.errors import PortError
+
+        self._order_builder(mock_client).range.side_effect = APIError(
+            {"code": "PGRST205", "message": "relation llm_calls does not exist"}
+        )
+
+        with pytest.raises(PortError):
+            repo.get_llm_costs_since(datetime(2026, 10, 19, tzinfo=UTC))
 
 
 class TestShockAlertTimes:

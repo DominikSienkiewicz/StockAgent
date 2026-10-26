@@ -44,7 +44,7 @@ from src.domain.db_size import RelationSize
 from src.domain.earnings import EARNINGS_CACHE_TTL_HOURS, CachedEarningsDate
 from src.domain.equity_curve import directional_hit_rate
 from src.domain.feature_requirements import FLAG_REQUIRED_MIGRATION
-from src.domain.finops import LLMCallEntry
+from src.domain.finops import LedgerCost, LLMCallEntry
 from src.domain.mistake_taxonomy import MistakeCategory
 from src.domain.paper_ledger import (
     GENESIS_HASH,
@@ -2563,6 +2563,22 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
             (float(cost) for row in _paginate(query) if (cost := row.get("cost_usd")) is not None),
             0.0,
         )
+
+    def get_llm_costs_since(self, since: datetime) -> list[LedgerCost]:
+        # Paginacja (#8): tydzień ledgera to tysiące wierszy; agregację robi domena.
+        query = (
+            self._client.table(LLM_CALLS_TABLE)
+            .select("symbol, cost_usd")
+            .gte("created_at", since.isoformat())
+            .order("id", desc=False)
+        )
+        return [
+            LedgerCost(
+                symbol=None if (symbol := row.get("symbol")) is None else str(symbol),
+                cost_usd=None if (cost := row.get("cost_usd")) is None else float(cost),
+            )
+            for row in _paginate(query)
+        ]
 
     def save_cycle_run(self, run: CycleRun) -> None:
         # Jeden insert na przebieg; `paid_calls` idzie jako JSONB (dict, nie string).

@@ -41,6 +41,7 @@ from testcontainers.postgres import PostgresContainer
 
 from src.application.errors import NotFound, PortError
 from src.domain.council import InvestorOpinion, Recommendation
+from src.domain.finops import LedgerCost
 from src.domain.watchlist import SymbolMute
 from src.infrastructure.adapters import supabase_repo
 from src.infrastructure.adapters.bot_store import SupabaseBotStore
@@ -433,6 +434,40 @@ class TestLlmCostLedger:
         spent = repository.get_llm_cost_since(since)
 
         assert spent == pytest.approx(in_window * 0.002)
+
+    def test_llm_costs_since_returns_rows_of_the_window_past_the_row_cap(
+        self, repository: SupabaseRepository, postgrest_stack: PostgrestStack
+    ) -> None:
+        # FIN-26: wiersze tygodnia (symbol, koszt) z `llm_calls` (040) — także ponad
+        # limit 1000 wierszy PostgREST; wiersz sprzed okna poza wynikiem.
+        since = datetime(2026, 11, 2, tzinfo=UTC)
+        in_window = POSTGREST_MAX_ROWS + 15
+        with postgrest_stack.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) "
+                "SELECT 't17-fin26', 'NVDA', 'predict', 'anthropic', 'm', 1, 1, 0.001, "
+                "%s::timestamptz + g * interval '1 second' "
+                "FROM generate_series(1, %s) AS g",
+                (since.isoformat(), in_window),
+            )
+            cur.execute(
+                "INSERT INTO llm_calls (run_id, symbol, node, provider, model, input_tokens, "
+                "output_tokens, cost_usd, created_at) VALUES "
+                "('t17-fin26', NULL, 'recap', 'anthropic', 'm', 1, 1, NULL, %s), "
+                "('t17-fin26', 'AAPL', 'predict', 'anthropic', 'm', 1, 1, 9.0, %s)",
+                (
+                    (since + timedelta(hours=2)).isoformat(),
+                    (since - timedelta(seconds=1)).isoformat(),
+                ),
+            )
+
+        rows = repository.get_llm_costs_since(since)
+
+        assert len(rows) == in_window + 1
+        assert rows.count(LedgerCost("NVDA", 0.001)) == in_window
+        assert LedgerCost(None, None) in rows
+        assert all(row.symbol != "AAPL" for row in rows)
 
 
 class TestShadowTrendPrediction:
