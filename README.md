@@ -1,5 +1,5 @@
 # 📈 StockAgent
-**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications, define the quality gates enforced in CI and review every change.
+**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications and define the quality gates CI runs on every push to `main` and every pull request: ruff, mypy --strict and pytest, including schema tests on a real Postgres with pgvector ([Testing](#testing)).
 
 **Educational proof of concept — not investment advice.** A Python and LangGraph agent that
 analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price action with
