@@ -41,7 +41,7 @@ dependencies = [
     # WIA-73: podpis keyless rootu cyklu (klucz P-256, CSR do Fulcio) i odczyt certyfikatu
     # w verify-attestation. Był już w drzewie (supabase-auth[crypto] → pyjwt[crypto]),
     # deklaracja nie dokłada żadnego pakietu.
-    "cryptography>=48",
+    "cryptography>=50",
 ]
 
 [dependency-groups]

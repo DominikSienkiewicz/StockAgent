@@ -1415,7 +1415,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.102.0,<1" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.102.0,<1" },
-    { name = "cryptography", specifier = ">=48" },
+    { name = "cryptography", specifier = ">=50" },
     { name = "httpx", specifier = ">=0.26" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "langgraph", specifier = ">=1.2,<2" },
