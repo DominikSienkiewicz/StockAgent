@@ -534,6 +534,42 @@ class TestShadowTrendPrediction:
         assert [row.forecast.model_name for row in settled] == ["champion"]
 
 
+class TestShadowStaleQuote:
+    """ML-57: z `stale_quote_enabled` osadzony SELECT odczytu par niesie `stale_quote`
+    (migracja 055), a rozliczenie z nieaktualnego notowania nie wraca."""
+
+    def test_settled_pairs_skip_stale_quote_settlements(
+        self, postgrest_stack: PostgrestStack
+    ) -> None:
+        from src.domain.promotion import ShadowForecast
+
+        with mock.patch.object(supabase_repo, "create_client", _root_rest_client):
+            repository = SupabaseRepository(
+                url=postgrest_stack.base_url,
+                key=jwt_for("service_role"),
+                stale_quote_enabled=True,
+            )
+        since = datetime.now(UTC) - timedelta(minutes=1)
+        settled_ids = {}
+        for symbol, stale in (("T17SQF", False), ("T17SQS", True)):
+            prediction_id = repository.save_prediction(prediction_record(symbol))
+            repository.save_shadow_predictions(
+                prediction_id, symbol, [ShadowForecast("champion", "a" * 64, predicted_return=0.01)]
+            )
+            repository.update_prediction_accuracy(
+                prediction_id, Decimal("190.0"), 0.9, True, "Rozliczona.", stale_quote=stale
+            )
+            settled_ids[prediction_id] = symbol
+
+        returned = {
+            settled_ids[row.prediction_id]
+            for row in repository.get_settled_shadow_predictions(since)
+            if row.prediction_id in settled_ids
+        }
+
+        assert returned == {"T17SQF"}
+
+
 class TestShockAlertLevels:
     """ALR-16 (migracja 081): szczebel 1 bez klucza `level`, eskalacja z kluczem —
     oba przez prawdziwy PostgREST, odczyt szczebli dnia i odbicie powtórzonego szczebla."""

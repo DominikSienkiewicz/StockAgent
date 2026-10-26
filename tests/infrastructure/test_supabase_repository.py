@@ -6187,6 +6187,41 @@ class TestShadowPredictions:
 
         assert rows == []
 
+    def test_settled_shadow_predictions_skip_stale_quote(self, mock_client: MagicMock) -> None:
+        # ML-57: rozliczenie z nieaktualnego notowania (DAT-14) nie trafia do porównania
+        # par champion/challenger — tak jak do trafności. Kolumna z migracji 055 w
+        # osadzonym SELECT tylko z flagą, filtr po stronie Pythona.
+        repo = SupabaseRepository(
+            url="https://test.supabase.co", key="anon-key", stale_quote_enabled=True
+        )
+
+        def row(prediction_id: str, stale_quote: bool | None) -> dict[str, Any]:
+            return {
+                "prediction_id": prediction_id,
+                "model_name": "direction",
+                "model_version": self.DIRECTION,
+                "predicted_return": None,
+                "proba": 0.6,
+                "prediction_logs": {
+                    "price_at_prediction": 100.0,
+                    "actual_price_after_12h": 101.0,
+                    "stale_quote": stale_quote,
+                },
+            }
+
+        rows, chain = self._read(
+            repo,
+            mock_client,
+            [[row("fresh", False), row("stale", True), row("crypto", None)]],
+        )
+
+        assert [settled.prediction_id for settled in rows] == ["fresh", "crypto"]
+        select = chain.select.call_args.args[0]
+        assert (
+            "prediction_logs!inner(price_at_prediction, actual_price_after_12h, stale_quote)"
+            in select
+        )
+
 
 # ---------------------------------------------------------------------------
 # WIA-59: append-only paper ledger (migracja 073)

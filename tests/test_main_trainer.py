@@ -233,6 +233,19 @@ class TestModelScorecardRunId:
 
         assert supabase_cls.call_args.kwargs["scorecard_provenance_enabled"] is enabled
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_trainer_repository_follows_the_stale_quote_flag(
+        self, settings: Settings, mocker: Any, enabled: bool
+    ) -> None:
+        # ML-57: pary champion/challenger (i pozostałe odczyty rozliczeń Slow Loopa)
+        # bez rozliczeń z nieaktualnego notowania — kolumna z migracji 055 za flagą.
+        supabase_cls = mocker.patch("main_trainer.SupabaseRepository")
+        settings = settings.model_copy(update={"stale_quote_enabled": enabled})
+
+        main_trainer.build_repository(settings)
+
+        assert supabase_cls.call_args.kwargs.get("stale_quote_enabled") is enabled
+
     def test_build_use_case_hands_the_commit_sha_to_the_use_case(
         self, settings: Settings, mocker: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:

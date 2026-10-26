@@ -412,10 +412,11 @@ def _optional_float(value: Any) -> float | None:
 
 def _settled_shadow(row: Mapping[str, Any]) -> SettledShadowForecast | None:
     """ML-33: wiersz cienia z osadzoną predykcją → prognoza ze zwrotem zrealizowanym.
-    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, albo prognoza łamie
-    kontrakt domeny (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
+    None, gdy predykcja nie ma dodatniej ceny albo rozliczenia, została rozliczona
+    z nieaktualnego notowania (ML-57, DAT-14) albo prognoza łamie kontrakt domeny
+    (np. p spoza [0, 1] wpisane do bazy ręcznie)."""
     prediction = row.get("prediction_logs")
-    if not isinstance(prediction, Mapping):
+    if not isinstance(prediction, Mapping) or prediction.get(_STALE_QUOTE_COLUMN) is True:
         return None
     price = _optional_float(prediction.get("price_at_prediction"))
     actual = _optional_float(prediction.get("actual_price_after_12h"))
@@ -1479,11 +1480,14 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
     def get_settled_shadow_predictions(self, since: datetime) -> list[SettledShadowForecast]:
         # ML-33: `!inner` + filtr na osadzonej predykcji — tylko rozliczone. `id`
         # jako drugi klucz: granica strony deterministyczna przy równych `created_at`.
+        # ML-57: z flagą DAT-14 osadzony SELECT niesie `stale_quote` (migracja 055),
+        # a `_settled_shadow` odsiewa rozliczenia z nieaktualnego notowania.
+        settlement = self._countable_columns("price_at_prediction, actual_price_after_12h")
         query = (
             self._client.table(DEFAULT_SHADOW_PREDICTION_TABLE)
             .select(
                 "prediction_id, model_name, model_version, predicted_return, proba, "
-                "prediction_logs!inner(price_at_prediction, actual_price_after_12h)"
+                f"prediction_logs!inner({settlement})"
             )
             .gte("created_at", since.isoformat())
             .not_.is_("prediction_logs.actual_price_after_12h", "null")
