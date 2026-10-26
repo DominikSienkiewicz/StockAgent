@@ -11,10 +11,14 @@ Kontrakt:
 2. Dokumenty dla agentów i ludzi cytują dokładnie te same komendy co CI.
 3. Bramka pytest w plikach agentowych pomija testy `integration` (TEST-07): gołe
    `uv run pytest` przy wyeksportowanych kluczach woła płatne API i wysyła mail.
+
+Dokument czytamy tak, jak widzi go agent: linia `@plik` to import, który Claude Code
+zastępuje treścią pliku (DOC-29: `CLAUDE.md` = `@AGENTS.md` + dodatki Claude'a).
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -35,6 +39,23 @@ MYPY_RATCHET = (
     "tests/application",
     "tests/*.py",
 )
+
+
+_IMPORT_LINE = re.compile(r"^@(\S+)$")
+
+
+def _doc_lines(doc: str) -> list[str]:
+    """Linie dokumentu z rozwiniętymi importami `@plik` (ścieżka względem dokumentu)."""
+    path = ROOT / doc
+    lines: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        imported = _IMPORT_LINE.match(line.strip())
+        if imported is None:
+            lines.append(line)
+        else:
+            target = (path.parent / imported.group(1)).relative_to(ROOT)
+            lines.extend(_doc_lines(target.as_posix()))
+    return lines
 
 
 def _entrypoints() -> list[str]:
@@ -108,7 +129,7 @@ def test_agent_docs_quote_the_ci_gate(doc: str, tool: str) -> None:
     ci_commands = _ci_tool_commands(tool)
     quoted = {
         " ".join(_from_tool(line, tool))
-        for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
+        for line in _doc_lines(doc)
         if line.lstrip().startswith(f"uv run {tool}")
     }
     assert quoted, f"{doc} nie cytuje komendy `{tool}` z bramki"
@@ -150,7 +171,7 @@ def test_agent_docs_pytest_gate_skips_live_api_tests(doc: str) -> None:
     )
     quoted = [
         _pytest_marker(line)
-        for line in (ROOT / doc).read_text(encoding="utf-8").splitlines()
+        for line in _doc_lines(doc)
         if line.lstrip().startswith("uv run pytest")
     ]
 

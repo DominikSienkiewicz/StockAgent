@@ -320,3 +320,22 @@ def test_running_locally_prerequisites_name_the_supabase_cli_and_db_url() -> Non
 
     assert "Supabase CLI" in section
     assert "SUPABASE_DB_URL" in section
+
+
+# DOC-29 (G58): CLAUDE.md i AGENTS.md były dwiema pełnymi kopiami zasad i się rozjechały
+# (AGENTS.md znał dwa entry-pointy z siedmiu). AGENTS.md jest jedynym źródłem; CLAUDE.md
+# importuje je linią `@AGENTS.md` (Claude Code wkleja plik w jej miejsce) i dokłada tylko
+# dodatki Claude'a — żadna sekcja nie stoi w obu plikach.
+def _level_two_headings(text: str) -> set[str]:
+    return {line.strip() for line in text.splitlines() if line.startswith("## ")}
+
+
+def test_claude_md_delegates_to_agents_md() -> None:
+    claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "@AGENTS.md" in {line.strip() for line in claude.splitlines()}, (
+        "CLAUDE.md nie importuje AGENTS.md"
+    )
+    duplicated = _level_two_headings(claude) & _level_two_headings(agents)
+    assert duplicated == set(), f"CLAUDE.md powtarza sekcje AGENTS.md: {sorted(duplicated)}"
