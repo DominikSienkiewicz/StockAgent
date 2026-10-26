@@ -211,7 +211,7 @@ rendered from fictional data, with English labels added for this screenshot; sec
 section it is described in [the report email](docs/report-email.md).
 
 <details>
-<summary>Annotated sample email (fictional data, rendered 2026-10-22)</summary>
+<summary>Annotated sample email (fictional data, rendered 2026-10-26)</summary>
 
 ![Annotated sample of the report email, rendered from fictional data](docs/img/report-email.png)
 
