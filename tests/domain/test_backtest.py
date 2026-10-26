@@ -8,12 +8,15 @@ from src.domain.backtest import (
     MIN_REL_IMPROVEMENT,
     BacktestSummary,
     LabelOverlap,
+    WalkForwardFold,
     beats_baseline,
     count_label_overlaps,
+    expanding_window_bounds,
     label_end_times,
     purge_training_indices,
     purged_train_end,
     summarize_folds,
+    walk_forward_folds,
 )
 
 
@@ -242,6 +245,85 @@ def test_fixed_horizon_label_ends_reproduce_purged_train_end() -> None:
         assert purge_training_indices(stamps, ends, valid_start) == tuple(
             range(purged_train_end(stamps, valid_start))
         )
+
+
+class TestFoldDesign:
+    """ARCH-27: granice foldów walk-forward żyją w domenie — te same, które adapter
+    XGBoost liczył dotąd u siebie (przypięte liczbami, żeby przeniesienie ich nie ruszyło)."""
+
+    @pytest.mark.parametrize(
+        ("n_samples", "bounds"),
+        [
+            (11, ((1, 11),)),
+            (30, ((20, 30),)),
+            (49, ((39, 49),)),
+            (50, ((10, 20), (20, 30), (30, 40), (40, 50))),
+            (60, ((12, 24), (24, 36), (36, 48), (48, 60))),
+            (203, ((40, 80), (80, 120), (120, 160), (160, 203))),
+        ],
+    )
+    def test_expanding_window_bounds_are_unchanged(
+        self, n_samples: int, bounds: tuple[tuple[int, int], ...]
+    ) -> None:
+        assert expanding_window_bounds(n_samples) == bounds
+
+    def test_sample_without_room_for_training_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="validation holdout"):
+            expanding_window_bounds(10)
+
+    def test_without_timestamps_every_fold_trains_on_the_prefix(self) -> None:
+        folds = walk_forward_folds(60)
+
+        assert [(f.train_rows, f.train_end, f.valid_end) for f in folds] == [
+            (tuple(range(end)), end, valid_end) for end, valid_end in expanding_window_bounds(60)
+        ]
+
+    def test_fixed_horizon_purge_drops_rows_inside_the_label_horizon(self) -> None:
+        stamps = [_T + timedelta(hours=i) for i in range(60)]
+
+        folds = walk_forward_folds(60, stamps)
+
+        # Godzinne wiersze, horyzont 12 h → 11 wierszy przed walidacją wypada z treningu.
+        assert [f.train_rows for f in folds] == [tuple(range(f.train_end - 11)) for f in folds]
+
+    def test_label_ends_drive_the_purge(self) -> None:
+        # Wiersz 0 rozlicza się po 40 h: pierwszy fold (walidacja od 12:00) zostaje bez
+        # treningu i wypada, kolejne trenują bez wiersza 0, dopóki jego etykieta trwa.
+        stamps = [_T + timedelta(hours=i) for i in range(60)]
+        ends = [_T + timedelta(hours=40), *(stamp + LABEL_HORIZON for stamp in stamps[1:])]
+
+        folds = walk_forward_folds(60, stamps, ends)
+
+        assert [(f.train_end, f.train_rows) for f in folds] == [
+            (24, tuple(range(1, 13))),
+            (36, tuple(range(1, 25))),
+            (48, tuple(range(37))),
+        ]
+
+    def test_fold_without_training_rows_after_purge_is_skipped(self) -> None:
+        # Cała próbka w jednej godzinie: przy pierwszych foldach żadna etykieta
+        # nie dojrzała przed startem walidacji.
+        stamps = [_T + timedelta(minutes=i) for i in range(60)]
+
+        assert walk_forward_folds(60, stamps) == ()
+
+    def test_label_ends_need_timestamps(self) -> None:
+        with pytest.raises(ValueError, match="timestamps"):
+            walk_forward_folds(60, label_ends=[_T] * 60)
+
+    def test_timestamps_must_align_with_rows(self) -> None:
+        with pytest.raises(ValueError, match="align"):
+            walk_forward_folds(60, [_T] * 59)
+
+    @pytest.mark.parametrize(
+        ("train_rows", "train_end", "valid_end"),
+        [((0,), 0, 5), ((0,), 5, 5), ((), 5, 10), ((5,), 5, 10), ((-1,), 5, 10)],
+    )
+    def test_fold_rejects_inconsistent_bounds(
+        self, train_rows: tuple[int, ...], train_end: int, valid_end: int
+    ) -> None:
+        with pytest.raises(ValueError, match="fold"):
+            WalkForwardFold(train_rows, train_end, valid_end)
 
 
 def test_label_end_is_the_settlement_but_never_before_the_horizon() -> None:

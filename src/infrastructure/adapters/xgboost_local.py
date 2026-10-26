@@ -21,10 +21,9 @@ from src.application.ports import (
     ShadowModelPort,
 )
 from src.domain.backtest import (
-    LABEL_HORIZON,
     BacktestSummary,
-    purge_training_indices,
     summarize_folds,
+    walk_forward_folds,
 )
 from src.domain.direction_variant import (
     DirectionReport,
@@ -65,16 +64,6 @@ LIBRARY_VERSION = f"xgboost {xgb.__version__}"
 DIRECTION_PARAMS: dict[str, Any] = {**DEFAULT_PARAMS, "objective": "binary:logistic"}
 # Przycięcie prawdopodobieństwa w log loss (pewność 0/1 przy pudle = nieskończoność).
 _LOG_LOSS_EPS = 1e-6
-
-VALIDATION_FRACTION = 0.2
-MIN_VALIDATION_SAMPLES = 10
-
-# Walk-forward (expanding window): liczba foldów i minimalna liczba próbek, poniżej
-# której nie ma sensu robić CV (spadamy do pojedynczego splitu). Każdy fold dokłada
-# kolejny chronologiczny blok do treningu i waliduje na następnym — to lepszy
-# (mniej hałaśliwy) estymator dla niestacjonarnej serii finansowej niż jeden split.
-WALK_FORWARD_FOLDS = 4
-MIN_FOLD_SAMPLES = 50
 
 # ML-10: cecha z kierunkiem LLM (kontrakt `ML_FEATURE_COLUMNS`) — z niej powstaje
 # baseline „sam LLM". Bez tej kolumny w danych baseline jest pomijany.
@@ -278,21 +267,18 @@ class XGBoostAdapter(MLPredictionPort):
     ) -> list[dict[str, float]]:
         """Per-fold metryki walk-forward (expanding window) na danych
         time-ordered. Jedno źródło prawdy dla bramki `train()` (przez domenowe
-        `summarize_folds`) i `walk_forward_report` (szczegół). Poniżej
-        `MIN_FOLD_SAMPLES` spada do pojedynczego splitu (sane fallback) → jeden fold.
+        `summarize_folds`) i `walk_forward_report` (szczegół).
 
-        Z `timestamps` (czas globalny, rosnąco) trening foldu to
-        `purge_training_indices` — bez wierszy, których etykieta kończy się po
-        starcie walidacji (ML-26): koniec z `label_ends` (rozliczenie), a bez nich
-        stały horyzont 12 h, czyli prefiks jak dotąd. Purge obejmuje też fallback
-        single-split. Fold bez żadnego wiersza treningowego po purgu jest pomijany.
+        ARCH-27: granice foldów i wiersze treningu (purge ML-26 przy `timestamps`)
+        projektuje domena (`walk_forward_folds`); adapter tylko trenuje i mierzy.
 
         ML-10: baseline'y „dryf średniej" i „sam LLM" biorą skalę WYŁĄCZNIE z
         części treningowej foldu (tej samej, którą widzi kandydat) — żadnego
         podglądu walidacji.
         """
         out: list[dict[str, float]] = []
-        for rows, train_end, valid_end in _purged_folds(len(target), timestamps, label_ends):
+        for fold in walk_forward_folds(len(target), timestamps, label_ends):
+            rows, train_end, valid_end = list(fold.train_rows), fold.train_end, fold.valid_end
             train_x = features.iloc[rows]
             train_y = target.iloc[rows]
             valid_x = features.iloc[train_end:valid_end]
@@ -409,7 +395,8 @@ class XGBoostAdapter(MLPredictionPort):
         prognozy stopy bazowej części treningowej. Fold z jedną klasą w treningu
         nie ma czego uczyć — pomijany."""
         out: list[dict[str, float]] = []
-        for rows, train_end, valid_end in _purged_folds(len(outcome_y), timestamps, label_ends):
+        for fold in walk_forward_folds(len(outcome_y), timestamps, label_ends):
+            rows, train_end, valid_end = list(fold.train_rows), fold.train_end, fold.valid_end
             train_y = outcome_y.iloc[rows]
             if train_y.nunique() < 2:
                 continue
@@ -698,33 +685,6 @@ def _sum_log_loss(probability: Any, actual: Any) -> float:
     return float(-(hits * np.log(clipped) + (1 - hits) * np.log(1 - clipped)).sum())
 
 
-def _purged_folds(
-    n_samples: int,
-    timestamps: list[datetime] | None,
-    label_ends: list[datetime] | None,
-) -> list[tuple[list[int], int, int]]:
-    """Foldy expanding-window jako (wiersze treningu, train_end, valid_end).
-
-    Z `timestamps` trening foldu to `purge_training_indices` (ML-26): koniec etykiety
-    z `label_ends`, a bez nich stały horyzont 12 h — wtedy to prefiks jak dotąd.
-    Fold bez wiersza treningu po purgu jest pomijany."""
-    ends = (
-        None
-        if timestamps is None
-        else label_ends or [stamp + LABEL_HORIZON for stamp in timestamps]
-    )
-    out: list[tuple[list[int], int, int]] = []
-    for train_end, valid_end in _expanding_window_folds(n_samples):
-        rows = (
-            list(range(train_end))
-            if timestamps is None or ends is None
-            else list(purge_training_indices(timestamps, ends, train_end))
-        )
-        if rows:
-            out.append((rows, train_end, valid_end))
-    return out
-
-
 def _label_end_order(
     label_ends: Sequence[datetime] | None, stamps: list[datetime] | None
 ) -> list[datetime] | None:
@@ -738,42 +698,6 @@ def _label_end_order(
     if len(parsed) != len(stamps):
         raise ValueError("label_ends must align with the training rows")
     return [stamp.to_pydatetime() for stamp in parsed]
-
-
-def _expanding_window_folds(n_samples: int) -> list[tuple[int, int]]:
-    """Zwraca granice (train_end, valid_end) dla foldów expanding-window.
-
-    Dane są time-ordered: każdy fold trenuje na [0, train_end) i waliduje na
-    [train_end, valid_end). Kolejne foldy rozszerzają okno treningowe (expanding)
-    — replikuje to produkcyjny scenariusz „trenuj na przeszłości, predykuj
-    przyszłość". Poniżej `MIN_FOLD_SAMPLES` zwracamy jeden split (sane fallback),
-    żeby nie ciąć i tak małej próbki na bezsensownie cienkie foldy.
-    """
-    single_split = _single_split_bounds(n_samples)
-    if n_samples < MIN_FOLD_SAMPLES:
-        return [single_split]
-
-    # Walidacyjny blok per fold; reszta na początku idzie do pierwszego treningu.
-    block = n_samples // (WALK_FORWARD_FOLDS + 1)
-    if block < 1:
-        return [single_split]
-
-    folds: list[tuple[int, int]] = []
-    for fold_idx in range(1, WALK_FORWARD_FOLDS + 1):
-        train_end = block * fold_idx
-        valid_end = train_end + block if fold_idx < WALK_FORWARD_FOLDS else n_samples
-        if valid_end > train_end and train_end >= 1:
-            folds.append((train_end, valid_end))
-    return folds or [single_split]
-
-
-def _single_split_bounds(n_samples: int) -> tuple[int, int]:
-    """Granice pojedynczego chronologicznego splitu 20% (fallback / mała próbka)."""
-    validation_size = max(MIN_VALIDATION_SAMPLES, int(n_samples * VALIDATION_FRACTION))
-    if validation_size >= n_samples:
-        raise ValueError("Not enough samples to create validation holdout.")
-    train_end = n_samples - validation_size
-    return (train_end, n_samples)
 
 
 def _feature_distribution_stats(
