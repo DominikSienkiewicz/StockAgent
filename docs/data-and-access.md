@@ -148,6 +148,10 @@ afterwards.
   guarded by `pg_roles`, as in `038`, because the test container has no such roles.
 - New tables, views and sequences no longer get grants for `anon` and `authenticated`:
   `038` removed them from the default privileges of the migration role.
+- A new table or view needs a row in the [Relations](#relations) table, and a dropped one
+  loses its row. `tests/test_data_and_access_relations.py` (DOC-37, no Docker) replays the
+  `CREATE` and `DROP` statements of `supabase/migrations/*.sql` in order and fails when the
+  table and the migrations disagree.
 
 The container tests in `tests/infrastructure/test_migrations.py` enforce this:
 `test_every_public_table_has_row_level_security` fails on a table without RLS, and
