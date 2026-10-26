@@ -5231,6 +5231,14 @@ def test_report_flags_carry_the_council_redundancy_flag(settings: Settings, enab
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+def test_report_flags_carry_the_recipe_version_flag(settings: Settings, enabled: bool) -> None:
+    # WIA-68: n_trials Deflated Sharpe czyta kolumnę z migracji 030 tylko za jej flagą.
+    settings.recipe_version_enabled = enabled
+
+    assert main_agent._report_flags(settings).recipe_version_enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [False, True])
 def test_receipts_flag_reaches_the_repository_and_the_report(
     settings: Settings, mocker: Any, enabled: bool
 ) -> None:

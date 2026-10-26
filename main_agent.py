@@ -2473,6 +2473,7 @@ def _report_flags(settings: Settings) -> ReportFlags:
         paper_ledger_curve_enabled=settings.paper_ledger_enabled,
         open_entry_curve_enabled=settings.executable_entry_enabled,
         cost_ledger_enabled=settings.cost_ledger_enabled,
+        recipe_version_enabled=settings.recipe_version_enabled,
     )
 
 

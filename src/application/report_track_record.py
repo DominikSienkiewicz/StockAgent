@@ -56,7 +56,7 @@ from src.domain.calibration_curve import (
 )
 from src.domain.change_detection import AccuracyDrop
 from src.domain.conformal import IntervalCoverage
-from src.domain.equity_curve import EquityCurve
+from src.domain.equity_curve import MIN_SHARPE_SAMPLE, EquityCurve, SharpeEvidence
 from src.domain.mistake_taxonomy import MISTAKE_CATEGORY_LABELS_PL, MistakeCategory
 from src.domain.number_format import DecimalMark
 from src.domain.track_record import HitRateEvidence
@@ -76,6 +76,13 @@ _SECTION_HEADER = (
 _EXPIRED_NOTE_PL = (
     "za stare, by rozliczyć je bieżącą ceną, więc nie wchodzą ani do trafności, "
     "ani do treningu modelu."
+)
+# WIA-68: co znaczą PSR i DSR — pod podsumowaniem krzywej, gdy mają liczby.
+_SHARPE_NOTE_PL = (
+    "PSR — prawdopodobieństwo, że prawdziwy Sharpe krzywej jest dodatni, z poprawką "
+    "na skośność i grube ogony zwrotów; DSR (Deflated Sharpe) — to samo wobec "
+    "najlepszego z wypróbowanych wariantów przepisu bez umiejętności. Liczba "
+    "wariantów (z recipe_version) i ich rozrzut to szacunki."
 )
 # Budżet MAIL-06: w duży dzień zostają same kluczowe liczby.
 _COMPACT_NOTE_PL = (
@@ -98,6 +105,7 @@ class TrackRecordStats:
     - `sideways_scores` — Brier prognoz „bez ruchu” liczony osobno (WIA-39);
       `scores` i krzywa kalibracji są wtedy wyłącznie kierunkowe.
     - `accuracy_drop` — data istotnego spadku trafności (NIEZ-20); None = brak alarmu.
+    - `sharpe` — PSR i DSR krzywej kapitału (WIA-68); None = bez linii PSR/DSR.
     """
 
     hit_rate: HitRateEvidence | None = None
@@ -108,6 +116,8 @@ class TrackRecordStats:
     sideways_scores: ProbabilityScores | None = None
     # NIEZ-20: istotny spadek trafności (Page-Hinkley); None = brak alarmu.
     accuracy_drop: AccuracyDrop | None = None
+    # WIA-68: PSR i DSR krzywej; None = linii PSR/DSR nie ma.
+    sharpe: SharpeEvidence | None = None
 
 
 def render_track_record_html(
@@ -173,7 +183,7 @@ def _render_compact_html(
     return (
         _SECTION_HEADER
         + expired
-        + _render_equity_summary_html(equity_curve, stats.costs)
+        + _render_equity_summary_html(equity_curve, stats.costs, stats.sharpe)
         + _render_benchmark_line_html(stats.benchmark)
         + hit_rate
         + _render_accuracy_drop_html(stats.accuracy_drop)
@@ -188,8 +198,28 @@ def _equity_title(costs: PaperCosts | None) -> str:
     return f"Krzywa kapitału — {paper_pnl_label(costs)}"
 
 
-def _render_equity_summary_html(curve: EquityCurve, costs: PaperCosts | None) -> str:
-    """Ramka z wynikiem łącznym, trafnością, obsunięciem i liczbą transakcji."""
+def _sharpe_summary(sharpe: SharpeEvidence | None) -> str:
+    """WIA-68: „ · PSR 81% · DSR 44% (4 warianty przepisu)”; poniżej
+    `MIN_SHARPE_SAMPLE` okresów bez liczby; bez dowodu — nic."""
+    if sharpe is None:
+        return ""
+    if sharpe.psr is None:
+        return f" · PSR i DSR: od {MIN_SHARPE_SAMPLE} okresów krzywej (jest {sharpe.n})"
+    if sharpe.dsr is None or sharpe.n_trials is None:
+        dsr = "DSR —"
+    else:
+        variants = plural_pl(
+            sharpe.n_trials, "wariant przepisu", "warianty przepisu", "wariantów przepisu"
+        )
+        dsr = f"DSR {pct(sharpe.dsr, decimals=0)} ({sharpe.n_trials} {variants})"
+    return f" · PSR {pct(sharpe.psr, decimals=0)} · {dsr}"
+
+
+def _render_equity_summary_html(
+    curve: EquityCurve, costs: PaperCosts | None, sharpe: SharpeEvidence | None = None
+) -> str:
+    """Ramka z wynikiem łącznym, trafnością, obsunięciem, liczbą transakcji
+    i PSR / DSR (WIA-68)."""
     total_color = PALETTE.positive if curve.total_return >= 0 else PALETTE.negative
     return (
         f"<div style='padding: 10px 14px; background: {PALETTE.tint_info}; "
@@ -200,18 +230,21 @@ def _render_equity_summary_html(curve: EquityCurve, costs: PaperCosts | None) ->
         f"{pct(curve.total_return, signed=True, decimals=1)}</span> · trafność "
         f"{pct(curve.win_rate, decimals=1)} · max obsunięcie "
         f"{pct(curve.max_drawdown, decimals=1)} · transakcji: {curve.n_trades}"
+        f"{_sharpe_summary(sharpe)}"
         "</div>"
     )
 
 
 def _render_equity_html(curve: EquityCurve, stats: TrackRecordStats) -> str:
     """T1 — podsumowanie krzywej kapitału, założenia, dowód trafności, sparklinia."""
-    summary = _render_equity_summary_html(curve, stats.costs)
+    summary = _render_equity_summary_html(curve, stats.costs, stats.sharpe)
     assumptions = (
         f"<p style='{_NOTE_STYLE}'>{_html.escape(portfolio_assumptions(stats.costs))} "
         f"{_html.escape(ENTRY_PRICE_NOTE_PL)} "
         f"{_html.escape(PORTFOLIO_METHOD_CHANGE_PL)}</p>"
     )
+    if stats.sharpe is not None and stats.sharpe.psr is not None:
+        assumptions += f"<p style='{_NOTE_STYLE}'>{_html.escape(_SHARPE_NOTE_PL)}</p>"
     basket = None if stats.benchmark is None else stats.benchmark.basket
     return (
         summary

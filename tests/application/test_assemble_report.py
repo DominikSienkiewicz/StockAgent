@@ -782,3 +782,77 @@ class TestMonthToDateCost:
 
         assert context.month_cost is None
         assert "ledger" in caplog.text
+
+
+def _settled_days(days: int) -> list[dict[str, Any]]:
+    """Po jednym rozliczeniu na dzień UTC — krzywa portfela ma `days` okresów."""
+    start = datetime(2026, 8, 1, 5, 30, tzinfo=UTC)
+    rows = []
+    for day in range(days):
+        up = day % 3 != 0
+        rows.append(
+            {
+                **_SETTLED,
+                "is_trend_correct": up,
+                "actual_price_after_12h": "102" if up else "99",
+                "timestamp": (start + timedelta(days=day)).isoformat(),
+            }
+        )
+    return rows
+
+
+def _sharpe_flags(*, recipe_version_enabled: bool = True) -> ReportFlags:
+    return ReportFlags(
+        track_record_days=90,
+        reflection_min_age_hours=12,
+        equity_curve_enabled=True,
+        recipe_version_enabled=recipe_version_enabled,
+    )
+
+
+class TestSharpeEvidenceOfTheCurve:
+    """WIA-68: PSR i DSR krzywej kapitału; n_trials z liczby wersji przepisu."""
+
+    def test_curve_of_thirty_periods_gets_psr_and_dsr_with_recipe_trials(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+        repo.count_recipe_versions.return_value = 3
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        assert stats is not None
+        assert stats.sharpe is not None
+        assert (stats.sharpe.n, stats.sharpe.n_trials) == (30, 3)
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is not None
+
+    def test_recipe_trials_need_their_flag(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+
+        stats = _assemble(repo, _sharpe_flags(recipe_version_enabled=False)).track_record_stats
+
+        repo.count_recipe_versions.assert_not_called()
+        assert stats is not None and stats.sharpe is not None
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is None
+
+    def test_short_curve_reads_no_trials(self) -> None:
+        repo = _repo()
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        repo.count_recipe_versions.assert_not_called()
+        assert stats is not None and stats.sharpe is not None
+        assert (stats.sharpe.n, stats.sharpe.psr) == (1, None)
+
+    def test_failed_trials_read_leaves_only_the_psr(self) -> None:
+        repo = _repo()
+        repo.get_resolved_predictions.return_value = _settled_days(30)
+        repo.count_recipe_versions.side_effect = ProviderUnavailable("supabase down")
+
+        stats = _assemble(repo, _sharpe_flags()).track_record_stats
+
+        assert stats is not None and stats.sharpe is not None
+        assert stats.sharpe.psr is not None
+        assert stats.sharpe.dsr is None

@@ -69,7 +69,12 @@ from src.domain.consensus_shift import ConsensusShift, detect_shift
 from src.domain.council_redundancy import CouncilRedundancy, assess_council_redundancy
 from src.domain.coverage import CoverageReport
 from src.domain.cycle_maturity import CycleMaturity, SkipReason, classify_cycle
-from src.domain.equity_curve import EquityCurve
+from src.domain.equity_curve import (
+    MIN_SHARPE_SAMPLE,
+    EquityCurve,
+    SharpeEvidence,
+    sharpe_evidence,
+)
 from src.domain.finops import (
     BudgetWindow,
     MonthToDateCost,
@@ -150,6 +155,8 @@ class ReportFlags:
     # FIN-23: koszt miesiąca w sekcji kosztu z ledgera `llm_calls` (migracja 040) —
     # czytany tylko, gdy ledger jest pisany.
     cost_ledger_enabled: bool = False
+    # WIA-68: n_trials Deflated Sharpe z liczby wersji przepisu (kolumna z migracji 030).
+    recipe_version_enabled: bool = False
 
 
 def portfolio_sectors(results: list[SymbolResult], sector_map: Mapping[str, str]) -> dict[str, int]:
@@ -451,15 +458,40 @@ def build_symbol_track_record(
     return symbol_track_record_view(resolved, flags.track_record_days)
 
 
+def build_sharpe_evidence(
+    flags: ReportFlags, repository: RepositoryPort, curve: EquityCurve | None
+) -> SharpeEvidence | None:
+    """WIA-68: PSR i DSR zwrotów okresu krzywej kapitału (tej z maila).
+
+    n_trials (liczba wersji przepisu) czytamy dopiero, gdy krzywa ma
+    `MIN_SHARPE_SAMPLE` okresów — wcześniej liczb i tak nie ma. Bez flagi
+    `recipe_version_enabled` albo po błędzie odczytu zostaje sam PSR."""
+    if not flags.equity_curve_enabled or curve is None or curve.n_trades == 0:
+        return None
+    returns = [point.period_return for point in curve.points]
+    enough = len(returns) >= MIN_SHARPE_SAMPLE
+    trials = _recipe_trials(repository) if enough and flags.recipe_version_enabled else None
+    return sharpe_evidence(returns, trials)
+
+
+def _recipe_trials(repository: RepositoryPort) -> int | None:
+    try:
+        return repository.count_recipe_versions() or None
+    except PortError:
+        logger.warning("Recipe versions unavailable — Track Record without DSR", exc_info=True)
+        return None
+
+
 def build_track_record_stats(
     flags: ReportFlags,
     repository: RepositoryPort,
     costs: PaperCosts | None = None,
     *,
     reads: TrackRecordReads | None = None,
+    equity_curve: EquityCurve | None = None,
 ) -> TrackRecordStats | None:
-    """Dowód trafności (T1), Brier / BSS (T2) i pokrycie przedziałów 80% (ML-34)
-    pod sekcją Track Record.
+    """Dowód trafności (T1), Brier / BSS (T2), pokrycie przedziałów 80% (ML-34)
+    i PSR / DSR krzywej `equity_curve` (WIA-68) pod sekcją Track Record.
 
     Te same flagi co podsekcje, które statystyki uzupełniają; pokrycie za
     `interval_coverage_enabled` (kolumny z migracji 032). Osobna funkcja,
@@ -512,7 +544,8 @@ def build_track_record_stats(
         except Exception:
             logger.exception("Failed to measure interval coverage for track record")
     paper_costs = costs if flags.equity_curve_enabled else None
-    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop)
+    sharpe = build_sharpe_evidence(flags, repository, equity_curve)
+    parts = (evidence, scores, coverage, paper_costs, benchmark, accuracy_drop, sharpe)
     if all(part is None for part in parts):
         return None
     return TrackRecordStats(
@@ -523,6 +556,7 @@ def build_track_record_stats(
         benchmark=benchmark,
         sideways_scores=sideways_scores,
         accuracy_drop=accuracy_drop,
+        sharpe=sharpe,
     )
 
 
@@ -756,7 +790,9 @@ class ReportAssembler:
         equity_curve, calibration_buckets, lessons = build_track_record(
             flags, repository, self._costs, reads=reads
         )
-        track_record_stats = build_track_record_stats(flags, repository, self._costs, reads=reads)
+        track_record_stats = build_track_record_stats(
+            flags, repository, self._costs, reads=reads, equity_curve=equity_curve
+        )
         persona_track_record = assess_personas(persona_track_record, track_record_stats)
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
