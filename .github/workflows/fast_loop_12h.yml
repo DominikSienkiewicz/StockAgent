@@ -115,7 +115,7 @@ jobs:
       - name: 📦 Sync dependencies
         # SDK anthropic jest zależnością rdzeniową (analiza główna chodzi na Claude);
         # `--extra anthropic` to zachowany alias, pilnowany przez test_workflow_env_wiring.
-        run: uv sync --frozen --extra anthropic --no-build --no-install-project
+        run: uv sync --frozen --no-dev --extra anthropic --no-build --no-install-project
 
       - name: 📦 Download model weights (Release model-latest)
         # CI-13: wagi XGBoost trzyma Release `model-latest` (upload w Slow Loopie), nie

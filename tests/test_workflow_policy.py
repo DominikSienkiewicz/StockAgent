@@ -523,3 +523,51 @@ def test_harden_runner_never_blocks_traffic() -> None:
     for inputs in audited:
         assert inputs.get("egress-policy") == "audit", inputs
         assert "allowed-endpoints" not in inputs, "allowlista należy do trybu block"
+
+
+# CI-18: job z entry-pointem (`python main_*.py`) i jego sekretami nie potrzebuje pytesta,
+# mypy, ruffa ani testcontainers, więc kod z grupy dev nie trafia do środowiska z kluczami.
+# Bramka (ci.yml) i smoke (pytest) synchronizują grupę dev, bo jej używają.
+_ENTRYPOINT_RUN = re.compile(r"\bpython\s+main_\w+\.py\b")
+EXPECTED_ENTRYPOINT_WORKFLOWS = frozenset(
+    {
+        "bot_poll.yml",
+        "deadman_daily.yml",
+        "fast_loop_12h.yml",
+        "scorecard_pages.yml",
+        "shock_watch_hourly.yml",
+        "slow_loop_weekly.yml",
+    }
+)
+
+
+def _entrypoint_sync_steps() -> list[tuple[str, str, str]]:
+    """(workflow, job, komenda) każdego `uv sync` w jobie, który uruchamia `main_*.py`."""
+    found: list[tuple[str, str, str]] = []
+    for workflow, spec in _workflow_specs().items():
+        if workflow == "ci.yml":
+            continue
+        for name, job in _jobs(spec).items():
+            runs = [str(step.get("run", "")) for step in job.get("steps", [])]
+            if any(_ENTRYPOINT_RUN.search(run) for run in runs):
+                found.extend((workflow, name, run) for run in runs if "uv sync" in run)
+    return found
+
+
+def test_entrypoint_sync_detection_finds_every_entrypoint_workflow() -> None:
+    assert {workflow for workflow, _, _ in _entrypoint_sync_steps()} == (
+        EXPECTED_ENTRYPOINT_WORKFLOWS
+    )
+
+
+def test_production_workflows_sync_without_dev_dependencies() -> None:
+    with_dev = [
+        f"{workflow}:{job}"
+        for workflow, job, run in _entrypoint_sync_steps()
+        if "--no-dev" not in run.split()
+    ]
+
+    assert with_dev == [], (
+        f"`uv sync` bez `--no-dev` w jobach z entry-pointem: {with_dev} — grupa dev "
+        "(pytest, mypy, testcontainers) nie ma czego szukać w jobie z sekretami"
+    )

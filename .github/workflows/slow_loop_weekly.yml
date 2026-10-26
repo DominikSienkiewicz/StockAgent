@@ -64,7 +64,7 @@ jobs:
           enable-cache: true
 
       - name: 📦 Sync dependencies
-        run: uv sync --frozen --no-build --no-install-project
+        run: uv sync --frozen --no-dev --no-build --no-install-project
 
       - name: 🔐 Install age (evidence backup)
         # NIEZ-32: kopia tabel dowodowych jest szyfrowana `age` kluczem odbiorcy przed
