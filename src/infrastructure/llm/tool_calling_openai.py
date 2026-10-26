@@ -100,7 +100,7 @@ class ToolCallingOpenAIAdapter(ToolUseLLMPort):
             return {"error": f"invalid tool arguments: {exc}"}
         try:
             return tool.func(args)
-        except Exception as exc:  # noqa: BLE001 — celowo łapiemy wszystko
+        except Exception as exc:  # celowo łapiemy wszystko
             # Treść wyjątku (URL z kluczem, echo klucza) idzie do płatnego modelu.
             message = redact_secrets(str(exc), self._secret_values)
             logger.warning("Tool %s raised: %s", tool.name, message)

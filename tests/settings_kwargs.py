@@ -1,9 +1,9 @@
 """Argument `_env_file=None` dla `Settings` w testach pod strict mypy.
 
-mypy syntezuje `__init__` modelu z jego pól i nie zna `_env_file` z
-`BaseSettings.__init__`, więc `Settings(_env_file=None, ...)` to błąd `call-arg`.
 Rozpakowanie tego słownika przekazuje `_env_file=None` wprost do runtime'u (test nie
-czyta `.env` z dysku), a resztę argumentów konstruktora mypy dalej sprawdza.
+czyta `.env` z dysku), a resztę argumentów konstruktora mypy dalej sprawdza. Przed
+ARCH-22 mypy nie znał `_env_file` z `BaseSettings.__init__`; plugin `pydantic.mypy`
+go zna, a słownik zostaje wspólną konwencją testów.
 """
 
 from __future__ import annotations

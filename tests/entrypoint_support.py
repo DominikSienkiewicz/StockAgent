@@ -10,8 +10,8 @@ from src.config import Settings
 from src.domain.finops import LLMUsage
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
-# mypy zna z pydantica tylko syntetyczny `__init__` z polami modelu, bez kwargs
-# pydantic-settings (`_env_file`), więc konstruktor przechodzi przez `Callable`.
+# Konstruktor przez `Callable` z czasów, gdy mypy nie znał kwargs pydantic-settings
+# (`_env_file`); od ARCH-22 plugin `pydantic.mypy` je zna, a fabryka zostaje bez zmian.
 _SETTINGS_FACTORY: Callable[..., Settings] = Settings
 
 _BASE_SETTINGS: dict[str, Any] = {

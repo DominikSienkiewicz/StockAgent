@@ -15,7 +15,7 @@ class TestFeatureContribution:
         try:
             contribution.contribution = 1.0  # type: ignore[misc]
         # Interesuje nas tylko, że przypisanie do frozen pola rzuca — typ nieistotny.
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raised = exc
         else:
             raised = None

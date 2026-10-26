@@ -122,6 +122,7 @@ select = [
     "B",    # flake8-bugbear
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
+    "RUF100",  # ARCH-22: martwe `# noqa` (także kody reguł spoza `select`, np. BLE)
 ]
 
 [tool.ruff.lint.isort]
@@ -136,9 +137,24 @@ known-third-party = ["supabase"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
 # Gołe `uv run mypy` = bramka CI. Cały `tests/` jest pod strict (TEST-13, ratchet po
 # katalogach domknięty 2026-10-25): katalogi wymienione z nazwy + `tests/*.py` dla
 # top-levelu. Samo "tests" daje duplikaty modułów obok katalogów. Wpisu nie wolno
 # zdjąć, a nowy katalog testów trzeba dopisać — pilnuje tego tests/test_quality_gate_sync.py.
 files = ["src", "main_agent.py", "main_backtest.py", "main_bot.py", "main_deadman.py", "main_scorecard.py", "main_tools.py", "main_trainer.py", "main_watch.py", "tests/domain", "tests/tools", "tests/infrastructure", "tests/application", "tests/*.py"]
+
+# ARCH-22: brak stubów wyciszony tylko dla bibliotek, które ich nie mają (pandas bez
+# pandas-stubs, jsonschema, psycopg2, docker i testcontainers tylko w testach
+# kontenerowych). Nowa biblioteka bez stubów to błąd mypy, a nie cichy `Any`.
+[[tool.mypy.overrides]]
+module = ["pandas", "pandas.*", "jsonschema", "jsonschema.*", "psycopg2", "psycopg2.*", "docker", "docker.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+# ARCH-22: plugin pydantic syntezuje `__init__` modeli i `BaseSettings` (pola opcjonalne,
+# bo przychodzą z env; zna `_env_file`). Typowane argumenty i zakaz nieznanych pól
+# trzymają `Settings(...)` w testach pod tą samą kontrolą co dotąd.
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
