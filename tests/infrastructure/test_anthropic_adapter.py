@@ -1,3 +1,4 @@
+import inspect
 import json
 import time
 from typing import Any, cast
@@ -5,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from anthropic import APIStatusError
+from anthropic.resources.messages import Messages
 
 from src.application.ports import LLMPort
 from src.infrastructure.llm.anthropic_client import DEFAULT_MODEL, AnthropicAdapter
@@ -229,6 +231,21 @@ class TestConfiguration:
         assert call.kwargs["api_key"] == "sk-ant-secret"
         # GHA fast loop ma 15 min hard timeout — SDK musi mieć krótszy.
         assert call.kwargs["timeout"] > 0
+
+    def test_create_kwargs_exist_in_installed_sdk_signature(
+        self, adapter_with_client: tuple[AnthropicAdapter, MagicMock]
+    ) -> None:
+        """Podbicie Dependabota do anthropic 1.x usunęło `temperature` z `Messages.create`.
+        MagicMock przyjmuje każdy kwarg, więc testy zostały zielone, a Fast Loop dostałby
+        TypeError przy każdym wywołaniu Claude'a — kwargi sprawdzamy na podpisie SDK."""
+        adapter, client = adapter_with_client
+        client.messages.create.return_value = _message_response("{}")
+
+        adapter.analyze("Predict.")
+
+        accepted = set(inspect.signature(Messages.create).parameters)
+        sent = set(client.messages.create.call_args.kwargs)
+        assert sent <= accepted, f"SDK nie przyjmuje: {sorted(sent - accepted)}"
 
 
 def _status_error(status: int, retry_after: str | None = None) -> APIStatusError:

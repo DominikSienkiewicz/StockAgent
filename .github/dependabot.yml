@@ -27,6 +27,13 @@ updates:
       prefix: build
     cooldown:
       default-days: 14
+    # Nowy major SDK LLM zmienia API adapterów (anthropic 1.x bez `temperature`, openai 3.x
+    # na httpx2) — migrujemy go świadomie, a grupa `*` przemyciłaby go w tygodniowym PR-ze.
+    ignore:
+      - dependency-name: anthropic
+        update-types: ["version-update:semver-major"]
+      - dependency-name: openai
+        update-types: ["version-update:semver-major"]
     groups:
       python-deps:
         patterns: ["*"]

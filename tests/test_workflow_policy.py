@@ -152,6 +152,21 @@ def test_dependabot_waits_two_weeks_before_proposing_a_release() -> None:
         assert cooldown.get("default-days", 0) >= 14, update["package-ecosystem"]
 
 
+def test_dependabot_never_proposes_a_new_major_of_an_llm_sdk() -> None:
+    """Tygodniowa grupa `*` przyniosła anthropic 1.x (bez `temperature` w `Messages.create`)
+    i openai 3.x (httpx2); Fast Loop dostałby TypeError przy każdym wywołaniu Claude'a.
+    Major SDK LLM to świadoma migracja adapterów, więc Dependabot go nie proponuje."""
+    spec = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+    uv = next(update for update in spec["updates"] if update["package-ecosystem"] == "uv")
+    ignored_majors = {
+        rule["dependency-name"]
+        for rule in uv.get("ignore") or []
+        if "version-update:semver-major" in rule.get("update-types", [])
+    }
+
+    assert {"anthropic", "openai"} <= ignored_majors, sorted(ignored_majors)
+
+
 # NIEZ-27: ręczne DB Migrate w trakcie cyklu (022 robi DROP i CREATE ml_feature_store)
 # dawało błędy PGRST w połowie cyklu albo kolizję z odświeżeniem feature store w Slow
 # Loopie. Każdy job piszący do bazy bierze tę samą grupę, a kolejka nie anuluje nikogo.

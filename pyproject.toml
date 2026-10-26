@@ -31,10 +31,13 @@ dependencies = [
     "jinja2>=3.1.6",
     # LLM — główna analiza na Claude (`llm_provider = "anthropic"` w config.toml),
     # więc SDK jest rdzeniem, nie opcją: Slow Loop (weekly recap) też go buduje.
-    "anthropic>=0.102.0",
+    # Górne granice SDK: anthropic 1.x usunął `temperature` z `Messages.create` (adapter
+    # wysyła 0.2, bez niej Claude próbkuje z 1.0), a openai 3.x przeszedł na httpx2.
+    # Nowy major to świadoma migracja adapterów, nie cotygodniowe podbicie Dependabota.
+    "anthropic>=0.102.0,<1",
     "urllib3>=2.7",
     # Rada doradcza (gpt-5-mini), embeddingi i failover LLM — adaptery importują SDK wprost.
-    "openai>=2.36",
+    "openai>=2.36,<3",
     # WIA-73: podpis keyless rootu cyklu (klucz P-256, CSR do Fulcio) i odczyt certyfikatu
     # w verify-attestation. Był już w drzewie (supabase-auth[crypto] → pyjwt[crypto]),
     # deklaracja nie dokłada żadnego pakietu.
@@ -66,7 +69,7 @@ dev = [
 # Alias wstecznej zgodności: SDK jest już zależnością rdzeniową, ale
 # `uv sync --extra anthropic` w CI i w workflowach dalej działa.
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.102.0"]
+anthropic = ["anthropic>=0.102.0,<1"]
 
 [build-system]
 requires = ["hatchling"]
