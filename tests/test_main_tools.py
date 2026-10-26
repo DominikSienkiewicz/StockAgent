@@ -18,6 +18,7 @@ import pytest
 
 import main_tools
 from src.domain.portfolio import Position
+from tests.entrypoint_support import build_settings
 from tests.settings_kwargs import NO_ENV_FILE
 
 
@@ -181,6 +182,23 @@ def test_evaluate_is_a_main_tools_subcommand(
     assert code == 0
     repo_cls.return_value.get_resolved_predictions_for_eval.assert_called_once_with(days=7)
     assert "ostatnie 7 dni" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("stale_quote_enabled", [True, False])
+def test_evaluate_passes_stale_quote_flag_to_repository(
+    mocker: Any, stale_quote_enabled: bool
+) -> None:
+    # WIA-83: evaluate pomija rozliczenia ze stęchłego notowania jak Fast i Slow Loop.
+    mocker.patch(
+        "src.config.Settings.from_env",
+        return_value=build_settings(stale_quote_enabled=stale_quote_enabled),
+    )
+    repo_cls = mocker.patch("src.infrastructure.adapters.supabase_repo.SupabaseRepository")
+    repo_cls.return_value.get_resolved_predictions_for_eval.return_value = []
+
+    main_tools.main(["evaluate", "--days", "7"])
+
+    assert repo_cls.call_args.kwargs["stale_quote_enabled"] is stale_quote_enabled
 
 
 def test_src_tools_evaluate_has_no_entry_point_of_its_own() -> None:
