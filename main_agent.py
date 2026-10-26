@@ -276,7 +276,7 @@ def _ignored_result(symbol: str) -> SymbolResult:
     return SymbolResult(
         symbol=symbol,
         status="ignored",
-        # #4: trzecia kategoria pominięcia — ticker nieobsługiwany cenowo.
+        # R-4: trzecia kategoria pominięcia — ticker nieobsługiwany cenowo.
         # Wykluczona z licznika cold-startu (nigdy nie dostanie punktu odniesienia).
         skip_reason=SkipReason.UNSUPPORTED_PRICE,
         error_message="unsupported by current price adapter (Finnhub free)",
@@ -322,7 +322,7 @@ def build_llm_adapter(
 ) -> LLMPort:
     """Factory LLM — wybiera providera na podstawie konfiguracji.
 
-    #2: gdy `model_routing_enabled`, zwraca `CascadingLLMAdapter` — tani model
+    R-20: gdy `model_routing_enabled`, zwraca `CascadingLLMAdapter` — tani model
     domyślnie, eskalacja do frontier tylko gdy `confidence < routing_floor`.
     FIN-13: `usage_sink` dostaje tokeny każdego requestu (oba modele kaskady).
     NIEZ-44: z `llm_fallback_provider` całość idzie za `FailoverLLMAdapter`
@@ -394,7 +394,7 @@ def _build_primary_llm(
     usage_sink: UsageSink | None,
     telemetry: CycleTelemetry | None = None,
 ) -> LLMPort:
-    """Główny LLM analizy: kaskada modeli (#2) albo adapter `llm_provider`.
+    """Główny LLM analizy: kaskada modeli (R-20) albo adapter `llm_provider`.
 
     FIN-12 / FIN-21: eskalacja do frontiera to drugi płatny request jednego
     `analyze`, którego graf nie widzi (liczy tylko wywołanie kaskady), więc
@@ -459,7 +459,7 @@ def build_tool_use_adapter(
     quota_monitor: QuotaMonitor | None = None,
     usage_sink: UsageSink | None = None,
 ) -> ToolUseLLMPort | None:
-    """#6: adapter LLM z pętlą tool-use. None gdy wyłączony (tool_use_enabled=false).
+    """R-24: adapter LLM z pętlą tool-use. None gdy wyłączony (tool_use_enabled=false).
 
     Provider wybierany jak w `build_llm_adapter` (LLM_PROVIDER). `max_rounds` to
     twardy cap rund tool-call (FinOps): worst-case wywołań płatnych na analizę =
@@ -567,7 +567,7 @@ def build_notifier(
             ", ".join(missing),
         )
 
-    # #5: gdy messenger digest jest włączony, push NIE wchodzi do tego notifiera
+    # R-5: gdy messenger digest jest włączony, push NIE wchodzi do tego notifiera
     # — dostaje osobno 5-linijkowy skrót (`_dispatch_push_digest`). Pełny
     # plain-text raportu przekracza limit 4096 znaków Telegrama → 400 i cichy
     # zgon pusha. Z flagą OFF zachowujemy dotychczasowe (wadliwe) sklejenie.
@@ -607,7 +607,7 @@ def build_legacy_push_notifier(
 ) -> ReportNotifierPort | None:
     """Stary wariant pushu (`messenger_digest_enabled=false`): pełny tekst raportu
     do Telegram/Slack, wysyłany OSOBNO od maila, żeby tekst mógł pominąć sekcję
-    portfela. None, gdy działa skrót #5 albo nie ma sekretów żadnego kanału."""
+    portfela. None, gdy działa skrót R-5 albo nie ma sekretów żadnego kanału."""
     if settings.messenger_digest_enabled:
         return None
     channels = build_push_channels(settings, quota_monitor=quota_monitor)
@@ -631,7 +631,7 @@ def _missing_push_secrets(settings: Settings) -> list[str]:
 def build_push_notifier(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> ReportNotifierPort:
-    """#5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
+    """R-5 — kanały push jako JEDEN port (Telegram + Slack), z izolacją wyjątków
     per kanał w `CompositeNotifier`. Brak sekretów → Null (kanał nie powstaje).
 
     NIEZ-34: włączony `messenger_digest_enabled` bez żadnego kanału loguje WARNING
@@ -665,7 +665,7 @@ def _dispatch_push_digest(
     ranked_signals: Sequence[TradeSignal] = (),
     archive_url: str | None = None,
 ) -> bool:
-    """#5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
+    """R-5 — wysyła skrót push RAZ, niezależnie od fan-outu per subskrybent.
 
     MAIL-20: `lead_items` i `ranked_signals` to lead i ranking sygnałów maila
     właściciela — push mówi, co najważniejsze, w tej samej kolejności.
@@ -696,7 +696,7 @@ def _dispatch_push_digest(
 
 
 def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
-    """#15 — realne pozycje użytkownika. Null gdy flaga off → sekcja się chowa,
+    """R-15 — realne pozycje użytkownika. Null gdy flaga off → sekcja się chowa,
     a warstwa ryzyka zostaje przy dotychczasowych równych wagach."""
     from src.infrastructure.adapters.positions_repo import (
         NullPositionsAdapter,
@@ -709,7 +709,7 @@ def build_positions_port(settings: Settings) -> PortfolioPositionsPort:
 
 
 def _build_user_portfolio(settings: Settings) -> Portfolio | None:
-    """#15 — agregat portfela. Błąd / brak pozycji → None → sekcja się chowa
+    """R-15 — agregat portfela. Błąd / brak pozycji → None → sekcja się chowa
     (a nie: fałszywy P/L z niekompletnych danych)."""
     if not settings.portfolio_positions_enabled:
         return None
@@ -792,7 +792,7 @@ def _quote_held_positions(
 
 
 def _portfolio_clusters(settings: Settings) -> dict[str, str]:
-    """#15 — mapa symbol → grupa z `peer_groups`, czyli sektor akcji z `sectors`
+    """R-15 — mapa symbol → grupa z `peer_groups`, czyli sektor akcji z `sectors`
     w config.toml (PORT-05) — sektor, nie policzony klaster korelacji. Grup nie
     liczymy tutaj; domena tylko sumuje ekspozycję."""
     clusters: dict[str, str] = {}
@@ -803,7 +803,7 @@ def _portfolio_clusters(settings: Settings) -> dict[str, str]:
 
 
 def build_attestation_publisher(settings: Settings) -> AttestationPublisherPort:
-    """#16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
+    """R-16 — publisher commit-reveal. Null gdy `attestation_enabled=false`,
     tylko do odczytu bez `db_writes_enabled` (BEZ-08). WIA-73: z
     `attestation_rekor_enabled` root cyklu idzie najpierw do Sigstore Rekor
     (token OIDC z env joba GitHub Actions)."""
@@ -843,7 +843,7 @@ def build_attestation_ledger(settings: Settings) -> AttestationLedgerPort:
 def attestation_reveals(
     settings: Settings, repository: RepositoryPort
 ) -> RevealAttestationsUseCase:
-    """#16/WIA-15 — sweep revealów ze stemplem z trwałego ledgera: `reconcile` na starcie
+    """R-16/WIA-15 — sweep revealów ze stemplem z trwałego ledgera: `reconcile` na starcie
     runu stempluje revealy, które przeżyły push poprzedniego runu, `run` po raporcie
     tylko publikuje."""
     return RevealAttestationsUseCase(
@@ -874,7 +874,7 @@ def publish_paper_ledger_head(
 def build_options_port(
     settings: Settings, quota_monitor: QuotaMonitor | None = None
 ) -> OptionsFlowPort | None:
-    """#18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
+    """R-18 — port opcji dla grafu (fetch IV w `_predict_node`, za bramką
     volatility). None, gdy `options_flow_enabled` i `deribit_dvol_enabled` są off
     → sygnał nie powstaje. DAT-18: z `deribit_dvol_enabled` krypto idzie do Deribit
     DVOL, a akcje do Finnhuba (albo Null bez `options_flow_enabled`)."""
@@ -906,7 +906,7 @@ def build_options_port(
 
 def build_market_port(settings: Settings) -> MarketDataPort:
     """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
-    Wydzielone z `build_use_case`, bo `main_watch` (#11) potrzebuje samej ceny."""
+    Wydzielone z `build_use_case`, bo `main_watch` (R-11) potrzebuje samej ceny."""
     return RoutingMarketDataPort(
         equity=FinnhubAdapter(
             api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
@@ -917,7 +917,7 @@ def build_market_port(settings: Settings) -> MarketDataPort:
 
 
 def build_public_scorecard_publisher(settings: Settings) -> WebPublisherPort:
-    """#10 — `FileWebPublisher` publicznego scorecardu (same agregaty) na jego
+    """R-10 — `FileWebPublisher` publicznego scorecardu (same agregaty) na jego
     własnej ścieżce; bez flagi Null. Prywatny digest nie idzie już na dysk —
     leży w prywatnym archiwum (MAIL-24, BEZ-27)."""
     from src.infrastructure.adapters.web_publisher import (
@@ -999,7 +999,7 @@ def _public_scorecard_options(settings: Settings) -> PublicScorecardOptions:
 def public_scorecard_use_case(
     settings: Settings, repository: RepositoryPort, publisher: WebPublisherPort
 ) -> PublishPublicScorecardUseCase:
-    """#10/WIA-81 — publikacja strony i `scorecard.json` z okna `track_record_days`.
+    """R-10/WIA-81 — publikacja strony i `scorecard.json` z okna `track_record_days`.
     `main_scorecard` woła `publish` (błąd odczytu = exit 1), Fast Loop — `run`."""
     return PublishPublicScorecardUseCase(repository, publisher, _public_scorecard_options(settings))
 
@@ -1012,7 +1012,7 @@ def _publish_public_scorecard(
     *,
     reads: TrackRecordReads | None = None,
 ) -> None:
-    """#10 — publikacja strony w cyklu Fast Loopa za `public_scorecard_enabled`
+    """R-10 — publikacja strony w cyklu Fast Loopa za `public_scorecard_enabled`
     (`PublishPublicScorecardUseCase`, best-effort). `reads` (ARCH-16) — odczyty
     okna z tego dispatchu; None = use case czyta sam."""
     if not settings.public_scorecard_enabled:
@@ -1212,9 +1212,9 @@ def build_council_adapter(
     fail-fast: jeśli katalog pusty/zepsuty, agent w ogóle nie startuje
     zamiast cicho lecieć z mniejszą/inną radą.
 
-    #3: gdy `persona_weighting_enabled` i jest repozytorium, wstrzykuje dostawcę
+    R-21: gdy `persona_weighting_enabled` i jest repozytorium, wstrzykuje dostawcę
     wag person (cache per asset_type, jeden odczyt na klasę aktywa/cykl).
-    #1: `debate_mode` z configu — jedna runda rewizji przy podzielonym round-1.
+    R-19: `debate_mode` z configu — jedna runda rewizji przy podzielonym round-1.
     """
     from pathlib import Path
 
@@ -1810,7 +1810,7 @@ def build_agent_graph_deps(
     crypto_council_threshold = (
         Threshold(settings.crypto_volatility_threshold) if settings.crypto_symbols else None
     )
-    # #6: tool-use research agent — adapter + read-only toole (fundamenty z cache,
+    # R-24: tool-use research agent — adapter + read-only toole (fundamenty z cache,
     # makro NBP). Budowane tylko gdy włączony. Toole NIE robią nowych płatnych
     # wywołań: fast loop czyta fundamenty z cache, a NBP jest darmowe i bezkluczowe.
     tool_use_port = paid.tool_use
@@ -1896,7 +1896,7 @@ def build_agent_graph_deps(
         corporate_events_enabled=settings.corporate_events_enabled,
         # BEZ-14: lekcja z reflect w prompcie predykcji w fence'u; off.
         prompt_taint_fence_enabled=settings.prompt_taint_fence_enabled,
-        # #18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
+        # R-18: port opcji trafia DO GRAFU (fetch za bramką volatility), a nie tylko
         # do enrichmentu po grafie. Off → None → sygnał nie powstaje.
         options_port=build_options_port(settings, quota_monitor),
         # WIA-28: horyzont edge z kalendarza NYSE zamiast stałych 24 h; off.
@@ -1918,7 +1918,7 @@ def build_agent_graph_deps(
         price_outlier_guard_enabled=settings.price_outlier_guard_enabled,
         # EXP-17: reflect bez diagnozy per błąd — robi ją tygodniowo Slow Loop; off.
         batch_diagnosis_enabled=settings.batch_diagnosis_enabled,
-        # #16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
+        # R-16: publisher tylko gdy flaga on — inaczej nowe kolumny przed
         # migracją 024 dałyby PGRST204 i zabiły zapis całej predykcji. WIA-70:
         # flaga on bez kolumn 024/043 → cykl bez atestacji, predykcje zapisane.
         # WIA-60: commitmenty cyklu idą do kolektora — ledger dostaje jedną linię rootu
@@ -2053,7 +2053,7 @@ def _regime_tagging_enabled(settings: Settings) -> bool:
 
 
 def _run_risk_watch(settings: Settings, repository: RepositoryPort) -> MacroRiskReport | None:
-    """Risk Watch przed pętlą (zasila też reżim rynku #7). Off / błąd → None."""
+    """Risk Watch przed pętlą (zasila też reżim rynku R-25). Off / błąd → None."""
     risk_use_case = build_macro_risk_use_case(settings, repository)
     if risk_use_case is None:
         return None
@@ -2086,7 +2086,7 @@ def _resolve_regime(
     on_banner: Callable[[RegimeBanner], None] | None = None,
     macro_series: MacroSeriesSnapshot | None = None,
 ) -> tuple[str, float]:
-    """#7: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
+    """R-25: reżim rynku z overall_alert (zacieśnia próg + label do promptu).
     Zwraca (regime_context, regime_multiplier). Off / brak raportu → ("", 1.0).
 
     ALR-05: `on_banner` dostaje reżim cyklu dla nagłówka maila (reżim, mnożnik,
@@ -2199,7 +2199,7 @@ def _apply_regime_hysteresis(
 
 
 # ARCH-07: przebieg symboli cyklu żyje w `use_cases/run_cycle.py`; `_ProcessedSymbol`
-# i `_process_one_symbol` zostają dla testów wiringu (NIEZ-21, BEZ-07, #6, #14).
+# i `_process_one_symbol` zostają dla testów wiringu (NIEZ-21, BEZ-07, R-6, R-14).
 _ProcessedSymbol = ProcessedSymbol
 
 
@@ -2387,7 +2387,7 @@ def _build_subject(
     analyzed_total: int = 0,
     display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
 ) -> str:
-    """#1 — temat maila jak nagłówek gazety, nie jak licznik.
+    """R-1 — temat maila jak nagłówek gazety, nie jak licznik.
 
     Gdy cykl ma lead, jego pierwsza pozycja idzie do tematu ("NVDA -4,2%, rada
     PODZIELONA"); bez leadu zostaje dotychczasowy temat licznikowy. `prefix`
@@ -2398,7 +2398,7 @@ def _build_subject(
     w strefie `display_timezone` (`started_at` jest w UTC).
     """
     stamp = format_local(started_at, display_timezone)
-    # #4: pierwszy cykl ma własny, powitalny temat — lead i tak jest wtedy pusty
+    # R-4: pierwszy cykl ma własny, powitalny temat — lead i tak jest wtedy pusty
     # (brak punktu odniesienia = brak sygnałów).
     welcome = onboarding_subject(maturity, instrument_count=analyzed_total)
     if welcome:
@@ -2522,14 +2522,14 @@ def _build_symbol_track_record(
 def _build_signal_calibration(
     settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> list[CalibrationBucket] | None:
-    """#9 z `Settings` — `assemble_report.build_signal_calibration`."""
+    """R-9 z `Settings` — `assemble_report.build_signal_calibration`."""
     return build_signal_calibration(_report_flags(settings), repository, reads=reads)
 
 
 def _build_model_scorecard(
     settings: Settings, repository: RepositoryPort, *, reads: TrackRecordReads | None = None
 ) -> ModelScorecardView | None:
-    """#12 z `Settings` — `assemble_report.build_model_scorecard`."""
+    """R-12 z `Settings` — `assemble_report.build_model_scorecard`."""
     return build_model_scorecard(_report_flags(settings), repository, reads=reads)
 
 
@@ -2658,7 +2658,7 @@ def _report_inputs(
 
     `watchlist` (FIN-34) to symbole wycenione w tym cyklu: pozycje spoza niej
     dostają sam darmowy `/quote` (PORT-07)."""
-    # #15: realny portfel użytkownika (flaga + migracja 023).
+    # R-15: realny portfel użytkownika (flaga + migracja 023).
     user_portfolio = _build_user_portfolio(settings)
     held_prices = _quote_held_positions(settings, user_portfolio, watchlist)
     # PORT-11: kursy NBP do „P/L zł” (darmowe, poza bramką volatility).
@@ -2779,8 +2779,8 @@ def deliver_report(
 
     Kolejność: prywatne archiwum (MAIL-24, za flagą — link trafia do maila
     i pushu), mail — pojedynczy z opcjonalnym starym pushem albo fan-out per
-    subskrybent (U2) — potem artefakty poboczne: publiczny scorecard (#10), sweep
-    revealów (#16) i skrót push (#5). Błąd kanału go
+    subskrybent (U2) — potem artefakty poboczne: publiczny scorecard (R-10), sweep
+    revealów (R-16) i skrót push (R-5). Błąd kanału go
     oznacza i nie zatrzymuje kolejnych; wyjątek spoza kanałów kończy fazę
     (przed końcem wysyłki `report_sent` zostaje False). Nigdy nie rzuca.
 
@@ -2801,7 +2801,7 @@ def deliver_report(
         max_sev = quota_monitor.max_severity()
         prefix = QUOTA_CRITICAL_SUBJECT_PREFIX if max_sev is QuotaSeverity.CRITICAL else ""
 
-        # #1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
+        # R-1: temat z leadu, liczony nad PEŁNYMI wynikami cyklu (nie per
         # subskrybent) — sekcje są re-slicowane, ale temat jest współdzielony.
         # PORT-10: ten sam lead co w treści, więc też świadomy portfela; obcy
         # subskrybenci dostają jeden wspólny wariant bez portfela (BEZ-01).
@@ -2891,7 +2891,7 @@ def deliver_report(
                 )
         report_sent = True
 
-        # #10: publiczny scorecard — osobny publisher, osobna ścieżka.
+        # R-10: publiczny scorecard — osobny publisher, osobna ścieżka.
         _publish_public_scorecard(
             settings,
             repository,
@@ -2900,13 +2900,13 @@ def deliver_report(
             reads=report.reads,
         )
 
-        # #16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
+        # R-16: sweep revealów PO wysyłce — publikacja to artefakt poboczny,
         # nie może opóźnić ani zablokować raportu. WIA-15: bez stempla `revealed_at` —
         # ten przychodzi w następnym runie, gdy reveal przeżyje push na `attestation-log`.
         if settings.attestation_enabled:
             attestation_reveals(settings, repository).run()
 
-        # #5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
+        # R-5: push idzie RAZ, skrótem, poza gałęzią fan-outu — inaczej albo
         # ginie (subskrybenci), albo przekracza limit Telegrama (pełny raport).
         if settings.messenger_digest_enabled:
             push_notifier = build_push_notifier(settings, quota_monitor)
@@ -3473,10 +3473,10 @@ def _run_fast_loop(
         )
         results.append(_ignored_result(skipped))
 
-    # ---- Risk Watch (PRZED pętlą — zasila też reżim rynku #7) ----
+    # ---- Risk Watch (PRZED pętlą — zasila też reżim rynku R-25) ----
     macro_risk_report = _run_risk_watch(settings, repository)
 
-    # #7: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
+    # R-25: reżim rynku z overall_alert (zacieśnia próg + label do promptu). Off → neutral.
     # ALR-05: ten sam reżim trafia do nagłówka maila.
     regime_banners: list[RegimeBanner] = []
     regime_context, regime_multiplier = _resolve_regime(
@@ -3531,7 +3531,7 @@ def _run_fast_loop(
     results.extend(loop_results)
 
     duration = time.perf_counter() - started_perf
-    # #34: mianownik MUSI być liczbą faktycznie przetworzonych symboli
+    # Audyt z czerwca 2026: mianownik MUSI być liczbą faktycznie przetworzonych symboli
     # (eligible = symbols + crypto − unsupported), a nie len(settings.symbols).
     # Pętla iteruje `eligible`, więc failures odnoszą się do niego — inaczej
     # przy obecności krypto/unsupported ratio się rozjeżdża (failures mogą nawet

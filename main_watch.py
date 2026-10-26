@@ -1,4 +1,4 @@
-"""Watch entry point — darmowy alert szoku rynkowego poza cyklem (#11).
+"""Watch entry point — darmowy alert szoku rynkowego poza cyklem (R-11).
 
 Czwarty entry point obok `main_agent` (Fast Loop), `main_trainer` (Slow Loop)
 i `main_backtest`. Zaprojektowany pod cron CO GODZINĘ, 24/7 — nie tylko w sesji
