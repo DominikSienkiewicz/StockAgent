@@ -305,7 +305,7 @@ każdy adapter ma testy jednostkowe (mock sieci) + opcjonalnie integracyjne.
 ## Język
 
 - Komentarze w kodzie i treść raportu mailowego: **polski**.
-- `README.md`: **angielski**.
+- `README.md` i `SECURITY.md`: **angielski**.
 - Identyfikatory (klasy, funkcje, zmienne): angielski.
 
 ## Znane kompromisy
