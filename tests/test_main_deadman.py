@@ -181,3 +181,16 @@ def test_failed_database_alert_exits_1_so_the_workflow_alert_fires(
     notifier.send_report.side_effect = RuntimeError("Resend 500")
 
     assert main_deadman.main(settings) == 1
+
+
+def test_main_builds_settings_via_from_env(settings: Settings, mocker: Any) -> None:
+    # ARCH-41: ten sam punkt wejścia konfiguracji co pozostałe entry-pointy
+    # (`Settings.from_env`), bez gołego `Settings()` z ignorem mypy.
+    settings_cls = mocker.patch("main_deadman.Settings")
+    settings_cls.from_env.return_value = settings
+    mocker.patch("main_deadman.configure_logging")
+    _wire(mocker, _repo(datetime.now(UTC) - timedelta(days=2)))
+
+    main_deadman.main(now=datetime.now(UTC))
+
+    settings_cls.from_env.assert_called_once_with()
