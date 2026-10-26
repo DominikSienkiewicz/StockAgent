@@ -347,6 +347,40 @@ class TestCircuitBreaker:
         )
 
 
+class TestDefaultTimeout:
+    """TEST-31: żądanie bez `timeout=` dostaje limit sesji `DEFAULT_TIMEOUT_SECONDS`
+    (`requests` czekałby bez końca); jawny limit adaptera wygrywa."""
+
+    URL = "https://api.example.com/v1/data"
+
+    @staticmethod
+    def _ok() -> requests.Response:
+        response = requests.Response()
+        response.status_code = 200
+        response.url = TestDefaultTimeout.URL
+        return response
+
+    def test_request_without_timeout_gets_the_session_default(self, mocker: Any) -> None:
+        from src.infrastructure.adapters._http import DEFAULT_TIMEOUT_SECONDS
+
+        transport = mocker.patch.object(HTTPAdapter, "send", return_value=self._ok())
+
+        build_session().get(self.URL)
+        build_session(retry_post=False).post(self.URL, json={})
+
+        timeouts = [call.kwargs["timeout"] for call in transport.call_args_list]
+        assert timeouts == [DEFAULT_TIMEOUT_SECONDS, DEFAULT_TIMEOUT_SECONDS]
+
+    def test_explicit_timeout_wins_over_the_default(self, mocker: Any) -> None:
+        transport = mocker.patch.object(HTTPAdapter, "send", return_value=self._ok())
+
+        build_session().get(self.URL, timeout=3)
+        build_session().get(self.URL, timeout=(2, 5))
+
+        timeouts = [call.kwargs["timeout"] for call in transport.call_args_list]
+        assert timeouts == [3, (2, 5)]
+
+
 class TestFailedRequestsBySource:
     """MAIL-21: błędne odpowiedzi z licznika HTTP przypisane dostawcom po hoście."""
 
