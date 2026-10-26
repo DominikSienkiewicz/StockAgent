@@ -104,7 +104,7 @@ class TestMainTrainer:
 
 
 class TestModelScorecardPersistence:
-    """#12 — każdy przebieg treningu zapisuje scorecard per symbol, best-effort."""
+    """R-12 — każdy przebieg treningu zapisuje scorecard per symbol, best-effort."""
 
     def test_scorecard_saved_per_symbol(
         self, settings: Settings, mock_external_clients: None, mocker: Any
@@ -284,7 +284,7 @@ class TestModelScorecardRunId:
 
 
 class TestWeeklyRecapWiring:
-    """#17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
+    """R-17 — niedzielny recap. Slow Loop chodzi co tydzień i dotąd nie wysyłał
     użytkownikowi NIC. Koszt: dokładnie 1 wywołanie LLM tygodniowo."""
 
     def _trainer(

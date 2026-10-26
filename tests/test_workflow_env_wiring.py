@@ -111,7 +111,7 @@ def test_dependency_sync_installs_anthropic_extra() -> None:
 # Adaptery piszą wyłącznie na dysk runnera, który znika po jobie — bez kroku
 # publikacji włączona flaga to twierdzenie bez pokrycia.
 PUBLIC_ARTIFACT_FLAGS = ("attestation_enabled", "public_scorecard_enabled")
-# Pliki ledgera atestacji (#16), które musi zabrać trwały `git push`.
+# Pliki ledgera atestacji (R-16), które musi zabrać trwały `git push`.
 ATTESTATION_LEDGER_KEYS = ("attestation_commitments_path", "attestation_reveals_path")
 # WIA-59: głowa paper ledgera — ten sam katalog i ten sam push co ledger atestacji.
 PAPER_LEDGER_HEADS_KEY = "paper_ledger_heads_path"

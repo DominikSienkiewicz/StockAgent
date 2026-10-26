@@ -1,7 +1,7 @@
 """Regression guard — `shock_watch_hourly.yml` musi wstrzyknąć KOMPLET sekretów,
 których `Settings()` wymaga do samej KONSTRUKCJI.
 
-Historia: watch (#11) nie woła żadnego płatnego portu, ale `Settings` jest jednym
+Historia: watch (R-11) nie woła żadnego płatnego portu, ale `Settings` jest jednym
 wspólnym obiektem configu z twardo wymaganymi sekretami — `openai_api_key` (pole
 `str`) ORAZ `alpha_vantage_api_keys` (walidator `_resolve_alpha_vantage_keys`).
 Workflow wstrzykiwał `OPENAI_API_KEY`, ale gubił `ALPHA_VANTAGE_API_KEYS`, więc
