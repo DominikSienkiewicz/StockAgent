@@ -142,8 +142,10 @@ class AnthropicAdapter(LLMPort):
             lambda: self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
-                temperature=self._temperature,
                 messages=[{"role": "user", "content": prompt}],
+                # SDK 1.x usunął `temperature` z podpisu, ale wysyła API `2023-06-01`, które ją
+                # przyjmuje dla Claude 4.6; `extra_body` trzyma próbkowanie przepisu bez zmian.
+                extra_body={"temperature": self._temperature},
             )
         )
         if self._usage_sink is not None:

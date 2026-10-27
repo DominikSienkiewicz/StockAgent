@@ -10,7 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import anthropic
-import httpx
+import httpx2
 import openai
 import pytest
 
@@ -20,13 +20,13 @@ from src.infrastructure.llm.model_catalog import (
     OpenAIModelCatalog,
 )
 
-_REQUEST = httpx.Request("GET", "https://api.example.com/v1/models/x")
+_REQUEST = httpx2.Request("GET", "https://api.example.com/v1/models/x")
 
 
 def _not_found(module: object) -> Exception:
     error_type = module.NotFoundError  # type: ignore[attr-defined]
     return error_type(  # type: ignore[no-any-return]
-        "model not found", response=httpx.Response(404, request=_REQUEST), body=None
+        "model not found", response=httpx2.Response(404, request=_REQUEST), body=None
     )
 
 

@@ -588,11 +588,11 @@ class TestTemperatureCompatibility:
 
 
 def _server_error() -> Exception:
-    import httpx
+    import httpx2
     from openai import InternalServerError
 
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-    response = httpx.Response(503, request=request)
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx2.Response(503, request=request)
     return InternalServerError(message="unavailable", response=response, body=None)
 
 
@@ -742,11 +742,11 @@ class TestUsageReporting:
 
 
 def _client_error(status: int = 400) -> Exception:
-    import httpx
+    import httpx2
     from openai import APIStatusError
 
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-    response = httpx.Response(status, request=request)
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx2.Response(status, request=request)
     return APIStatusError(message="bad request", response=response, body=None)
 
 
@@ -790,12 +790,12 @@ class TestPortErrorTaxonomy:
     def test_connection_error_after_retries_is_provider_unavailable(
         self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
-        import httpx
+        import httpx2
         from openai import APIConnectionError
 
         from src.application.errors import ProviderUnavailable
 
-        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
         adapter = self._adapter(mock_openai_class, mocker, APIConnectionError(request=request))
 
         with pytest.raises(ProviderUnavailable) as excinfo:

@@ -9,14 +9,14 @@ from src.infrastructure.llm.openai_embeddings import OpenAIEmbeddingAdapter
 
 
 def _rate_limit_error(retry_after: str | None = None) -> RateLimitError:
-    """Buduje openai.RateLimitError z realnym httpx.Response."""
-    import httpx
+    """Buduje openai.RateLimitError z realnym httpx2.Response."""
+    import httpx2
 
     headers = {}
     if retry_after is not None:
         headers["retry-after"] = retry_after
-    request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
-    response = httpx.Response(429, headers=headers, request=request)
+    request = httpx2.Request("POST", "https://api.openai.com/v1/embeddings")
+    response = httpx2.Response(429, headers=headers, request=request)
     return RateLimitError("rate limited", response=response, body=None)
 
 
@@ -288,15 +288,15 @@ class TestSingleRetryLayer:
         assert mock_openai_class.call_args.kwargs["max_retries"] == 0
 
     def test_retries_server_error(self, mock_openai_class: MagicMock, mocker: Any) -> None:
-        import httpx
+        import httpx2
         from openai import InternalServerError
 
         mocker.patch("src.infrastructure.llm.openai_embeddings.time.sleep")
         client = MagicMock()
         mock_openai_class.return_value = client
-        request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+        request = httpx2.Request("POST", "https://api.openai.com/v1/embeddings")
         error = InternalServerError(
-            message="unavailable", response=httpx.Response(503, request=request), body=None
+            message="unavailable", response=httpx2.Response(503, request=request), body=None
         )
         client.embeddings.create.side_effect = [error, _embedding_response([0.0])]
 
