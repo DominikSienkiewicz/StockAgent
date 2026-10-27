@@ -4,8 +4,9 @@ import time
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import httpx2
 import pytest
-from anthropic import APIStatusError
+from anthropic import Anthropic, APIStatusError, DefaultHttpxClient
 from anthropic.resources.messages import Messages
 
 from src.application.ports import LLMPort
@@ -247,17 +248,53 @@ class TestConfiguration:
         sent = set(client.messages.create.call_args.kwargs)
         assert sent <= accepted, f"SDK nie przyjmuje: {sorted(sent - accepted)}"
 
+    def test_request_keeps_temperature_on_api_version_that_accepts_it(self, mocker: Any) -> None:
+        """anthropic 1.x nie ma `temperature` w podpisie, ale wysyła API `2023-06-01`, które
+        przyjmuje ją dla claude-sonnet-4-6. Przepis predykcji próbkuje z 0.2, więc to 0.2 musi
+        dojść do API; anthropic 2.x (API `2026-10-21`) odrzuca ją na każdym modelu."""
+        sent: dict[str, Any] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            sent["version"] = request.headers["anthropic-version"]
+            sent["body"] = json.loads(request.content)
+            return httpx2.Response(200, json=_MESSAGE_PAYLOAD)
+
+        def client_with_mock_transport(**kwargs: Any) -> Anthropic:
+            transport = httpx2.MockTransport(handler)
+            return Anthropic(**kwargs, http_client=DefaultHttpxClient(transport=transport))
+
+        mocker.patch(
+            "src.infrastructure.llm.anthropic_client.Anthropic",
+            side_effect=client_with_mock_transport,
+        )
+
+        AnthropicAdapter(api_key="sk-ant-test").analyze("Predict.")
+
+        assert sent["version"] == "2023-06-01"
+        assert sent["body"]["temperature"] == 0.2
+
+
+_MESSAGE_PAYLOAD = {
+    "id": "msg_test",
+    "type": "message",
+    "role": "assistant",
+    "model": DEFAULT_MODEL,
+    "content": [{"type": "text", "text": "{}"}],
+    "stop_reason": "end_turn",
+    "stop_sequence": None,
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}
+
 
 def _status_error(status: int, retry_after: str | None = None) -> APIStatusError:
-    """Buduje anthropic.APIStatusError (lub podklasę) z realnym httpx.Response."""
-    import httpx
+    """Buduje anthropic.APIStatusError (lub podklasę) z realnym httpx2.Response."""
     from anthropic import InternalServerError, RateLimitError
 
     headers = {}
     if retry_after is not None:
         headers["retry-after"] = retry_after
-    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    response = httpx.Response(status, headers=headers, request=request)
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx2.Response(status, headers=headers, request=request)
     if status == 429:
         return RateLimitError("rate limited", response=response, body=None)
     if status >= 500:
@@ -736,12 +773,11 @@ class TestPortErrorTaxonomy:
     def test_connection_error_after_retries_is_provider_unavailable(
         self, mock_anthropic_class: MagicMock, mocker: Any
     ) -> None:
-        import httpx
         from anthropic import APIConnectionError
 
         from src.application.errors import ProviderUnavailable
 
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
         adapter = self._adapter(mock_anthropic_class, mocker, APIConnectionError(request=request))
 
         with pytest.raises(ProviderUnavailable) as excinfo:

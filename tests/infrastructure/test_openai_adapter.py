@@ -1,8 +1,10 @@
+import inspect
 import json
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from openai.resources.chat.completions import Completions
 
 from src.application.ports import LLMPort
 from src.infrastructure.llm.openai_client import DEFAULT_MODEL, OpenAIAdapter
@@ -178,6 +180,23 @@ class TestConfiguration:
         call = mock_openai_class.call_args
         assert call.kwargs["api_key"] == "sk-secret-123"
         assert call.kwargs["timeout"] > 0
+
+    @pytest.mark.parametrize("model", ["gpt-4o", "gpt-5-mini"])
+    def test_create_kwargs_exist_in_installed_sdk_signature(
+        self, mock_openai_class: MagicMock, model: str
+    ) -> None:
+        """Adapter składa kwargi w `dict[str, Any]`, więc mypy nie widzi ich nazw, a MagicMock
+        przyjmuje każdy kwarg. Major SDK, który usunie parametr, dałby TypeError dopiero w
+        Fast Loopie — kwargi obu wariantów (z `temperature` i bez) sprawdzamy na podpisie SDK."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _completion("{}")
+
+        OpenAIAdapter(api_key="sk-test", model=model).analyze("Predict.")
+
+        accepted = set(inspect.signature(Completions.create).parameters)
+        sent = set(mock_client.chat.completions.create.call_args.kwargs)
+        assert sent <= accepted, f"SDK nie przyjmuje: {sorted(sent - accepted)}"
 
 
 class TestAdapterImplementsPort:
@@ -588,11 +607,11 @@ class TestTemperatureCompatibility:
 
 
 def _server_error() -> Exception:
-    import httpx
+    import httpx2
     from openai import InternalServerError
 
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-    response = httpx.Response(503, request=request)
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx2.Response(503, request=request)
     return InternalServerError(message="unavailable", response=response, body=None)
 
 
@@ -742,11 +761,11 @@ class TestUsageReporting:
 
 
 def _client_error(status: int = 400) -> Exception:
-    import httpx
+    import httpx2
     from openai import APIStatusError
 
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-    response = httpx.Response(status, request=request)
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx2.Response(status, request=request)
     return APIStatusError(message="bad request", response=response, body=None)
 
 
@@ -790,12 +809,12 @@ class TestPortErrorTaxonomy:
     def test_connection_error_after_retries_is_provider_unavailable(
         self, mock_openai_class: MagicMock, mocker: Any
     ) -> None:
-        import httpx
+        import httpx2
         from openai import APIConnectionError
 
         from src.application.errors import ProviderUnavailable
 
-        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
         adapter = self._adapter(mock_openai_class, mocker, APIConnectionError(request=request))
 
         with pytest.raises(ProviderUnavailable) as excinfo:

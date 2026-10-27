@@ -369,11 +369,11 @@ class TestPortErrorTaxonomy:
 
     @staticmethod
     def _status_error(status: int) -> Exception:
-        import httpx
+        import httpx2
         from openai import APIStatusError, InternalServerError, RateLimitError
 
-        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-        response = httpx.Response(status, request=request)
+        request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx2.Response(status, request=request)
         if status == 429:
             return RateLimitError(message="rate limited", response=response, body=None)
         if status >= 500:

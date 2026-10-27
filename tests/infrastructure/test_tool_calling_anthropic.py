@@ -432,11 +432,11 @@ class TestPortErrorTaxonomy:
 
     @staticmethod
     def _status_error(status: int) -> Exception:
-        import httpx
+        import httpx2
         from anthropic import APIStatusError, InternalServerError, RateLimitError
 
-        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-        response = httpx.Response(status, request=request)
+        request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx2.Response(status, request=request)
         if status == 429:
             return RateLimitError("rate limited", response=response, body=None)
         if status >= 500:

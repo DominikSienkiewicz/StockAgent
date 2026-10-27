@@ -17,7 +17,7 @@ from types import ModuleType
 from unittest.mock import Mock
 
 import anthropic
-import httpx
+import httpx2
 import openai
 import pytest
 
@@ -28,7 +28,7 @@ from src.application.ports import (
 )
 from src.infrastructure.llm.failover import FailoverLLMAdapter
 
-_REQUEST = httpx.Request("POST", "https://api.example.test/v1/messages")
+_REQUEST = httpx2.Request("POST", "https://api.example.test/v1/messages")
 
 
 class _StatusError(Exception):
@@ -41,7 +41,7 @@ class _StatusError(Exception):
 
 def _sdk_status_error(sdk: ModuleType, status: int) -> Exception:
     error: Exception = sdk.InternalServerError(
-        f"HTTP {status}", response=httpx.Response(status, request=_REQUEST), body=None
+        f"HTTP {status}", response=httpx2.Response(status, request=_REQUEST), body=None
     )
     return error
 

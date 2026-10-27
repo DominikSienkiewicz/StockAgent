@@ -354,6 +354,26 @@ tested list, and a rule changes in one place.
 
 **Guards** [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_graph_deps_depend_on_exactly_the_methods_the_fast_loop_calls` · [`tests/application/test_prediction_store_port.py`](../tests/application/test_prediction_store_port.py) `test_prediction_store_mirrors_repository_port_signatures` · [`tests/test_docs_consistency.py`](../tests/test_docs_consistency.py) `test_claude_md_delegates_to_agents_md`
 
+### D-15 · The LLM SDKs move one major at a time, and Claude keeps sampling at 0.2
+
+**Date** 2026-10-27 · **Status** in force · **Commits** `b617ff4`, `cd89957`
+
+The adapters run on anthropic 1.x and openai 3.x. anthropic 1.x dropped `temperature` from
+`Messages.create`, yet it still sends API version `2023-06-01`, which accepts the parameter on
+Claude 4.6; `AnthropicAdapter` therefore sends the recipe's 0.2 through `extra_body`, and
+predictions sample exactly as before. Deleting it would sample at 1.0 and change the recipe,
+which waits behind a flag while EXP-02 and EXP-03 run (D-9). anthropic 2.x sends API version
+`2026-10-21`, which rejects `temperature` on every model, so the SDK stays below 2 and Dependabot
+skips both SDKs' majors; moving to `2026-10-21` is the point where Claude's sampling becomes a
+recipe decision.
+
+*Costs:* `extra_body` bypasses the SDK's types, so only a test sees the parameter, and a model
+that rejects sampling values (Claude 4.7 and later, Sonnet 5 and later) would fail with a 400 if
+the config named one. *Gains:* current SDKs and their fixes with no change in what the model is
+asked or how it samples.
+
+**Guards** [`tests/infrastructure/test_anthropic_adapter.py`](../tests/infrastructure/test_anthropic_adapter.py) `TestConfiguration::test_request_keeps_temperature_on_api_version_that_accepts_it` · [`tests/infrastructure/test_openai_adapter.py`](../tests/infrastructure/test_openai_adapter.py) `TestConfiguration::test_create_kwargs_exist_in_installed_sdk_signature` · [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) `test_dependabot_never_proposes_a_new_major_of_an_llm_sdk`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:
