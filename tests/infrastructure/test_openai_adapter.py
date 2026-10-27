@@ -1,8 +1,10 @@
+import inspect
 import json
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from openai.resources.chat.completions import Completions
 
 from src.application.ports import LLMPort
 from src.infrastructure.llm.openai_client import DEFAULT_MODEL, OpenAIAdapter
@@ -178,6 +180,23 @@ class TestConfiguration:
         call = mock_openai_class.call_args
         assert call.kwargs["api_key"] == "sk-secret-123"
         assert call.kwargs["timeout"] > 0
+
+    @pytest.mark.parametrize("model", ["gpt-4o", "gpt-5-mini"])
+    def test_create_kwargs_exist_in_installed_sdk_signature(
+        self, mock_openai_class: MagicMock, model: str
+    ) -> None:
+        """Adapter składa kwargi w `dict[str, Any]`, więc mypy nie widzi ich nazw, a MagicMock
+        przyjmuje każdy kwarg. Major SDK, który usunie parametr, dałby TypeError dopiero w
+        Fast Loopie — kwargi obu wariantów (z `temperature` i bez) sprawdzamy na podpisie SDK."""
+        mock_client = MagicMock()
+        mock_openai_class.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _completion("{}")
+
+        OpenAIAdapter(api_key="sk-test", model=model).analyze("Predict.")
+
+        accepted = set(inspect.signature(Completions.create).parameters)
+        sent = set(mock_client.chat.completions.create.call_args.kwargs)
+        assert sent <= accepted, f"SDK nie przyjmuje: {sorted(sent - accepted)}"
 
 
 class TestAdapterImplementsPort:
