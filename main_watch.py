@@ -924,6 +924,7 @@ def _run_watch(settings: Settings) -> int:
     # Import lokalny — DI Container Fast Loopa buduje darmowe adaptery ceny
     # i kanały push; watch tylko je składa. Zero płatnych portów.
     from main_agent import (
+        WATCH_FINNHUB_RATE_LIMITER,
         build_fx_port,
         build_market_port,
         build_push_channels,
@@ -945,7 +946,7 @@ def _run_watch(settings: Settings) -> int:
             "Shock watch bez kanału push (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID albo "
             "SLACK_WEBHOOK_URL) — wykryte szoki nie zostaną wysłane ani zapisane."
         )
-    market = build_market_port(settings)
+    market = build_market_port(settings, rate_limiter=WATCH_FINNHUB_RATE_LIMITER)
     scan = partial(
         scan_watch,
         settings,

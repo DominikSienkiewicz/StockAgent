@@ -237,7 +237,10 @@ def test_rate_limit_alert_is_polish_and_logged_in_english(
     alert = monitor.alerts[0]
     assert "wyczerpany darmowy limit" in alert.message
     assert "exhausted" not in alert.message
-    assert "SYMBOL_THROTTLE_SECONDS" in alert.action
+    # Limiter procesu trzyma się swojego udziału w limicie klucza, więc 429 znaczy
+    # drugiego użytkownika tego samego klucza, nie za szybką pętlę symboli.
+    assert "SYMBOL_THROTTLE_SECONDS" not in alert.action
+    assert "FINNHUB_API_KEY" in alert.action
     assert "Finnhub returned 429 for 'AAPL'" in caplog.text
 
 

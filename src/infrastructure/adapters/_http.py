@@ -366,6 +366,10 @@ class RateLimiter:
         self._granted: deque[float] = deque()
         self._lock = threading.Lock()
 
+    @property
+    def rate_per_minute(self) -> int:
+        return self._rate
+
     def acquire(self) -> None:
         with self._lock:
             now = self._clock()

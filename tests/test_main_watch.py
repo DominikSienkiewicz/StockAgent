@@ -257,6 +257,30 @@ def test_main_wires_free_adapters_only(settings: Settings, mocker: Any) -> None:
         builder.assert_not_called()
 
 
+def test_watch_and_fast_loop_split_the_finnhub_key_within_the_plan(
+    settings: Settings, mocker: Any
+) -> None:
+    # Watch i Fast Loop to osobne procesy na jednym FINNHUB_API_KEY, a kolejka GHA ich
+    # nie rozdziela (GROUP_EXEMPT_WRITERS w test_workflow_policy.py), więc mogą chodzić
+    # naraz. Darmowy plan to 60 zapytań na minutę na klucz: dwa limitery po 55 dawały 429.
+    import main_agent
+    from src.infrastructure.adapters._http import RateLimiter
+
+    mocker.patch("main_agent.build_repository")
+    market = mocker.patch("main_agent.build_market_port")
+    mocker.patch(
+        "main_watch.scan_watch", return_value=main_watch.WatchOutcome(sent=0, failures=0, total=1)
+    )
+
+    assert main_watch.main(settings) == 0
+
+    watch_limiter = market.call_args.kwargs.get("rate_limiter")
+    assert isinstance(watch_limiter, RateLimiter)
+    assert watch_limiter is not main_agent.FINNHUB_RATE_LIMITER
+    fast_loop_limiter = main_agent.FINNHUB_RATE_LIMITER
+    assert watch_limiter.rate_per_minute + fast_loop_limiter.rate_per_minute <= 60
+
+
 def test_main_hands_the_nbp_port_to_the_scan_only_with_nbp_enabled(
     settings: Settings, mocker: Any
 ) -> None:

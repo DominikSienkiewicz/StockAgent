@@ -2,9 +2,9 @@
 
 Darmowy plan Finnhub to 60 zapytań na minutę na KLUCZ, a proces ma kilka
 adapterów na tym samym kluczu (/quote, analitycy, opcje). DI tworzy więc jeden
-`RateLimiter` z `FINNHUB_REQUESTS_PER_MINUTE` (zapas pod 60) i wstrzykuje go
-wszystkim. `FinnhubStatusWatcher` mówi głośno o statusach, które adaptery
-opcjonalnych źródeł alpha dotąd połykały jak „brak danych”.
+`RateLimiter` na proces i wstrzykuje go wszystkim; Fast Loop i Shock Watch dzielą
+klucz, więc każdy dostaje swój udział w limicie. `FinnhubStatusWatcher` mówi głośno
+o statusach, które adaptery opcjonalnych źródeł alpha dotąd połykały jak „brak danych”.
 """
 
 from __future__ import annotations
@@ -19,8 +19,11 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._http import build_session
 
-# 55 z 60 dozwolonych na minutę — zapas na drgania zegara i requesty spoza procesu.
-FINNHUB_REQUESTS_PER_MINUTE = 55
+# Fast Loop i Shock Watch to osobne procesy na jednym kluczu i mogą chodzić naraz:
+# kolejka GHA ich nie rozdziela, bo godzinny watch wypychałby z niej czekający Fast Loop.
+# Dzielą więc 60 zapytań na minutę: 35 + 20 = 55, zapas 5 na drgania zegara.
+FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE = 35
+SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE = 20
 
 # BEZ-15: token jedzie nagłówkiem, nie `&token=` w URL-u — URL trafia do treści
 # wyjątków `requests`, logów urllib3 i tracebacków.
