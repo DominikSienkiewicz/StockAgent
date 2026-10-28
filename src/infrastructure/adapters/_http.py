@@ -35,6 +35,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -58,7 +59,8 @@ logger = logging.getLogger(__name__)
 # a job ma 15 minut limitu.
 RETRY_TOTAL = 3
 RETRY_BACKOFF_FACTOR = 0.5
-RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+RETRY_SERVER_ERRORS = (500, 502, 503, 504)
+RETRY_STATUS_FORCELIST = (429, *RETRY_SERVER_ERRORS)
 RETRY_AFTER_MAX_SECONDS = 10
 
 # TEST-31: limit żądania sesji, które nie podało własnego `timeout=` — `requests`
@@ -292,6 +294,7 @@ class _CircuitBreakingAdapter(HTTPAdapter):
 def build_session(
     *,
     retry_post: bool = True,
+    retry_rate_limited: bool = True,
     meter: HttpCallMeter | None = None,
     breakers: CircuitBreakerRegistry | None = None,
 ) -> requests.Session:
@@ -303,6 +306,11 @@ def build_session(
 
     `retry_post=False` dla API bez klucza idempotencji (Telegram, webhook Slacka):
     POST powtórzony po 5xx, który serwer jednak przyjął, dubluje wiadomość.
+
+    `retry_rate_limited=False` dla API, którego limit na minutę pilnuje `RateLimiter`
+    (Finnhub): ponowienie 429 idzie obok limitera i w kilka sekund nie doczeka końca
+    okna, więc tylko dokłada zapytań. Wyłącza też honorowanie `Retry-After`, bo z tym
+    nagłówkiem urllib3 ponawia 429 nawet spoza `status_forcelist`.
 
     `meter` (NIEZ-24) — miernik tej sesji; None = miernik z `metered_http`, o ile
     jest zainstalowany.
@@ -317,9 +325,10 @@ def build_session(
     retry = Retry(
         total=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF_FACTOR,
-        status_forcelist=RETRY_STATUS_FORCELIST,
+        status_forcelist=RETRY_STATUS_FORCELIST if retry_rate_limited else RETRY_SERVER_ERRORS,
         allowed_methods=frozenset({"GET", "POST"} if retry_post else {"GET"}),
         raise_on_status=False,  # status sprawdzamy sami przez raise_for_status()
+        respect_retry_after_header=retry_rate_limited,
         retry_after_max=RETRY_AFTER_MAX_SECONDS,
     )
     adapter = _CircuitBreakingAdapter(
@@ -329,14 +338,18 @@ def build_session(
     return session
 
 
+_RATE_WINDOW_SECONDS = 60.0
+
+
 class RateLimiter:
-    """Token bucket współdzielony przez wszystkie adaptery jednego API (DAT-12).
+    """Okno przesuwne współdzielone przez wszystkie adaptery jednego API (DAT-12).
 
     Limit jest per klucz, więc limiter działa tylko jako JEDEN obiekt na proces
     (DI tworzy go raz) — limiter na instancji adaptera nie widziałby ruchu
-    pozostałych. Pojemność = `rate_per_minute` (burst), dolewka liniowa.
-    `acquire()` blokuje wątek do czasu dostępnego tokenu; lock trzyma kolejkę
-    przy równoległych symbolach."""
+    pozostałych. W żadnych 60 sekundach nie wychodzi więcej niż `rate_per_minute`
+    żądań; kubełek tokenów z pojemnością równą stawce wpuszczał w pierwszej minucie
+    prawie dwie stawki i Finnhub odpowiadał 429. `acquire()` blokuje wątek, aż
+    najstarsze żądanie wyjdzie z okna; lock trzyma kolejkę przy równoległych symbolach."""
 
     def __init__(
         self,
@@ -347,25 +360,25 @@ class RateLimiter:
     ) -> None:
         if rate_per_minute <= 0:
             raise ValueError(f"rate_per_minute must be positive (got {rate_per_minute})")
-        self._capacity = float(rate_per_minute)
-        self._per_second = rate_per_minute / 60.0
+        self._rate = rate_per_minute
         self._clock = clock
         self._sleep = sleep
-        self._tokens = self._capacity
-        self._updated = clock()
+        self._granted: deque[float] = deque()
         self._lock = threading.Lock()
 
     def acquire(self) -> None:
         with self._lock:
             now = self._clock()
-            elapsed = max(0.0, now - self._updated)
-            self._tokens = min(self._capacity, self._tokens + elapsed * self._per_second)
-            self._updated = now
-            if self._tokens < 1.0:
-                self._sleep((1.0 - self._tokens) / self._per_second)
-                self._tokens = 1.0
-                self._updated = self._clock()
-            self._tokens -= 1.0
+            self._forget_up_to(now - _RATE_WINDOW_SECONDS)
+            while len(self._granted) >= self._rate:
+                self._sleep(self._granted[0] + _RATE_WINDOW_SECONDS - now)
+                now = self._clock()
+                self._forget_up_to(now - _RATE_WINDOW_SECONDS)
+            self._granted.append(now)
+
+    def _forget_up_to(self, moment: float) -> None:
+        while self._granted and self._granted[0] <= moment:
+            self._granted.popleft()
 
 
 REDACTED = "***"

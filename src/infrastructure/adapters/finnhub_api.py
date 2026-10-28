@@ -13,10 +13,12 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money, Quote
-from src.infrastructure.adapters._finnhub_common import finnhub_auth_headers
+from src.infrastructure.adapters._finnhub_common import (
+    build_finnhub_session,
+    finnhub_auth_headers,
+)
 from src.infrastructure.adapters._http import (
     RateLimiter,
-    build_session,
     raise_for_status_redacted,
     safe_get,
     translate_http_error,
@@ -54,7 +56,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._session = build_session()
+        self._session = build_finnhub_session()
         self._quota_monitor = quota_monitor
         # DAT-12: wspólny limiter procesu (jeden na klucz Finnhub) z DI.
         self._rate_limiter = rate_limiter

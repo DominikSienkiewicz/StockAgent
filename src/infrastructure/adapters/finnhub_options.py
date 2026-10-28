@@ -31,11 +31,11 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.options_flow import OptionsFlowSnapshot
 from src.infrastructure.adapters._finnhub_common import (
     FinnhubStatusWatcher,
+    build_finnhub_session,
     finnhub_auth_headers,
 )
 from src.infrastructure.adapters._http import (
     RateLimiter,
-    build_session,
     json_payload,
     translated_get,
 )
@@ -62,7 +62,7 @@ class FinnhubOptionsAdapter(OptionsFlowPort):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._session = session if session is not None else build_session()
+        self._session = session if session is not None else build_finnhub_session()
         self._rate_limiter = rate_limiter
         self._status = FinnhubStatusWatcher("Finnhub options", "łańcuch opcji", quota_monitor)
 

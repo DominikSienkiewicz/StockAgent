@@ -34,11 +34,11 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.analyst_consensus import AnalystConsensus
 from src.infrastructure.adapters._finnhub_common import (
     FinnhubStatusWatcher,
+    build_finnhub_session,
     finnhub_auth_headers,
 )
 from src.infrastructure.adapters._http import (
     RateLimiter,
-    build_session,
     json_payload,
     translated_get,
 )
@@ -67,7 +67,7 @@ class FinnhubAnalystAdapter(AnalystConsensusPort):
         self._api_key = api_key
         self._timeout = timeout
         self._base_url = base_url.rstrip("/")
-        self._session = session if session is not None else build_session()
+        self._session = session if session is not None else build_finnhub_session()
         self._rate_limiter = rate_limiter
         self._status = FinnhubStatusWatcher(
             "Finnhub analyst", "konsensus analityków", quota_monitor
