@@ -35,6 +35,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -329,14 +330,18 @@ def build_session(
     return session
 
 
+_RATE_WINDOW_SECONDS = 60.0
+
+
 class RateLimiter:
-    """Token bucket współdzielony przez wszystkie adaptery jednego API (DAT-12).
+    """Okno przesuwne współdzielone przez wszystkie adaptery jednego API (DAT-12).
 
     Limit jest per klucz, więc limiter działa tylko jako JEDEN obiekt na proces
     (DI tworzy go raz) — limiter na instancji adaptera nie widziałby ruchu
-    pozostałych. Pojemność = `rate_per_minute` (burst), dolewka liniowa.
-    `acquire()` blokuje wątek do czasu dostępnego tokenu; lock trzyma kolejkę
-    przy równoległych symbolach."""
+    pozostałych. W żadnych 60 sekundach nie wychodzi więcej niż `rate_per_minute`
+    żądań; kubełek tokenów z pojemnością równą stawce wpuszczał w pierwszej minucie
+    prawie dwie stawki i Finnhub odpowiadał 429. `acquire()` blokuje wątek, aż
+    najstarsze żądanie wyjdzie z okna; lock trzyma kolejkę przy równoległych symbolach."""
 
     def __init__(
         self,
@@ -347,25 +352,25 @@ class RateLimiter:
     ) -> None:
         if rate_per_minute <= 0:
             raise ValueError(f"rate_per_minute must be positive (got {rate_per_minute})")
-        self._capacity = float(rate_per_minute)
-        self._per_second = rate_per_minute / 60.0
+        self._rate = rate_per_minute
         self._clock = clock
         self._sleep = sleep
-        self._tokens = self._capacity
-        self._updated = clock()
+        self._granted: deque[float] = deque()
         self._lock = threading.Lock()
 
     def acquire(self) -> None:
         with self._lock:
             now = self._clock()
-            elapsed = max(0.0, now - self._updated)
-            self._tokens = min(self._capacity, self._tokens + elapsed * self._per_second)
-            self._updated = now
-            if self._tokens < 1.0:
-                self._sleep((1.0 - self._tokens) / self._per_second)
-                self._tokens = 1.0
-                self._updated = self._clock()
-            self._tokens -= 1.0
+            self._forget_up_to(now - _RATE_WINDOW_SECONDS)
+            while len(self._granted) >= self._rate:
+                self._sleep(self._granted[0] + _RATE_WINDOW_SECONDS - now)
+                now = self._clock()
+                self._forget_up_to(now - _RATE_WINDOW_SECONDS)
+            self._granted.append(now)
+
+    def _forget_up_to(self, moment: float) -> None:
+        while self._granted and self._granted[0] <= moment:
+            self._granted.popleft()
 
 
 REDACTED = "***"

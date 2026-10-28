@@ -83,7 +83,7 @@ class TestRetryLimits:
 
 
 class TestRateLimiter:
-    """DAT-12: token bucket współdzielony przez adaptery jednego API w procesie."""
+    """DAT-12: okno przesuwne współdzielone przez adaptery jednego API w procesie."""
 
     @staticmethod
     def _limiter(rate_per_minute: int) -> tuple[RateLimiter, list[float], list[float]]:
@@ -107,22 +107,35 @@ class TestRateLimiter:
 
         assert sleeps == []
 
-    def test_request_over_the_budget_waits_for_one_token(self) -> None:
+    def test_no_minute_window_carries_more_than_the_rate(self) -> None:
+        # Fast Loop i Shock Watch 2026-10-28: kubełek z pojemnością równą stawce
+        # wpuścił w pierwszej minucie burst 55 i dolewkę ~55, a Finnhub liczy 60 na minutę.
+        limiter, clock, _ = self._limiter(55)
+        granted: list[float] = []
+
+        for _ in range(110):
+            limiter.acquire()
+            granted.append(clock[0])
+
+        spans = [granted[index + 55] - granted[index] for index in range(len(granted) - 55)]
+        assert min(spans) >= 60.0
+
+    def test_request_over_the_budget_waits_until_the_oldest_leaves_the_window(self) -> None:
         limiter, _, sleeps = self._limiter(60)
 
         for _ in range(61):
             limiter.acquire()
 
-        # 60/min = 1 token na sekundę: 61. request czeka pełną sekundę.
-        assert sleeps == [1.0]
+        # 60 żądań w chwili 0: 61. czeka, aż pierwsze wyjdzie z 60-sekundowego okna.
+        assert sleeps == [60.0]
 
-    def test_tokens_refill_with_time(self) -> None:
+    def test_budget_returns_once_the_window_has_passed(self) -> None:
         limiter, clock, sleeps = self._limiter(60)
         for _ in range(60):
             limiter.acquire()
 
-        clock[0] += 30.0
-        for _ in range(30):
+        clock[0] += 60.0
+        for _ in range(60):
             limiter.acquire()
 
         assert sleeps == []
