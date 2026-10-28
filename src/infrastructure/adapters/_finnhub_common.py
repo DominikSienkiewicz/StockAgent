@@ -13,8 +13,11 @@ import logging
 import threading
 from datetime import UTC, datetime
 
+import requests
+
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
+from src.infrastructure.adapters._http import build_session
 
 # 55 z 60 dozwolonych na minutę — zapas na drgania zegara i requesty spoza procesu.
 FINNHUB_REQUESTS_PER_MINUTE = 55
@@ -32,6 +35,13 @@ logger = logging.getLogger(__name__)
 def finnhub_auth_headers(api_key: str) -> dict[str, str]:
     """Nagłówki uwierzytelnienia żądania Finnhub (BEZ-15)."""
     return {FINNHUB_TOKEN_HEADER: api_key}
+
+
+def build_finnhub_session() -> requests.Session:
+    """Sesja adaptera Finnhub: 429 wraca od razu do adaptera. Ponowienia urllib3
+    szłyby obok wspólnego limitera, a minutowe okno Finnhub trwa dłużej niż ich
+    backoff — każde 429 kosztowało cztery zapytania i przedłużało blokadę klucza."""
+    return build_session(retry_rate_limited=False)
 
 
 class FinnhubStatusWatcher:

@@ -32,11 +32,11 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.earnings import EarningsEvent, EarningsTiming
 from src.infrastructure.adapters._finnhub_common import (
     FinnhubStatusWatcher,
+    build_finnhub_session,
     finnhub_auth_headers,
 )
 from src.infrastructure.adapters._http import (
     RateLimiter,
-    build_session,
     json_payload,
     translated_get,
 )
@@ -81,7 +81,7 @@ class FinnhubEarningsCalendarAdapter(EarningsCalendarPort):
     ) -> None:
         self._api_key = api_key
         self._symbols = frozenset(symbol.upper() for symbol in symbols)
-        self._session = session if session is not None else build_session()
+        self._session = session if session is not None else build_finnhub_session()
         self._timeout = timeout
         self._base_url = base_url.rstrip("/")
         self._horizon_days = horizon_days
