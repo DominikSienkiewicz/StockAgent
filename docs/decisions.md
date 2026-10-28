@@ -374,6 +374,31 @@ asked or how it samples.
 
 **Guards** [`tests/infrastructure/test_anthropic_adapter.py`](../tests/infrastructure/test_anthropic_adapter.py) `TestConfiguration::test_request_keeps_temperature_on_api_version_that_accepts_it` · [`tests/infrastructure/test_openai_adapter.py`](../tests/infrastructure/test_openai_adapter.py) `TestConfiguration::test_create_kwargs_exist_in_installed_sdk_signature` · [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) `test_dependabot_never_proposes_a_new_major_of_an_llm_sdk`
 
+### D-16 · The Fast Loop and the Shock Watch split the Finnhub key's minute
+
+**Date** 2026-10-28 · **Status** in force · **Commits** `127930e`, `768ec66`
+
+The free Finnhub plan allows 60 requests a minute per key, and the Fast Loop and the hourly Shock
+Watch are separate processes on the same `FINNHUB_API_KEY`. Each paces itself with one
+`RateLimiter` (DAT-12) that cannot see the other process, so when the two runs overlap, which
+GitHub's delayed crons make likely for roughly one Fast Loop in ten, they could send twice the
+plan between them. A shared GitHub Actions concurrency group would serialise them, but GitHub keeps
+one pending run per group and cancels the older one, so the hourly watch would push a waiting Fast
+Loop out of the queue; the same reason keeps the watch out of `supabase-writers`. The key is
+therefore split: the Fast Loop's limiter passes at most 35 requests in any 60 seconds and the
+watch's 20, 55 in all, with 5 left for clock drift. A 429 now means a third user of the key in that
+minute, usually a local run on the production key, and the quote adapter's alert says so.
+
+*Costs:* each run is paced below the plan even when it runs alone. The Fast Loop's Finnhub requests
+(about 150 a run) take about three and a half minutes instead of under two, and the Shock Watch's
+(two per stock symbol while the daily change is from the previous session, about 76) about three
+minutes instead of under one, inside the 15- and 10-minute job limits. A local run or a new job on
+the same key is not covered. *Gains:* the two scheduled runs cannot draw a 429 from each other,
+however GitHub delays their crons, with no coordination between processes and no change to the run
+queues.
+
+**Guards** [`tests/test_main_watch.py`](../tests/test_main_watch.py) `test_watch_and_fast_loop_split_the_finnhub_key_within_the_plan` · [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) `test_hourly_shock_watch_stays_out_of_the_writers_queue` · [`tests/infrastructure/test_finnhub_adapter.py`](../tests/infrastructure/test_finnhub_adapter.py) `test_rate_limit_alert_is_polish_and_logged_in_english`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:
