@@ -14,6 +14,8 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money, Quote
 from src.infrastructure.adapters._finnhub_common import (
+    FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE,
+    SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE,
     build_finnhub_session,
     finnhub_auth_headers,
 )
@@ -127,7 +129,8 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                 "LSE tickers with dot notation (e.g. CSPX.L) require a paid plan."
             )
         if response.status_code == 429:
-            # Free tier: 60 req/min. Powyżej tego dostajemy 429.
+            # Free tier: 60 req/min na klucz. Limiter procesu trzyma się swojego udziału,
+            # więc 429 znaczy, że ten sam klucz w tej minucie brał jeszcze ktoś inny.
             self._emit_quota_alert(
                 severity=QuotaSeverity.CRITICAL,
                 message=(
@@ -135,8 +138,12 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                     "limit (60 zapytań/min)."
                 ),
                 action=(
-                    "Zmniejsz liczbę SYMBOLS albo podnieś SYMBOL_THROTTLE_SECONDS, "
-                    "żeby spowolnić pętlę, albo podnieś plan Finnhub."
+                    "Fast Loop i Shock Watch dzielą klucz po "
+                    f"{FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE} i "
+                    f"{SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE} zapytań/min, więc w tej "
+                    "minucie FINNHUB_API_KEY brał jeszcze ktoś inny: zwykle lokalny "
+                    "przebieg z kluczem produkcyjnym albo nowy job bez własnego udziału "
+                    "w limicie. Nie uruchamiaj lokalnie z tym kluczem w trakcie cronów."
                 ),
                 log_message=(
                     f"Finnhub returned 429 for '{symbol}' — free tier limit (60 req/min) exhausted."
