@@ -209,7 +209,10 @@ from src.domain.shadow_prompt import variant_version
 from src.domain.subscriber import Subscriber, is_owner, masked_email, symbols_for
 from src.domain.value_objects import AssetType, Threshold
 from src.domain.watchlist import EffectiveWatchlist, effective
-from src.infrastructure.adapters._finnhub_common import FINNHUB_REQUESTS_PER_MINUTE
+from src.infrastructure.adapters._finnhub_common import (
+    FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE,
+    SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE,
+)
 from src.infrastructure.adapters._http import (
     RateLimiter,
     failed_requests_by_source,
@@ -263,8 +266,10 @@ DEFAULT_STRESS_SCENARIOS: tuple[Scenario, ...] = (
 logger = logging.getLogger(__name__)
 
 # DAT-12: limit Finnhub jest per klucz, więc limiter jest JEDEN na proces — każdy
-# adapter Finnhub (/quote, analitycy, opcje) dostaje ten sam obiekt.
-FINNHUB_RATE_LIMITER = RateLimiter(FINNHUB_REQUESTS_PER_MINUTE)
+# adapter Finnhub (/quote, analitycy, opcje) dostaje ten sam obiekt. Shock Watch to
+# osobny proces na tym samym kluczu, więc ma własny, mniejszy udział (D-16).
+FINNHUB_RATE_LIMITER = RateLimiter(FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE)
+WATCH_FINNHUB_RATE_LIMITER = RateLimiter(SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE)
 
 
 def _ignored_result(symbol: str) -> SymbolResult:
@@ -904,12 +909,15 @@ def build_options_port(
     )
 
 
-def build_market_port(settings: Settings) -> MarketDataPort:
+def build_market_port(
+    settings: Settings, *, rate_limiter: RateLimiter = FINNHUB_RATE_LIMITER
+) -> MarketDataPort:
     """Darmowe źródła ceny: krypto → CoinGecko, reszta → Finnhub.
-    Wydzielone z `build_use_case`, bo `main_watch` (R-11) potrzebuje samej ceny."""
+    Wydzielone z `build_use_case`, bo `main_watch` (R-11) potrzebuje samej ceny;
+    watch podaje swój udział w limicie klucza (`WATCH_FINNHUB_RATE_LIMITER`)."""
     return RoutingMarketDataPort(
         equity=FinnhubAdapter(
-            api_key=settings.require_finnhub_api_key(), rate_limiter=FINNHUB_RATE_LIMITER
+            api_key=settings.require_finnhub_api_key(), rate_limiter=rate_limiter
         ),
         crypto=CoinGeckoAdapter(),
         crypto_symbols=settings.crypto_symbols,
