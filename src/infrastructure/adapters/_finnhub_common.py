@@ -25,6 +25,16 @@ from src.infrastructure.adapters._http import build_session
 FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE = 35
 SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE = 20
 
+# Akcja każdego alertu 429 Finnhub (/quote i źródła alpha): żaden proces nie przekracza
+# swojego udziału, więc 429 znaczy trzeciego użytkownika klucza, nie za szybką pętlę.
+FINNHUB_RATE_LIMITED_ACTION = (
+    "Fast Loop i Shock Watch dzielą klucz po "
+    f"{FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE} i {SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE} "
+    "zapytań/min, więc w tej minucie FINNHUB_API_KEY brał jeszcze ktoś inny: zwykle "
+    "lokalny przebieg z kluczem produkcyjnym albo nowy job bez własnego udziału w limicie. "
+    "Nie uruchamiaj lokalnie z tym kluczem w trakcie cronów."
+)
+
 # BEZ-15: token jedzie nagłówkiem, nie `&token=` w URL-u — URL trafia do treści
 # wyjątków `requests`, logów urllib3 i tracebacków.
 FINNHUB_TOKEN_HEADER = "X-Finnhub-Token"
@@ -103,10 +113,7 @@ class FinnhubStatusWatcher:
                     "wspólny limit 60 zapytań/min; temu źródłu może brakować danych do "
                     "końca cyklu (kolejne 429 tylko w logu)."
                 ),
-                action=(
-                    "Wyłącz część źródeł alpha Finnhub albo zmniejsz liczbę SYMBOLS; "
-                    "większy limit daje płatny plan Finnhub."
-                ),
+                action=FINNHUB_RATE_LIMITED_ACTION,
                 occurred_at=datetime.now(UTC),
             )
         )

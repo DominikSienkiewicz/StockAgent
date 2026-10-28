@@ -14,8 +14,7 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.shock import DailyChange
 from src.domain.value_objects import Money, Quote
 from src.infrastructure.adapters._finnhub_common import (
-    FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE,
-    SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE,
+    FINNHUB_RATE_LIMITED_ACTION,
     build_finnhub_session,
     finnhub_auth_headers,
 )
@@ -137,14 +136,7 @@ class FinnhubAdapter(MarketDataPort, DailyChangePort, QuotePort):
                     f"Finnhub zwrócił 429 dla '{symbol}' — wyczerpany darmowy "
                     "limit (60 zapytań/min)."
                 ),
-                action=(
-                    "Fast Loop i Shock Watch dzielą klucz po "
-                    f"{FAST_LOOP_FINNHUB_REQUESTS_PER_MINUTE} i "
-                    f"{SHOCK_WATCH_FINNHUB_REQUESTS_PER_MINUTE} zapytań/min, więc w tej "
-                    "minucie FINNHUB_API_KEY brał jeszcze ktoś inny: zwykle lokalny "
-                    "przebieg z kluczem produkcyjnym albo nowy job bez własnego udziału "
-                    "w limicie. Nie uruchamiaj lokalnie z tym kluczem w trakcie cronów."
-                ),
+                action=FINNHUB_RATE_LIMITED_ACTION,
                 log_message=(
                     f"Finnhub returned 429 for '{symbol}' — free tier limit (60 req/min) exhausted."
                 ),

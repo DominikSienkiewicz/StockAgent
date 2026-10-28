@@ -262,6 +262,23 @@ def test_429_on_recommendation_emits_quota_alert() -> None:
     assert "test-token-123" not in alert.message + alert.action
 
 
+def test_429_alert_points_at_a_second_user_of_the_key() -> None:
+    # D-16: limiter procesu trzyma się swojego udziału w limicie klucza, więc 429 źródła
+    # alpha znaczy to samo co 429 /quote — klucz brał w tej minucie ktoś jeszcze.
+    from unittest.mock import patch
+
+    from src.application.quota_monitor import QuotaMonitor
+
+    monitor = QuotaMonitor()
+    adapter = FinnhubAnalystAdapter(api_key="test-token-123", quota_monitor=monitor)
+    with patch.object(adapter._session, "get", return_value=_status_response(429)):
+        adapter.get_consensus("AAPL")
+
+    action = monitor.alerts[0].action
+    assert "SYMBOLS" not in action
+    assert "FINNHUB_API_KEY" in action
+
+
 def test_repeated_429_on_one_endpoint_is_one_critical_alert(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
