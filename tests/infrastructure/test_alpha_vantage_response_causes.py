@@ -153,6 +153,18 @@ class TestAlphaVantageResponseCauses:
         assert "dzienny limit" not in monitor.alerts[0].message
         assert "północy" not in monitor.alerts[0].action
 
+    def test_frequency_alert_identifies_the_key_configuration(self, mocker: MockerFixture) -> None:
+        monitor = QuotaMonitor()
+        mocker.patch(
+            "requests.Session.get",
+            return_value=_response({"Note": "Our API call frequency is 5 calls per minute."}),
+        )
+        mocker.patch("time.sleep")
+
+        _fetcher("news", monitor)("AAPL")
+
+        assert "ALPHA_VANTAGE_API_KEYS" in monitor.alerts[0].action
+
     def test_news_can_fall_back_to_an_entitled_key(self, mocker: MockerFixture) -> None:
         monitor = QuotaMonitor()
         mock_get = mocker.patch(

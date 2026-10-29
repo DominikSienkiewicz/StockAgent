@@ -96,7 +96,7 @@ def failure_action(kind: AlphaVantageFailureKind) -> str:
         case AlphaVantageFailureKind.FREQUENCY_LIMIT:
             return (
                 "Rozłóż zapytania w czasie i sprawdź limit częstotliwości "
-                "swojego planu Alpha Vantage."
+                "swojego planu dla kluczy z ALPHA_VANTAGE_API_KEYS."
             )
         case AlphaVantageFailureKind.UNKNOWN:
             return (
