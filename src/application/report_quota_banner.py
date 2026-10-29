@@ -1,7 +1,7 @@
 """Render bannera 🚨 Alerty subskrypcji / limitów na samej górze maila.
 
-Banner pojawia się ZAWSZE przed sekcją sesji NYSE, gdy są jakiekolwiek
-alerty (z bieżącego cyklu lub history 24h). Czas alertu jest w strefie wyświetlania
+Banner pojawia się przed sekcją sesji NYSE, gdy są alerty bieżącego cyklu.
+Historia z bazy ma osobny, neutralny blok. Czas alertu jest w strefie wyświetlania
 maila (`display_timezone`, MAIL-59), jak nagłówek i temat. Kolory:
 - CRITICAL → czerwony banner
 - WARNING  → żółty banner
@@ -20,6 +20,10 @@ from src.application.report_formatting import (
     PALETTE,
     format_local,
     number,
+)
+from src.application.report_quota_history import (
+    render_quota_history_html,
+    render_quota_history_text,
 )
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.finops import BudgetBreach, BudgetWindow
@@ -42,13 +46,15 @@ _SEVERITY_BG = {
 
 
 def render_quota_banner_html(
-    alerts: list[QuotaAlert], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+    alerts: list[QuotaAlert],
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    *,
+    current_cycle: bool = False,
 ) -> str:
     if not alerts:
         return ""
 
-    # Dedup po (source, severity, message) — gdy ten sam alert wystawiony
-    # i w bieżącym cyklu, i w history z bazy.
+    # Powtórzenia tego samego problemu w cyklu zajmują jeden wiersz.
     seen: set[tuple[str, str, str]] = set()
     deduped: list[QuotaAlert] = []
     for a in alerts:
@@ -83,13 +89,14 @@ def render_quota_banner_html(
             f"</tr>"
         )
 
+    scope = " — BIEŻĄCY CYKL" if current_cycle else ""
     return (
         f"<div style='padding: 12px 16px; background: {main_bg}; "
         f"border-left: 4px solid {main_color}; border-radius: 4px; "
         f"margin-bottom: 16px;'>"
         f"<div style='font-size: 14px; font-weight: 600; color: {main_color}; "
         f"margin-bottom: 8px;'>"
-        f"🚨 ALERTY SUBSKRYPCJI / LIMITÓW ({len(deduped)})"
+        f"🚨 ALERTY SUBSKRYPCJI / LIMITÓW{scope} ({len(deduped)})"
         f"</div>"
         f"<table role='presentation' style='width: 100%; border-collapse: collapse; "
         f"font-size: 12px;'>"
@@ -100,7 +107,10 @@ def render_quota_banner_html(
 
 
 def render_quota_banner_text(
-    alerts: list[QuotaAlert], display_timezone: str = DEFAULT_DISPLAY_TIMEZONE
+    alerts: list[QuotaAlert],
+    display_timezone: str = DEFAULT_DISPLAY_TIMEZONE,
+    *,
+    current_cycle: bool = False,
 ) -> str:
     if not alerts:
         return ""
@@ -115,8 +125,9 @@ def render_quota_banner_text(
         deduped.append(a)
     deduped.sort(key=lambda a: (-a.severity.rank, -a.occurred_at.timestamp()))
 
+    scope = " — BIEŻĄCY CYKL" if current_cycle else ""
     lines = [
-        f"=== 🚨 ALERTY SUBSKRYPCJI / LIMITÓW ({len(deduped)}) ===",
+        f"=== 🚨 ALERTY SUBSKRYPCJI / LIMITÓW{scope} ({len(deduped)}) ===",
     ]
     for a in deduped:
         lines.append(
@@ -194,18 +205,41 @@ def render_llm_budget_banner_text(breach: BudgetBreach | None) -> str:
 
 
 def _section_html(data: SectionInput) -> str:
-    return render_llm_budget_banner_html(data.context.llm_budget_breach) + render_quota_banner_html(
-        data.context.quota_alerts or [], data.context.display_timezone
+    return (
+        render_llm_budget_banner_html(data.context.llm_budget_breach)
+        + render_quota_banner_html(
+            data.context.quota_alerts or [],
+            data.context.display_timezone,
+            current_cycle=data.context.quota_alert_history is not None,
+        )
+        + render_quota_history_html(
+            data.context.quota_alert_history or [], data.context.display_timezone
+        )
     )
 
 
 def _section_text(data: SectionInput) -> list[str]:
-    return text_block(render_llm_budget_banner_text(data.context.llm_budget_breach)) + text_block(
-        render_quota_banner_text(data.context.quota_alerts or [], data.context.display_timezone)
+    return (
+        text_block(render_llm_budget_banner_text(data.context.llm_budget_breach))
+        + text_block(
+            render_quota_banner_text(
+                data.context.quota_alerts or [],
+                data.context.display_timezone,
+                current_cycle=data.context.quota_alert_history is not None,
+            )
+        )
+        + text_block(
+            render_quota_history_text(
+                data.context.quota_alert_history or [], data.context.display_timezone
+            )
+        )
     )
 
 
 # Banner idzie NAJWYŻEJ: wyczerpany płatny klucz waży więcej niż ruch ceny.
 QUOTA_BANNER_SECTION = ReportSection(
-    key="quota_banner", render_html=_section_html, render_text=_section_text
+    key="quota_banner",
+    render_html=_section_html,
+    render_text=_section_text,
+    context_fields=frozenset({"quota_alert_history"}),
 )
