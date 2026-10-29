@@ -46,6 +46,7 @@ from src.application.report_model_scorecard import (
 )
 from src.application.report_models import ResolvedPrediction
 from src.application.report_open_entry import OpenEntryCurve, build_open_entry_curve
+from src.application.report_quota_history import QUOTA_ALERT_LOOKBACK_HOURS
 from src.application.report_signals import parse_resolved_predictions
 from src.application.report_symbol_record import SymbolTrackRecordView, symbol_track_record_view
 from src.application.report_track_record import TrackRecordStats
@@ -102,9 +103,6 @@ from src.domain.reference_signal import ReferenceTally, tally_outcomes
 
 ACCURACY_STATS_DAYS = 30
 RESOLVED_PREDICTIONS_HOURS = 24
-# NIEZ-01: banner alertów kwot sięga tydzień + 3 h wstecz, żeby niedzielny CRITICAL
-# ze Slow Loopa (cron raz w tygodniu) był w najbliższym mailu, a nie znikał po 24 h.
-QUOTA_ALERT_LOOKBACK_HOURS = 7 * 24 + 3
 # ALR-06: okno szoków, gdy nie wiadomo, kiedy wyszedł ostatni mail (doba = cykl
 # Fast Loopa w dzień roboczy).
 SHOCK_FALLBACK_LOOKBACK_HOURS = 24
@@ -684,8 +682,8 @@ def fetch_report_context(
         logger.exception("Failed to fetch resolved predictions")
         resolved = None
 
-    # Persystencja alertów z BIEŻĄCEGO cyklu (przed odczytem history, żeby też
-    # tu trafiły) + odczyt z okna bannera.
+    # Zapis bieżących alertów i odczyt historii. Assembler rozdziela je po
+    # tożsamości zdarzenia, więc powtórzenie komunikatu nie gubi bieżącej awarii.
     persist_quota_alerts(repository, quota_monitor.alerts)
     try:
         recent_alerts = repository.get_recent_quota_alerts(hours=QUOTA_ALERT_LOOKBACK_HOURS)
@@ -799,6 +797,9 @@ class ReportAssembler:
             persona_brier_ranking=flags.persona_brier_ranking_enabled,
             receipts_enabled=flags.receipts_enabled,
         )
+        current_alerts = quota_monitor.alerts
+        current_events = set(current_alerts)
+        historical_alerts = [alert for alert in recent_alerts if alert not in current_events]
 
         # T1/T2/T4: Track Record (render-only, zero płatnych). Każda podsekcja
         # flag-gated; wszystkie czytają zamknięte predykcje z okna track_record_days.
@@ -814,8 +815,8 @@ class ReportAssembler:
         # NIEZ-20: alarm detektora trafności do bannera tego maila (bez zapisu —
         # liczony na nowo w każdym cyklu, więc nie dubluje wierszy `quota_alerts`).
         if track_record_stats is not None and track_record_stats.accuracy_drop is not None:
-            recent_alerts = [
-                *recent_alerts,
+            current_alerts = [
+                *current_alerts,
                 accuracy_drop_alert(track_record_stats.accuracy_drop, started_at),
             ]
         # R-9: kubełki pod ranking sygnałów (osobna flaga, ten sam odczyt okna).
@@ -848,7 +849,8 @@ class ReportAssembler:
             council_history=council_history,
             council_redundancy=build_council_redundancy(flags, repository),
             persona_track_record=persona_track_record,
-            quota_alerts=recent_alerts,
+            quota_alerts=current_alerts,
+            quota_alert_history=historical_alerts,
             equity_curve=equity_curve,
             calibration_buckets=calibration_buckets,
             lessons=lessons,
