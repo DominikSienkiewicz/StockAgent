@@ -77,6 +77,9 @@ LIVE_CHECKED_FIXTURES = frozenset(
     }
 )
 NOT_LIVE_CHECKABLE_FIXTURES = {
+    "av_premium_endpoint_truncated.json": (
+        "marker premium z logu runu 40867144144, przycięty do 160 znaków; nie pełny payload HTTP"
+    ),
     "av_note_limit.json": "limitu częstotliwości nie da się wywołać na żądanie",
     # WIA-73: kształt z API Fulcio v2 i Rekora v1, wartości syntetyczne, ale spójne
     # kryptograficznie (tests/sigstore_support.py): podpis rootu, inclusion proof ciała.
@@ -209,6 +212,19 @@ class TestFinnhubQuoteFixture:
 
 
 class TestAlphaVantageFixtures:
+    def test_captured_premium_marker_reports_access_denial(self, mocker: Any) -> None:
+        from src.application.quota_monitor import QuotaMonitor
+
+        payload = _object("av_premium_endpoint_truncated.json")
+        mocker.patch("requests.Session.get", return_value=_json_response(payload))
+        monitor = QuotaMonitor()
+        client = AlphaVantageClient(api_keys=["av-test"], symbols=["AAPL"], quota_monitor=monitor)
+
+        assert client.articles_for("AAPL") == []
+        assert client.degraded_reason == "av_keys_exhausted"
+        assert "premium" in monitor.alerts[0].message
+        assert "dzienny limit" not in monitor.alerts[0].message
+
     @staticmethod
     def _aapl_blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Bloki `ticker_sentiment` AAPL powyżej progu relevance klienta."""

@@ -47,7 +47,7 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 - Python 3.12 + `uv` (install: `curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - macOS only: `brew install libomp` (required by XGBoost)
 - **Finnhub** API key (free) — https://finnhub.io/dashboard
-- **Alpha Vantage** API key(s), ideally several (free 25 req/day × N) — https://www.alphavantage.co/support/#api-key
+- **Alpha Vantage** API key(s) with access to the configured endpoints — https://www.alphavantage.co/support/#api-key. Extra keys can provide fallback capacity; they do not grant access to an endpoint restricted to another plan.
 - **OpenAI** API key — https://platform.openai.com/api-keys
 - **Supabase** project (free tier) — https://supabase.com/dashboard
 - **Supabase CLI** (`supabase`) — applies the migrations with `supabase db push` (step 3 below); CI pins version `2.121.0` in `db_migrate.yml` — https://supabase.com/docs/guides/cli
@@ -335,6 +335,25 @@ SAP.DE,4,182.10,EUR,
 **Unit tests have no network (TEST-11).** pytest runs with pytest-socket's `--disable-socket --allow-unix-socket` (`addopts` in `pyproject.toml`): a test that opens an internet socket or resolves a host name fails with `SocketBlockedError` instead of reaching a paid API or sending a real email with the keys exported in your shell. Tests marked `integration` or `containers` get the network back: `tests/conftest.py` adds pytest-socket's `enable_socket` marker to them at collection, before module-scoped fixtures such as the Postgres container start. Unix sockets stay open for the Docker client. A new test that needs the network must carry one of those two markers.
 
 **No Docker is a failure in CI, a skip locally (CI-06).** The container fixtures (`pg_conn`, `fresh_pg` in [`tests/infrastructure/test_migrations.py`](../tests/infrastructure/test_migrations.py)) share one factory, `_pgvector_connection()`. Without a Docker daemon it skips the container tests, so a laptop without Docker Desktop still runs `uv run pytest -m containers` to the end; with `REQUIRE_DOCKER=1`, which the `containers` step of [`ci.yml`](../.github/workflows/ci.yml) sets, a missing daemon fails the run instead, because a green step that ran zero container tests proves nothing. Use `REQUIRE_DOCKER=1 uv run pytest -m containers` locally when you want the same guarantee. **Property tests (TEST-12).** `tests/domain/test_*_properties.py` check the invariants of the risk math with Hypothesis on 200 generated inputs each (the `ci` profile, no deadline, registered in `tests/conftest.py`; `HYPOTHESIS_PROFILE=default` restores the library defaults): VaR grows with the confidence level, CVaR is never below VaR, Pearson is symmetric and within [-1, 1], the equity-curve drawdown stays within [0, 1], sizing never suggests the full band without a finite hit rate, calibration stays within [0, 1], the implied edge is either a finite sigma or `NO_SIGNAL`, and the volatility gate is symmetric and monotonic in the move and in the threshold. Four of them failed when they were written and the domain now holds them: a period loss is capped at the whole capital (a short against a +150% move is ruin, equity 0, not negative equity), a NaN or infinite hit rate counts as no track record, a confidence outside [0, 1] (rows saved before `clamp_unit`) is clipped before scoring calibration, and a NaN or infinite IV, horizon or model move gives `NO_SIGNAL` with no `edge_sigma` instead of `ALIGNED`. Failing examples are kept in the git-ignored `.hypothesis/` directory and replayed first. Hypothesis is pinned to one exact release in the dev group (`hypothesis==6.168.5`, published 2026-10-05), chosen because it had been public for at least two weeks when it was pinned; raise it deliberately, with `uv lock`, never by a floating lower bound.
+
+**Alpha Vantage responses without data.** News, fundamentals and earnings calendar
+adapters classify the text of `Information` and `Note`, rather than treating either
+field name as proof of a daily quota. A premium endpoint/access denial asks you to
+check the key's plan and permissions. A confirmed daily limit and a short frequency
+limit have separate guidance; an unknown message or different causes across keys
+remain explicitly ambiguous. A frequency limit gets one retry on the same key;
+other refusals try a reserve key that may have the required access. Once the pool
+is unavailable, subsequent symbols use the cached failure and the adapter emits
+one alert for the run. News retains the `av_keys_exhausted` quality flag so the
+source-health display and training exclusion remain compatible.
+
+The regression fixture `av_premium_endpoint_truncated.json` preserves only the
+marker text captured in [run 40867144144](https://github.com/DominikSienkiewicz/StockAgent/actions/runs/40867144144)
+on 2026-10-29 (11:42:55–11:43:02 UTC). It ends at the logger's 160-character
+boundary and is not a complete recorded HTTP response. The tests do not call the
+provider. They also cover successful fallback, unknown markers, redaction and
+concurrent news callers. The fix changes failure handling; it does not grant
+premium access.
 
 ## Branch workflow
 

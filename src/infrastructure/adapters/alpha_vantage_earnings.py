@@ -15,11 +15,11 @@ deterministycznych testów — `date.today()` liczymy leniwie (przy wywołaniu).
 Opcjonalne źródło alpha — błędy są łapane wewnętrznie i dają `None`; adapter nigdy
 nie rzuca wyjątkiem.
 
-FIN-11: `reserve_keys` to dalsze klucze z ALPHA_VANTAGE_API_KEYS. Soft-limit AV
-(JSON z `Information`/`Note` zamiast CSV) rotuje klucz wg reguł DAT-06 — `Note`
-dostaje jedno odczekanie na tym samym kluczu, `Information` od razu przesuwa na
-kolejny. FIN-09: gdy soft-limit odbiją wszystkie klucze, `QuotaMonitor` dostaje
-jeden WARNING (kalendarz w tym przebiegu jest pusty, bramka earnings bez mnożnika).
+FIN-11: `reserve_keys` to dalsze klucze z ALPHA_VANTAGE_API_KEYS. Marker AV
+(JSON z `Information`/`Note` zamiast CSV) rotuje klucz; tylko rozpoznany limit
+częstotliwości dostaje jedno odczekanie na tym samym kluczu. Gdy żaden klucz
+nie zwróci danych, `QuotaMonitor` dostaje jeden WARNING z rozpoznaną przyczyną
+(kalendarz w tym przebiegu jest pusty, bramka earnings bez mnożnika).
 ARCH-33: sieć, status i treść idą przez pomocniki `_http` w taksonomii portów."""
 
 from __future__ import annotations
@@ -42,9 +42,12 @@ from src.domain.earnings import EarningsEvent
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
     NOTE_BACKOFF_SECONDS,
-    is_frequency_limit,
-    is_soft_limit,
+    AlphaVantageFailureKind,
+    classify_response,
+    failure_action,
+    failure_description,
     soft_limit_text,
+    summarize_failures,
 )
 from src.infrastructure.adapters._http import (
     build_session,
@@ -77,6 +80,7 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
         # Indeks aktywnego klucza — przesuwany wyłącznie przy soft-limicie (jak
         # w adapterze fundamentów), więc rezerwa zostaje na resztę przebiegu.
         self._key_index = 0
+        self._key_failures: set[AlphaVantageFailureKind] = set()
         self._session = session or build_session()
         self._timeout = timeout
         # Wstrzyknięte `today` zamrażamy; bez niego liczymy leniwie przy wywołaniu.
@@ -136,11 +140,12 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
                 return text
             payload = _json_object(text)
             marker = soft_limit_text(payload, self._api_keys)
-            if not is_soft_limit(payload, ()):
+            failure = classify_response(payload, ())
+            if failure is None:
                 # Np. `Error Message` (zły klucz, zła funkcja) — inny klucz nic nie zmieni.
                 logger.warning("AlphaVantage returned a JSON error instead of the earnings CSV")
                 return None
-            if is_frequency_limit(payload) and not backed_off:
+            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
                 logger.warning(
                     "AlphaVantage earnings key #%d hit the frequency limit: %s — "
                     "retrying the same key in %.1f s.",
@@ -152,10 +157,12 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
                 time.sleep(NOTE_BACKOFF_SECONDS)
                 continue
             logger.warning(
-                "AlphaVantage earnings key #%d exhausted: %s — rotating.",
+                "AlphaVantage earnings key #%d unavailable (%s): %s — rotating.",
                 self._key_index + 1,
+                failure.value,
                 marker,
             )
+            self._key_failures.add(failure)
             self._key_index += 1
             backed_off = False
         self._report_keys_exhausted()
@@ -164,7 +171,11 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
     def _report_keys_exhausted(self) -> None:
         """Log po angielsku + jeden WARNING po polsku (MAIL-15): kalendarz w tym
         przebiegu jest pusty, bramka earnings działa bez mnożnika."""
-        logger.warning("AlphaVantage earnings: every key is exhausted — no earnings dates")
+        failure = summarize_failures(self._key_failures)
+        logger.warning(
+            "AlphaVantage earnings: every key is unavailable (%s) — no earnings dates",
+            failure.value,
+        )
         if self._quota_monitor is None:
             return
         self._quota_monitor.record(
@@ -172,14 +183,11 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
                 source="Alpha Vantage earnings",
                 severity=QuotaSeverity.WARNING,
                 message=(
-                    f"Kalendarz wyników Alpha Vantage odbił limit na wszystkich kluczach "
-                    f"({len(self._api_keys)}); w tym przebiegu bramka earnings działa "
+                    f"Klucze kalendarza wyników Alpha Vantage ({len(self._api_keys)}) "
+                    f"{failure_description(failure)}; w tym przebiegu bramka earnings działa "
                     "bez mnożnika przed raportami."
                 ),
-                action=(
-                    "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
-                    "alphavantage.co) albo poczekaj na reset limitu o północy UTC."
-                ),
+                action=failure_action(failure),
                 occurred_at=datetime.now(UTC),
             )
         )

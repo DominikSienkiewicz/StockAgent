@@ -28,9 +28,12 @@ from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Fundamentals
 from src.infrastructure.adapters._alpha_vantage_common import (
     NOTE_BACKOFF_SECONDS,
-    is_frequency_limit,
-    is_soft_limit,
+    AlphaVantageFailureKind,
+    classify_response,
+    failure_action,
+    failure_description,
     soft_limit_text,
+    summarize_failures,
 )
 from src.infrastructure.adapters._http import (
     build_session,
@@ -55,16 +58,12 @@ _REJECTED_KEY_PHRASE = "apikey"
 _ERROR_LOG_CHARS = 160
 
 
-class _AlphaVantageQuotaExhausted(Exception):
-    """Wewnętrzny sygnał: AV zwróciło soft-limit 200 (pole `Information`/`Note`),
-    a nie realne dane. Odróżnia wyczerpanie limitu od zwykłej pustej odpowiedzi,
-    żeby `get_fundamentals` nie potraktował go cicho jako brak fundamentów.
+class _AlphaVantageKeysUnavailable(Exception):
+    """Wszystkie klucze zwróciły marker bez danych; zachowuje rodzaj odmowy."""
 
-    `frequency_limit` = ostatni klucz odbił limit minutowy (`Note`), nie dzienny."""
-
-    def __init__(self, message: str, *, frequency_limit: bool = False) -> None:
-        super().__init__(message)
-        self.frequency_limit = frequency_limit
+    def __init__(self, failure: AlphaVantageFailureKind) -> None:
+        super().__init__(failure.value)
+        self.failure = failure
 
 
 class _AlphaVantageRequestRejected(Exception):
@@ -123,16 +122,18 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         self._quota_monitor = quota_monitor
         # DAT-11: po odrzuceniu klucza adapter nie wysyła już żadnych requestów.
         self._rejected = False
+        self._key_failures: set[AlphaVantageFailureKind] = set()
+        self._keys_unavailable_reported = False
 
     def _current_key(self) -> str:
         return self._api_keys[self._key_index]
 
     def _get(self, function: str, symbol: str) -> dict[str, Any]:
         """Woła AV aktualnym kluczem; przy soft-limicie rotuje na kolejny
-        i ponawia. Gdy WSZYSTKIE klucze wyczerpane — `_AlphaVantageQuotaExhausted`.
+        i ponawia. Gdy brak klucza z danymi — `_AlphaVantageKeysUnavailable`.
 
-        `Note` (limit minutowy) dostaje jeden backoff i ponowienie tym samym
-        kluczem, `Information` (limit dzienny) od razu rotuje (DAT-06).
+        Rozpoznany limit częstotliwości dostaje jeden backoff i ponowienie tym
+        samym kluczem. Pozostałe markery bez danych od razu rotują.
         Odrzucony klucz (DAT-11) też rotuje; przy ostatnim leci
         `_AlphaVantageRequestRejected`."""
         backed_off = False
@@ -158,11 +159,11 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
                 continue
             # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
             # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
-            if not is_soft_limit(data, _FUNDAMENTALS_DATA_KEYS):
+            failure = classify_response(data, _FUNDAMENTALS_DATA_KEYS)
+            if failure is None:
                 return data
             marker = soft_limit_text(data, self._api_keys)
-            frequency_limit = is_frequency_limit(data)
-            if frequency_limit and not backed_off:
+            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
                 logger.warning(
                     "Alpha Vantage fundamentals key #%d hit the frequency limit: %s — "
                     "retrying the same key in %.1f s.",
@@ -174,17 +175,19 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
                 time.sleep(NOTE_BACKOFF_SECONDS)
                 continue
             logger.warning(
-                "Alpha Vantage fundamentals key #%d exhausted: %s — rotating.",
+                "Alpha Vantage fundamentals key #%d unavailable (%s): %s — rotating.",
                 self._key_index + 1,
+                failure.value,
                 marker,
             )
+            self._key_failures.add(failure)
             self._key_index += 1
             backed_off = False
             if self._key_index >= len(self._api_keys):
-                raise _AlphaVantageQuotaExhausted(marker, frequency_limit=frequency_limit)
+                raise _AlphaVantageKeysUnavailable(summarize_failures(self._key_failures))
         # Klucze wyczerpane jeszcze przed tym wywołaniem (short-circuit) —
         # nie spalamy requestu na martwym kluczu.
-        raise _AlphaVantageQuotaExhausted("all keys exhausted")
+        raise _AlphaVantageKeysUnavailable(summarize_failures(self._key_failures))
 
     def _raise_on_error_message(self, data: dict[str, Any]) -> None:
         """`Error Message` → `_AlphaVantageRequestRejected` (klucz) albo
@@ -263,40 +266,19 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             )
         )
 
-    def _report_quota_exhausted(self, symbol: str, *, frequency_limit: bool) -> None:
-        """Log po angielsku + CRITICAL alert po polsku (MAIL-15); limit minutowy
-        (`Note`) ma własny tekst — „dzienny limit 25 zapytań” by mylił (DAT-06)."""
-        if frequency_limit:
-            logger.exception(
-                "Alpha Vantage fundamentals frequency limit hit on every key for %s",
-                symbol,
-            )
-            self._emit_quota_alert(
-                message=(
-                    "Fundamenty Alpha Vantage odbiły limit częstotliwości zapytań "
-                    "(pole Note) mimo ponowienia; w tym cyklu brakuje P/E i wzrostu EPS."
-                ),
-                action=(
-                    "Rozłóż zapytania w czasie albo dodaj kolejny klucz "
-                    "w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co)."
-                ),
-            )
-            return
-        logger.exception("Alpha Vantage fundamentals daily quota exhausted for %s", symbol)
+    def _report_keys_unavailable(self, symbol: str, failure: AlphaVantageFailureKind) -> None:
+        """Jeden alert na przebieg; opis przyczyny pozostaje zgodny z odpowiedzią AV."""
+        logger.error("Alpha Vantage fundamentals %s for %s", failure.value, symbol)
         self._emit_quota_alert(
             message=(
-                "Fundamenty Alpha Vantage wyczerpały dzienny limit 25 zapytań; "
-                "w tym cyklu brakuje P/E i wzrostu EPS."
+                f"Klucze fundamentów Alpha Vantage {failure_description(failure)}; "
+                "w tym cyklu brakuje P/E i wzrostu EPS dla pozostałych spółek."
             ),
-            action=(
-                "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
-                "alphavantage.co), zmniejsz liczbę symboli z fundamentami "
-                "albo poczekaj na reset o północy UTC."
-            ),
+            action=failure_action(failure),
         )
 
     def get_fundamentals(self, symbol: str) -> Fundamentals | None:
-        if self._rejected:
+        if self._rejected or self._keys_unavailable_reported:
             return None
         try:
             overview = self._get("OVERVIEW", symbol)
@@ -305,11 +287,9 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             self._rejected = True
             self._report_rejected_key(symbol, str(rejected))
             return None
-        except _AlphaVantageQuotaExhausted as exhausted:
-            # Wyczerpany limit: NIE udajemy pustych fundamentów. Emitujemy alert
-            # i przerywamy — kolejne klucze i tak są wspólne z resztą integracji
-            # AV, więc dalsze próby tylko spalą budżet.
-            self._report_quota_exhausted(symbol, frequency_limit=exhausted.frequency_limit)
+        except _AlphaVantageKeysUnavailable as unavailable:
+            self._keys_unavailable_reported = True
+            self._report_keys_unavailable(symbol, unavailable.failure)
             return None
         except Exception as exc:
             # ARCH-33: klasa w logu odróżnia awarię dostawcy (taksonomia) od reszty.

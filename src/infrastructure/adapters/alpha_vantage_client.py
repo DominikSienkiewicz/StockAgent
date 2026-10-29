@@ -26,9 +26,12 @@ from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
     NOTE_BACKOFF_SECONDS,
-    is_frequency_limit,
-    is_soft_limit,
+    AlphaVantageFailureKind,
+    classify_response,
+    failure_action,
+    failure_description,
     soft_limit_text,
+    summarize_failures,
 )
 from src.infrastructure.adapters._http import (
     build_session,
@@ -144,9 +147,7 @@ class AlphaVantageClient:
         # `feed` i bez markera limitu. `sentiment_for` dokłada ją tylko temu
         # symbolowi — flaga cykliczna oflagowałaby wszystkie.
         self._symbol_degraded_reasons: dict[str, str] = {}
-        # DAT-06: ostatni soft-limit przed wyczerpaniem był minutowy (`Note`) —
-        # wtedy alert nie może mówić o dziennym limicie 25 zapytań.
-        self._exhausted_by_frequency_limit = False
+        self._key_failures: dict[int, AlphaVantageFailureKind] = {}
         self._keys_exhausted_reported = False
         self._session = build_session()
         # Serializuje leniwy fetch feedu — bez tego współbieżni callerzy (równoległe
@@ -385,53 +386,42 @@ class AlphaVantageClient:
             if self._keys_exhausted_reported:
                 return
             self._keys_exhausted_reported = True
+            failure = summarize_failures(self._key_failures.values())
         logger.error(
-            "All %d Alpha Vantage API keys exhausted — returning partial feed.",
+            "All %d Alpha Vantage API keys exhausted (%s) — returning partial feed.",
             len(self._api_keys),
+            failure.value,
         )
         if not self._lazy_per_symbol:
             self._degraded_reason = "av_keys_exhausted"
         # MAIL-15: treść alertu idzie do maila po polsku; angielska
         # diagnoza jest w logger.error powyżej.
-        if self._exhausted_by_frequency_limit:
-            message = (
-                f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) odbiły limit "
-                "częstotliwości zapytań (pole Note) mimo ponowienia. Feed newsów "
-                "i sentymentu jest w tym cyklu niepełny."
-            )
-            action = (
-                "Rozłóż zapytania w czasie albo dodaj kolejny klucz "
-                "w ALPHA_VANTAGE_API_KEYS (darmowy na alphavantage.co)."
-            )
-        else:
-            message = (
-                f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) wyczerpały "
-                "dzienny limit 25 zapytań. Feed newsów i sentymentu jest w tym "
-                "cyklu niepełny."
-            )
-            action = (
-                "Dodaj kolejny klucz w ALPHA_VANTAGE_API_KEYS (darmowy na "
-                "alphavantage.co) albo poczekaj na reset o północy UTC."
-            )
-        self._emit_quota_alert(severity=QuotaSeverity.CRITICAL, message=message, action=action)
+        message = (
+            f"Wszystkie klucze Alpha Vantage ({len(self._api_keys)}) "
+            f"{failure_description(failure)}. Feed newsów i sentymentu jest w tym cyklu niepełny."
+        )
+        self._emit_quota_alert(
+            severity=QuotaSeverity.CRITICAL, message=message, action=failure_action(failure)
+        )
 
     def _fetch_batch_with_rotation(self, tickers: list[str]) -> dict[str, Any] | None:
         """Próbuje wszystkich kluczy od `_active_key_idx` w górę.
 
         Zwraca payload przy sukcesie (i aktualizuje `_active_key_idx`),
-        albo `None` gdy wszystkie klucze wyczerpane. `Note` (limit minutowy)
-        dostaje jeden backoff i ponowienie tym samym kluczem, `Information`
-        (limit dzienny) od razu rotuje (DAT-06).
+        albo `None` gdy brak dostępnego klucza. Tylko rozpoznany limit
+        częstotliwości dostaje jeden backoff i ponowienie tym samym kluczem.
+        Odmowa planu próbuje kolejnego klucza, który może mieć inne uprawnienia.
         """
         backed_off = False
         while (key_idx := self._active_key_idx) < len(self._api_keys):
             payload = self._fetch_batch(tickers, self._api_keys[key_idx])
 
-            if not is_soft_limit(payload, _NEWS_DATA_KEYS):
+            failure = classify_response(payload, _NEWS_DATA_KEYS)
+            if failure is None:
                 return payload
 
             marker = soft_limit_text(payload, self._api_keys)
-            if is_frequency_limit(payload) and not backed_off:
+            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
                 logger.warning(
                     "Alpha Vantage key #%d hit the frequency limit: %s — retrying "
                     "the same key in %.1f s.",
@@ -444,11 +434,12 @@ class AlphaVantageClient:
                 continue
 
             logger.warning(
-                "Alpha Vantage key #%d rate-limited: %s — rotating to next.",
+                "Alpha Vantage key #%d unavailable (%s): %s — rotating to next.",
                 key_idx + 1,
+                failure.value,
                 marker,
             )
-            self._rotate_past(key_idx, frequency_limit=is_frequency_limit(payload))
+            self._rotate_past(key_idx, failure=failure)
             backed_off = False
             # Tryb wsadowy: bez sleepa — do martwego klucza nie poszedł realny
             # request, więc pacing 1 req/sec go nie dotyczy, a re-chodzenie po
@@ -458,13 +449,13 @@ class AlphaVantageClient:
 
         return None
 
-    def _rotate_past(self, key_idx: int, *, frequency_limit: bool) -> None:
+    def _rotate_past(self, key_idx: int, *, failure: AlphaVantageFailureKind) -> None:
         """Przesuwa aktywny klucz za `key_idx`, o ile nikt tego jeszcze nie zrobił:
         drugi wątek z limitem na tym samym kluczu nie przeskoczy żywego następnego."""
         with self._rotation_lock:
             if self._active_key_idx == key_idx:
                 self._active_key_idx = key_idx + 1
-                self._exhausted_by_frequency_limit = frequency_limit
+                self._key_failures[key_idx] = failure
 
     def _emit_quota_alert(self, severity: QuotaSeverity, message: str, action: str) -> None:
         """Wystawia alert do QuotaMonitor jeśli ten jest skonfigurowany."""
