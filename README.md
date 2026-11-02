@@ -1,5 +1,6 @@
 # 📈 StockAgent
-**Designed and maintained by [Dominik](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications and define the quality gates CI runs on every push to `main` and every pull request: ruff, mypy --strict and pytest, including schema tests on a real Postgres with pgvector ([Testing](#testing)).
+
+**Designed and maintained by [Dominik Sienkiewicz](https://www.linkedin.com/in/dominik-sienkiewicz/), built with AI coding agents:** I set the architecture, write the specifications and define the quality gates CI runs on every push to `main` and every pull request: ruff, mypy --strict and pytest, including schema tests on a real Postgres with pgvector ([Testing](#testing)).
 
 **Educational proof of concept — not investment advice.** A Python and LangGraph agent that
 analyses a fixed watchlist of US stocks, ETFs and crypto. It combines price action with
@@ -7,7 +8,6 @@ curated financial news sentiment, cross-checks the LLM's reading against Alpha V
 scores every past prediction against the realised price, and writes a Polish-language report
 email with charts and its own running hit-rate.
 
-[![CI](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge)
 ![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet_4.6-D97757?style=for-the-badge&logo=anthropic&logoColor=white)
@@ -16,8 +16,10 @@ email with charts and its own running hit-rate.
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres+pgvector-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![Resend](https://img.shields.io/badge/Resend-Email-000000?style=for-the-badge)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal+DDD-orange?style=for-the-badge)](tests/test_architecture.py)
-![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)
-![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)
+
+[![CI](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml)
+[![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)](https://sonarcloud.io/dashboard?id=DominikSienkiewicz_StockAgent)
+[![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/dashboard?id=DominikSienkiewicz_StockAgent)
 
 ## Engineering evidence (10-minute tour)
 
