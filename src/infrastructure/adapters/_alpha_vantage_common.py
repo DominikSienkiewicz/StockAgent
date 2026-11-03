@@ -15,7 +15,6 @@ from src.infrastructure.adapters._http import redact_secrets
 
 INFORMATION_MARKER = "Information"
 NOTE_MARKER = "Note"
-NOTE_BACKOFF_SECONDS = 2.0
 _MARKER_LOG_CHARS = 160
 
 
@@ -23,6 +22,7 @@ class AlphaVantageFailureKind(Enum):
     ACCESS_DENIED = "access denied"
     DAILY_QUOTA = "daily quota exhausted"
     FREQUENCY_LIMIT = "frequency rate-limit"
+    HTTP_RATE_LIMIT = "HTTP 429 rate-limit (unspecified interval)"
     UNKNOWN = "unclassified response without data"
 
 
@@ -75,7 +75,9 @@ def failure_description(kind: AlphaVantageFailureKind) -> str:
         case AlphaVantageFailureKind.DAILY_QUOTA:
             return "wyczerpały dzienny limit zapytań"
         case AlphaVantageFailureKind.FREQUENCY_LIMIT:
-            return "odbiły limit częstotliwości zapytań mimo ponowienia"
+            return "odbiły limit częstotliwości zapytań"
+        case AlphaVantageFailureKind.HTTP_RATE_LIMIT:
+            return "osiągnęły limit zapytań (HTTP 429; okres limitu nieznany)"
         case AlphaVantageFailureKind.UNKNOWN:
             return "zwróciły komunikaty bez danych; przyczyny są niejednoznaczne"
 
@@ -98,6 +100,11 @@ def failure_action(kind: AlphaVantageFailureKind) -> str:
                 "Rozłóż zapytania w czasie i sprawdź limit częstotliwości "
                 "swojego planu dla kluczy z ALPHA_VANTAGE_API_KEYS."
             )
+        case AlphaVantageFailureKind.HTTP_RATE_LIMIT:
+            return (
+                "Sprawdź limity i termin ich odnowienia dla kluczy z ALPHA_VANTAGE_API_KEYS; "
+                "sam status HTTP 429 nie określa okresu limitu."
+            )
         case AlphaVantageFailureKind.UNKNOWN:
             return (
                 "Sprawdź zredagowane komunikaty Alpha Vantage w logu "
@@ -117,7 +124,7 @@ def is_soft_limit(payload: Mapping[str, Any], data_keys: Iterable[str]) -> bool:
 
 
 def is_frequency_limit(payload: Mapping[str, Any]) -> bool:
-    """Treść markera wskazuje krótkotrwały limit, po którym warto odczekać."""
+    """Treść markera wskazuje limit częstotliwości zapytań."""
     return classify_response(payload, ()) is AlphaVantageFailureKind.FREQUENCY_LIMIT
 
 

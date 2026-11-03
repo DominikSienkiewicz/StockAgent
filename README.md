@@ -109,6 +109,11 @@ The layers are tested where they live:
 
 Setup, the local run and the build commands are in [running it](docs/running-locally.md).
 
+Alpha Vantage keys go in the secret `ALPHA_VANTAGE_API_KEYS`, in comma-separated order.
+News, fundamentals and earnings immediately retry a rate-limited request with the next key
+(JSON `Information`/`Note` or HTTP 429). Each adapter keeps using the successful key for
+the rest of its run; after all keys are exhausted it stops requesting and reports missing data.
+
 ## Status
 
 **The daily report run resumed on 2026-10-23** on weekdays at 05:30 UTC

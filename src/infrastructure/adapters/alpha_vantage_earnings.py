@@ -16,8 +16,7 @@ Opcjonalne źródło alpha — błędy są łapane wewnętrznie i dają `None`; 
 nie rzuca wyjątkiem.
 
 FIN-11: `reserve_keys` to dalsze klucze z ALPHA_VANTAGE_API_KEYS. Marker AV
-(JSON z `Information`/`Note` zamiast CSV) rotuje klucz; tylko rozpoznany limit
-częstotliwości dostaje jedno odczekanie na tym samym kluczu. Gdy żaden klucz
+(JSON z `Information`/`Note` zamiast CSV) lub HTTP 429 od razu rotuje klucz. Gdy żaden klucz
 nie zwróci danych, `QuotaMonitor` dostaje jeden WARNING z rozpoznaną przyczyną
 (kalendarz w tym przebiegu jest pusty, bramka earnings bez mnożnika).
 ARCH-33: sieć, status i treść idą przez pomocniki `_http` w taksonomii portów."""
@@ -29,19 +28,18 @@ import io
 import json
 import logging
 import threading
-import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
 import requests
 
+from src.application.errors import QuotaExhausted
 from src.application.ports import EarningsCalendarPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.earnings import EarningsEvent
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
-    NOTE_BACKOFF_SECONDS,
     AlphaVantageFailureKind,
     classify_response,
     failure_action,
@@ -81,7 +79,7 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
         # w adapterze fundamentów), więc rezerwa zostaje na resztę przebiegu.
         self._key_index = 0
         self._key_failures: set[AlphaVantageFailureKind] = set()
-        self._session = session or build_session()
+        self._session = session or build_session(retry_rate_limited=False)
         self._timeout = timeout
         # Wstrzyknięte `today` zamrażamy; bez niego liczymy leniwie przy wywołaniu.
         self._today = today
@@ -120,42 +118,22 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
         return _parse_reports(body) if body is not None else {}
 
     def _fetch_csv(self) -> str | None:
-        backed_off = False
+        failure: AlphaVantageFailureKind | None
         while self._key_index < len(self._api_keys):
-            response = translated_get(
-                self._session,
-                f"{self._base_url}/query",
-                params={
-                    "function": "EARNINGS_CALENDAR",
-                    "horizon": DEFAULT_HORIZON,
-                    "apikey": self._api_keys[self._key_index],
-                },
-                timeout=self._timeout,
-            )
-            raise_for_status_translated(response)
-            text = response.text
-            # AV przy rate-limit / błędzie zwraca JSON zamiast CSV — wykrywamy to
-            # po wiodącym `{` i odmawiamy parsowania jako CSV.
-            if not text.lstrip().startswith("{"):
-                return text
-            payload = _json_object(text)
-            marker = soft_limit_text(payload, self._api_keys)
-            failure = classify_response(payload, ())
-            if failure is None:
-                # Np. `Error Message` (zły klucz, zła funkcja) — inny klucz nic nie zmieni.
-                logger.warning("AlphaVantage returned a JSON error instead of the earnings CSV")
-                return None
-            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
-                logger.warning(
-                    "AlphaVantage earnings key #%d hit the frequency limit: %s — "
-                    "retrying the same key in %.1f s.",
-                    self._key_index + 1,
-                    marker,
-                    NOTE_BACKOFF_SECONDS,
-                )
-                backed_off = True
-                time.sleep(NOTE_BACKOFF_SECONDS)
-                continue
+            try:
+                text = self._request_calendar()
+            except QuotaExhausted:
+                failure = AlphaVantageFailureKind.HTTP_RATE_LIMIT
+                marker = "HTTP 429"
+            else:
+                if not text.lstrip().startswith("{"):
+                    return text
+                payload = _json_object(text)
+                marker = soft_limit_text(payload, self._api_keys)
+                failure = classify_response(payload, ())
+                if failure is None:
+                    logger.warning("AlphaVantage returned a JSON error instead of the earnings CSV")
+                    return None
             logger.warning(
                 "AlphaVantage earnings key #%d unavailable (%s): %s — rotating.",
                 self._key_index + 1,
@@ -164,9 +142,22 @@ class AlphaVantageEarningsAdapter(EarningsCalendarPort):
             )
             self._key_failures.add(failure)
             self._key_index += 1
-            backed_off = False
         self._report_keys_exhausted()
         return None
+
+    def _request_calendar(self) -> str:
+        response = translated_get(
+            self._session,
+            f"{self._base_url}/query",
+            params={
+                "function": "EARNINGS_CALENDAR",
+                "horizon": DEFAULT_HORIZON,
+                "apikey": self._api_keys[self._key_index],
+            },
+            timeout=self._timeout,
+        )
+        raise_for_status_translated(response)
+        return response.text
 
     def _report_keys_exhausted(self) -> None:
         """Log po angielsku + jeden WARNING po polsku (MAIL-15): kalendarz w tym

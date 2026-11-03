@@ -337,7 +337,6 @@ class TestApiKeyRotation:
         mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [
             self._note_response(),  # key1 — limit minutowy
-            self._note_response(),  # key1 po backoffie — nadal limit
             _ok_response(_SAMPLE_PAYLOAD),  # key2 — OK
         ]
 
@@ -345,14 +344,12 @@ class TestApiKeyRotation:
         articles = client.articles_for("AAPL")
 
         keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
-        # Krótki backoff i ponowienie TYM SAMYM kluczem, dopiero potem rotacja.
-        assert keys_used == ["key1", "key1", "key2"]
-        assert sleep_mock.call_count == 1
-        assert sleep_mock.call_args.args[0] > 0
+        assert keys_used == ["key1", "key2"]
+        sleep_mock.assert_not_called()
         assert len(articles) == 1
         assert client.degraded_reason is None
 
-    def test_note_cleared_by_backoff_keeps_the_same_key(self, mocker: Any) -> None:
+    def test_note_rotates_immediately_and_keeps_the_reserve_key(self, mocker: Any) -> None:
         mocker.patch("src.infrastructure.adapters.alpha_vantage_client.time.sleep")
         mock_get = mocker.patch("requests.Session.get")
         mock_get.side_effect = [self._note_response(), _ok_response(_SAMPLE_PAYLOAD)]
@@ -361,8 +358,8 @@ class TestApiKeyRotation:
         articles = client.articles_for("AAPL")
 
         keys_used = [call.kwargs["params"]["apikey"] for call in mock_get.call_args_list]
-        assert keys_used == ["key1", "key1"]
-        assert client._active_key_idx == 0
+        assert keys_used == ["key1", "key2"]
+        assert client._active_key_idx == 1
         assert len(articles) == 1
 
     def test_note_on_every_key_alerts_about_the_frequency_limit(self, mocker: Any) -> None:
@@ -378,8 +375,7 @@ class TestApiKeyRotation:
 
         client.articles_for("AAPL")
 
-        # Dwa klucze × (próba + ponowienie po backoffie).
-        assert mock_get.call_count == 4
+        assert mock_get.call_count == 2
         assert client.degraded_reason == "av_keys_exhausted"
         alert = monitor.alerts[0]
         assert "częstotliwości" in alert.message

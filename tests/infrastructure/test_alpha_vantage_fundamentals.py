@@ -281,22 +281,20 @@ NOTE_JSON: dict[str, Any] = {
 }
 
 
-def test_note_soft_limit_backs_off_and_retries_the_same_key() -> None:
-    # `Note` to limit częstotliwości: krótki backoff i ten sam klucz — rotacja od
-    # razu spaliłaby dzienny budżet rezerwowego klucza.
+def test_note_soft_limit_rotates_immediately_to_the_next_key() -> None:
     adapter = AlphaVantageFundamentalsAdapter(api_keys=["KEY1", "KEY2"])
     with patch.object(adapter._session, "get") as mock_get, patch("time.sleep") as sleep_mock:
         mock_get.side_effect = [
             _mock_response(NOTE_JSON),  # KEY1 / OVERVIEW — limit minutowy
-            _mock_response(OVERVIEW_JSON),  # KEY1 / OVERVIEW po backoffie — OK
-            _mock_response(EARNINGS_JSON),  # KEY1 / EARNINGS — OK
+            _mock_response(OVERVIEW_JSON),  # KEY2 / OVERVIEW — OK
+            _mock_response(EARNINGS_JSON),  # KEY2 / EARNINGS — OK
         ]
         result = adapter.get_fundamentals("AAPL")
 
     assert result is not None
     keys_used = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
-    assert keys_used == ["KEY1", "KEY1", "KEY1"]
-    assert sleep_mock.call_count == 1
+    assert keys_used == ["KEY1", "KEY2", "KEY2"]
+    sleep_mock.assert_not_called()
 
 
 def test_information_soft_limit_rotates_without_backoff() -> None:
