@@ -181,8 +181,8 @@ def test_http_error_log_omits_apikey(caplog: pytest.LogCaptureFixture) -> None:
 
 class TestKeyRotation:
     """FIN-11: odświeżenie cache w Slow Loopie idzie listą kluczy AV, jak fundamenty —
-    soft-limit `Information` przesuwa na kolejny klucz, `Note` dostaje jedno odczekanie
-    na tym samym kluczu, a po ostatnim kluczu adapter przestaje pytać."""
+    soft-limit `Information` lub `Note` przesuwa na kolejny klucz,
+    a po ostatnim kluczu adapter przestaje pytać."""
 
     NOTE = '{"Note": "Thank you for using Alpha Vantage! Please spread out your requests."}'
 
@@ -216,21 +216,21 @@ class TestKeyRotation:
 
         assert mock_get.call_args_list[-1].kwargs["params"]["apikey"] == "KEY2"
 
-    def test_frequency_limit_waits_once_on_the_same_key(self) -> None:
+    def test_frequency_limit_rotates_immediately(self) -> None:
         adapter = AlphaVantageEarningsAdapter(
             api_key="KEY1", reserve_keys=["KEY2"], today=date(2026, 6, 21)
         )
         with (
             patch.object(adapter._session, "get") as mock_get,
-            patch("src.infrastructure.adapters.alpha_vantage_earnings.time.sleep") as sleep,
+            patch("time.sleep") as sleep,
         ):
             mock_get.side_effect = [_mock_response(self.NOTE), _mock_response(CSV_TWO_FUTURE)]
             event = adapter.get_next_earnings("AAPL")
 
         assert event is not None
-        sleep.assert_called_once()
+        sleep.assert_not_called()
         keys = [c.kwargs["params"]["apikey"] for c in mock_get.call_args_list]
-        assert keys == ["KEY1", "KEY1"]
+        assert keys == ["KEY1", "KEY2"]
 
     def test_exhausted_keys_stop_further_requests(self) -> None:
         adapter = AlphaVantageEarningsAdapter(

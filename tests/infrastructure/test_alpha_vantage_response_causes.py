@@ -134,7 +134,7 @@ class TestAlphaVantageResponseCauses:
         assert "częstotliwości" not in monitor.alerts[0].message
 
     @pytest.mark.parametrize("adapter", ["news", "fundamentals", "earnings"])
-    def test_frequency_limit_in_information_retries_each_key_once(
+    def test_frequency_limit_in_information_tries_each_key_once(
         self, adapter: AdapterName, mocker: MockerFixture
     ) -> None:
         monitor = QuotaMonitor()
@@ -148,7 +148,7 @@ class TestAlphaVantageResponseCauses:
 
         _fetcher(adapter, monitor)("AAPL")
 
-        assert mock_get.call_count == 4
+        assert mock_get.call_count == 2
         assert "częstotliwości" in monitor.alerts[0].message
         assert "dzienny limit" not in monitor.alerts[0].message
         assert "północy" not in monitor.alerts[0].action

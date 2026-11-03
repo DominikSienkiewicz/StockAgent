@@ -21,11 +21,10 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from src.application.errors import PortError
+from src.application.errors import PortError, QuotaExhausted
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.infrastructure.adapters._alpha_vantage_common import (
-    NOTE_BACKOFF_SECONDS,
     AlphaVantageFailureKind,
     classify_response,
     failure_action,
@@ -149,7 +148,7 @@ class AlphaVantageClient:
         self._symbol_degraded_reasons: dict[str, str] = {}
         self._key_failures: dict[int, AlphaVantageFailureKind] = {}
         self._keys_exhausted_reported = False
-        self._session = build_session()
+        self._session = build_session(retry_rate_limited=False)
         # Serializuje leniwy fetch feedu — bez tego współbieżni callerzy (równoległe
         # symbole) startują N duplikatów cold-startu, zjadając dzienny limit AV.
         self._fetch_lock = threading.Lock()
@@ -408,30 +407,22 @@ class AlphaVantageClient:
         """Próbuje wszystkich kluczy od `_active_key_idx` w górę.
 
         Zwraca payload przy sukcesie (i aktualizuje `_active_key_idx`),
-        albo `None` gdy brak dostępnego klucza. Tylko rozpoznany limit
-        częstotliwości dostaje jeden backoff i ponowienie tym samym kluczem.
+        albo `None` gdy brak dostępnego klucza. Limit w JSON lub HTTP 429
+        od razu ponawia bieżące zapytanie kolejnym kluczem.
         Odmowa planu próbuje kolejnego klucza, który może mieć inne uprawnienia.
         """
-        backed_off = False
+        failure: AlphaVantageFailureKind | None
         while (key_idx := self._active_key_idx) < len(self._api_keys):
-            payload = self._fetch_batch(tickers, self._api_keys[key_idx])
-
-            failure = classify_response(payload, _NEWS_DATA_KEYS)
-            if failure is None:
-                return payload
-
-            marker = soft_limit_text(payload, self._api_keys)
-            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
-                logger.warning(
-                    "Alpha Vantage key #%d hit the frequency limit: %s — retrying "
-                    "the same key in %.1f s.",
-                    key_idx + 1,
-                    marker,
-                    NOTE_BACKOFF_SECONDS,
-                )
-                backed_off = True
-                time.sleep(NOTE_BACKOFF_SECONDS)
-                continue
+            try:
+                payload = self._fetch_batch(tickers, self._api_keys[key_idx])
+            except QuotaExhausted:
+                failure = AlphaVantageFailureKind.HTTP_RATE_LIMIT
+                marker = "HTTP 429"
+            else:
+                failure = classify_response(payload, _NEWS_DATA_KEYS)
+                if failure is None:
+                    return payload
+                marker = soft_limit_text(payload, self._api_keys)
 
             logger.warning(
                 "Alpha Vantage key #%d unavailable (%s): %s — rotating to next.",
@@ -440,12 +431,6 @@ class AlphaVantageClient:
                 marker,
             )
             self._rotate_past(key_idx, failure=failure)
-            backed_off = False
-            # Tryb wsadowy: bez sleepa — do martwego klucza nie poszedł realny
-            # request, więc pacing 1 req/sec go nie dotyczy, a re-chodzenie po
-            # wyczerpanych kluczach z 1.1s przerwą marnowałoby wall-clock na
-            # quota-wyczerpany dzień (pacing między batchami jest w `_fetch`).
-            # Tryb leniwy: każdy request i tak przechodzi przez `_pace()`.
 
         return None
 

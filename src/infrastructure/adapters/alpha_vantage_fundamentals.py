@@ -18,16 +18,15 @@ funkcja) to WARNING i None tylko dla tego symbolu.
 from __future__ import annotations
 
 import logging
-import time
 from datetime import UTC, datetime
 from typing import Any
 
+from src.application.errors import QuotaExhausted
 from src.application.ports import FundamentalsPort
 from src.application.quota_monitor import QuotaMonitor
 from src.domain.quota import QuotaAlert, QuotaSeverity
 from src.domain.value_objects import Fundamentals
 from src.infrastructure.adapters._alpha_vantage_common import (
-    NOTE_BACKOFF_SECONDS,
     AlphaVantageFailureKind,
     classify_response,
     failure_action,
@@ -118,7 +117,7 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         # load po wszystkich kluczach i bije w dzienny cap równocześnie —
         # zostajemy więc na jednym kluczu aż padnie, reszta jest rezerwą.
         self._key_index = 0
-        self._session = build_session()
+        self._session = build_session(retry_rate_limited=False)
         self._quota_monitor = quota_monitor
         # DAT-11: po odrzuceniu klucza adapter nie wysyła już żadnych requestów.
         self._rejected = False
@@ -132,48 +131,27 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
         """Woła AV aktualnym kluczem; przy soft-limicie rotuje na kolejny
         i ponawia. Gdy brak klucza z danymi — `_AlphaVantageKeysUnavailable`.
 
-        Rozpoznany limit częstotliwości dostaje jeden backoff i ponowienie tym
-        samym kluczem. Pozostałe markery bez danych od razu rotują.
+        Limit w JSON lub HTTP 429 od razu przechodzi na kolejny klucz.
         Odrzucony klucz (DAT-11) też rotuje; przy ostatnim leci
         `_AlphaVantageRequestRejected`."""
-        backed_off = False
+        failure: AlphaVantageFailureKind | None
         while self._key_index < len(self._api_keys):
-            params = {
-                "function": function,
-                "symbol": symbol,
-                "apikey": self._current_key(),
-            }
-            response = translated_get(self._session, _BASE_URL, params=params, timeout=15)
-            raise_for_status_translated(response)
-            data = json_payload(response)
-            if not isinstance(data, dict):
-                return {}
             try:
-                self._raise_on_error_message(data)
+                data = self._fetch_payload(function, symbol)
+            except QuotaExhausted:
+                failure = AlphaVantageFailureKind.HTTP_RATE_LIMIT
+                marker = "HTTP 429"
             except _AlphaVantageRequestRejected as rejected:
                 if self._key_index + 1 >= len(self._api_keys):
                     raise
                 self._report_rotated_key(symbol, str(rejected))
                 self._key_index += 1
-                backed_off = False
                 continue
-            # Soft-limit (200 + `Information`/`Note`, brak danych) musi być
-            # rozróżniony od zwykłej pustki — inaczej dane giną po cichu.
-            failure = classify_response(data, _FUNDAMENTALS_DATA_KEYS)
-            if failure is None:
-                return data
-            marker = soft_limit_text(data, self._api_keys)
-            if failure is AlphaVantageFailureKind.FREQUENCY_LIMIT and not backed_off:
-                logger.warning(
-                    "Alpha Vantage fundamentals key #%d hit the frequency limit: %s — "
-                    "retrying the same key in %.1f s.",
-                    self._key_index + 1,
-                    marker,
-                    NOTE_BACKOFF_SECONDS,
-                )
-                backed_off = True
-                time.sleep(NOTE_BACKOFF_SECONDS)
-                continue
+            else:
+                failure = classify_response(data, _FUNDAMENTALS_DATA_KEYS)
+                if failure is None:
+                    return data
+                marker = soft_limit_text(data, self._api_keys)
             logger.warning(
                 "Alpha Vantage fundamentals key #%d unavailable (%s): %s — rotating.",
                 self._key_index + 1,
@@ -182,12 +160,21 @@ class AlphaVantageFundamentalsAdapter(FundamentalsPort):
             )
             self._key_failures.add(failure)
             self._key_index += 1
-            backed_off = False
             if self._key_index >= len(self._api_keys):
                 raise _AlphaVantageKeysUnavailable(summarize_failures(self._key_failures))
         # Klucze wyczerpane jeszcze przed tym wywołaniem (short-circuit) —
         # nie spalamy requestu na martwym kluczu.
         raise _AlphaVantageKeysUnavailable(summarize_failures(self._key_failures))
+
+    def _fetch_payload(self, function: str, symbol: str) -> dict[str, Any]:
+        params = {"function": function, "symbol": symbol, "apikey": self._current_key()}
+        response = translated_get(self._session, _BASE_URL, params=params, timeout=15)
+        raise_for_status_translated(response)
+        data = json_payload(response)
+        if not isinstance(data, dict):
+            return {}
+        self._raise_on_error_message(data)
+        return data
 
     def _raise_on_error_message(self, data: dict[str, Any]) -> None:
         """`Error Message` → `_AlphaVantageRequestRejected` (klucz) albo
