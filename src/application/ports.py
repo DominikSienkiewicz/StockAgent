@@ -505,14 +505,14 @@ class RepositoryPort(ABC):
 
         main_agent woła po cyklu dla każdego alertu zebranego przez
         `QuotaMonitor`. Tabela `quota_alerts` (migracja 010) jest
-        audit trail; banner w mailu używa `get_recent_quota_alerts`.
+        audit trail; banner w mailu używa tylko bieżącego `QuotaMonitor`.
         """
 
     @abstractmethod
     def get_recent_quota_alerts(self, hours: int) -> list[QuotaAlert]:
         """Zwraca alerty z ostatnich `hours` godzin, posortowane malejąco
-        po `occurred_at`. Banner w mailu używa tej listy, by pokazać też
-        alerty z poprzednich cykli, których jeszcze nie naprawiono."""
+        po `occurred_at`, do diagnostyki historycznych zdarzeń.
+        Raport bieżącego cyklu nie odczytuje tej historii."""
 
     @abstractmethod
     def find_similar_predictions(

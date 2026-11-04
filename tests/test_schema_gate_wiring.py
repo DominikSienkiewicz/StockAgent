@@ -231,7 +231,7 @@ class TestSlowLoopSchemaGate:
         assert self.build_repository.call_count >= 2
         assert self.build_repository.call_args.args[0].receipts_enabled is False
 
-    def test_the_alert_is_persisted_for_the_next_email_banner(
+    def test_the_alert_is_persisted_for_diagnostics(
         self, mocker: Any, settings: Settings, trainer: TestSlowLoopSchemaGate
     ) -> None:
         self._run(mocker, settings, SCHEMA_BEHIND_RECEIPTS)

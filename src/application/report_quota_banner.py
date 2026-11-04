@@ -1,8 +1,8 @@
 """Render bannera 🚨 Alerty subskrypcji / limitów na samej górze maila.
 
 Banner pojawia się przed sekcją sesji NYSE, gdy są alerty bieżącego cyklu.
-Historia z bazy ma osobny, neutralny blok. Czas alertu jest w strefie wyświetlania
-maila (`display_timezone`, MAIL-59), jak nagłówek i temat. Kolory:
+Czas alertu jest w strefie wyświetlania maila (`display_timezone`, MAIL-59),
+jak nagłówek i temat. Kolory:
 - CRITICAL → czerwony banner
 - WARNING  → żółty banner
 
@@ -20,10 +20,6 @@ from src.application.report_formatting import (
     PALETTE,
     format_local,
     number,
-)
-from src.application.report_quota_history import (
-    render_quota_history_html,
-    render_quota_history_text,
 )
 from src.application.reporting.section import ReportSection, SectionInput, text_block
 from src.domain.finops import BudgetBreach, BudgetWindow
@@ -205,33 +201,19 @@ def render_llm_budget_banner_text(breach: BudgetBreach | None) -> str:
 
 
 def _section_html(data: SectionInput) -> str:
-    return (
-        render_llm_budget_banner_html(data.context.llm_budget_breach)
-        + render_quota_banner_html(
-            data.context.quota_alerts or [],
-            data.context.display_timezone,
-            current_cycle=data.context.quota_alert_history is not None,
-        )
-        + render_quota_history_html(
-            data.context.quota_alert_history or [], data.context.display_timezone
-        )
+    return render_llm_budget_banner_html(data.context.llm_budget_breach) + render_quota_banner_html(
+        data.context.quota_alerts or [],
+        data.context.display_timezone,
+        current_cycle=True,
     )
 
 
 def _section_text(data: SectionInput) -> list[str]:
-    return (
-        text_block(render_llm_budget_banner_text(data.context.llm_budget_breach))
-        + text_block(
-            render_quota_banner_text(
-                data.context.quota_alerts or [],
-                data.context.display_timezone,
-                current_cycle=data.context.quota_alert_history is not None,
-            )
-        )
-        + text_block(
-            render_quota_history_text(
-                data.context.quota_alert_history or [], data.context.display_timezone
-            )
+    return text_block(render_llm_budget_banner_text(data.context.llm_budget_breach)) + text_block(
+        render_quota_banner_text(
+            data.context.quota_alerts or [],
+            data.context.display_timezone,
+            current_cycle=True,
         )
     )
 
@@ -241,5 +223,5 @@ QUOTA_BANNER_SECTION = ReportSection(
     key="quota_banner",
     render_html=_section_html,
     render_text=_section_text,
-    context_fields=frozenset({"quota_alert_history"}),
+    context_fields=frozenset(),
 )

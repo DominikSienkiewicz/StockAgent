@@ -2451,7 +2451,7 @@ class TestDispatchReportsDelivery:
 
         assert "nie został dostarczony" in push.send_report.call_args.kwargs["plain_text"]
 
-    def test_resend_failure_alert_is_persisted_for_next_report(
+    def test_resend_failure_alert_is_persisted_for_diagnostics(
         self, settings: Settings, mocker: Any
     ) -> None:
         from src.application.quota_monitor import QuotaMonitor
@@ -2474,10 +2474,8 @@ class TestDispatchReportsDelivery:
         repository.save_quota_alert.assert_called_once_with(alert)
 
 
-class TestQuotaAlertBannerLookback:
-    def test_banner_reaches_back_past_a_weekly_slow_loop_alert(self) -> None:
-        # NIEZ-01: niedzielny CRITICAL Alpha Vantage ze Slow Loopa ma być widoczny
-        # w najbliższym mailu, a 24 h okna gubiło go już w poniedziałek rano.
+class TestQuotaAlertBannerScope:
+    def test_banner_does_not_read_alerts_from_previous_runs(self) -> None:
         from src.application.quota_monitor import QuotaMonitor
 
         repository = MagicMock(spec=RepositoryPort)
@@ -2485,8 +2483,7 @@ class TestQuotaAlertBannerLookback:
 
         main_agent._fetch_report_context(repository, QuotaMonitor(), ["AAPL"])
 
-        hours = repository.get_recent_quota_alerts.call_args.kwargs["hours"]
-        assert hours >= 7 * 24 + 3
+        repository.get_recent_quota_alerts.assert_not_called()
 
 
 def _same_day_rows() -> list[dict[str, object]]:

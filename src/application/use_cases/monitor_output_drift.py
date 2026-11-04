@@ -5,7 +5,7 @@ utworzenia na okno poprzednie i bieżące, a porównanie robi domena
 (`src/domain/output_drift.py`). Zero płatnych wywołań: sam odczyt bazy.
 
 Skok udziałów (z biasem) albo pewności daje WARNING — `QuotaAlert`, który Slow
-Loop zapisuje w `quota_alerts`, więc trafia do bannera najbliższego maila.
+Loop zapisuje w `quota_alerts` jako historię diagnostyczną.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ class MonitorOutputDriftUseCase:
 
 
 def drift_alert(report: OutputDriftReport, now: datetime) -> QuotaAlert | None:
-    """WARNING dla bannera maila, gdy monitor flaguje; None, gdy rozkład stabilny."""
+    """WARNING dla monitora Slow Loopa; None, gdy rozkład stabilny."""
     if not report.flagged:
         return None
     return QuotaAlert(

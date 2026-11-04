@@ -3183,7 +3183,7 @@ def flag_undelivered_report(
     repository: RepositoryPort | None = None,
 ) -> None:
     """NIEZ-12: raport z tego przebiegu nie dotarł — adnotacja `::error` na stdout
-    i alert CRITICAL (banner następnego maila, push real-time, gdy włączony).
+    i alert CRITICAL (historia diagnostyczna, push real-time, gdy włączony).
 
     Exit code zostaje 0 (CLAUDE.md, Resilience): niedostarczenie nie jest awarią
     cyklu, tylko wymaga uwagi właściciela. Z `repository` alert jest zapisany od

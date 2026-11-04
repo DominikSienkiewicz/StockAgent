@@ -453,7 +453,7 @@ class ReportContext:
     council_history: list[InvestorHistory] | None = None
     council_redundancy: CouncilRedundancy | None = None
     persona_track_record: list[PersonaTrackRecord] | None = None
-    # Alerty tego cyklu napędzają banner i lead; historia jest tylko kontekstem.
+    # Wyłącznie alerty tego cyklu — napędzają banner i lead.
     quota_alerts: list[QuotaAlert] | None = None
     symbols_filter: frozenset[str] | None = None
     equity_curve: EquityCurve | None = None
@@ -549,9 +549,6 @@ class ReportContext:
     # linia „watchlista: N z config − K wyciszone” w Zapleczu. None = flaga
     # `symbol_mutes_enabled` off, mail bajt w bajt jak przed MAIL-45.
     watchlist_mutes: EffectiveWatchlist | None = None
-    # Wpisy z okna 171 h poza zdarzeniami obecnego monitora. None zachowuje
-    # dawny nagłówek renderera; assembler przekazuje zawsze rozdzieloną listę.
-    quota_alert_history: list[QuotaAlert] | None = None
 
 
 def _section_input(

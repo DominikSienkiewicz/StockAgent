@@ -1,4 +1,4 @@
-"""Historia alertów nie udaje awarii w bieżącym cyklu raportu."""
+"""Raport pokazuje wyłącznie alerty z przebiegu, który go wygenerował."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from src.domain.change_detection import AccuracyDrop
 from src.domain.quota import QuotaAlert, QuotaSeverity
 
 STARTED = datetime(2026, 10, 29, 5, 30, tzinfo=UTC)
-HISTORY_TITLE = "HISTORIA ALERTÓW (ostatnie 171 h)"
+HISTORY_TITLE = "HISTORIA ALERTÓW"
 CURRENT_TITLE = "ALERTY SUBSKRYPCJI / LIMITÓW — BIEŻĄCY CYKL"
 
 
@@ -66,7 +66,7 @@ def _assemble(repo: Mock, current: list[QuotaAlert]) -> ReportContext:
 
 
 @pytest.mark.parametrize("compact", [False, True])
-def test_historical_critical_alert_is_history_without_current_warning(compact: bool) -> None:
+def test_historical_alerts_are_absent_from_current_report(compact: bool) -> None:
     old = _alert(hours_ago=170)
     repo = _repo([old])
 
@@ -75,14 +75,12 @@ def test_historical_critical_alert_is_history_without_current_warning(compact: b
 
     assert "🚨 ALERTY SUBSKRYPCJI / LIMITÓW" not in html
     assert "🚨 ALERTY SUBSKRYPCJI / LIMITÓW" not in text
-    assert HISTORY_TITLE in html and HISTORY_TITLE in text
-    assert old.message in html and old.message in text
-    assert "Status tych zdarzeń wymaga osobnej weryfikacji." in html
-    assert "Status tych zdarzeń wymaga osobnej weryfikacji." in text
+    assert HISTORY_TITLE not in html and HISTORY_TITLE not in text
+    assert old.message not in html and old.message not in text
     assert context.quota_alerts == []
-    assert context.quota_alert_history == [old]
     assert build_cycle_lead([], context) == []
-    repo.get_recent_quota_alerts.assert_called_once_with(hours=171)
+    repo.get_recent_quota_alerts.assert_not_called()
+    repo.save_quota_alert.assert_not_called()
 
 
 def test_historical_critical_alert_does_not_become_the_subject() -> None:
@@ -104,58 +102,58 @@ def test_historical_critical_alert_does_not_become_the_subject() -> None:
     assert "0 predykcji, 0 błędów" in subject
 
 
-def test_repeated_current_alert_is_not_hidden_by_its_older_occurrence() -> None:
+@pytest.mark.parametrize("compact", [False, True])
+def test_repeated_current_alert_is_not_hidden_by_its_older_occurrence(compact: bool) -> None:
     old = _alert(hours_ago=24)
     current = _alert(hours_ago=0)
 
-    context = _assemble(_repo([old, current]), [current])
+    repo = _repo([old, current])
+    context = _assemble(repo, [current])
 
     assert context.quota_alerts == [current]
-    assert context.quota_alert_history == [old]
-    html, text = build_html_report([], STARTED, 1.0, context)
+    html, text = build_html_report([], STARTED, 1.0, context, compact=compact)
     assert CURRENT_TITLE in html and CURRENT_TITLE in text
-    assert HISTORY_TITLE in html and HISTORY_TITLE in text
-    current_text, history_text = text.split(HISTORY_TITLE)
-    assert format_local(current.occurred_at, context.display_timezone) in current_text
-    assert format_local(old.occurred_at, context.display_timezone) in history_text
-    assert (
-        f"ostatnio {format_local(current.occurred_at, context.display_timezone)}"
-        not in history_text
-    )
-    assert old.message in history_text
+    assert HISTORY_TITLE not in html and HISTORY_TITLE not in text
+    for rendered in (html, text):
+        assert format_local(current.occurred_at, context.display_timezone) in rendered
+        assert format_local(old.occurred_at, context.display_timezone) not in rendered
     assert current.message in build_cycle_lead([], context)[0].headline
+    repo.save_quota_alert.assert_called_once_with(current)
+    repo.get_recent_quota_alerts.assert_not_called()
 
 
+@pytest.mark.parametrize("compact", [False, True])
 @pytest.mark.parametrize("failed_operation", [None, "save_quota_alert", "get_recent_quota_alerts"])
-def test_current_alert_survives_a_missing_persisted_copy(failed_operation: str | None) -> None:
+def test_current_alert_survives_a_missing_persisted_copy(
+    failed_operation: str | None, compact: bool
+) -> None:
     current = _alert(hours_ago=0)
     repo = _repo([])
     if failed_operation is not None:
         getattr(repo, failed_operation).side_effect = ProviderUnavailable("Baza niedostępna")
 
     context = _assemble(repo, [current])
-    html, text = build_html_report([], STARTED, 1.0, context)
+    html, text = build_html_report([], STARTED, 1.0, context, compact=compact)
 
     assert CURRENT_TITLE in html and CURRENT_TITLE in text
     assert context.quota_alerts == [current]
-    assert context.quota_alert_history == []
     assert HISTORY_TITLE not in html and HISTORY_TITLE not in text
+    repo.save_quota_alert.assert_called_once_with(current)
+    repo.get_recent_quota_alerts.assert_not_called()
 
 
-def test_history_groups_repeated_events_using_latest_time_and_count() -> None:
+def test_repeated_historical_events_stay_out_of_the_report() -> None:
     older = _alert(hours_ago=48)
     newer = _alert(hours_ago=24)
     context = _assemble(_repo([older, newer]), [])
 
     html, text = build_html_report([], STARTED, 1.0, context)
 
-    assert HISTORY_TITLE in html and HISTORY_TITLE in text
+    assert HISTORY_TITLE not in html and HISTORY_TITLE not in text
     for rendered in (html, text):
-        assert rendered.count(older.message) == 1
-        assert "Liczba zdarzeń: 2" in rendered
-        assert format_local(newer.occurred_at, context.display_timezone) in rendered
+        assert older.message not in rendered
+        assert format_local(newer.occurred_at, context.display_timezone) not in rendered
         assert format_local(older.occurred_at, context.display_timezone) not in rendered
-        assert "Zalecenie zapisane przy zdarzeniu" in rendered
 
 
 def test_historical_critical_does_not_raise_a_current_warning_to_critical() -> None:
@@ -164,11 +162,11 @@ def test_historical_critical_does_not_raise_a_current_warning_to_critical() -> N
     context = _assemble(_repo([old, warning]), [warning])
 
     assert build_cycle_lead([], context) == []
-    _, text = build_html_report([], STARTED, 1.0, context)
-    current_text, history_text = text.split(HISTORY_TITLE)
-    assert "OSTRZEŻENIE" in current_text
-    assert "KRYTYCZNY" not in current_text
-    assert "KRYTYCZNY" in history_text
+    html, text = build_html_report([], STARTED, 1.0, context)
+    for rendered in (html, text):
+        assert "OSTRZEŻENIE" in rendered
+        assert "KRYTYCZNY" not in rendered
+        assert HISTORY_TITLE not in rendered
 
 
 def test_recomputed_accuracy_alarm_remains_current_without_reappearing_in_history() -> None:
@@ -185,4 +183,8 @@ def test_recomputed_accuracy_alarm_remains_current_without_reappearing_in_histor
     assert context.quota_alerts is not None
     assert len(context.quota_alerts) == 1
     assert context.quota_alerts[0].source == "Detektor trafności"
-    assert context.quota_alert_history == [old]
+    html, text = build_html_report([], STARTED, 1.0, context)
+    for rendered in (html, text):
+        assert "Detektor trafności" in rendered
+        assert old.message not in rendered
+        assert HISTORY_TITLE not in rendered
