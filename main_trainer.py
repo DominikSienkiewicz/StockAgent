@@ -294,9 +294,8 @@ def _persist_quota_alerts(
     repository: RepositoryPort, quota_monitor: QuotaMonitor, start: int = 0
 ) -> int:
     """Persystencja alertów kwoty od pozycji `start` (np. wyczerpany limit AV przy
-    fundamentach, Resend przy recapie). Banner w mailu sięga tydzień wstecz
-    (`QUOTA_ALERT_LOOKBACK_HOURS`), więc alert z niedzieli trafi do najbliższego
-    raportu. Zwraca liczbę alertów już zapisanych — kolejne wywołanie zaczyna od niej.
+    fundamentach, Resend przy recapie) do historii diagnostycznej w bazie.
+    Zwraca liczbę alertów już zapisanych — kolejne wywołanie zaczyna od niej.
     """
     alerts = quota_monitor.alerts
     for alert in alerts[start:]:
@@ -748,9 +747,9 @@ def _model_catalogs(settings: Settings) -> dict[str, ModelCatalogPort]:
 
 def _push_critical_alerts(settings: Settings, alerts: list[QuotaAlert]) -> None:
     """NIEZ-25: CRITICAL sondy idzie od razu pushem, ZAWSZE gdy jest kanał
-    (Telegram albo Slack), niezależnie od `realtime_alerts_enabled`: wycofany model
-    to cichy total outage Fast Loopa, a bez pushu właściciel dowiedziałby się o nim
-    dopiero z kolejnego maila. Błąd sieci sondy to WARNING i nie jest pushowany."""
+    (Telegram albo Slack), niezależnie od `realtime_alerts_enabled`:
+    od razu powiadamia właściciela o wycofanym modelu, niezależnie od raportów.
+    Błąd sieci sondy to WARNING i nie jest pushowany."""
     critical = [alert for alert in alerts if alert.severity is QuotaSeverity.CRITICAL]
     if not critical:
         return

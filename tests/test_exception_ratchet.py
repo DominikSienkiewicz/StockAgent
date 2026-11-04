@@ -24,7 +24,8 @@ ROOT = Path(__file__).parent.parent
 # -1 (WIA-15): publikacja revealu łapie błędy zapisu i serializacji, nie `Exception`.
 # -4 (fala 2, kontynuacja ARCH-33): adaptery analityków i opcji Finnhub, zapis głosów
 # rady w grafie i odczyt wieku cache fundamentów w trenerze łapią `PortError`.
-BROAD_HANDLER_BASELINE = 152
+# -1: raport nie odczytuje już historii alertów z poprzednich cykli.
+BROAD_HANDLER_BASELINE = 151
 _BROAD_NAMES = frozenset({"Exception", "BaseException"})
 
 
