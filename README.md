@@ -18,7 +18,7 @@ that generated the report; earlier events remain in the database for diagnostics
 ![Resend](https://img.shields.io/badge/Resend-Email-000000?style=for-the-badge)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal+DDD-orange?style=for-the-badge)](tests/test_architecture.py)
 
-[![CI](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DominikSienkiewicz/StockAgent/actions/workflows/ci.yml)
+[![CI](https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/actions/workflows/ci.yml)
 [![Quality Gate](https://img.shields.io/sonar/quality_gate/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud&label=Quality%20Gate)](https://sonarcloud.io/dashboard?id=DominikSienkiewicz_StockAgent)
 [![Coverage](https://img.shields.io/sonar/coverage/DominikSienkiewicz_StockAgent?server=https%3A%2F%2Fsonarcloud.io&style=for-the-badge&logo=sonarcloud)](https://sonarcloud.io/dashboard?id=DominikSienkiewicz_StockAgent)
 
@@ -146,7 +146,7 @@ heartbeat secret, the attestation flags and a push channel for the shock check. 
 daily run's cron is active, `tests/test_workflow_env_wiring.py` fails unless a deadman runs on a cron and the
 cost ceiling, the weekly budget, the liveness gap and the write and paid-call switches are in
 place. Every run, scheduled or manual, is listed on the
-[GitHub Actions workflows page](https://github.com/DominikSienkiewicz/StockAgent/actions).
+[GitHub Actions workflows page](https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/actions).
 
 **Database risk: the Supabase Free plan.** The Supabase project is on the Free plan, which
 pauses a project after 7 days without activity. The daily run and the shock check write on

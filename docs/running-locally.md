@@ -348,7 +348,7 @@ one alert for the run. News retains the `av_keys_exhausted` quality flag so the
 source-health display and training exclusion remain compatible.
 
 The regression fixture `av_premium_endpoint_truncated.json` preserves only the
-marker text captured in [run 40867144144](https://github.com/DominikSienkiewicz/StockAgent/actions/runs/40867144144)
+marker text captured in [run 40867144144](https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/actions/runs/40867144144)
 on 2026-10-29 (11:42:55–11:43:02 UTC). It ends at the logger's 160-character
 boundary and is not a complete recorded HTTP response. The tests do not call the
 provider. They also cover successful fallback, unknown markers, redaction and
