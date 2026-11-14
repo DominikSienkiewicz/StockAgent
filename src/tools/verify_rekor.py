@@ -11,8 +11,6 @@ na wpis `hashedrekord` rootu. Weryfikator sprawdza z samego pliku ledgera:
    (od `MAX_CLOCK_SKEW` przed do `MAX_LOG_DELAY` po) i w ważności certyfikatu,
 4. tożsamość workflowu: SAN certyfikatu to URI pliku workflowu w repo
    (`https://github.com/<repo>/<ścieżka>@<ref>`), a issuer to OIDC GitHub Actions.
-   Dawna nazwa repo (sprzed przeniesienia do organizacji) potwierdza tylko wpis
-   zalogowany przed przeniesieniem (`FORMER_REPOSITORIES`).
 
 Czego offline NIE sprawdza (UCZCIWOŚĆ CLAIMU): łańcucha certyfikatu do roota Fulcio
 ani podpisu checkpointu i SET-u kluczem Rekora — to wymaga zaufanego materiału Sigstore
@@ -41,7 +39,7 @@ from src.domain.attestation import root_artifact, root_artifact_sha256, verify_i
 REKOR_FIELD = "rekor"
 GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 # Tożsamość, którą obiecuje docs/configuration.md: Fast Loop tego repo.
-DEFAULT_REKOR_REPOSITORY = "SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent"
+DEFAULT_REKOR_REPOSITORY = "DominikSienkiewicz/StockAgent"
 DEFAULT_REKOR_WORKFLOW = ".github/workflows/fast_loop_12h.yml"
 # Rekor dostaje root sekundy po `committed_at` (seal → token → Fulcio → Rekor); okno
 # z zapasem na retry. Root zalogowany później niż kwadrans po deklarowanym czasie linii
@@ -58,24 +56,6 @@ _CHECKPOINT_ROOT_LINE = 2
 
 
 @dataclass(frozen=True)
-class FormerRepository:
-    """Dawna nazwa repo: SAN z nią potwierdza tylko wpis zalogowany przed `until`."""
-
-    name: str
-    until: datetime
-
-
-# 2026-11-13 repo przeszło z konta osobistego do organizacji, a certyfikaty rootów
-# zalogowanych wcześniej nazywają workflow pod dawną nazwą. Po przeniesieniu tę nazwę może
-# zająć nowe repo, więc potwierdza ona tylko wpisy sprzed końca dnia przeniesienia (UTC).
-FORMER_REPOSITORIES: Mapping[str, tuple[FormerRepository, ...]] = {
-    DEFAULT_REKOR_REPOSITORY: (
-        FormerRepository("DominikSienkiewicz/StockAgent", until=datetime(2026, 11, 14, tzinfo=UTC)),
-    ),
-}
-
-
-@dataclass(frozen=True)
 class WorkflowIdentity:
     """Workflow, którego certyfikat Fulcio ma podpisać root: repo i ścieżka pliku."""
 
@@ -86,17 +66,7 @@ class WorkflowIdentity:
     @property
     def uri_prefix(self) -> str:
         """Początek SAN certyfikatu GitHub Actions; po `@` stoi ref (gałąź albo tag)."""
-        return self._uri_prefix(self.repository)
-
-    def uri_prefixes(self, logged_at: datetime) -> tuple[str, ...]:
-        """Początki SAN, które potwierdzają wpis zalogowany `logged_at`: bieżąca nazwa repo
-        zawsze, dawna tylko przed przeniesieniem."""
-        former = FORMER_REPOSITORIES.get(self.repository, ())
-        names = (self.repository, *(repo.name for repo in former if logged_at < repo.until))
-        return tuple(self._uri_prefix(name) for name in names)
-
-    def _uri_prefix(self, repository: str) -> str:
-        return f"https://github.com/{repository}/{self.workflow}@"
+        return f"https://github.com/{self.repository}/{self.workflow}@"
 
 
 FAST_LOOP_IDENTITY = WorkflowIdentity()
@@ -246,11 +216,10 @@ def _identity_problems(entry: _Entry, identity: WorkflowIdentity) -> list[str]:
     """SAN certyfikatu nazywa workflow `identity`, a issuer to OIDC GitHub Actions."""
     problems: list[str] = []
     uris = _san_uris(entry.certificate)
-    prefixes = identity.uri_prefixes(entry.integrated_at)
-    if not any(uri.startswith(prefix) for uri in uris for prefix in prefixes):
+    if not any(uri.startswith(identity.uri_prefix) for uri in uris):
         problems.append(
             f"the Rekor certificate names {', '.join(uris) or 'no workflow'} instead of the "
-            f"workflow {' or '.join(f'{prefix}…' for prefix in prefixes)}"
+            f"workflow {identity.uri_prefix}…"
         )
     if identity.issuer not in _issuers(entry.certificate):
         problems.append(f"the Rekor certificate was not issued for {identity.issuer}")
