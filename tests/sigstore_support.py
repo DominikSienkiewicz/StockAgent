@@ -23,7 +23,7 @@ from cryptography.x509.oid import NameOID
 
 from src.domain.attestation import inclusion_proof, merkle_root
 
-WORKFLOW_SUBJECT = "repo:SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent:ref:refs/heads/main"
+WORKFLOW_SUBJECT = "repo:DominikSienkiewicz/StockAgent:ref:refs/heads/main"
 OIDC_REQUEST_URL = "https://pipelines.actions.example/idtoken?api-version=2.0"
 OIDC_REQUEST_TOKEN = "oidc-request-bearer-0123456789"
 OIDC_ENVIRON = {
@@ -103,11 +103,6 @@ def rekor_response(
 
 GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 WORKFLOW_URI = (
-    "https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent"
-    "/.github/workflows/fast_loop_12h.yml@refs/heads/main"
-)
-# Ten sam workflow pod nazwą repo sprzed przeniesienia do organizacji (2026-11-13).
-FORMER_WORKFLOW_URI = (
     "https://github.com/DominikSienkiewicz/StockAgent/.github/workflows/fast_loop_12h.yml"
     "@refs/heads/main"
 )

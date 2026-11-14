@@ -126,7 +126,7 @@ ledger=$(mktemp -d) \
 **9b. Protect it** (no force-push, no deletion, admins included; pushes stay open, because the workflow pushes with the job token):
 
 ```bash
-gh api -X PUT "repos/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/branches/attestation-log/protection" --input - <<'JSON'
+gh api -X PUT "repos/DominikSienkiewicz/StockAgent/branches/attestation-log/protection" --input - <<'JSON'
 {
   "required_status_checks": null,
   "enforce_admins": true,
@@ -145,9 +145,9 @@ JSON
 **9e. Pages for the public scorecard:** switch GitHub Pages on with GitHub Actions as its source (the same as Settings → Pages → Source: GitHub Actions); the first command creates the site, the second one switches an existing site to Actions, the third shows the result:
 
 ```bash
-gh api -X POST "repos/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/pages" -f build_type=workflow
-gh api -X PUT "repos/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/pages" -f build_type=workflow
-gh api "repos/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/pages" --jq '.build_type, .html_url'
+gh api -X POST "repos/DominikSienkiewicz/StockAgent/pages" -f build_type=workflow
+gh api -X PUT "repos/DominikSienkiewicz/StockAgent/pages" -f build_type=workflow
+gh api "repos/DominikSienkiewicz/StockAgent/pages" --jq '.build_type, .html_url'
 ```
 
 Then turn `public_scorecard_enabled` on. `tests/test_workflow_env_wiring.py::test_enabled_public_artifacts_have_a_durable_publish_step` checks each flag against its own mechanism, in the job that runs `main_agent.py` or in any job that waits for it through `needs` (directly or transitively): `public_scorecard_enabled` needs an `actions/upload-pages-artifact` of the scorecard's directory and an `actions/deploy-pages` step, which the Fast Loop has since WIA-16; `attestation_enabled` needs a `git add` of both ledger files (`attestation_commitments_path`, `attestation_reveals_path`) and a `git push`, which the `publish-attestation-ledger` job has since WIA-14, because a Pages deploy replaces the whole site and cannot keep an append-only ledger. The public scorecard has its own deploy: [`scorecard_pages.yml`](../.github/workflows/scorecard_pages.yml) runs the free `main_scorecard.py` and deploys only `dirname(public_scorecard_path)` to Pages (WIA-52), and every Fast Loop run that wrote the page deploys it the same way (WIA-16). Once Pages is set up and `public_scorecard_enabled` is on, run **🏅 Public Scorecard** from the Actions tab with a `days` input that reaches back to the last settled predictions, then check the page URL on the run summary and `<page URL>/scorecard.json` next to it (WIA-81; its contract is [`docs/schemas/scorecard.schema.json`](schemas/scorecard.schema.json)).

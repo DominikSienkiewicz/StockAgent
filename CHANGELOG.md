@@ -178,7 +178,7 @@ agent and the audit fixes that made it honest, from 2026-05-13.
 - `3e6a493` is a boundary chosen as the last commit before `9d98e16`, not a milestone commit.
   R-26 and R-27 (`ef921b9`) belong to the June series that the v0.2 commit completes.
 
-[Unreleased]: https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/compare/v0.3...main
-[v0.3]: https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/compare/v0.2...v0.3
-[v0.2]: https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/compare/v0.1...v0.2
-[v0.1]: https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/releases/tag/v0.1
+[Unreleased]: https://github.com/DominikSienkiewicz/StockAgent/compare/v0.3...main
+[v0.3]: https://github.com/DominikSienkiewicz/StockAgent/compare/v0.2...v0.3
+[v0.2]: https://github.com/DominikSienkiewicz/StockAgent/compare/v0.1...v0.2
+[v0.1]: https://github.com/DominikSienkiewicz/StockAgent/releases/tag/v0.1

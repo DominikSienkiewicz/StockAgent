@@ -52,7 +52,7 @@ def test_status_section_dates_the_pause_and_links_the_checklist_and_the_runs() -
     assert "2026-08-17" in section
     assert "02fc397" in section
     assert "docs/resume-checklist.md" in section
-    assert "https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent/actions" in section
+    assert "https://github.com/DominikSienkiewicz/StockAgent/actions" in section
 
 
 def _limitations_section(readme: str) -> str:
