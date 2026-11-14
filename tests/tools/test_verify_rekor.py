@@ -18,7 +18,7 @@ import pytest
 from src.domain.attestation import cycle_root_record
 from src.tools import verify_rekor
 from src.tools.verify_rekor import WorkflowIdentity, rekor_problems
-from tests.sigstore_support import WORKFLOW_URI, rekor_entry_for
+from tests.sigstore_support import FORMER_WORKFLOW_URI, WORKFLOW_URI, rekor_entry_for
 
 ROOT = Path(__file__).resolve().parents[2]
 _NOW = datetime(2026, 10, 26, 5, 31, 7, tzinfo=UTC)
@@ -27,6 +27,8 @@ _LINE = cycle_root_record(
 )
 _ROOT = str(_LINE["root"])
 _OTHER_ROOT = "cd" * 32
+# Pierwszy dzień po przeniesieniu repo do organizacji (2026-11-13).
+_AFTER_TRANSFER = datetime(2026, 11, 14, 5, 31, 7, tzinfo=UTC)
 
 
 def _line(**entry: Any) -> dict[str, Any]:
@@ -99,9 +101,42 @@ def test_a_line_without_a_usable_committed_at_fails(committed_at: str | None) ->
     assert "committed_at" in _problems(line)
 
 
+def _problems_of_line_committed_at(committed_at: datetime, uri: str) -> str:
+    line = cycle_root_record(
+        cycle_id="987.2.20261114T053000Z", committed_at=committed_at, commitments=["ee" * 32]
+    )
+    root = str(line["root"])
+    entry = rekor_entry_for(root, integrated_at=committed_at + timedelta(seconds=3), uri=uri)
+    return " | ".join(rekor_problems({**line, "rekor": entry}, root))
+
+
+def test_an_entry_of_the_fast_loop_in_the_organization_confirms_its_root() -> None:
+    assert _problems_of_line_committed_at(_AFTER_TRANSFER, WORKFLOW_URI) == ""
+
+
+def test_the_former_repository_name_confirms_an_entry_logged_before_the_transfer() -> None:
+    # Rooty zalogowane przed przeniesieniem niosą w SAN dawną nazwę repo.
+    assert rekor_problems(_line(uri=FORMER_WORKFLOW_URI), _ROOT) == []
+
+
+def test_the_former_repository_name_fails_for_an_entry_logged_after_the_transfer() -> None:
+    # Po przeniesieniu dawną nazwę może zająć inne repo — jego podpis nie potwierdza rootu.
+    problems = _problems_of_line_committed_at(_AFTER_TRANSFER, FORMER_WORKFLOW_URI)
+
+    assert "instead of the workflow" in problems
+
+
+def test_the_former_repository_name_does_not_vouch_for_a_fork() -> None:
+    fork = WorkflowIdentity(repository="someone/fork")
+
+    assert rekor_problems(_line(uri=FORMER_WORKFLOW_URI), _ROOT, fork) != []
+
+
 @pytest.mark.parametrize(
     "uri",
     [
+        "https://github.com/SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent"
+        "/.github/workflows/other.yml@refs/heads/main",
         "https://github.com/DominikSienkiewicz/StockAgent/.github/workflows/other.yml@refs/heads/main",
         "https://github.com/someone/StockAgent/.github/workflows/fast_loop_12h.yml@refs/heads/main",
     ],

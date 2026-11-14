@@ -559,7 +559,7 @@ def test_verify_attestation_checks_rekor_entries_against_the_fast_loop_by_defaul
     args = main_tools.build_parser().parse_args(["verify-attestation"])
 
     assert (getattr(args, "rekor_repository", None), getattr(args, "rekor_workflow", None)) == (
-        "DominikSienkiewicz/StockAgent",
+        "SeniorDeveloper-pl-Dominik-Sienkiewicz/StockAgent",
         ".github/workflows/fast_loop_12h.yml",
     )
 
