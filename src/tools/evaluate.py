@@ -288,7 +288,7 @@ class EvalReport:
 def _to_float(value: Any) -> float | None:
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if math.isnan(result) or math.isinf(result):
         return None

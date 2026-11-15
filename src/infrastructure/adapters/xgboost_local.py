@@ -872,7 +872,7 @@ def load_challenger(name: str, model_path: str, kind: ForecastKind) -> XGBoostCh
         version = hashlib.sha256(path.read_bytes()).hexdigest()
         model.load_model(model_path)
         objective = json.loads(model.get_booster().save_config())["learner"]["objective"]["name"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError, ValueError, KeyError, TypeError:
         # TypeError: wrapper sklearn XGBoost odmawia pliku estymatora innego typu
         # (klasyfikator wczytywany jako regresor i odwrotnie).
         logger.warning("ML-33: wag challengera %s (%s) nie da się wczytać", name, model_path)

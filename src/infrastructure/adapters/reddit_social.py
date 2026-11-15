@@ -124,7 +124,7 @@ class RedditSocialAdapter(SocialVelocityPort):
             if not isinstance(children, list):
                 return None
             return len(children)
-        except (PortError, KeyError, TypeError):
+        except PortError, KeyError, TypeError:
             logger.exception("Reddit social fetch failed for %s (t=%s)", symbol, period)
             return None
 

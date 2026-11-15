@@ -48,10 +48,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 🐍 Set up Python 3.12
+      - name: 🐍 Set up Python 3.14
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.14'
 
       - name: ⚡ Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -73,7 +73,7 @@ jobs:
           TESTS: ${{ matrix.tests }}
         run: |
           status=0
-          uvx --python 3.12 --from mutmut==2.5.1 mutmut run \
+          uvx --python 3.14 --from mutmut==2.5.1 mutmut run \
             --paths-to-mutate "src/domain/${MODULE}.py" \
             --tests-dir tests/domain \
             --runner "uv run --frozen --no-build --no-sync python -m pytest -x -q -p no:cacheprovider ${TESTS}" \
@@ -82,7 +82,7 @@ jobs:
             echo "::error title=mutmut::błąd krytyczny pomiaru ${MODULE} (exit ${status})"
             exit 1
           fi
-          uvx --python 3.12 --from mutmut==2.5.1 mutmut junitxml --untested-policy=skipped \
+          uvx --python 3.14 --from mutmut==2.5.1 mutmut junitxml --untested-policy=skipped \
             > "mutmut-${MODULE}.xml"
 
       - name: 📊 Mutation score (job summary)

@@ -117,6 +117,6 @@ def _parse_row(row: dict[str, Any], currency: str, on_date: date) -> FxRate | No
             effective_date=date.fromisoformat(str(row.get("effective_date"))),
             rate=Decimal(str(row.get("rate"))),
         )
-    except (ValueError, InvalidOperation):
+    except ValueError, InvalidOperation:
         logger.warning("fx_rates: malformed cache row for %s on %s", currency, on_date)
         return None

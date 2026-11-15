@@ -107,7 +107,7 @@ def test_ci_has_a_manual_lowest_direct_job() -> None:
 
 
 # CI-28: `requires-python = ">=3.12"` obiecywał działanie na 3.13+, czego nic nie sprawdza
-# (CI, mypy i ruff celują w 3.12, a wheele XGBoost, pandas i LangGraph dla nowego Pythona
+# (CI, mypy i ruff celowały wtedy w 3.12, a wheele XGBoost, pandas i LangGraph dla nowego Pythona
 # bywają opóźnione). Deklaracja obejmuje więc tylko minor, który bramka faktycznie testuje;
 # przejście na nowy Python to świadoma zmiana granicy, locka i CI w jednym commicie.
 def _setup_python_versions() -> set[str]:

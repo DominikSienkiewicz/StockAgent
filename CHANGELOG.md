@@ -41,6 +41,8 @@ summarised by the merges and the decisions that shaped them rather than commit b
 - 2026-10-25, `cc6db87`: program P1+P2: the port error taxonomy, the report section registry,
   the attestation proof, ML champion/challenger, the paper ledger, the data source terms, strict
   mypy over all tests (migrations 060-076).
+- 2026-11-16, after `cc6db87`: Python 3.14 replaces 3.12 as the one declared and tested minor
+  (`8392ec9`, D-17); every locked dependency still installs from a wheel.
 
 ## [v0.3] - 2026-07-10
 

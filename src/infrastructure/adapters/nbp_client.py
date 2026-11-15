@@ -177,6 +177,6 @@ def _parse_day_rate(code: str, on_date: date, payload: Any) -> FxRate | None:
             effective_date=date.fromisoformat(str(entry.get("effectiveDate"))),
             rate=Decimal(str(entry["mid"])),
         )
-    except (KeyError, ValueError, InvalidOperation):
+    except KeyError, ValueError, InvalidOperation:
         logger.warning("NBP: malformed rate payload for %s on %s", code, on_date)
         return None

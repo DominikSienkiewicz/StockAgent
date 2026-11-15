@@ -412,7 +412,7 @@ def _optional_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -762,7 +762,7 @@ def _failed_personas_of(raw: Any) -> int:
     albo wartość nieczytelna → 0; nie zgadujemy awarii z treści opinii."""
     try:
         return max(0, int(raw))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -1582,7 +1582,7 @@ class SupabaseRepository(RepositoryPort, EvidenceSourcePort, TrainingDataPort):
         for row in rows:
             try:
                 severity = QuotaSeverity(row["severity"])
-            except (KeyError, ValueError):
+            except KeyError, ValueError:
                 continue
             occurred = row.get("occurred_at")
             if not isinstance(occurred, str):

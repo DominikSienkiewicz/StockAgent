@@ -60,7 +60,7 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
+    except InvalidOperation, ValueError, TypeError:
         return None
 
 

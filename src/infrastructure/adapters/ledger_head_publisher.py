@@ -59,6 +59,6 @@ def _published_on(line: str) -> date | None:
     try:
         record = json.loads(line)
         return date.fromisoformat(str(record["published_on"]))
-    except (ValueError, KeyError, TypeError):
+    except ValueError, KeyError, TypeError:
         logger.warning("Paper ledger heads: last line is not a head record")
         return None

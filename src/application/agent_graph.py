@@ -496,7 +496,7 @@ def _validate_float(value: Any, field_name: str, default: float) -> tuple[float,
         return default, f"{field_name}_missing"
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default, f"{field_name}_invalid"
     if math.isnan(parsed) or math.isinf(parsed):
         return default, f"{field_name}_invalid"
@@ -536,7 +536,7 @@ def _parse_number(value: Any) -> float | None:
         return None
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return None if math.isnan(parsed) else parsed
 
@@ -1929,7 +1929,7 @@ def _shadow_forecasts(
     for challenger in setup.challengers:
         try:
             forecasts.append(challenger.forecast(features, return_scale=return_scale))
-        except (PortError, ReturnScaleUnavailableError):
+        except PortError, ReturnScaleUnavailableError:
             logger.warning(
                 "ML-33: challenger %s bez prognozy cienia dla %s",
                 challenger.name,

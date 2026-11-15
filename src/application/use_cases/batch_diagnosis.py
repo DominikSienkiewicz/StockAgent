@@ -118,7 +118,7 @@ class BatchDiagnosisUseCase:
         except PaidBudgetExhausted:
             logger.warning("Batch diagnosis — przydział wyczerpany, placeholdery zostają")
             return {"status": "budget_exhausted", "misses": len(misses)}
-        except (PortError, RuntimeError):
+        except PortError, RuntimeError:
             logger.warning("Batch diagnosis — LLM failed, placeholdery zostają", exc_info=True)
             return {"status": "llm_failed", "misses": len(misses)}
         diagnoses = parse_batch_diagnoses(answer, len(misses))

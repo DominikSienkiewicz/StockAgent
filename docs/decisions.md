@@ -399,6 +399,29 @@ queues.
 
 **Guards** [`tests/test_main_watch.py`](../tests/test_main_watch.py) `test_watch_and_fast_loop_split_the_finnhub_key_within_the_plan` · [`tests/test_workflow_policy.py`](../tests/test_workflow_policy.py) `test_hourly_shock_watch_stays_out_of_the_writers_queue` · [`tests/infrastructure/test_finnhub_adapter.py`](../tests/infrastructure/test_finnhub_adapter.py) `test_rate_limit_alert_is_polish_and_logged_in_english`
 
+### D-17 · Python 3.14, not 3.15, while CI installs wheels only
+
+**Date** 2026-11-16 · **Status** in force · **Commits** `8392ec9`, `c8c9365`
+
+The project declares exactly the one Python minor that CI tests (CI-28), and that minor was 3.12;
+the owner moved it to 3.14. 3.15 was tried first and dropped: PyYAML 6.0.3 and zstandard 0.25.0,
+which the agent needs at runtime (langgraph → langchain-core → PyYAML, and langchain-core →
+langsmith → zstandard), publish no 3.15 wheels, so they would have to build from source, and every
+workflow syncs with `--no-build` (githubactions:S8541), which refuses exactly that. On 3.14 every
+locked release already ships a wheel for macOS arm64 and Linux x86_64, so the lock moved no version
+and `--no-build` stays as it is. ruff now targets py314: its formatter writes `except A, B:` without
+parentheses (PEP 758), and quoted annotations that name their own class lose the quotes, because
+3.14 defers annotations. From 3.14 on, argparse also expands a help text as a `%` template already
+in `add_argument`, so one bare `%` in the help of `evaluate` stopped every `main_tools.py`
+subcommand until it became `%%`.
+
+*Costs:* not the newest CPython, and the step to 3.15 waits until PyYAML and zstandard publish 3.15
+wheels or `--no-build` is decided again. *Gains:* no source build and no C compiler in the setup,
+CI and the scheduled jobs keep installing wheels only, and the development machine no longer needs
+Python 3.12.
+
+**Guards** [`tests/test_dependency_bounds.py`](../tests/test_dependency_bounds.py) `test_requires_python_promises_only_the_tested_minor` · [`tests/test_main_tools.py`](../tests/test_main_tools.py) `test_every_subcommand_renders_its_help`
+
 ## Flag rationale
 
 Why each feature flag exists, what it replaced, what it costs and how its design was settled:

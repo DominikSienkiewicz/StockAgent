@@ -100,7 +100,7 @@ def _history_available() -> bool:
             text=True,
             check=True,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return False
     return shallow.stdout.strip() == "false"
 

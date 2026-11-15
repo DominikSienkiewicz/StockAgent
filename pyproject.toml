@@ -3,9 +3,9 @@ name = "stock-agent"
 version = "0.1.0"
 description = "Autonomous financial agent — agentic RAG, an LLM advisory council and self-reflection against realised prices"
 readme = "README.md"
-# CI-28: tylko minor testowany w CI (ci.yml, mypy, ruff celują w 3.12); nowy Python = świadoma
+# CI-28: tylko minor testowany w CI (ci.yml, mypy, ruff celują w 3.14); nowy Python = świadoma
 # zmiana tej granicy, locka i CI razem — pilnuje tests/test_dependency_bounds.py.
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 authors = [{ name = "Dominik Sienkiewicz" }]
 license = { text = "MIT" }
 
@@ -119,7 +119,7 @@ fail_under = 98
 # ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
@@ -143,7 +143,7 @@ known-third-party = ["supabase"]
 # mypy (type checker)
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 # CI-15: goły `# type: ignore` (bez kodu błędu) ucisza każdy błąd w linii — mypy go odrzuca;
 # liczbę ignore z kodem i `cast(Any, …)` pilnuje zapadka w tests/test_quality_gate_sync.py.
 enable_error_code = ["ignore-without-code"]

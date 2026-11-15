@@ -35,7 +35,7 @@ def _tracked_weight_files() -> list[str]:
             text=True,
             check=True,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         pytest.skip("brak repozytorium git — nie da się sprawdzić śledzonych wag")
     return [line for line in listed.stdout.splitlines() if line]
 

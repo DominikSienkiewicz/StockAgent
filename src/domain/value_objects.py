@@ -31,7 +31,7 @@ class Money:
         if self.amount.is_nan() or self.amount.is_infinite():
             raise ValueError(f"Money amount must be a finite number (got {self.amount})")
 
-    def for_storage(self) -> "Money":
+    def for_storage(self) -> Money:
         """Kwota w skali kolumny DECIMAL(14,4), zawsze z czterema miejscami.
 
         `ROUND_HALF_UP` w Pythonie zaokrągla połówki od zera, tak jak NUMERIC

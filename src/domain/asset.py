@@ -51,7 +51,7 @@ class PriceDelta:
         return to_percent(Ratio(self.fraction))
 
     @staticmethod
-    def calculate(previous: Money, current: Money) -> "PriceDelta":
+    def calculate(previous: Money, current: Money) -> PriceDelta:
         if previous.amount == 0:
             return PriceDelta(Decimal("0"))
         delta = (current.amount - previous.amount) / previous.amount
