@@ -6,6 +6,7 @@ czystą logikę. Każde narzędzie to podkomenda argparse.
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 from datetime import UTC, date, datetime, timedelta
@@ -36,6 +37,23 @@ def test_main_tools_help_names_the_composition_root(capsys: pytest.CaptureFixtur
 
     assert exit_info.value.code == 0
     assert "main_tools.py" in capsys.readouterr().out
+
+
+def test_every_subcommand_renders_its_help() -> None:
+    # Pomoc argparse to szablon `%`: goły `%` (np. „top-k% wg”) Python 3.14+ odrzuca już w
+    # `add_argument`, więc wywraca budowę parsera i każdą podkomendę naraz.
+    parser = main_tools.build_parser()
+    (subcommands,) = (
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    unrendered = [
+        name
+        for name, subparser in subcommands.choices.items()
+        if f"main_tools.py {name}" not in subparser.format_help()
+    ]
+
+    assert subcommands.choices
+    assert unrendered == []
 
 
 # --- PORT-18: import-positions ------------------------------------------------

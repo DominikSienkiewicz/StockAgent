@@ -227,7 +227,7 @@ def _add_evaluate(subcommands: argparse._SubParsersAction[argparse.ArgumentParse
         action="store_true",
         help=(
             "Czy pewność coś znaczy (WIA-38): AUC pewności LLM i konsensusu rady "
-            "z CI blokowym i trafnością top-k% wg pewności."
+            "z CI blokowym i trafnością top-k%% wg pewności."
         ),
     )
     parser.add_argument(
