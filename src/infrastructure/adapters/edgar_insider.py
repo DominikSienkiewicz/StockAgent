@@ -164,7 +164,7 @@ def _padded_cik(cik_raw: int | str | None) -> str | None:
         return None
     try:
         return str(int(cik_raw)).zfill(10)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -481,7 +481,7 @@ class EdgarInsiderAdapter(InsiderFlowPort, CorporateEventsPort):
     def _parse_date(date_str: object) -> date | None:
         try:
             return datetime.strptime(str(date_str), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     def _parse_form4(self, cik: str, accession: str, primary_doc: str) -> _Form4Summary | None:

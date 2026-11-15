@@ -281,7 +281,7 @@ class _CircuitBreakingAdapter(HTTPAdapter):
             response = super().send(
                 request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies
             )
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.ConnectionError, requests.Timeout:
             self._breakers.record_failure(host)
             raise
         if response.status_code >= _SERVER_ERROR:

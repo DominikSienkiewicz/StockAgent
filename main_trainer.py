@@ -466,7 +466,7 @@ def _evaluate_direction_variant(
     dead_band = float(load_evaluation_protocol().directional_dead_zone)
     try:
         report = use_case.run_direction_variant(trainable, dead_band=dead_band)
-    except (PortError, LookupError, ValueError, RuntimeError):
+    except PortError, LookupError, ValueError, RuntimeError:
         logger.exception("Direction variant failed — pomijam")
         return
     if not isinstance(report, DirectionReport):

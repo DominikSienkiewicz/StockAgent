@@ -53,7 +53,7 @@ def _parse_decimal(raw: Any) -> Decimal | None:
         return None
     try:
         value = Decimal(str(raw))
-    except (InvalidOperation, ValueError, TypeError):
+    except InvalidOperation, ValueError, TypeError:
         return None
     if value.is_nan() or value.is_infinite():
         return None

@@ -124,7 +124,7 @@ class JudgeDiagnosesUseCase:
                 logger.warning("Diagnosis judge — przydział wyczerpany, koniec joba")
                 status = "budget_exhausted"
                 break
-            except (PortError, RuntimeError):
+            except PortError, RuntimeError:
                 logger.warning("Diagnosis judge — LLM failed", exc_info=True)
                 failed += 1
                 continue

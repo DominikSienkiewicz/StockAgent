@@ -164,7 +164,7 @@ def _as_int(value: Any) -> int:
     """Bezpieczna konwersja licznika rekomendacji na int (None/śmieci → 0)."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -172,6 +172,6 @@ def _as_float(value: Any) -> float | None:
     """Bezpieczna konwersja celu cenowego na float; 0/None/śmieci → None."""
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return result if result > 0 else None

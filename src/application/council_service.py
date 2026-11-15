@@ -70,7 +70,7 @@ def _clamp_unit(raw: Any, default: float = 0.5) -> float:
     """
     try:
         value = float(raw) if raw is not None else default
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
     return max(0.0, min(1.0, value))
 

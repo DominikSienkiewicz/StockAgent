@@ -8,7 +8,7 @@ pilnuje, że żadna sekcja nie stoi w obu plikach.
 
 ## Stack i narzędzia
 
-- **Python 3.12**, manager zależności: **`uv`** (nie `pip`!). Każda komenda przez `uv run ...`.
+- **Python 3.14**, manager zależności: **`uv`** (nie `pip`!). Każda komenda przez `uv run ...`.
 - Dodanie zależności: `uv add <pkg>` → commituj **oba** `pyproject.toml` + `uv.lock`.
 - macOS: XGBoost wymaga `brew install libomp` (jednorazowo).
 

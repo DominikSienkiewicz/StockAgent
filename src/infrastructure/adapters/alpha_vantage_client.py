@@ -562,7 +562,7 @@ class AlphaVantageClient:
                         "relevance": float(ts.get("relevance_score", 0)),
                         "sentiment": float(ts.get("ticker_sentiment_score", 0)),
                     }
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     return None
         return None
 

@@ -25,7 +25,7 @@ That is six accounts with the committed configuration and five at the least (`ll
 
 ## Tech stack
 
-- **Python 3.12** with `from __future__ import annotations`
+- **Python 3.14** with `from __future__ import annotations`
 - **[uv](https://github.com/astral-sh/uv)** (Astral) — dependency manager. The CI gate syncs with `uv sync --locked`, which fails when `uv.lock` no longer matches `pyproject.toml` (a dependency changed without `uv lock`, CI-11); the production workflows install the committed lock with `--frozen`
 - **[LangGraph](https://langchain-ai.github.io/langgraph/) 1.2** — decision graph with `StateGraph[AgentState]`
 - **OpenAI Python SDK** v2 — `gpt-5-mini` advisory council + `text-embedding-3-small` embeddings, JSON mode
@@ -44,7 +44,7 @@ Architecture: **Hexagonal (Ports & Adapters) + DDD**. Domain (pure Python, zero 
 
 ## Prerequisites
 
-- Python 3.12 + `uv` (install: `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- Python 3.14 + `uv` (install: `curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - macOS only: `brew install libomp` (required by XGBoost)
 - **Finnhub** API key (free) — https://finnhub.io/dashboard
 - **Alpha Vantage** API key(s) with access to the configured endpoints — https://www.alphavantage.co/support/#api-key. Extra keys can provide fallback capacity; they do not grant access to an endpoint restricted to another plan.

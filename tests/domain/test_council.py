@@ -72,7 +72,7 @@ class TestInvestorOpinion:
         try:
             op.confidence = 0.1  # type: ignore[misc]
             raise AssertionError("should raise")
-        except (AttributeError, TypeError):
+        except AttributeError, TypeError:
             pass
 
     def test_recommendation_stored(self) -> None:
@@ -96,7 +96,7 @@ class TestCouncilVerdict:
         try:
             v.consensus_strength = 0.1  # type: ignore[misc]
             raise AssertionError("should raise")
-        except (AttributeError, TypeError):
+        except AttributeError, TypeError:
             pass
 
     def test_holds_all_opinions(self) -> None:

@@ -152,7 +152,7 @@ class RevealAttestationsUseCase:
     def _publish(self, record: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
         try:
             location = self._publisher.publish_reveal(record)
-        except (OSError, PortError, TypeError, ValueError):
+        except OSError, PortError, TypeError, ValueError:
             logger.exception("Failed to publish reveal for %s", row.get("id"))
             return False
         if not location:

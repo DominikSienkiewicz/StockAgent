@@ -151,7 +151,7 @@ def _binding_problems(entry: _Entry, root: str) -> list[str]:
             root_artifact(root),
             ec.ECDSA(hashes.SHA256()),
         )
-    except (InvalidSignature, binascii.Error, ValueError):
+    except InvalidSignature, binascii.Error, ValueError:
         return ["the signature in the Rekor entry does not verify over the root"]
     return []
 
@@ -186,7 +186,7 @@ def _checkpoint_names(checkpoint: Any, size: int, tree_root: str) -> bool:
     try:
         named_root = base64.b64decode(lines[_CHECKPOINT_ROOT_LINE], validate=True)
         root_bytes = bytes.fromhex(tree_root)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return False
     return lines[_CHECKPOINT_SIZE_LINE] == str(size) and named_root == root_bytes
 
