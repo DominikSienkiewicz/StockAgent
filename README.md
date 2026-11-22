@@ -197,6 +197,152 @@ and **cyclically confronts itself with reality** through Self-Reflection. It's n
 and it's not another "GPT predict stocks" — every prediction it makes is recorded, closed
 against the realised price, and fed back into the next run.
 
+## Architecture
+
+StockAgent is a set of scheduled Python jobs on GitHub Actions around one Supabase
+database. Nothing runs between the schedules, and the jobs hand their results to each other
+through the database and the release that carries the model weights.
+
+### What it is made of
+
+Where the data comes from and where it goes: every arrow follows the data and names the
+interface it travels over.
+
+```mermaid
+flowchart LR
+    gha["GitHub Actions<br/>cron schedules"]
+    prices["Finnhub, CoinGecko<br/>prices"]
+    news["Alpha Vantage<br/>news, sentiment, fundamentals"]
+    macro["FRED, NBP<br/>yield curve, FX rates"]
+    llm["Anthropic, OpenAI<br/>analysis, council, embeddings"]
+    sa["StockAgent jobs, Python 3.14<br/>Fast Loop, Slow Loop,<br/>Shock Watch, Deadman"]
+    db[("Supabase<br/>Postgres + pgvector, Storage")]
+    rel[("GitHub Release<br/>model-latest")]
+    mail["Resend<br/>report, recap, alerts"]
+    push["Telegram, Slack<br/>digest, shock alerts"]
+
+    gha -->|"starts each job"| sa
+    prices -->|"REST: quotes, daily change"| sa
+    news -->|"REST: news sentiment, fundamentals"| sa
+    macro -->|"REST: yield curve, FX rates"| sa
+    llm <-->|"SDK: prompts out, readings and embeddings back"| sa
+    sa <-->|"PostgREST: predictions, snapshots, RAG search"| db
+    sa <-->|"XGBoost weights"| rel
+    sa -->|"REST: HTML email"| mail
+    sa -->|"Bot API, webhook"| push
+```
+
+Only the Fast Loop and the Slow Loop make paid calls; the Shock Watch and the Deadman use
+free quotes and the database. The owner's Telegram bot (`main_bot.py`, polled every 15 minutes) is wired but exits at once
+while `telegram_bot_enabled` is off. The sources that stay behind other flags are listed under
+[Integrations](#integrations).
+
+### How the jobs share data
+
+Read it left to right: each schedule starts one job, and the next job picks up what the
+previous one stored.
+
+```mermaid
+flowchart LR
+    c1(["weekdays 05:30 UTC"]) --> fast["Fast Loop"]
+    c2(["Sundays 03:00 UTC"]) --> slow["Slow Loop"]
+    c3(["hourly at :07"]) --> watch["Shock Watch"]
+    c4(["daily 09:17 UTC"]) --> deadman["Deadman"]
+
+    fast -->|"writes"| pl[("prediction_logs<br/>council_votes, paper_trades")]
+    fast -->|"writes"| ps[("price_snapshots<br/>feature_snapshots")]
+    ps -->|"reference price for the gate"| fast
+    pl -->|"settled predictions via ml_feature_store"| slow
+    slow -->|"refreshes"| fc[("fundamentals_cache")]
+    fc -->|"cached fundamentals"| fast
+    slow -->|"writes"| ms[("model_scorecards")]
+    slow -->|"uploads weights"| w["Release model-latest"]
+    w -->|"downloads weights"| fast
+    watch -->|"one alert per symbol and day"| sa[("shock_alerts")]
+    ps & ms -->|"last run of each job"| deadman
+```
+
+Every table, with the jobs that write and read it, is in
+[data and access](docs/data-and-access.md#relations).
+
+### Core data model
+
+Predictions are the centre: three tables hang on `prediction_logs` by a real foreign key,
+while `price_snapshots` is matched to a prediction only by symbol and hour.
+
+```mermaid
+erDiagram
+    prediction_logs ||--o{ council_votes : "voted on in"
+    prediction_logs ||--o{ shadow_predictions : "challenged by"
+    prediction_logs ||--o| paper_trades : "opens"
+    prediction_logs {
+        uuid id PK
+        varchar symbol
+        timestamptz timestamp
+        decimal price_at_prediction
+        varchar predicted_trend
+        decimal predicted_target_price
+        boolean is_trend_correct
+        vector embedding "1536 dimensions, RAG"
+    }
+    council_votes {
+        bigserial id PK
+        uuid prediction_id FK
+        varchar investor_name
+        varchar recommendation "BUY, SELL or HOLD"
+        smallint round "1 vote, 2 debate"
+    }
+    shadow_predictions {
+        bigserial id PK
+        uuid prediction_id FK
+        text model_name
+        double predicted_return
+    }
+    paper_trades {
+        bigint seq PK
+        uuid prediction_id FK "unique"
+        text side
+        decimal entry_price
+        decimal exit_price
+        text row_hash "hash chain, append-only"
+    }
+    price_snapshots {
+        uuid id PK
+        varchar symbol
+        decimal price
+        timestamptz timestamp "unique per symbol and hour"
+    }
+```
+
+## Integrations
+
+Every external service the production code calls, with its state in `config.toml` today.
+The logos only identify the services.
+
+| Service | Used for | Interface | Status |
+|---|---|---|---|
+| <img src="https://cdn.simpleicons.org/githubactions" alt="GitHub Actions" height="16"> GitHub Actions | Runs every job on its schedule, and CI on every push to `main` and every pull request | Workflows in [`.github/workflows/`](.github/workflows/) | On |
+| <img src="https://cdn.simpleicons.org/github/181717/ffffff" alt="GitHub" height="16"> GitHub Releases | Carries the XGBoost weights from the Slow Loop to the Fast Loop (`model-latest`) | `gh` CLI in the workflows | On |
+| Finnhub | US stock and ETF quotes for the Fast Loop, the Shock Watch and Risk Watch; analyst consensus | REST, `X-Finnhub-Token` header | On; option chain and earnings calendar off |
+| CoinGecko | Crypto prices and their 24-hour change | REST `/simple/price` | On |
+| Alpha Vantage | News sentiment past the gate; the weekly fundamentals refresh | REST | On; earnings calendar off |
+| FRED | Yield curve (10Y, 2Y, fed funds) for the market regime | REST, free key | On; extra macro series off |
+| NBP | EUR and USD against PLN for Risk Watch and the portfolio | REST, no key | On |
+| <img src="https://cdn.simpleicons.org/anthropic/191919/ffffff" alt="Anthropic" height="16"> Anthropic | Main analysis past the gate and the diagnosis of a missed prediction | `anthropic` SDK, Messages API | On, the default `llm_provider` |
+| OpenAI | Advisory council of 7 personas; news embeddings for the RAG search | `openai` SDK | On |
+| <img src="https://cdn.simpleicons.org/supabase" alt="Supabase" height="16"> Supabase | Postgres with pgvector for every table and the RAG search; Storage for the private digest archive | `supabase-py` over PostgREST | On; writes only with `DB_WRITES_ENABLED=true` |
+| <img src="https://cdn.simpleicons.org/resend/000000/ffffff" alt="Resend" height="16"> Resend | The report email, the weekly recap and the deadman's alerts | REST `POST /emails` | On |
+| <img src="https://cdn.simpleicons.org/telegram" alt="Telegram" height="16"> Telegram | Push digest and shock alerts; the owner's command bot | Bot API: `sendMessage`, `getUpdates` polling for the bot | Push when its secrets are set; bot off |
+| Slack | Push digest and shock alerts | Incoming webhook | When `SLACK_WEBHOOK_URL` is set |
+| SEC EDGAR | Insider Form 4 flow and 8-K events | REST | Off (`insider_flow_enabled`, `corporate_events_enabled`) |
+| <img src="https://cdn.simpleicons.org/reddit" alt="Reddit" height="16"> Reddit | Mention counts per symbol | REST `search.json`, anonymous | Off (`social_velocity_enabled`) |
+| Deribit | BTC and ETH implied volatility (DVOL) | REST, public API | Off (`deribit_dvol_enabled`) |
+| Sigstore Rekor | A public transparency-log entry for each cycle's attestation root | REST, keyless OIDC signing | Off (`attestation_enabled`, `attestation_rekor_enabled`) |
+| <img src="https://cdn.simpleicons.org/githubpages/222222/ffffff" alt="GitHub Pages" height="16"> GitHub Pages | Public scorecard and status page | `deploy-pages` in the workflows | Off (`public_scorecard_enabled`, `public_status_page_enabled`) |
+
+The terms of each data source and what may leave the owner's inbox are in
+[data sources and terms](docs/how-it-works.md#data-sources-and-terms).
+
 ## One pass, end to end
 
 `price` → `self-reflection on the last prediction` → `cached fundamentals` →
@@ -205,6 +351,43 @@ against the realised price, and fed back into the next run.
 ends in `ignore` (price snapshot only), and past it, once the cycle's paid-call ceiling is spent, in
 `budget_exhausted` (no snapshot). The diagram in [how it works](docs/how-it-works.md#how-it-works) is
 generated from the graph's code, and a test fails when the two drift apart.
+
+The sequence below follows one symbol through a Fast Loop pass and shows which service each
+step calls; the node-by-node graph stays in how it works.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GHA as GitHub Actions
+    participant Graph as Fast Loop graph
+    participant Px as Finnhub or CoinGecko
+    participant DB as Supabase
+    participant AV as Alpha Vantage
+    participant LLM as Anthropic and OpenAI
+    participant Out as Resend, Telegram, Slack
+
+    GHA->>Graph: main_agent.py on weekdays at 05:30 UTC
+    loop every symbol on the watchlist
+        Graph->>Px: check_price: live quote
+        Graph->>DB: reflect: settle the open prediction against this price
+        Graph->>DB: fetch_fundamentals: read the cache only
+        alt move below the volatility threshold
+            Graph->>DB: ignore: price snapshot only, no paid call
+        else paid-call ceiling or USD budget spent
+            Note over Graph: budget_exhausted: no snapshot, so the move is analysed next cycle
+        else move at or above the threshold
+            Graph->>AV: analyze_sentiment and fetch_news
+            Graph->>LLM: predict: embed the news (OpenAI)
+            Graph->>DB: predict: similar past predictions (pgvector)
+            Graph->>LLM: predict: main analysis (Anthropic)
+            Note over Graph: local XGBoost forecast beside the LLM reading
+            Graph->>LLM: council: 7 personas vote on larger moves (OpenAI)
+            Graph->>DB: save: prediction, votes, paper trade, snapshot
+        end
+    end
+    Graph->>DB: read the track record for the report
+    Graph->>Out: HTML email and push digest
+```
 
 The gate is the point: below the threshold no paid API is touched at all. A cycle where
 every symbol was filtered reports **zero paid calls**, and the report prints that bill.
@@ -259,6 +442,23 @@ ML / email). The dependency arrow flows one way, and
 module that imports anything beyond the standard library and `src.domain`, an application
 module that imports the infrastructure or an entry point, or `typing.Any` in the domain
 outside `attestation.py`.
+
+The arrows are the allowed imports: each layer may import the one it points to, and the
+test fails when the domain or the application imports against them.
+
+```mermaid
+flowchart LR
+    main["main_*.py<br/>composition roots: wire adapters into use cases"]
+    infra["src/infrastructure<br/>adapters for APIs, Supabase, LLMs, XGBoost, email"]
+    app["src/application<br/>ports, use cases, LangGraph graph, report"]
+    domain["src/domain<br/>pure Python, standard library only"]
+
+    main --> infra
+    main --> app
+    infra -->|"implements the ports"| app
+    infra --> domain
+    app --> domain
+```
 
 ## Pre-registered parameters
 
