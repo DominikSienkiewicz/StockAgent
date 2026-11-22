@@ -1,0 +1,35 @@
+{
+  "name": "StockAgent",
+  "kicker": "LangGraph market agent",
+  "description": "Analyses a stock and crypto watchlist and scores every past prediction against realised prices.",
+  "accent": "#FFD43B",
+  "stack": [
+    {
+      "icon": "python",
+      "label": "Python 3.14",
+      "color": "#FFD43B"
+    },
+    {
+      "icon": "langgraph",
+      "label": "LangGraph 1.2",
+      "color": "#FFFFFF"
+    },
+    {
+      "icon": "anthropic",
+      "label": "Anthropic Claude",
+      "color": "#D97757"
+    },
+    {
+      "icon": "supabase",
+      "label": "Supabase",
+      "color": "#3ECF8E"
+    }
+  ],
+  "preview": {
+    "type": "image",
+    "path": "docs/img/report-email.png",
+    "position": "top"
+  },
+  "previewLabel": "Annotated sample of the report email · fictional data",
+  "authorCaption": "Designed and maintained by"
+}
