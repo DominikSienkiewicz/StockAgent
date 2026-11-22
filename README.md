@@ -417,8 +417,8 @@ python main_tools.py offline` runs two cycles of a fixed scenario on in-memory f
 without keys, database or network, and writes one email per cycle to `build/offline/` (see
 [Offline cycle](docs/running-locally.md#offline-cycle-dx-04)). The screenshot is not regenerated
 automatically, so it can lag behind the email after a report change. The repository's social
-preview, [docs/img/social-preview.png](docs/img/social-preview.png), is the top of the same
-sample at 1280 × 640.
+preview, [docs/assets/social-preview.png](docs/assets/social-preview.png), frames the top of the
+same sample; it is rendered from [docs/assets/social-preview.json](docs/assets/social-preview.json).
 
 ## Documentation
 
